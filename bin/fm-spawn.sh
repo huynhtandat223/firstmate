@@ -4,7 +4,8 @@
 # Usage: fm-spawn.sh <task-id> <project-dir> [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] [--scout]
 #        fm-spawn.sh <task-id> [<firstmate-home>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] --secondmate
 #   --harness <name> is the explicit per-spawn harness/profile adapter. The old
-#   positional harness arg still works for back-compat.
+#   positional harness arg still works for back-compat. agy is verified for
+#   worker launches only and is rejected for --secondmate launches.
 #   --model <name> and --effort <low|medium|high|xhigh|max> are concrete profile
 #   axes chosen by firstmate at intake. They are only threaded into harnesses whose
 #   installed CLIs were verified to support that axis; unsupported axes are omitted
@@ -59,7 +60,7 @@
 #   profile consultation. A --secondmate spawn is exempt and resolves the SECONDMATE
 #   harness (config/secondmate-harness -> config/crew-harness -> own), so the
 #   secondmate-vs-crewmate split is DURABLE across every respawn (recovery,
-#   /updatefirstmate, restart). A bare adapter name (claude|codex|opencode|pi|grok)
+#   /updatefirstmate, restart). A bare adapter name (claude|codex|opencode|pi|grok|agy)
 #   overrides it for this spawn (either kind). A non-flag string containing
 #   whitespace is treated as a RAW launch command - the escape hatch for verifying
 #   new adapters.
@@ -447,6 +448,10 @@ launch_template() {
     # launch command - it is a Stop-event hook installed below (global hook +
     # per-task pointer), so the template is identical for ship/scout/secondmate.
     grok) printf '%s' 'grok --always-approve __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
+    # agy starts an interactive, steerable session in the pane cwd. Keep this
+    # literal command substitution child-side: the pane shell reads the brief
+    # after launch, so no parent expansion can leak or alter its contents.
+    agy) printf '%s' 'agy --dangerously-skip-permissions __MODELFLAG____EFFORTFLAG__-i "$(cat __BRIEF__)"' ;;
     *) return 1 ;;
   esac
 }
@@ -458,6 +463,10 @@ case "$ARG3" in
     for word in $LAUNCH; do
       case "$word" in [A-Za-z_]*=*) continue ;; *) HARNESS=$(basename "$word"); break ;; esac
     done
+    if [ "$KIND" = secondmate ] && [ "$HARNESS" = agy ]; then
+      echo "error: harness 'agy' is verified for workers only and cannot launch a secondmate" >&2
+      exit 1
+    fi
     ;;
   '')
     # No explicit harness: resolve from config. A secondmate AGENT launches on the
@@ -470,6 +479,10 @@ case "$ARG3" in
     # kinds: a harness with no template aborts the spawn.
     if [ "$KIND" = secondmate ]; then
       HARNESS=$("$FM_ROOT/bin/fm-harness.sh" secondmate)
+      if [ "$HARNESS" = agy ]; then
+        echo "error: harness 'agy' is verified for workers only and cannot launch a secondmate" >&2
+        exit 1
+      fi
       harness_src='config/secondmate-harness (falling back to config/crew-harness)'
     else
       if [ -f "$CONFIG/crew-dispatch.json" ]; then
@@ -483,6 +496,10 @@ case "$ARG3" in
     ;;
   *)
     HARNESS=$ARG3
+    if [ "$KIND" = secondmate ] && [ "$HARNESS" = agy ]; then
+      echo "error: harness 'agy' is verified for workers only and cannot launch a secondmate" >&2
+      exit 1
+    fi
     LAUNCH=$(launch_template "$HARNESS" "$KIND") || { echo "error: unknown harness '$HARNESS'; pass a raw launch command to use an unverified adapter" >&2; exit 1; }
     ;;
 esac
@@ -534,7 +551,7 @@ model_flag_for_harness() {
   local harness=$1 model=$2
   [ -n "$model" ] && [ "$model" != default ] || return 0
   case "$harness" in
-    claude|codex|opencode|pi|grok)
+    claude|codex|opencode|pi|grok|agy)
       printf -- '--model %s ' "$(shell_quote "$model")"
       ;;
   esac
@@ -571,6 +588,16 @@ effort_flag_for_harness() {
       # its --thinking flag.
       case "$effort" in
         low|medium|high|xhigh|max) printf -- '--thinking %s ' "$(shell_quote "$effort")" ;;
+      esac
+      ;;
+    agy)
+      # Antigravity CLI (agy 1.1.5) exposes --effort low|medium|high (verified
+      # `agy --help`). Its model catalog also bakes an effort suffix into some
+      # model names (e.g. gemini-3.6-flash-high); firstmate keeps --model as the
+      # bare catalog name and drives the reasoning axis through --effort. The
+      # ceiling is high, so omit xhigh|max rather than passing a known-bad value.
+      case "$effort" in
+        low|medium|high) printf -- '--effort %s ' "$(shell_quote "$effort")" ;;
       esac
       ;;
     # opencode's interactive `opencode --prompt` launch has a verified --model
