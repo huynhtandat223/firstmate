@@ -123,6 +123,22 @@ The supported launch-profile flags below are verified locally; each row records 
 | opencode | `--model <provider/model>` | none for firstmate's interactive launch | Verified on opencode 1.17.6. `opencode run` has `--variant`, but firstmate launches the interactive `opencode --prompt` path, which has no verified effort flag. |
 | agy | `--model <model>` | `--effort <low\|medium\|high>` | Verified on Antigravity CLI 1.1.5. `agy models` lists names that bake effort into the suffix (e.g. `gemini-3.6-flash-high`), but a separate `--effort` flag drives the reasoning axis and is firstmate's profile knob; pass the bare catalog model name via `--model`. The ceiling is `high`; `xhigh` and `max` are omitted rather than passing an unsupported value. |
 
+### Model support discovery
+
+Treat model and provider knowledge as current source-of-truth discovery, not as a permanent namespace or provider mapping.
+Use the discovery surface in the current authenticated environment because supported and available models can change by version, account, and configuration.
+
+| Harness | Authoritative discovery surface |
+|---|---|
+| claude | Open the current interactive session's `/model` picker; `claude --help` documents the accepted alias or full-model-name input shape. |
+| codex | Open the current interactive session's `/model` picker. |
+| opencode | Run `opencode models [provider]`, which lists available provider/model identifiers. |
+| pi | Run `pi --list-models [search]`; Pi's installed `docs/models.md` owns how built-in, extension-registered, and custom provider/model entries reach that list. |
+| grok | Run `grok models`, which lists the models available to the current Grok installation and account. |
+
+For an unfamiliar harness or model namespace, establish support and provider identity from that harness's authoritative CLI help, model listing, or current documentation rather than guessing from a name or prefix.
+If those sources do not establish the relationship needed for dispatch, fail loudly and report the unresolved candidate.
+
 When a requested effort value is outside the harness-specific accepted set, `fm-spawn` records the requested `effort=` in meta but emits no effort flag for that harness.
 This preserves launch success instead of passing a known-bad value.
 
