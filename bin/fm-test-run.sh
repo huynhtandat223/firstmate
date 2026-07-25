@@ -174,8 +174,15 @@ family_for_basename() {
       printf '%s\n' secondmate
       ;;
     fm-bootstrap.test.sh|fm-fleet-sync.test.sh|fm-gate-refuse.test.sh|fm-gotmp.test.sh|\
+<<<<<<< HEAD
+    fm-session-lock-liveness.test.sh|\
     fm-session-start.test.sh|fm-sessionstart-nudge.test.sh|fm-startup-network.test.sh|\
     fm-tangle-guard.test.sh|fm-update.test.sh)
+=======
+    fm-session-lock-liveness.test.sh|\
+    fm-session-start.test.sh|fm-sessionstart-nudge.test.sh|fm-tangle-guard.test.sh|\
+    fm-update.test.sh)
+>>>>>>> cea3640 (fix: read live pi sessions as live in session-lock liveness)
       printf '%s\n' session-bootstrap
       ;;
     fm-afk-pi-herdr-return-e2e.test.sh|\
