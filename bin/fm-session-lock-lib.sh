@@ -33,11 +33,25 @@ fm_harness_ancestry_pid() {
 }
 
 # True if $1 is a live process that looks like a verified harness.
+#
+# Mirrors fm_harness_ancestry_pid: the basename of comm is tested on its own
+# line, and args is consulted only when comm is a bare interpreter. Joining comm
+# and args into one line breaks anchored alternatives in FM_HARNESS_RE - a pi
+# harness joins to "pi pi", which ^pi$ cannot match, so every live pi session
+# read as stale and lost its session lock to a competing session.
 fm_harness_pid_alive() {
   local pid=$1 comm
   kill -0 "$pid" 2>/dev/null || return 1
   comm=$(ps -o comm= -p "$pid" 2>/dev/null) || return 1
-  printf '%s' "$(basename "$comm") $(ps -o args= -p "$pid" 2>/dev/null)" | grep -qE "$FM_HARNESS_RE"
+  [ -n "$comm" ] || return 1
+  printf '%s' "$(basename "$comm")" | grep -qE "$FM_HARNESS_RE" && return 0
+  # Bare interpreter (e.g. node): match the harness name in its script path.
+  case "$comm" in
+    *node*|*python*)
+      printf '%s' "$(ps -o args= -p "$pid" 2>/dev/null)" | grep -qE "$FM_HARNESS_RE" && return 0
+      ;;
+  esac
+  return 1
 }
 
 # True when state dir $1 holds a session lock whose pid is the harness ancestor
