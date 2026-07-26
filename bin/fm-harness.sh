@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Detect the agent harness this process tree runs on.
-# Usage: fm-harness.sh                  print own harness: claude|codex|opencode|pi|grok|unknown
+# Usage: fm-harness.sh                  print own harness: claude|codex|opencode|pi|grok|kimi|unknown
 #        fm-harness.sh crew             print the effective CREWMATE harness
 #                                        (config/crew-harness; "default" resolves to own)
 #        fm-harness.sh secondmate       print the harness the PRIMARY uses to launch
@@ -29,16 +29,18 @@ CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 
 detect_own() {
   # Layer 1: environment markers for verified harnesses.
+  # Keep marker detection before ancestry detection as an explicit precedence rule.
+  # Only claude, pi, and grok set verified markers of their own; codex, opencode,
+  # and kimi are markerless, so a foreign marker retained in a terminal
+  # multiplexer's stored environment can silently misidentify one of them before
+  # ancestry is consulted. This is a precedence hazard, not evidence that
+  # CLAUDECODE inheritance into a kimi child was observed; it was not observed.
   [ "${CLAUDECODE:-}" = "1" ] && { echo claude; return; }
   [ "${PI_CODING_AGENT:-}" = "true" ] && { echo pi; return; }
   # grok sets GROK_AGENT=1 for its child/tool processes (verified, grok 0.2.73).
   # It does NOT set CLAUDECODE despite being Claude-Code-compatible, so this marker
   # is unambiguous when firstmate runs natively on grok.
   [ "${GROK_AGENT:-}" = "1" ] && { echo grok; return; }
-  # agy (Antigravity CLI) sets ANTIGRAVITY_AGENT=1 in every tool/child process
-  # (verified, cli-1.1.5, alongside ANTIGRAVITY_AGENTAPI_EXE and
-  # ANTIGRAVITY_LS_VERSION=cli-<v>). Unambiguous when firstmate runs on agy.
-  [ "${ANTIGRAVITY_AGENT:-}" = "1" ] && { echo agy; return; }
   # Layer 2: walk the parent chain and match the command name.
   local pid=$$ comm args
   for _ in 1 2 3 4 5 6 7 8; do
@@ -48,7 +50,7 @@ detect_own() {
       *codex*) echo codex; return ;;
       *opencode*) echo opencode; return ;;
       *grok*) echo grok; return ;;
-      agy) echo agy; return ;;
+      kimi) echo kimi; return ;;
       pi) echo pi; return ;;
       node*|python*)
         # Bare interpreter: match the harness name in its script path.
@@ -58,7 +60,6 @@ detect_own() {
           *codex*) echo codex; return ;;
           *opencode*) echo opencode; return ;;
           *grok*) echo grok; return ;;
-          *agy*|*antigravity*) echo agy; return ;;
           *" pi "*|*/pi) echo pi; return ;;
         esac ;;
     esac
