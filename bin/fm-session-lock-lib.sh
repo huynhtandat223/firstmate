@@ -9,7 +9,7 @@
 # This file is sourced by scripts and has no side effects on source.
 
 # Known harness command names; extend when a new adapter is verified.
-FM_HARNESS_RE='claude|codex|opencode|grok|kimi|^pi$'
+FM_HARNESS_RE='claude|codex|opencode|grok|kimi|^pi$|^pi-signed$'
 
 # Walk the current process ancestry (up to 8 hops) and print the first pid whose
 # command looks like a verified harness. The harness pid lives as long as the
@@ -33,25 +33,20 @@ fm_harness_ancestry_pid() {
 }
 
 # True if $1 is a live process that looks like a verified harness.
-#
-# Mirrors fm_harness_ancestry_pid: the basename of comm is tested on its own
-# line, and args is consulted only when comm is a bare interpreter. Joining comm
-# and args into one line breaks anchored alternatives in FM_HARNESS_RE - a pi
-# harness joins to "pi pi", which ^pi$ cannot match, so every live pi session
-# read as stale and lost its session lock to a competing session.
 fm_harness_pid_alive() {
-  local pid=$1 comm
+  local pid=$1 comm args
   kill -0 "$pid" 2>/dev/null || return 1
   comm=$(ps -o comm= -p "$pid" 2>/dev/null) || return 1
-  [ -n "$comm" ] || return 1
-  printf '%s' "$(basename "$comm")" | grep -qE "$FM_HARNESS_RE" && return 0
-  # Bare interpreter (e.g. node): match the harness name in its script path.
+  if printf '%s' "$(basename "$comm")" | grep -qE "$FM_HARNESS_RE"; then
+    return 0
+  fi
   case "$comm" in
     *node*|*python*)
-      printf '%s' "$(ps -o args= -p "$pid" 2>/dev/null)" | grep -qE "$FM_HARNESS_RE" && return 0
+      args=$(ps -o args= -p "$pid" 2>/dev/null)
+      printf '%s' "$args" | grep -qE "$FM_HARNESS_RE"
       ;;
+    *) return 1 ;;
   esac
-  return 1
 }
 
 # True when state dir $1 holds a session lock whose pid is the harness ancestor
