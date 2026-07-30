@@ -819,9 +819,132 @@ test_parked_scout_decision_stays_pending() {
   pass "a scout still parked at a decision stays pending (terminal clear does not over-fire)"
 }
 
+# The secondmate evidence values are the other side of the same MAX_ARG_STRLEN
+# trap the oversized-backlog test covers. The keyed open-decision set folds a whole
+# status stream with no cap at all, and the parent activity scan and the registered
+# secondmate table are limited only by operator-tunable read windows, so all three
+# can cross the 128 KiB per-argument cap. This fixture drives every one of them
+# past that cap at once and asserts the evidence survives intact.
+test_oversized_secondmate_evidence_stays_off_the_command_line() {
+  local home sub fakebin out status_log pad i=0
+  home=$(make_home oversized-secondmate)
+  # The secondmate home must sit outside the parent home and the firstmate repo.
+  sub=$TMP_ROOT/oversized-secondmate-sub
+  mkdir -p "$sub/bin" "$sub/data" "$sub/state" "$sub/config" "$sub/projects"
+  printf '# fixture secondmate home\n' > "$sub/AGENTS.md"
+  printf 'big-mate\n' > "$sub/.fm-secondmate-home"
+  printf '## In flight\n\n## Queued\n\n## Done\n' > "$sub/data/backlog.md"
+
+  # 200 still-open decision keys and 200 still-open activity keys, each carrying a
+  # long summary, so both encoded sets clear 128 KiB on their own.
+  pad=$(printf 'x%.0s' $(seq 1 700))
+  status_log=$home/state/big-mate.status
+  : > "$status_log"
+  while [ "$i" -lt 200 ]; do
+    i=$((i + 1))
+    printf 'needs-decision [key=dec-%03d]: decision %03d %s\n' "$i" "$i" "$pad" >> "$status_log"
+    printf 'working [key=act-%03d]: activity %03d %s\n' "$i" "$i" "$pad" >> "$status_log"
+  done
+  cp "$status_log" "$home/state/bad-mate.status"
+
+  fm_write_meta "$home/state/big-mate.meta" \
+    "window=firstmate:fm-big-mate" \
+    "project=$sub" "harness=codex" "kind=secondmate" "mode=secondmate" \
+    "home=$sub" "projects=alpha"
+  # A second secondmate whose home never resolves takes the parent-event fallback
+  # branch, which carries the same three values through a different builder.
+  fm_write_meta "$home/state/bad-mate.meta" \
+    "window=firstmate:fm-bad-mate" \
+    "project=$home/missing-home" "harness=codex" "kind=secondmate" "mode=secondmate" \
+    "home=$home/missing-home" "projects=beta"
+
+  # A registered table long enough that the parsed registry itself clears 128 KiB.
+  {
+    printf -- '- big-mate (home: %s; scope: oversized evidence)\n' "$sub"
+    i=0
+    while [ "$i" -lt 400 ]; do
+      i=$((i + 1))
+      printf -- '- zfiller-%03d (home: /nonexistent/filler-%03d-%s; scope: filler)\n' "$i" "$i" "$pad"
+    done
+  } > "$home/data/secondmates.md"
+
+  fakebin=$(make_fakebin "$home")
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" \
+    FM_SNAPSHOT_SECONDMATES=2 \
+    FM_SNAPSHOT_SECONDMATE_TIMEOUT=120 \
+    FM_SNAPSHOT_REGISTRY_LINES=4000 \
+    FM_SNAPSHOT_REGISTRY_BYTES=1048576 \
+    FM_SNAPSHOT_REGISTRY_RECORDS=1000 \
+    FM_SNAPSHOT_REGISTRY_TIMEOUT=120 \
+    FM_SNAPSHOT_PARENT_ACTIVITY_LINES=4000 \
+    FM_SNAPSHOT_PARENT_ACTIVITY_BYTES=1048576 \
+    FM_SNAPSHOT_PARENT_ACTIVITIES=1000 \
+    FM_SNAPSHOT_PARENT_ACTIVITY_TIMEOUT=120 \
+    "$SNAPSHOT" --json) \
+    || fail "snapshot must survive secondmate evidence larger than the per-argument limit"
+
+  # Guard the fixture: a smaller payload would stop exercising the limit. Each of
+  # the three moved values must independently exceed 128 KiB.
+  printf '%s' "$out" | jq -e '
+    ([.tasks[] | select(.id == "big-mate")][0].hints.open_decisions | tojson | length) > 131072
+      and (.secondmate_current.registry | tojson | length) > 131072
+      and ([.secondmate_current.records[] | select(.id == "big-mate")][0].parent_event.open_activities
+           | tojson | length) > 131072
+  ' >/dev/null || fail "fixture secondmate evidence no longer exceeds the 128 KiB per-argument limit"
+
+  # Correctness, not just exit 0: truncated or emptied evidence must fail here.
+  printf '%s' "$out" | jq -e '
+    [.tasks[] | select(.id == "big-mate")][0]
+    | (.hints.open_decisions | length) == 200
+      and .hints.pending_decision == true
+      and .hints.open_decisions[0].key == "dec-001"
+      and .hints.open_decisions[-1].key == "dec-200"
+      and (.hints.open_decisions[-1].summary | startswith("decision 200 "))
+      and (.hints.open_decisions[-1].summary | length) == 713
+  ' >/dev/null || fail "oversized decision fold lost records on the task row: $(printf '%s' "$out" | head -c 400)"
+
+  printf '%s' "$out" | jq -e '
+    .secondmate_current
+    | .registry.complete == true
+      and (.registry.records | length) == 401
+      and .registry.records[0].id == "big-mate"
+      and .registry.records[-1].id == "zfiller-400"
+      and .total == 402
+      and .shown == 2
+      and .truncated == 400
+      and ([.records[].id] == ["bad-mate","big-mate"])
+  ' >/dev/null || fail "oversized registry lost records or rows: $(printf '%s' "$out" | head -c 400)"
+
+  # The structured-home branch: reconciliation reads both oversized sets.
+  printf '%s' "$out" | jq -e '
+    [.secondmate_current.records[] | select(.id == "big-mate")][0]
+    | .provenance.selected == "structured-home"
+      and (.parent_event.open_decisions | length) == 200
+      and (.parent_event.open_activities | length) == 200
+      and (.parent_event.activity_scan.records | length) == 200
+      and .parent_event.activity_scan.retained_truncated == false
+      and (.parent_event.reconciliation.decisions | length) == 200
+      and (.parent_event.reconciliation.activities | length) == 200
+      and .parent_event.reconciliation.activities[-1].key == "act-200"
+      and .parent_event.reconciliation.decisions[-1].key == "dec-200"
+  ' >/dev/null || fail "oversized reconciliation lost evidence: $(printf '%s' "$out" | head -c 400)"
+
+  # The parent-event fallback branch carries the same values through its own builder.
+  printf '%s' "$out" | jq -e '
+    [.secondmate_current.records[] | select(.id == "bad-mate")][0]
+    | .current.state == "unknown"
+      and .provenance.selected == "parent-event-fallback"
+      and (.parent_event.open_decisions | length) == 200
+      and (.parent_event.open_activities | length) == 200
+      and .parent_event.open_activities[-1].key == "act-200"
+  ' >/dev/null || fail "oversized fallback record lost evidence: $(printf '%s' "$out" | head -c 400)"
+  pass "oversized secondmate decisions, activities, and registry stay off the command line"
+}
+
 test_empty_fleet_json
 test_fixture_snapshot_json
 test_oversized_backlog_stays_off_the_command_line
+test_oversized_secondmate_evidence_stays_off_the_command_line
 test_main_inventory_orphan_and_unstructured_disclosure
 test_normalized_roles_and_plural_blocker_readiness
 test_event_hints_follow_reconciled_current_state
