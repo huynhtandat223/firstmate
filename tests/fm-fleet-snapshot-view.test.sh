@@ -184,6 +184,70 @@ test_fixture_snapshot_json() {
   pass "fixture snapshot covers task rows, backlog rows, pointers, and stable ordering"
 }
 
+# Whole-fleet JSON must never travel as a command-line argument. A single argv
+# string is capped at MAX_ARG_STRLEN (128 KiB), which is far below ARG_MAX, so a
+# backlog that crosses it used to make every snapshot fail outright with
+# "Argument list too long".
+test_oversized_backlog_stays_off_the_command_line() {
+  local home fakebin out summary i=0
+  home=$(make_home oversized-backlog)
+  mkdir -p "$home/projects/big-worktree"
+  {
+    printf '## In flight\n'
+    printf -- '- [ ] big-ship - Big Ship (repo: alpha) (kind: ship) (since 2026-07-20)\n'
+    printf '\n## Done\n'
+    while [ "$i" -lt 500 ]; do
+      i=$((i + 1))
+      printf -- '- [x] filler-%03d - Filler task %03d carrying a deliberately long title so the encoded backlog crosses the per-argument limit https://github.com/kunchenguid/firstmate/pull/%d (repo: alpha) (kind: ship) (merged 2026-07-20)\n' \
+        "$i" "$i" "$i"
+    done
+  } > "$home/data/backlog.md"
+  fm_write_meta "$home/state/big-ship.meta" \
+    "window=firstmate:fm-big-ship" \
+    "worktree=$home/projects/big-worktree" \
+    "project=alpha" \
+    "harness=codex" \
+    "kind=ship" \
+    "mode=ship"
+  fakebin=$(make_fakebin "$home")
+
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --json) \
+    || fail "snapshot must survive a backlog larger than the per-argument limit"
+  # Guard the fixture itself: a smaller backlog would stop exercising the limit.
+  printf '%s' "$out" | jq -e '(.backlog | tojson | length) > 131072' >/dev/null \
+    || fail "fixture backlog no longer exceeds the 128 KiB per-argument limit"
+  # Correctness, not just exit 0: a truncated or emptied inventory must fail here.
+  printf '%s' "$out" | jq -e '
+    (.backlog.records | length) == 501
+      and ([.backlog.records[] | select(.state == "done")] | length) == 500
+      and .backlog.records[0].id == "big-ship"
+      and .backlog.records[-1].id == "filler-500"
+      and .backlog.records[-1].pr_url == "https://github.com/kunchenguid/firstmate/pull/500"
+      and .backlog.records[-1].title == "Filler task 500 carrying a deliberately long title so the encoded backlog crosses the per-argument limit"
+      and (.tasks | length) == 1
+      and .tasks[0].id == "big-ship"
+      and .tasks[0].backlog.title == "Big Ship"
+      and .main_inventory.valid == true
+      and .main_inventory.reason == null
+      and (.main_inventory.orphan_in_flight | length) == 0
+      and .main_inventory.unstructured_current_count == 0
+      and (.scout_reports | type) == "array"
+      and (.secondmate_current.records | length) == 0
+  ' >/dev/null || fail "oversized-backlog snapshot lost or truncated inventory: $(printf '%s' "$out" | head -c 400)"
+
+  # The same payload also crosses the per-home summary used for secondmate reads.
+  summary=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --secondmate-home-summary) \
+    || fail "per-home summary must survive a backlog larger than the per-argument limit"
+  printf '%s' "$summary" | jq -e '
+    .schema == "fm-secondmate-home-summary.v1"
+      and .counts.landed == 500
+      and .counts.endpoints == 1
+      and .landed[0].id == "filler-500"
+      and .landed[0].pr_url == "https://github.com/kunchenguid/firstmate/pull/500"
+  ' >/dev/null || fail "oversized-backlog per-home summary wrong: $(printf '%s' "$summary" | head -c 400)"
+  pass "an oversized backlog snapshots fully instead of blowing the per-argument limit"
+}
+
 # R1 owner contract: main_inventory discloses orphan in-flight and unstructured
 # current rows without inventing task rows.
 test_main_inventory_orphan_and_unstructured_disclosure() {
@@ -757,6 +821,7 @@ test_parked_scout_decision_stays_pending() {
 
 test_empty_fleet_json
 test_fixture_snapshot_json
+test_oversized_backlog_stays_off_the_command_line
 test_main_inventory_orphan_and_unstructured_disclosure
 test_normalized_roles_and_plural_blocker_readiness
 test_event_hints_follow_reconciled_current_state
