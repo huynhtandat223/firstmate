@@ -11,15 +11,9 @@ metadata:
 
 # paired-review
 
-This skill is the single owner of the paired implement-and-check protocol, which is a universal way to execute an implementation task rather than one program's local procedure.
-Whichever firstmate owns the task dispatches and supervises the pair, so a standalone paired task runs entirely inside that firstmate, needing no persistent orchestrator to exist, be created, or be routed through.
-A program orchestrator reaches this same protocol for a program ticket under `program-orchestration` and dispatches it unchanged.
-
+This skill is the single owner of the paired implement-and-check protocol.
 It exists because firstmate supervises several threads at once, so relaying every exchange between the two workers makes firstmate the latency bottleneck and the pair stalls waiting for a firstmate turn.
 `AGENTS.md` section 1 keeps the narrowed communication rule always loaded, section 7 keeps the dispatch trigger, and section 13 keeps the load condition.
-
-A pair runs the protocol it was dispatched with, because both briefs are written at dispatch and neither side re-reads this file afterwards.
-A change here therefore reaches the next dispatch, and a pair already under way keeps the briefs and protocol it launched with.
 
 ## This is pairing, not review
 
@@ -80,15 +74,17 @@ This is the same reason a two-axis code review runs its axes as independent para
 The navigator needs its own task id because spawn, worktree, state, and status are all per task id; `<task-id>-nav` is the conventional form.
 Record both sides under the same backlog work item rather than filing the navigator as a second work item.
 
-## Routing
+## Default routing
 
-**The navigator runs on the pi runtime with the model `cx/gpt-5.6-terra`, on every paired task.**
-An explicit per-task captain choice of another navigator runtime or model is the one thing that replaces it.
-One fixed model holds across tasks of very different difficulty because the navigator checks work against a scope and a set of rules that are already written down, rather than doing open-ended design.
+These are defaults with their reasoning, not hard constraints, so a future dispatch can pick correctly when a task does not fit the usual shape.
+An explicit per-task captain choice always overrides both.
 
-**The driver runs on the claude runtime, on opus or sonnet chosen by the task's complexity.**
+- **Navigator: the pi runtime with an explicitly named Codex/GPT-family model.**
+  The navigator checks work against a scope and a set of rules that are already written down, rather than doing open-ended design, so it does not need the strongest model.
+  Where a home carries a standing rule naming the exact model for an autonomously launched Codex/GPT-family worker on pi, follow that rule; this default is consistent with it rather than an exception to it.
+- **Driver: the claude runtime, on opus or sonnet chosen by the task's complexity.**
 
-`AGENTS.md` section 4's routing precedence and `harness-adapters` resolve both sides into concrete launch mechanics - flags, effort, and spawn validation - and carry the navigator pin through that resolution rather than substituting a best-fit alternative of their own.
+Resolve both into concrete profiles through `AGENTS.md` section 4's routing precedence and `harness-adapters`; these defaults are the best-fit input to that resolution, never a bypass of it.
 
 ## The scope and seam statement
 
@@ -97,12 +93,6 @@ It is the `{SCOPE}` section every ship and scout brief carries by default; `bin/
 Write the same statement into both briefs and cite every firstmate-home path in absolute form, because a home-relative path resolves to nothing inside a worker's own copy.
 
 The stated scope and seam assumptions are part of the accepted contract, so widening or correcting them is an escalation, never something the pair settles between themselves.
-
-When the task came from a planner artifact, the ticket also carries an approved test contract - the acceptance intent the captain signed off with the scope, whose fields `planner` owns.
-At the plan gate the navigator challenges and refines it independently, the same way it challenges the plan: would what the driver is about to build actually be proven by the approved acceptance intent, observed where the contract says it is observed?
-That challenge sharpens acceptance intent within the accepted product scope and never expands it.
-The driver alone writes production and test code and runs validation; exact test names, fixtures, mocks, and commands are its decisions unless one is materially contract-defining.
-A required new behavior discovered at this gate is a scope decision for the captain, not a test the navigator adds.
 
 ## The four gates
 
@@ -151,14 +141,6 @@ The four exist because a checklist cannot reach the destination: a navigator is 
 Across one day of pairs on this fleet, 2026-07-31, the pairs caught real code defects unaided - a committed NUL byte, a validation rule enforced server-side but not client-side, a whitespace-predicate mismatch - and missed both architectural direction problems, which the captain caught.
 More precise checks narrow the aperture rather than widening it, which is why the destination stays firstmate's own to hold.
 
-A navigator is given one ticket, so a direction error that spans packages, or that lives at whole-solution level, sits outside its field of view rather than being something it missed.
-One program produced two of them: two approved packages that claimed the same route, caught only when the merged application refused to boot, and domain code accumulating inside a declared composition root, caught by the captain reading code.
-No sharper checklist and no larger model reaches either, which is why the destination above stays with the owning firstmate, and why `program-orchestration` puts direction across tickets on the program orchestrator.
-
-What does cross that boundary is the decision record.
-Where durable decisions exist, the navigator's brief names the ones bearing on its ticket by absolute path, so the navigator reads them itself rather than being told what they say, and can ask whether the work contradicts a decision it can see without ever seeing the package that decision was made in.
-A standalone paired task with no decision record behind it carries none of this and runs unchanged.
-
 ## The shared exchange file
 
 The pair exchanges through one durable file at `<firstmate-home>/data/<task-id>/pair-log.md`, in the driver's task data directory, never by messaging each other's panes.
@@ -170,7 +152,7 @@ Two reasons, both load-bearing:
 Name the absolute path in both briefs, and state in both that this file and the worker's own status file are the permitted writes outside its copy, because the standard brief otherwise forbids writing outside the worktree.
 Whichever side writes first creates the file.
 
-The log carries four kinds of entry: the navigator's gate-1 conclusion, the driver's plan and milestone declarations, the navigator's findings with the driver's answer under each, and the navigator's questions with their answer under each.
+The log carries three kinds of entry: the navigator's gate-1 conclusion, the driver's plan and milestone declarations, and the navigator's findings with the driver's answer under each.
 The navigator writes its gate-1 conclusion before it reads any driver entry, even one already sitting in the log, which is what keeps its independent view independent and timestamps it so it cannot be retro-fitted after the plan.
 
 Each navigator finding uses one fixed shape, with a finding id that is sequential and never reused:
@@ -188,34 +170,13 @@ The driver answers under each finding id, and answers every one:
 reason: moving the change to the owning module; the ownership test confirms the boundary.
 ```
 
-A navigator holding a question rather than a defect asks it as `Q<k>`, with a question id that runs its own sequence, sequential and never reused, carrying evidence the way a finding does:
-
-```
-## Q2 - plan gate - navigator
-question: does moving the workspace record into the App feature folder contradict D-010, which put record ownership in the module?
-evidence: D-010 as named in my brief, src/App/Features/Workspaces/Record.cs:41
-```
-
-The answer names who gave it and settles the question on its merits, carrying no accepted-or-rejected verdict, because a question asks rather than asserts:
-
-```
-### Q2 - firstmate: D-010 stands and the module still owns the record; the App-side change in this ticket is the call site only.
-```
-
-Firstmate answers a question by default, and answers it itself: escalating upward is the exception, for a question it genuinely lacks the authority or the knowledge to settle.
-Without that default the channel becomes a pipe to the captain, which defeats having a supervisor in the middle.
-The driver answers only a question plainly about its own implementation choices - why it built the thing the way it did.
-Intent, scope, and prior decisions are firstmate's to answer, so the driver leaves those to firstmate, and names the question id in a `needs-decision:` status line when its own work waits on the answer.
-The navigator does not have to route a question perfectly, because firstmate reads the log either way.
-
 Wait for the other side by polling that file, not by nudging its pane: re-read it on a bounded cadence, roughly every thirty seconds for up to about twenty minutes.
 If the cadence expires with no entry, append `paused: awaiting <gate> from <task-id>` and stop, and firstmate reconciles the pair.
 The navigator's last act is its PR-gate entry, after which it appends `done:` and firstmate cleans up both copies together.
 
-## One round trip per finding or question
+## One round trip per finding
 
 A finding gets one exchange: the navigator states it, the driver accepts or rejects it with a reason.
-A question gets the same single exchange, answered on its merits by whoever owns it, which is what keeps the question channel from becoming a place to park vague unease at a round trip each.
 If it is still disputed after that one exchange, both sides stop on it and escalate.
 Without that bound two agents can argue indefinitely, because there is no supervisor in the exchange to cut it off.
 
@@ -259,8 +220,8 @@ The deciding reason is not obvious and is worth stating: the two sides of a pair
 A skill is a markdown instruction file, so reading it by path loses nothing except the slash-command shorthand.
 
 Known limitation, recorded with its reasoning rather than as a defect to fix: a handed-out review skill written to run its axes as parallel sub-agents degrades on any runtime where sub-agents are disabled, as pi is on this fleet by captain decision.
-The navigator runs the axes sequentially in one context and loses the isolation between them.
-That is an accepted trade for a navigator whose main job is checking work against an already-written scope, and it is the captain's call to make if a task ever needs the parallel form badly enough to move the navigator off its pinned runtime.
+That navigator runs the axes sequentially in one context and loses the isolation between them.
+It is an accepted trade for a navigator whose main job is checking work against an already-written scope; route one that genuinely needs the parallel form to a claude runtime instead.
 
 ## Firstmate's remaining role
 
@@ -268,8 +229,8 @@ Removing firstmate from the exchange moves no approval authority to the crewmate
 Firstmate still:
 
 - dispatches both sides together and writes the same scope and seam statement into both briefs,
-- writes the task-specific checks, the four structural questions, and the decisions bearing on the ticket where a record exists into the navigator's brief, and holds the destination itself,
+- writes the task-specific checks and the four structural questions into the navigator's brief, and holds the destination itself,
 - hands out each side's skills by absolute path, and supplies the spec source at the PR gate,
 - reads the shared exchange file at its own pace rather than gating the pair on a firstmate turn,
-- answers the navigator's questions of intent, scope, and prior decision, and decides every escalation under the configured authority, escalating to the captain where that authority requires it,
+- decides every escalation under the configured authority, escalating to the captain where that authority requires it,
 - owns the merge, and then the cleanup of both copies under the ordinary landed-work check.
