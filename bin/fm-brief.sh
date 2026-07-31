@@ -6,6 +6,10 @@
 # description, acceptance criteria, and context, and may adjust other sections
 # when the task genuinely deviates (e.g. working an existing external PR instead
 # of shipping a new one).
+# Ship and scout briefs also carry a {SCOPE} placeholder, which firstmate fills by default.
+# It names the owning layer, out-of-bounds locations, and seam assumptions.
+# The stated scope is part of the accepted contract, so a worker that must widen it escalates.
+# Both members of a paired-review dispatch read the same statement.
 # Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--herdr-lab]
 #        fm-brief.sh <task-id> <repo-name> --scout [--herdr-lab]
 #        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
