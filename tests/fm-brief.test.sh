@@ -382,9 +382,42 @@ test_scout_and_secondmate_scaffold() {
   pass "fm-brief: scout and secondmate code paths still scaffold well-formed briefs"
 }
 
+# The scope and seam statement is a DEFAULT section, not something firstmate adds
+# on request: a ship brief that never names the owning module is how a worker spends
+# a run patching a superseded folder. Ship and scout briefs must both carry the
+# placeholder, the scaffold must name it in its completion line so an unfilled one is
+# not silent, and the secondmate charter must not grow a task-shaped scope section.
+test_scope_and_seams_is_a_default_section() {
+  local home brief out
+  home="$TMP_ROOT/scope-home"
+  write_registry "$home"
+
+  for id_proj_flag in "brief-scope-ship-s1:direct-proj:" "brief-scope-scout-s2:direct-proj:--scout"; do
+    local id proj flag
+    id=${id_proj_flag%%:*}
+    proj=${id_proj_flag#*:}; proj=${proj%%:*}
+    flag=${id_proj_flag##*:}
+    # shellcheck disable=SC2086  # deliberate empty-or-flag expansion
+    out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" "$proj" $flag 2>&1) \
+      || fail "fm-brief.sh $id $flag exited non-zero: $out"
+    brief="$home/data/$id/brief.md"
+    assert_grep "# Scope and seams" "$brief" "$id: brief missing the default scope and seams section"
+    assert_grep "{SCOPE}" "$brief" "$id: brief missing the {SCOPE} placeholder"
+    assert_contains "$out" "{SCOPE}" "$id: scaffold completion line did not name the {SCOPE} placeholder to fill"
+  done
+
+  FM_SECONDMATE_CHARTER='Supervise the alpha domain.' \
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-scope-sm-s3 --secondmate alpha >/dev/null 2>&1 \
+    || fail "fm-brief.sh secondmate scaffold exited non-zero"
+  assert_no_grep "{SCOPE}" "$home/data/brief-scope-sm-s3/brief.md" \
+    "secondmate charter must not carry the task-scoped {SCOPE} placeholder"
+  pass "fm-brief: ship and scout briefs carry the scope and seams section by default"
+}
+
 test_script_parses
 test_help_includes_entire_header
 test_ship_modes_generate_clean_briefs
+test_scope_and_seams_is_a_default_section
 test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
 test_ship_project_memory_wording

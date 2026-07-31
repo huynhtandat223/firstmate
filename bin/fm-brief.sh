@@ -6,6 +6,18 @@
 # description, acceptance criteria, and context, and may adjust other sections
 # when the task genuinely deviates (e.g. working an existing external PR instead
 # of shipping a new one).
+# Ship and scout briefs also carry a {SCOPE} placeholder, which firstmate fills by
+# default rather than on request, with two things:
+#   where the scope is - the project, module, assembly, or layer that owns the code
+#     being changed, named concretely; the locations that are legacy, superseded, or
+#     out of bounds, so a worker does not discover them by editing them; and the test
+#     or check that enforces any architectural boundary the task crosses.
+#   what the seam assumptions are - what this task assumes stays true on the other
+#     side of every boundary it crosses: the contracts it consumes rather than
+#     changes, the callers it must not disturb, the shape a neighbouring module keeps.
+# The stated scope is part of the accepted contract, so a worker that concludes it is
+# wrong or must widen escalates instead of deciding. Both members of a paired-review
+# dispatch read the same statement, so they start from one shared map.
 # Usage: fm-brief.sh <task-id> <repo-name> [--scout] [--herdr-lab]
 #        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
 #   --scout writes the scout contract instead: the deliverable is a report at
@@ -233,6 +245,9 @@ You are a crewmate: an autonomous worker agent managed by firstmate. Work on you
 # Task
 {TASK}
 
+# Scope and seams
+{SCOPE}
+
 $HERDR_SECTION
 
 # Setup
@@ -270,7 +285,7 @@ Before reporting done, read and follow \`$FM_ROOT/.agents/skills/decision-hold-l
 When the report is complete, append \`done: {one-line conclusion}\` to the status file and stop.
 If your findings reveal work that should ship (e.g. you reproduced a bug and the fix is clear), say so in the report; firstmate may promote this task in place, and you would then receive mode-specific ship instructions as a follow-up message.
 EOF
-echo "scaffolded: $BRIEF (scout; replace {TASK})"
+echo "scaffolded: $BRIEF (scout; replace {TASK} and {SCOPE})"
 exit 0
 fi
 
@@ -339,6 +354,9 @@ You are a crewmate: an autonomous worker agent managed by firstmate. Work on you
 # Task
 {TASK}
 
+# Scope and seams
+{SCOPE}
+
 $HERDR_SECTION
 
 # Setup
@@ -384,4 +402,4 @@ Keep it proportionate: skip \`AGENTS.md\` edits for trivial tasks that produced 
 
 $DOD
 EOF
-echo "scaffolded: $BRIEF (ship, mode=$MODE; replace {TASK})"
+echo "scaffolded: $BRIEF (ship, mode=$MODE; replace {TASK} and {SCOPE})"
