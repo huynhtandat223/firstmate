@@ -13,13 +13,14 @@ HARNESS="$ROOT/.agents/skills/harness-adapters/SKILL.md"
 CODING="$ROOT/.agents/skills/firstmate-coding-guidelines/SKILL.md"
 RECOVERY="$ROOT/.agents/skills/stuck-crewmate-recovery/SKILL.md"
 SECONDMATE="$ROOT/.agents/skills/secondmate-provisioning/SKILL.md"
+PROGRAM="$ROOT/.agents/skills/program-orchestration/SKILL.md"
 CONFIG="$ROOT/docs/configuration.md"
 AGENTS="$ROOT/AGENTS.md"
 BRIEF="$ROOT/bin/fm-brief.sh"
 
 test_new_skill_metadata_and_triggers() {
   local skill name count
-  for pair in "diagnostic-reasoning:$DIAG" "project-management:$PROJECT"; do
+  for pair in "diagnostic-reasoning:$DIAG" "project-management:$PROJECT" "program-orchestration:$PROGRAM"; do
     name=${pair%%:*}
     skill=${pair#*:}
     assert_present "$skill" "$name skill is missing"
@@ -37,7 +38,36 @@ test_new_skill_metadata_and_triggers() {
     "project-management skill metadata lost its precise load trigger"
   assert_grep '`project-management` - load before adding, creating, removing, or initializing a project.' "$ROOT/AGENTS.md" \
     "AGENTS.md lost the project-management trigger"
+  assert_grep 'Use before launching, recovering, handing off, or distributing a program orchestrator or its implementation workers across hosts.' "$PROGRAM" \
+    "program-orchestration metadata lost its precise load trigger"
+  assert_grep '`program-orchestration` - load before launching, recovering, handing off, or distributing a long-running program orchestrator or its workers across local or remote hosts;' "$ROOT/AGENTS.md" \
+    "AGENTS.md lost the program-orchestration trigger"
   pass "new internal skills have one precise AGENTS.md trigger each"
+}
+
+test_program_orchestration_owner_covers_cross_host_safety() {
+  assert_grep "single owner of cross-host coordination for a long-running program secondmate" "$PROGRAM" \
+    "program-orchestration skill does not declare ownership"
+  for phrase in \
+    "Apply that pin only to the orchestrator process" \
+    "one ticket = one worker = one branch" \
+    "exactly one evidence-only onboarding job" \
+    "at most one small, bounded implementation worker" \
+    "risk" \
+    "dependency frontier" \
+    "evidence capacity" \
+    "Host load" \
+    "Live-data needs" \
+    'active`, `idle`, and `parked' \
+    "without interrupting its running command" \
+    "Never move an existing worker between hosts or restart it merely to change its runtime"; do
+    assert_grep "$phrase" "$PROGRAM" "program-orchestration owner is missing '$phrase'"
+  done
+  assert_no_grep "dependency frontier" "$ROOT/AGENTS.md" \
+    "AGENTS.md must not duplicate program routing criteria"
+  assert_no_grep "one ticket = one worker = one branch" "$ROOT/AGENTS.md" \
+    "AGENTS.md must not duplicate program custody invariants"
+  pass "program-orchestration owns cross-host routing, ramp, custody, and handoff safety"
 }
 
 test_diagnostic_owner_covers_causal_procedure() {
@@ -249,6 +279,7 @@ test_compressed_agents_retains_authority_and_supervision_safety() {
 }
 
 test_new_skill_metadata_and_triggers
+test_program_orchestration_owner_covers_cross_host_safety
 test_diagnostic_owner_covers_causal_procedure
 test_project_management_owner_covers_guarded_operations
 test_generic_effort_fallback_respects_precedence
