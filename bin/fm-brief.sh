@@ -6,19 +6,8 @@
 # description, acceptance criteria, and context, and may adjust other sections
 # when the task genuinely deviates (e.g. working an existing external PR instead
 # of shipping a new one).
-# Ship and scout briefs also carry a {SCOPE} placeholder, which firstmate fills by
-# default rather than on request, with two things:
-#   where the scope is - the project, module, assembly, or layer that owns the code
-#     being changed, named concretely; the locations that are legacy, superseded, or
-#     out of bounds, so a worker does not discover them by editing them; and the test
-#     or check that enforces any architectural boundary the task crosses.
-#   what the seam assumptions are - what this task assumes stays true on the other
-#     side of every boundary it crosses: the contracts it consumes rather than
-#     changes, the callers it must not disturb, the shape a neighbouring module keeps.
-# The stated scope is part of the accepted contract, so a worker that concludes it is
-# wrong or must widen escalates instead of deciding. Both members of a paired-review
-# dispatch read the same statement, so they start from one shared map.
-# Usage: fm-brief.sh <task-id> <repo-name> [--scout] [--herdr-lab]
+# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--herdr-lab]
+#        fm-brief.sh <task-id> <repo-name> --scout [--herdr-lab]
 #        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
 #   --scout writes the scout contract instead: the deliverable is a report at
 #   data/<task-id>/report.md (no branch, no push, no PR) and the worktree is scratch.
@@ -38,15 +27,24 @@
 #   The flag must be explicit because {TASK} is filled after scaffolding and the
 #   caller-supplied repo string cannot reliably identify this repo. Briefs made
 #   without it carry a loud declaration so an omitted contract cannot be silent.
-# For ship tasks, the definition of done is shaped by the project's delivery mode
-# (data/projects.md via fm-project-mode.sh; see the project-management skill
-# and AGENTS.md task lifecycle):
-#   no-mistakes  implement -> /no-mistakes pipeline -> PR -> captain merge (default)
-#   direct-PR    implement -> push + open PR via gh-axi (no pipeline) -> captain merge
+# For ship tasks, --mode is REQUIRED and shapes the definition of done. Firstmate
+# resolves it per task at intake (AGENTS.md section 7); data/projects.md holds the
+# captain's standing posture as context, and this script never reads it:
+#   no-mistakes  implement -> /no-mistakes pipeline -> PR -> configured merge authority
+#   direct-PR    implement -> push + open PR via gh-axi (no pipeline) -> configured merge authority
 #   local-only   implement on branch, stop and report "ready in branch" (no push/PR);
-#                captain approves, firstmate merges to local main
+#                the configured merge authority approves, firstmate merges to local main
+# no-mistakes-prod-only is a registry policy, not a task mode; resolve it to one of
+# the three concrete modes at intake before calling this script.
+# The generated ship brief records the chosen mode as a fixed machine-readable
+# "Delivery contract: mode=<mode>" line. bin/fm-spawn.sh reads that line and refuses
+# to launch a ship task whose explicit --mode disagrees, so an adjusted brief and the
+# recorded task metadata cannot drift apart.
 # Ship briefs begin with a worktree-isolation assertion before the branch step.
-# Scout tasks ignore mode - their deliverable is a report, not a merge.
+# --mode is refused on scout and secondmate scaffolds: a scout's deliverable is a
+# report rather than a merge, and a charter is not a delivery contract.
+# There is no --yolo flag here. The worker never owns approval decisions, so yolo is
+# a spawn-time and firstmate-side input only (AGENTS.md section 7).
 # Every scaffold's status protocol distinguishes the configured
 # declared-external-wait verb (FM_CLASSIFY_PAUSED_VERB, default "paused") from
 # "blocked:": pause for a known external wait expected to clear on its own,
@@ -106,16 +104,56 @@ fi
 KIND=ship
 HERDR_LAB=0
 NO_PROJECTS=0
+MODE=
+MODE_SET=0
 POS=()
+want_value=
 for a in "$@"; do
+  if [ -n "$want_value" ]; then
+    case "$a" in
+      --*) echo "error: --$want_value requires a value" >&2; exit 1 ;;
+    esac
+    case "$want_value" in
+      mode) MODE=$a; MODE_SET=1 ;;
+      *) echo "error: internal parser state for --$want_value" >&2; exit 1 ;;
+    esac
+    want_value=
+    continue
+  fi
   case "$a" in
     --scout) KIND=scout ;;
     --secondmate) KIND=secondmate ;;
     --herdr-lab) HERDR_LAB=1 ;;
     --no-projects) NO_PROJECTS=1 ;;
+    --mode) want_value=mode ;;
+    --mode=*) MODE=${a#--mode=}; MODE_SET=1 ;;
+    # yolo never reaches the worker: it is firstmate's approval authority, not a
+    # brief input. Refuse it loudly so it is never silently dropped here and then
+    # believed to have been recorded.
+    --yolo|--yolo=*) echo "error: --yolo is not a brief input; pass it to bin/fm-spawn.sh, which records the task's approval posture" >&2; exit 1 ;;
     *) POS+=("$a") ;;
   esac
 done
+[ -z "$want_value" ] || { echo "error: --$want_value requires a value" >&2; exit 1; }
+
+# Ship delivery mode is an explicit per-task decision (AGENTS.md section 7). A
+# missing or invalid value stops the scaffold rather than silently defaulting.
+if [ "$KIND" = ship ]; then
+  [ "$MODE_SET" -eq 1 ] || {
+    echo "error: ship briefs require --mode <no-mistakes|direct-PR|local-only>; resolve it at intake from the captain's instruction and the project's registered posture in data/projects.md" >&2
+    exit 1
+  }
+  case "$MODE" in
+    no-mistakes|direct-PR|local-only) ;;
+    no-mistakes-prod-only)
+      echo "error: no-mistakes-prod-only is a registry policy, not a task mode; classify this task's surface and resolve it to no-mistakes or direct-PR at intake" >&2
+      exit 1 ;;
+    *) echo "error: --mode must be one of no-mistakes, direct-PR, local-only (got '$MODE')" >&2; exit 1 ;;
+  esac
+elif [ "$MODE_SET" -eq 1 ]; then
+  echo "error: --mode applies only to ship briefs; a scout delivers a report and a secondmate charter is not a delivery contract" >&2
+  exit 1
+fi
 ID=${POS[0]}
 
 if [ "$KIND" = secondmate ] && [ "$HERDR_LAB" -eq 1 ]; then
@@ -234,12 +272,12 @@ HERDR_SECTION=$(printf '%s\n' \
 '# Herdr isolation - HARD SAFETY CONTRACT' \
 'This brief was explicitly scaffolded with `--herdr-lab` because the task will drive Herdr lifecycle behavior.' \
 'On Herdr 0.7.3 the API socket is not relocatable by `HERDR_CONFIG_PATH`, `XDG_CONFIG_HOME`, or `HOME`.' \
-'A named non-`default` session plus a leading `--session <name>` on every call is the only viable local isolation.' \
+'A named non-`default` session plus a trailing `--session <name>` on every call is the only viable local isolation.' \
 '' \
 '1. Set `HERDR_LAB_HELPER='"$HERDR_LAB_HELPER"'` and generate the session name with `HERDR_LAB_SESSION=$("$HERDR_LAB_HELPER" name '"$ID"')`.' \
 '   Install `trap '\''"$HERDR_LAB_HELPER" teardown "$HERDR_LAB_SESSION"'\'' EXIT` before provisioning, then provision only with `"$HERDR_LAB_HELPER" provision "$HERDR_LAB_SESSION"`.' \
 '2. Run every task-specific non-lifecycle Herdr command through `"$HERDR_LAB_HELPER" run "$HERDR_LAB_SESSION" <arguments...>`.' \
-'   The helper inserts the required leading `--session "$HERDR_LAB_SESSION"` ahead of the subcommand, where a `--` separator cannot swallow it; `HERDR_SESSION` alone is never accepted as isolation.' \
+'   The helper appends the required trailing `--session "$HERDR_LAB_SESSION"`; `HERDR_SESSION` alone is never accepted as isolation.' \
 '3. Teardown only through `"$HERDR_LAB_HELPER" teardown "$HERDR_LAB_SESSION"`.' \
 '   It re-checks refuse-default immediately before stop and again immediately before delete, and fails closed on ambiguity.' \
 '4. If an experiment requires a deliberate mid-run session stop, use only `"$HERDR_LAB_HELPER" stop "$HERDR_LAB_SESSION"`; it performs the same immediate refuse-default check.' \
@@ -265,9 +303,6 @@ You are a crewmate: an autonomous worker agent managed by firstmate. Work on you
 
 # Task
 {TASK}
-
-# Scope and seams
-{SCOPE}
 
 $HERDR_SECTION
 
@@ -306,24 +341,22 @@ Before reporting done, read and follow \`$FM_ROOT/.agents/skills/decision-hold-l
 When the report is complete, append \`done: {one-line conclusion}\` to the status file and stop.
 If your findings reveal work that should ship (e.g. you reproduced a bug and the fix is clear), say so in the report; firstmate may promote this task in place, and you would then receive mode-specific ship instructions as a follow-up message.
 EOF
-echo "scaffolded: $BRIEF (scout; replace {TASK} and {SCOPE})"
+echo "scaffolded: $BRIEF (scout; replace {TASK})"
 exit 0
 fi
 
-# Ship task: shape Setup / Rule 1 / Definition of done by the project's delivery mode.
-# yolo does not affect the brief because the worker never owns approval decisions;
-# firstmate applies the authority contract in AGENTS.md section 7, so discard it.
-read -r MODE _ <<EOF
-$("$FM_ROOT/bin/fm-project-mode.sh" "$REPO")
-EOF
-
+# Ship task: shape Setup / Rule 1 / Definition of done by this task's explicit
+# delivery mode, validated above. The generated DOD opens with the fixed
+# "Delivery contract: mode=<mode>" line that bin/fm-spawn.sh checks against its own
+# explicit --mode before launching.
 case "$MODE" in
   direct-PR)
     SETUP2=""
     RULE1='1. Never push to the default branch (push only your `fm/'"$ID"'` branch). Never merge a PR.'
     IFS= read -r -d '' DOD <<EOF || true
 # Definition of done
-This project ships **direct-PR**: you raise the PR yourself, without the no-mistakes pipeline.
+Delivery contract: mode=direct-PR
+This task ships **direct-PR**: you raise the PR yourself, without the no-mistakes pipeline.
 The task is complete only when committed on your branch.
 When it is implemented and committed, push your branch and open a PR with \`gh-axi\`, then append \`done: PR {url}\` to the status file and stop.
 Do NOT run /no-mistakes. The configured merge authority decides whether to merge the PR; firstmate relays the outcome.
@@ -334,19 +367,21 @@ EOF
     RULE1="1. Never push to any remote and never open a PR. Work only on your \`fm/$ID\` branch; firstmate handles the merge into local \`main\`."
     IFS= read -r -d '' DOD <<EOF || true
 # Definition of done
-This project ships **local-only**: no remote, no PR, no pipeline.
+Delivery contract: mode=local-only
+This task ships **local-only**: no remote, no PR, no pipeline.
 The task is complete only when committed on your branch \`fm/$ID\`. Do NOT push, do NOT open a PR, do NOT merge.
 Keep your branch a clean fast-forward onto the current default branch - if \`main\` has advanced, rebase onto it so the eventual merge stays a fast-forward.
 When it is implemented and committed, append \`done: ready in branch fm/$ID\` to the status file and stop.
 The configured merge authority approves the ready branch, then firstmate merges it into local \`main\` through the guarded fast-forward path.
 EOF
     ;;
-  *)  # no-mistakes (default)
+  *)  # no-mistakes
     SETUP2="
 2. Run \`no-mistakes doctor\`; if it reports the repo is not initialized here, run \`no-mistakes init\`."
     RULE1='1. Never push to the default branch. Never merge a PR.'
     IFS= read -r -d '' DOD <<EOF || true
 # Definition of done
+Delivery contract: mode=no-mistakes
 The task is complete only when committed on your branch.
 When you believe it is complete, append \`done: {summary}\` to the status file and stop.
 Firstmate will then instruct you to run /no-mistakes to validate and ship a PR.
@@ -377,9 +412,6 @@ You are a crewmate: an autonomous worker agent managed by firstmate. Work on you
 
 # Task
 {TASK}
-
-# Scope and seams
-{SCOPE}
 
 $HERDR_SECTION
 
@@ -426,4 +458,4 @@ Keep it proportionate: skip \`AGENTS.md\` edits for trivial tasks that produced 
 
 $DOD
 EOF
-echo "scaffolded: $BRIEF (ship, mode=$MODE; replace {TASK} and {SCOPE})"
+echo "scaffolded: $BRIEF (ship, mode=$MODE; replace {TASK})"
