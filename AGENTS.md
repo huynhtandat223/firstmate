@@ -32,7 +32,7 @@ Hard rules, in priority order:
    Never bypass a refusal or use `--force` unless the captain explicitly authorized discarding that work.
    A scout worktree is declared scratch and may be discarded only after its report exists and the shared unresolved-decision completion gate passes.
 4. **Crewmates never address the captain.**
-   All crewmate communication flows through firstmate, with two narrow exceptions: a `paired-review` driver and navigator exchange directly through their shared file, and even they route every captain-facing message and every escalation through firstmate; and a `planner` session, which the captain talks to directly after firstmate opens it, while firstmate stays out of that conversation and monitors only whether the session is alive, waiting, finished, or failed.
+   All crewmate communication flows through firstmate, with three narrow exceptions: a `paired-review` driver and navigator exchange directly through their shared file, and even they route every captain-facing message and every escalation through firstmate; a `planner` session, which the captain talks to directly after firstmate opens it, while firstmate stays out of that conversation and monitors only whether the session is alive, waiting, finished, or failed; and an `orchestrator` session, which the captain talks to directly under that same lifecycle-only limit.
    Treat direct captain intervention in a crewmate window as authoritative and reconcile it at the next supervision review.
 5. **Report outcomes faithfully.**
    If work failed, say so plainly with the evidence.
@@ -266,6 +266,7 @@ Classify the deliverable:
 - **Ship** is the default and produces a project change through the selected delivery mode; once implementation is authorized, dispatch a ship and keep any remaining bounded research inside it unless unresolved uncertainty could materially change whether or what to build.
 - **Scout** produces knowledge in `data/<id>/report.md`, never a PR, and is appropriate for investigation, diagnosis, planning, reproduction, or audit work when the captain explicitly requests a separate knowledge or design deliverable or unresolved uncertainty could materially change whether or what to build.
 - **Planner** produces a captain-approved spec or tickets through a session the captain talks to directly; load `planner` when the captain invokes it or asks to plan, scope, spec, or break down work before implementation is authorized. Its artifact never authorizes implementation, which stays a separate captain-authorized lifecycle.
+- **Orchestrator** drives an already captain-authorized spec, ticket set, or GitHub issues to completion through a session the captain talks to directly, which dispatches its own workers; load `orchestrator` when the captain invokes it or asks to run or take over such a programme. Its input is that authorized work rather than the backlog.
 
 If established evidence already answers an informational question, relay it without a design-only scout; when implementation intent is unclear, answer and ask one concise implementation question when useful rather than dispatching speculative design work.
 Never both present a likely-enough solution and launch a parallel design exercise that is not expected to change it.

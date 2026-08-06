@@ -161,6 +161,14 @@
       "audience": "agent-runtime"
     },
     {
+      "path": ".agents/skills/orchestrator/CONTRACT.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/orchestrator/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": ".agents/skills/paired-review/SKILL.md",
       "audience": "agent-runtime"
     },
