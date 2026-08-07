@@ -24,7 +24,7 @@ Before writing a new fact anywhere in this repo, ask where it belongs, in this o
 2. Does the agent need it only in a nameable situation - a spawn, a recovery, a specific wake type, a specific lifecycle step?
    If yes: an agent-only skill under `.agents/skills/`, plus a one-line trigger pointer left inline in `AGENTS.md` (usually section 13).
 3. Is it public product, setup, or user/operator reference?
-   If yes: the surface classified for that audience in [`docs/documentation-audiences.md`](../../../../docs/documentation-audiences.md), limited to current behavior, setup, supported limits, stable invariants, concise rationale, and current verification entry points.
+   If yes: the surface classified for that audience in [`docs/documentation-audiences.md`](../../../docs/documentation-audiences.md), limited to current behavior, setup, supported limits, stable invariants, concise rationale, and current verification entry points.
 4. Is it contributor/maintainer architecture?
    If yes: the classified maintainer-architecture owner for stable ownership, extension points, mechanism boundaries, and safety rationale.
 5. Is it active reusable verification for a current guarantee?
@@ -36,7 +36,7 @@ Before writing a new fact anywhere in this repo, ask where it belongs, in this o
 
 Stop at the first tier that answers yes.
 Do not place a fact at a more convenient tier than the one this tree gives you.
-The machine-consumed inventory in [`docs/documentation-audiences.json`](../../../../docs/documentation-audiences.json) is the single classification owner for maintained prose surfaces; do not add parallel front matter or a second audience list.
+The machine-consumed inventory in [`docs/documentation-audiences.json`](../../../docs/documentation-audiences.json) is the single classification owner for maintained prose surfaces; do not add parallel front matter or a second audience list.
 
 ## One-owner rule
 

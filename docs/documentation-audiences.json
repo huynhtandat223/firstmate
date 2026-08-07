@@ -35,7 +35,7 @@
   ],
   "requiredOwnerPointers": [
     {
-      "source": ".agents/roles/firstmate/coding-guidelines/SKILL.md",
+      "source": ".agents/skills/firstmate-coding-guidelines/SKILL.md",
       "target": "docs/documentation-audiences.md"
     },
     {
@@ -105,19 +105,11 @@
   ],
   "surfaces": [
     {
-      "path": ".agents/roles/firstmate/codexapp/SKILL.md",
+      "path": ".agents/roles/driver/CONTRACT.md",
       "audience": "agent-runtime"
     },
     {
-      "path": ".agents/roles/firstmate/coding-guidelines/SKILL.md",
-      "audience": "agent-runtime"
-    },
-    {
-      "path": ".agents/roles/firstmate/orca/SKILL.md",
-      "audience": "agent-runtime"
-    },
-    {
-      "path": ".agents/roles/navigator/paired-review/SKILL.md",
+      "path": ".agents/roles/navigator/CONTRACT.md",
       "audience": "agent-runtime"
     },
     {
@@ -181,6 +173,10 @@
       "audience": "agent-runtime"
     },
     {
+      "path": ".agents/roles/worker/CONTRACT.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": ".agents/skills/afk/SKILL.md",
       "audience": "agent-runtime"
     },
@@ -209,11 +205,27 @@
       "audience": "agent-runtime"
     },
     {
+      "path": ".agents/skills/firstmate-codexapp/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/firstmate-coding-guidelines/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/firstmate-orca/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": ".agents/skills/fmx-respond/SKILL.md",
       "audience": "agent-runtime"
     },
     {
       "path": ".agents/skills/harness-adapters/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/paired-review/SKILL.md",
       "audience": "agent-runtime"
     },
     {

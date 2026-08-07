@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
+# shellcheck source=tests/lib.sh
 set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
-roles="$ROOT/.agents/roles"
 skills="$ROOT/.agents/skills"
-discovered=$(find "$skills" -name SKILL.md -print | sort)
-case "$discovered" in *"$roles"*) fail "role contract entered skill discovery";; esac
-for path in "$roles/planner/contract/SKILL.md" "$roles/orchestrator/contract/SKILL.md" "$roles/navigator/paired-review/SKILL.md"; do
-  [ -r "$path" ] || fail "explicit role contract is unreadable: $path"
+roles="$ROOT/.agents/roles"
+for path in "$skills/firstmate-coding-guidelines/SKILL.md" "$skills/firstmate-codexapp/SKILL.md" "$skills/firstmate-orca/SKILL.md" "$skills/paired-review/SKILL.md"; do
+  [ -r "$path" ] || fail "primary operational skill is not discoverable: $path"
 done
-pass "role contracts stay out of automatic skill discovery and remain readable by explicit path"
+for role in driver navigator worker planner orchestrator; do
+  find "$roles/$role" -type f -print -quit | grep -q . || fail "missing role contract: $role"
+done
+find "$skills" -path '*/planner/*' -o -path '*/orchestrator/*' | grep -q . && fail "worker role contract remained discoverable"
+pass "primary skills remain discoverable while role contracts are explicit only"
