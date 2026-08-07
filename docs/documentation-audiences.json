@@ -6,9 +6,10 @@
       "*.mdx",
       "*.rst",
       "*.txt",
-      "docs/examples/*"
+      "docs/examples/*",
+      ".agents/roles/**/*.md"
     ],
-    "description": "Tracked Markdown-like prose, including symlinked aliases, plus copyable documentation examples. Script headers, executable configuration, generated JSON evidence, and legal text keep their existing code/config/legal owners."
+    "description": "Tracked Markdown-like prose, including symlinked aliases, plus copyable documentation examples. Script headers, executable configuration, generated JSON evidence, and legal text keep their existing code/config/legal owners. Role contracts are maintained runtime prose but remain outside skill discovery."
   },
   "allowedAudiences": [
     "public-product",
@@ -34,7 +35,7 @@
   ],
   "requiredOwnerPointers": [
     {
-      "source": ".agents/skills/firstmate-coding-guidelines/SKILL.md",
+      "source": ".agents/roles/firstmate/coding-guidelines/SKILL.md",
       "target": "docs/documentation-audiences.md"
     },
     {
@@ -104,6 +105,82 @@
   ],
   "surfaces": [
     {
+      "path": ".agents/roles/firstmate/codexapp/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/roles/firstmate/coding-guidelines/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/roles/firstmate/orca/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/roles/navigator/paired-review/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/roles/orchestrator/contract/CONTRACT.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/roles/orchestrator/contract/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/roles/planner/contract/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/roles/planner/design/PROVENANCE.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/roles/planner/design/domain-modeling.ADR-FORMAT.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/roles/planner/design/domain-modeling.CONTEXT-FORMAT.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/roles/planner/design/domain-modeling.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/roles/planner/design/grill-me.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/roles/planner/design/grill-with-docs.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/roles/planner/design/grilling.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/roles/planner/design/tdd.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/roles/planner/design/tdd.mocking.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/roles/planner/design/tdd.tests.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/roles/planner/design/to-spec.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/roles/planner/design/to-tickets.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": ".agents/skills/afk/SKILL.md",
       "audience": "agent-runtime"
     },
@@ -132,87 +209,11 @@
       "audience": "agent-runtime"
     },
     {
-      "path": ".agents/skills/firstmate-codexapp/SKILL.md",
-      "audience": "agent-runtime"
-    },
-    {
-      "path": ".agents/skills/firstmate-coding-guidelines/SKILL.md",
-      "audience": "agent-runtime"
-    },
-    {
-      "path": ".agents/skills/firstmate-orca/SKILL.md",
-      "audience": "agent-runtime"
-    },
-    {
       "path": ".agents/skills/fmx-respond/SKILL.md",
       "audience": "agent-runtime"
     },
     {
       "path": ".agents/skills/harness-adapters/SKILL.md",
-      "audience": "agent-runtime"
-    },
-    {
-      "path": ".agents/skills/orchestrator/CONTRACT.md",
-      "audience": "agent-runtime"
-    },
-    {
-      "path": ".agents/skills/orchestrator/SKILL.md",
-      "audience": "agent-runtime"
-    },
-    {
-      "path": ".agents/skills/paired-review/SKILL.md",
-      "audience": "agent-runtime"
-    },
-    {
-      "path": ".agents/skills/planner/SKILL.md",
-      "audience": "agent-runtime"
-    },
-    {
-      "path": ".agents/skills/planner/matt/PROVENANCE.md",
-      "audience": "agent-runtime"
-    },
-    {
-      "path": ".agents/skills/planner/matt/domain-modeling.ADR-FORMAT.md",
-      "audience": "agent-runtime"
-    },
-    {
-      "path": ".agents/skills/planner/matt/domain-modeling.CONTEXT-FORMAT.md",
-      "audience": "agent-runtime"
-    },
-    {
-      "path": ".agents/skills/planner/matt/domain-modeling.md",
-      "audience": "agent-runtime"
-    },
-    {
-      "path": ".agents/skills/planner/matt/grill-me.md",
-      "audience": "agent-runtime"
-    },
-    {
-      "path": ".agents/skills/planner/matt/grill-with-docs.md",
-      "audience": "agent-runtime"
-    },
-    {
-      "path": ".agents/skills/planner/matt/grilling.md",
-      "audience": "agent-runtime"
-    },
-    {
-      "path": ".agents/skills/planner/matt/tdd.md",
-      "audience": "agent-runtime"
-    },
-    {
-      "path": ".agents/skills/planner/matt/tdd.mocking.md",
-      "audience": "agent-runtime"
-    },
-    {
-      "path": ".agents/skills/planner/matt/tdd.tests.md",
-      "audience": "agent-runtime"
-    },
-    {
-      "path": ".agents/skills/planner/matt/to-spec.md",
-      "audience": "agent-runtime"
-    },
-    {
-      "path": ".agents/skills/planner/matt/to-tickets.md",
       "audience": "agent-runtime"
     },
     {
@@ -334,6 +335,10 @@
     {
       "path": "docs/remote-secondmates.md",
       "audience": "operator-current"
+    },
+    {
+      "path": "docs/role-skill-migration.md",
+      "audience": "maintainer-architecture"
     },
     {
       "path": "docs/scripts.md",

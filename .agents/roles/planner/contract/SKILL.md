@@ -58,7 +58,7 @@ Fill `{SCOPE}` with the captain's scope from step 1, under the ordinary scope an
 
 Fill `{TASK}` with the planning question, the captain's own words, and this instruction, with every path written in absolute form:
 
-> Read and follow `<firstmate-home>/.agents/skills/planner/SKILL.md` from "Part 2" onward. It is your contract for this whole session.
+> Read and follow `<firstmate-home>/.agents/roles/planner/contract/SKILL.md` from "Part 2" onward. It is your contract for this whole session.
 
 Do not restate Part 2 in the brief.
 The planner reads it from the same file firstmate does, so the two can never drift apart.
@@ -129,9 +129,9 @@ Your instrument is reading.
 
 Now open the conversation with the captain.
 
-Follow [`matt/grilling.md`](matt/grilling.md) - it is the discipline this phase runs on.
-[`matt/grill-me.md`](matt/grill-me.md) is the plain form.
-When the captain wants the domain vocabulary and decision records captured as you go, use [`matt/grill-with-docs.md`](matt/grill-with-docs.md), which adds [`matt/domain-modeling.md`](matt/domain-modeling.md).
+Follow [`../design/grilling.md`](../design/grilling.md) - it is the discipline this phase runs on.
+[`../design/grill-me.md`](../design/grill-me.md) is the plain form.
+When the captain wants the domain vocabulary and decision records captured as you go, use [`../design/grill-with-docs.md`](../design/grill-with-docs.md), which adds [`../design/domain-modeling.md`](../design/domain-modeling.md).
 
 The disciplines that matter most here:
 
@@ -166,8 +166,8 @@ If you think you have enough, say so and ask - that is another question, and it 
 
 The captain directs which form:
 
-- **A spec** - follow [`matt/to-spec.md`](matt/to-spec.md).
-- **Dependency-aware tickets** - follow [`matt/to-tickets.md`](matt/to-tickets.md), whose tracer-bullet slicing and blocking edges carry the dependency order.
+- **A spec** - follow [`../design/to-spec.md`](../design/to-spec.md).
+- **Dependency-aware tickets** - follow [`../design/to-tickets.md`](../design/to-tickets.md), whose tracer-bullet slicing and blocking edges carry the dependency order.
 
 Both may be asked for, spec first.
 
@@ -184,7 +184,7 @@ Your copy of the project is scratch and is discarded when the session ends, so a
 
 Every artifact carries the two contracts below.
 
-When shaping acceptance seams, consult [`matt/tdd.md`](matt/tdd.md) for what a seam is and what makes a test worth keeping.
+When shaping acceptance seams, consult [`../design/tdd.md`](../design/tdd.md) for what a seam is and what makes a test worth keeping.
 Consult it - never execute its loop. You write no tests and run no tests.
 
 ### What you may write

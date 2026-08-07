@@ -9,11 +9,11 @@ set -u
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-PLANNER="$ROOT/.agents/skills/planner/SKILL.md"
-BUNDLE="$ROOT/.agents/skills/planner/matt"
+PLANNER="$ROOT/.agents/roles/planner/contract/SKILL.md"
+BUNDLE="$ROOT/.agents/roles/planner/design"
 PROVENANCE="$BUNDLE/PROVENANCE.md"
 PROGRAM="$ROOT/.agents/skills/program-orchestration/SKILL.md"
-PAIRED="$ROOT/.agents/skills/paired-review/SKILL.md"
+PAIRED="$ROOT/.agents/roles/navigator/paired-review/SKILL.md"
 BRIEF="$ROOT/bin/fm-brief.sh"
 AGENTS="$ROOT/AGENTS.md"
 
