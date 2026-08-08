@@ -10,8 +10,8 @@
 # It names the owning layer, out-of-bounds locations, and seam assumptions.
 # The stated scope is part of the accepted contract, so a worker that must widen it escalates.
 # Both members of a paired-review dispatch read the same statement.
-# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--herdr-lab]
-#        fm-brief.sh <task-id> <repo-name> --scout [--herdr-lab]
+# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--role driver|navigator] [--herdr-lab]
+#        fm-brief.sh <task-id> <repo-name> --scout [--role navigator] [--herdr-lab]
 #        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
 #   --scout writes the scout contract instead: the deliverable is a report at
 #   data/<task-id>/report.md (no branch, no push, no PR) and the worktree is scratch.
@@ -47,6 +47,9 @@
 # Ship briefs begin with a worktree-isolation assertion before the branch step.
 # --mode is refused on scout and secondmate scaffolds: a scout's deliverable is a
 # report rather than a merge, and a charter is not a delivery contract.
+# A paired dispatch passes --role driver or --role navigator so the generated brief
+# carries the authoritative role marker consumed by custom-skills/policy/SKILL.md.
+# The option is limited to those paired roles and never guesses from a task name.
 # There is no --yolo flag here. The worker never owns approval decisions, so yolo is
 # a spawn-time and firstmate-side input only (AGENTS.md section 7).
 # Every scaffold's status protocol distinguishes the configured
@@ -108,6 +111,7 @@ fi
 KIND=ship
 HERDR_LAB=0
 NO_PROJECTS=0
+ROLE=
 MODE=
 MODE_SET=0
 POS=()
@@ -119,6 +123,7 @@ for a in "$@"; do
     esac
     case "$want_value" in
       mode) MODE=$a; MODE_SET=1 ;;
+      role) ROLE=$a ;;
       *) echo "error: internal parser state for --$want_value" >&2; exit 1 ;;
     esac
     want_value=
@@ -128,6 +133,8 @@ for a in "$@"; do
     --scout) KIND=scout ;;
     --secondmate) KIND=secondmate ;;
     --herdr-lab) HERDR_LAB=1 ;;
+    --role) want_value=role ;;
+    --role=*) ROLE=${a#--role=} ;;
     --no-projects) NO_PROJECTS=1 ;;
     --mode) want_value=mode ;;
     --mode=*) MODE=${a#--mode=}; MODE_SET=1 ;;
@@ -139,6 +146,14 @@ for a in "$@"; do
   esac
 done
 [ -z "$want_value" ] || { echo "error: --$want_value requires a value" >&2; exit 1; }
+case "$ROLE" in
+  ''|driver|navigator) ;;
+  *) echo "error: --role must be driver or navigator" >&2; exit 1 ;;
+esac
+if [ "$KIND" = scout ] && [ "$ROLE" = driver ]; then
+  echo "error: scout briefs may use --role navigator only" >&2
+  exit 1
+fi
 
 # Ship delivery mode is an explicit per-task decision (AGENTS.md section 7). A
 # missing or invalid value stops the scaffold rather than silently defaulting.
@@ -305,7 +320,8 @@ fi
 if [ "$KIND" = scout ]; then
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
-
+${ROLE:+role=$ROLE
+}
 # Task
 {TASK}
 
@@ -418,7 +434,8 @@ DOD=${DOD%$'\n'}
 
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
-
+${ROLE:+role=$ROLE
+}
 # Task
 {TASK}
 

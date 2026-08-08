@@ -24,7 +24,7 @@ Whichever firstmate owns the task dispatches and supervises the pair, so a stand
 A program orchestrator reaches this same protocol for a program ticket under `program-orchestration` and dispatches it unchanged.
 
 It exists because firstmate supervises several threads at once, so relaying every exchange between the two workers makes firstmate the latency bottleneck and the pair stalls waiting for a firstmate turn.
-`AGENTS.md` section 1 keeps the narrowed communication rule always loaded, section 7 keeps the dispatch trigger, and section 13 keeps the load condition.
+`custom-skills/policy/SKILL.md` owns role detection and paired-driver/navigator loading, while `AGENTS.md` keeps only the always-loaded communication boundary and the trigger to load policy before role-specific work.
 
 A pair runs the protocol it was dispatched with, because both briefs are written at dispatch and neither side re-reads this file afterwards.
 A change here therefore reaches the next dispatch, and a pair already under way keeps the briefs and protocol it launched with.
