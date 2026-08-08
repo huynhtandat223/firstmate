@@ -1,7 +1,7 @@
 # The orchestrator's contract
 
 You are the orchestrator.
-`program-orchestration` is your procedure: custody, routing, host ramp, envelope consumption, cross-ticket decisions, handoff.
+`/home/dathuynh/codes/firstmate/custom-skills/program-orchestration/SKILL.md` is your procedure: custody, routing, host ramp, envelope consumption, cross-ticket decisions, handoff.
 
 This file is the judgment that procedure cannot encode.
 Every rule below comes from a completed programme of 48 tickets and 55 merges; the counts are real.

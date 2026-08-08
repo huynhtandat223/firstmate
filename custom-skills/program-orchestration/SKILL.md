@@ -13,16 +13,16 @@ metadata:
 
 This skill is the single owner of cross-host coordination for a long-running program secondmate.
 Load it before launching, recovering, handing off, or distributing a program orchestrator or its implementation workers across hosts.
-A program orchestrator is a persistent secondmate that coordinates a long-lived program; `secondmate-provisioning` remains the owner of its persistent home, charter, harness pin mechanics, inherited material, and retirement.
+A program orchestrator is a persistent secondmate that coordinates a long-lived program; `/home/dathuynh/codes/firstmate/.agents/skills/secondmate-provisioning/SKILL.md` remains the owner of its persistent home, charter, harness pin mechanics, inherited material, and retirement.
 This skill decides program custody and worker placement, not concrete launch commands, delivery mode, evidence format, or approval authority.
 
 ## Authority map
 
-Load `harness-adapters` before any concrete orchestrator or worker launch, recovery, runtime or model check, interrupt, exit, resume, or skill invocation.
-Load `secondmate-provisioning` before creating, seeding, validating, launching, recovering, handing backlog to, or retiring the persistent secondmate home.
-Use `stuck-crewmate-recovery` for a dead or unresponsive ordinary worker and preserve its recorded copy and unlanded work.
-Use `paired-review` when the task meets its high-blast-radius pairing trigger, and do not invent a second program-specific review gate.
-Use `diagnostic-reasoning` before scoping a reported worker bug, and use `ask-user-authority` for any finding or decision that belongs above the implementation worker.
+Load `/home/dathuynh/codes/firstmate/.agents/skills/harness-adapters/SKILL.md` before any concrete orchestrator or worker launch, recovery, runtime or model check, interrupt, exit, resume, or skill invocation.
+Load `/home/dathuynh/codes/firstmate/.agents/skills/secondmate-provisioning/SKILL.md` before creating, seeding, validating, launching, recovering, handing backlog to, or retiring the persistent secondmate home.
+Use `/home/dathuynh/codes/firstmate/.agents/skills/stuck-crewmate-recovery/SKILL.md` for a dead or unresponsive ordinary worker and preserve its recorded copy and unlanded work.
+Use `/home/dathuynh/codes/firstmate/custom-skills/paired-review/SKILL.md` when the task meets its high-blast-radius pairing trigger, and do not invent a second program-specific review gate.
+Use `/home/dathuynh/codes/firstmate/.agents/skills/diagnostic-reasoning/SKILL.md` before scoping a reported worker bug, and use `/home/dathuynh/codes/firstmate/.agents/skills/ask-user-authority/SKILL.md` for any finding or decision that belongs above the implementation worker.
 The ordinary delivery lifecycle remains authoritative for task briefs, branches, evidence, cleanup, approval, merging, and destructive actions.
 This skill references those owners instead of restating their contracts.
 
@@ -31,7 +31,7 @@ This skill references those owners instead of restating their contracts.
 Keep the program ledger, host records, capability matrix, orchestrator pin, custody map, and handoff receipts in the effective home's private `data/`, `state/`, or `config/` surfaces.
 Keep machine-specific host names, runtime versions, model availability, load limits, credentials, live-data permissions, and evidence locations out of tracked skills, docs, project memory, and `AGENTS.md`.
 A host record is usable only when its capability claims have a current verification timestamp, exact runtime and model identifiers, reachable evidence storage, and a known load reading.
-An unknown, expired, or contradictory host record is unavailable for remote expansion until re-verified through `harness-adapters` and the host's normal operational checks.
+An unknown, expired, or contradictory host record is unavailable for remote expansion until re-verified through `/home/dathuynh/codes/firstmate/.agents/skills/harness-adapters/SKILL.md` and the host's normal operational checks.
 Do not create a new tracked schema when an existing private host or program record can carry the fact.
 
 ## Orchestrator pin boundary
@@ -41,7 +41,7 @@ Apply that pin only to the orchestrator process and record the exact resolved ru
 Resolve every implementation worker through the ordinary per-task routing precedence, even when the worker runs on the orchestrator's host.
 Never inherit the orchestrator's model, runtime, effort, or host choice into a worker by default.
 Changing the orchestrator pin affects only a future orchestrator launch or an explicitly authorized orchestrator replacement; it never restarts, moves, or retunes an existing implementation worker.
-If a persistent-secondmate config pin and a program-specific pin both exist, `secondmate-provisioning` owns the persistent launch mechanics and this skill records which explicit pin was selected for the orchestrator.
+If a persistent-secondmate config pin and a program-specific pin both exist, `/home/dathuynh/codes/firstmate/.agents/skills/secondmate-provisioning/SKILL.md` owns the persistent launch mechanics and this skill records which explicit pin was selected for the orchestrator.
 
 ## Candidate routing
 
@@ -59,7 +59,7 @@ Choose the first host that satisfies every hard requirement, then use the later 
 A local host and a remote host are equal candidates when their verified capabilities satisfy the ticket; proximity alone is not a routing rule.
 A missing capability, stale load value, absent evidence path, or unverified live-data permission removes a candidate instead of being guessed around.
 A ticket that has no eligible candidate becomes a concrete blocker or captain decision under the ordinary authority rules; it is not silently downgraded.
-After selecting a host, resolve the worker's concrete runtime, model, and effort through the ordinary dispatch profile and `harness-adapters` rules.
+After selecting a host, resolve the worker's concrete runtime, model, and effort through the ordinary dispatch profile and `/home/dathuynh/codes/firstmate/.agents/skills/harness-adapters/SKILL.md` rules.
 The orchestrator may recommend a route, but the worker's per-task profile remains the dispatch record of authority.
 
 ## Consuming an upstream scope envelope and test contract
@@ -72,10 +72,10 @@ When a program's source spec or tickets carry them, they are the upstream draft 
 1. **Preserve provenance.** Record which artifact and which version each ticket's envelope and test contract came from, so a later reader can tell an approved boundary from an orchestrator inference.
 2. **Revalidate before every dispatch.** Check the envelope and contract against the current code, the current dependency frontier, and the tickets that have already landed. An artifact approved days ago describes a codebase that has since moved.
 3. **Narrow into the worker brief.** Fill `{SCOPE}` by narrowing the ticket's block to what this one worker touches, under the statement contract `bin/fm-brief.sh` owns. Copying a stale block unchanged is the failure this step exists to prevent.
-4. **Never widen.** Anything beyond the accepted envelope, and any required behavior the captain never approved, is a scope decision that returns to the captain under `ask-user-authority`.
+4. **Never widen.** Anything beyond the accepted envelope, and any required behavior the captain never approved, is a scope decision that returns to the captain under `/home/dathuynh/codes/firstmate/.agents/skills/ask-user-authority/SKILL.md`.
 5. **Escalate a stale, incorrect, or insufficient envelope** as a concrete blocker rather than repairing it in place. Repairing it silently replaces a captain-approved boundary with an orchestrator-chosen one.
 
-For a paired ticket, the navigator independently challenges and refines the approved test contract at the plan gate; `paired-review` owns that gate.
+For a paired ticket, the navigator independently challenges and refines the approved test contract at the plan gate; `/home/dathuynh/codes/firstmate/custom-skills/paired-review/SKILL.md` owns that gate.
 
 ## Cross-ticket decisions
 
@@ -83,10 +83,10 @@ A program settles things that outlive the ticket that settled them: which packag
 Keep them in the program's decision record alongside the durable private records above, each decision identified so a brief can name it and a worker can read it, and each carrying its reason, because the reason is what a later challenge is measured against.
 Record a decision as soon as a ticket settles something a later ticket would otherwise re-decide.
 
-When dispatching a paired ticket, hand the decisions bearing on it to both the driver and the navigator, named by absolute path in each brief; `paired-review` owns what the navigator does with them.
+When dispatching a paired ticket, hand the decisions bearing on it to both the driver and the navigator, named by absolute path in each brief; `/home/dathuynh/codes/firstmate/custom-skills/paired-review/SKILL.md` owns what the navigator does with them.
 
 Hold cross-package and whole-solution direction yourself.
-It reaches no single ticket's worker or navigator, for the field-of-view reason `paired-review` records, so this is where it is caught or it is not caught at all.
+It reaches no single ticket's worker or navigator, for the field-of-view reason `/home/dathuynh/codes/firstmate/custom-skills/paired-review/SKILL.md` records, so this is where it is caught or it is not caught at all.
 
 ## Remote-host ramp
 
@@ -105,7 +105,7 @@ Do not place a second implementation worker on a newly ramped remote host merely
 Widening remote use requires a fresh checkpoint proving the verified runtime and model, exact branch and SHA, expected current diff, and complete current evidence.
 Record that checkpoint before adding capacity, changing the task size, or assigning another ticket.
 A failed or incomplete checkpoint keeps the host at its current narrow capacity and routes new work elsewhere or escalates the blocker.
-A high-blast-radius, destructive, irreversible, or security-sensitive expansion still follows the captain and `ask-user-authority` boundaries even when the checkpoint is green.
+A high-blast-radius, destructive, irreversible, or security-sensitive expansion still follows the captain and `/home/dathuynh/codes/firstmate/.agents/skills/ask-user-authority/SKILL.md` boundaries even when the checkpoint is green.
 
 ## One-ticket custody
 

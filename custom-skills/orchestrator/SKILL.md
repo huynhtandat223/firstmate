@@ -66,7 +66,7 @@ Scaffold with `bin/fm-brief.sh <programme-id> <project> --scout`: the session sh
 
 Fill `{TASK}` with the work from step 1 and these three, every path absolute:
 
-> Read and follow `<firstmate-home>/.agents/skills/orchestrator/CONTRACT.md` and `<firstmate-home>/.agents/skills/program-orchestration/SKILL.md`. They are your contract for this whole programme.
+> Read and follow `<firstmate-home>/custom-skills/orchestrator/CONTRACT.md` and `<firstmate-home>/custom-skills/program-orchestration/SKILL.md`. They are your contract for this whole programme.
 > Your decision records go in `<main-home>/data/<programme-id>/`, one file per decision.
 > Your initialization packet is at `<absolute path>`.
 
