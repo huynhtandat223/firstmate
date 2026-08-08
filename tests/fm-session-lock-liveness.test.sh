@@ -78,6 +78,21 @@ test_live_pi_process_reads_alive() {
   pass "fm_harness_pid_alive: a live pi process reads as alive"
 }
 
+test_live_agy_process_reads_alive() {
+  local home pid out
+  home="$TMP_ROOT/agy-live-home"
+  mkdir -p "$home/state"
+  spawn_named "$TMP_ROOT/agy-live" agy
+  pid=$SPAWNED_PID
+  fm_harness_pid_alive "$pid" \
+    || fail "a live agy process must read as a live harness (comm=$(ps -o comm= -p "$pid" 2>/dev/null), args=$(ps -o args= -p "$pid" 2>/dev/null))"
+  printf '%s\n' "$pid" > "$home/state/.lock"
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-lock.sh" status)
+  assert_contains "$out" "lock: held by live harness pid $pid" \
+    "fm-lock.sh status must report a live agy holder as held"
+  pass "fm_harness_pid_alive and fm-lock.sh status: a live agy process reads as alive"
+}
+
 test_other_verified_harnesses_read_alive() {
   local name
   for name in claude codex opencode grok; do
@@ -165,6 +180,7 @@ test_fm_lock_status_reports_pip_holder_as_stale() {
 }
 
 test_live_pi_process_reads_alive
+test_live_agy_process_reads_alive
 test_other_verified_harnesses_read_alive
 test_bare_interpreter_matches_harness_in_args
 test_pi_lookalikes_are_not_harnesses
