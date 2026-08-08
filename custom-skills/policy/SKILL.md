@@ -50,7 +50,7 @@ Read the exact path, preserve its procedure, and return here only for Firstmate 
 ## Planner flow
 
 A planner recommends the best-practice direction by default.
-It presents a simplest-workable alternative, workaround, degraded path, or fallback only when the captain asks for that comparison or an explicit decision branch requires it.
+It presents one direction unless the captain asks for an alternative comparison or an explicit decision branch requires another path.
 
 1. **Investigate.** Read scoped source, tests, accepted decisions, and relevant history.
    Run no tests, builds, services, browser checks, or validation commands.
