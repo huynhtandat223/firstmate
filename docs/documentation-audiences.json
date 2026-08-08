@@ -169,7 +169,7 @@
       "audience": "agent-runtime"
     },
     {
-      "path": ".agents/skills/paired-review/SKILL.md",
+      "path": "custom-skills/paired-review/SKILL.md",
       "audience": "agent-runtime"
     },
     {
