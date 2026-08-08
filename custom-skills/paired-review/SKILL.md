@@ -12,6 +12,14 @@ metadata:
 # paired-review
 
 This skill is the single owner of the paired implement-and-check protocol, which is a universal way to execute an implementation task rather than one program's local procedure.
+
+## Herdr pair composition
+
+On the standing Herdr backend, compose the pair after simultaneous spawn in one pair-specific Herdr workspace and one tab, with the driver and navigator as adjacent panes.
+Use the existing `bin/fm-spawn.sh` isolated-copy creation and Herdr pane/layout operations; keep separate worktrees and branches for the two roles.
+Record the current pair's exact workspace, tab, pane, split, and copy identities as task evidence in the canonical pair log, while keeping the driver and navigator copies distinct.
+This is composition of existing lifecycle operations, not a new paired transport or layout subsystem.
+If a future environment cannot repeat this composition reliably through those existing operations, record that bounded limitation and preserve the separate-copy and read-only boundaries rather than widening this skill.
 Whichever firstmate owns the task dispatches and supervises the pair, so a standalone paired task runs entirely inside that firstmate, needing no persistent orchestrator to exist, be created, or be routed through.
 A program orchestrator reaches this same protocol for a program ticket under `program-orchestration` and dispatches it unchanged.
 
@@ -161,7 +169,10 @@ A standalone paired task with no decision record behind it carries none of this 
 
 ## The shared exchange file
 
-The pair exchanges through one durable file at `<firstmate-home>/data/<task-id>/pair-log.md`, in the driver's task data directory, never by messaging each other's panes.
+The pair exchanges through one durable file at `<firstmate-home>/data/<task-id>/pair-log.md`, in the driver's task data directory.
+The pair-log is canonical durable truth for Gate 1, the plan, N/Q entries, answers, evidence, disputes, verdicts, and the exact reviewed SHA.
+After writing complete durable content first, either peer may send only a short notification or pointer through the existing verified command `FM_HOME=<home> <firstmate-root>/bin/fm-send.sh <peer-task-id> '<short message>'`.
+Firstmate is not the normal relay, and chat is never evidence.
 Two reasons, both load-bearing:
 
 - Every exchange stays on disk, so firstmate reconstructs the reasoning asynchronously at its own pace without being in the loop.
@@ -169,6 +180,8 @@ Two reasons, both load-bearing:
 
 Name the absolute path in both briefs, and state in both that this file and the worker's own status file are the permitted writes outside its copy, because the standard brief otherwise forbids writing outside the worktree.
 Whichever side writes first creates the file.
+A short pointer is sent only after the durable record is complete, and an unconfirmed or failed delivery cannot replace, erase, or duplicate that record.
+File polling is recovery only when direct delivery is unavailable or unconfirmed, and recovery re-reads the canonical log before appending anything.
 
 The log carries four kinds of entry: the navigator's gate-1 conclusion, the driver's plan and milestone declarations, the navigator's findings with the driver's answer under each, and the navigator's questions with their answer under each.
 The navigator writes its gate-1 conclusion before it reads any driver entry, even one already sitting in the log, which is what keeps its independent view independent and timestamps it so it cannot be retro-fitted after the plan.
@@ -208,9 +221,17 @@ The driver answers only a question plainly about its own implementation choices 
 Intent, scope, and prior decisions are firstmate's to answer, so the driver leaves those to firstmate, and names the question id in a `needs-decision:` status line when its own work waits on the answer.
 The navigator does not have to route a question perfectly, because firstmate reads the log either way.
 
-Wait for the other side by polling that file, not by nudging its pane: re-read it on a bounded cadence, roughly every thirty seconds for up to about twenty minutes.
+Wait for the other side by polling that file only as recovery when direct delivery is unavailable or unconfirmed: re-read it on a bounded cadence, roughly every thirty seconds for up to about twenty minutes.
 If the cadence expires with no entry, append `paused: awaiting <gate> from <task-id>` and stop, and firstmate reconciles the pair.
 The navigator's last act is its PR-gate entry, after which it appends `done:` and firstmate cleans up both copies together.
+
+## Safe-boundary direction holds
+
+A material direction issue creates a navigator pair-hold.
+The navigator records the finding in the canonical log, sends the driver a short pointer, and the driver starts no new edit or command until the issue is resolved at the next safe boundary.
+Never interrupt a running command.
+Ordinary code findings remain nonblocking unless continuing in the current direction would waste work.
+The plan gate remains blocking.
 
 ## One round trip per finding or question
 
@@ -221,6 +242,7 @@ Without that bound two agents can argue indefinitely, because there is no superv
 
 ## What the pair may never settle between themselves
 
+Direct agreement never authorizes a contract or scope change, destructive or irreversible action, security-sensitive action, or a disagreement that survives one round trip.
 Escalate to firstmate with a `needs-decision:` status line, and stop on that point:
 
 1. A change to the accepted product or engineering contract.
@@ -261,6 +283,13 @@ A skill is a markdown instruction file, so reading it by path loses nothing exce
 Known limitation, recorded with its reasoning rather than as a defect to fix: a handed-out review skill written to run its axes as parallel sub-agents degrades on any runtime where sub-agents are disabled, as pi is on this fleet by captain decision.
 The navigator runs the axes sequentially in one context and loses the isolation between them.
 That is an accepted trade for a navigator whose main job is checking work against an already-written scope, and it is the captain's call to make if a task ever needs the parallel form badly enough to move the navigator off its pinned runtime.
+
+## Programme integration
+
+For every paired programme ticket, the orchestrator, driver, and navigator read the same accepted spec revision, ticket scope and seam assumptions, test contract, relevant cross-ticket decisions, and exact starting SHA.
+The driver and navigator use this same canonical log and direct-pointer mechanism.
+The orchestrator may participate in the durable discussion for programme intent or cross-ticket questions and may ping either peer, but is not a relay.
+The orchestrator holds the programme destination, the driver holds implementation, and the navigator holds the independent direction challenge.
 
 ## Firstmate's remaining role
 
