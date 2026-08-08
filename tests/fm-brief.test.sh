@@ -389,8 +389,8 @@ test_herdr_lab_contract_is_explicit_and_complete() {
     "Herdr lab brief missing helper-owned provisioning"
   assert_grep "\"\$HERDR_LAB_HELPER\" teardown \"\$HERDR_LAB_SESSION\"" "$brief" \
     "Herdr lab brief missing helper-owned teardown"
-  assert_grep "required trailing \`--session \"\$HERDR_LAB_SESSION\"\`" "$brief" \
-    "Herdr lab brief missing the per-call trailing session contract"
+  assert_grep "required leading \`--session \"\$HERDR_LAB_SESSION\"\`" "$brief" \
+    "Herdr lab brief missing the per-call leading session contract"
   assert_grep "direct \`herdr server stop\`" "$brief" \
     "Herdr lab brief missing the forbidden server-global command list"
   assert_grep "records the live default session before provisioning" "$brief" \
@@ -710,10 +710,38 @@ test_scout_and_secondmate_scaffold() {
   pass "fm-brief: scout and secondmate code paths still scaffold well-formed briefs"
 }
 
+# Ship and scout scaffolds must expose the shared scope-and-seams contract, while a secondmate charter remains task-independent.
+test_scope_and_seams_is_a_default_section() {
+  local home brief out id proj flag
+  home="$TMP_ROOT/scope-home"
+  write_registry "$home"
+
+  for id_proj_flag in "brief-scope-ship-s1:direct-proj:--mode direct-PR" "brief-scope-scout-s2:direct-proj:--scout"; do
+    id=${id_proj_flag%%:*}
+    proj=${id_proj_flag#*:}; proj=${proj%%:*}
+    flag=${id_proj_flag##*:}
+    # shellcheck disable=SC2086  # deliberate multi-word mode flag or scout flag
+    out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" "$proj" $flag 2>&1) \
+      || fail "fm-brief.sh $id $flag exited non-zero: $out"
+    brief="$home/data/$id/brief.md"
+    assert_grep "# Scope and seams" "$brief" "$id: brief missing the default scope and seams section"
+    assert_grep "{SCOPE}" "$brief" "$id: brief missing the {SCOPE} placeholder"
+    assert_contains "$out" "{SCOPE}" "$id: scaffold completion line did not name the {SCOPE} placeholder to fill"
+  done
+
+  FM_SECONDMATE_CHARTER='Supervise the alpha domain.' \
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-scope-sm-s3 --secondmate alpha >/dev/null 2>&1 \
+    || fail "fm-brief.sh secondmate scaffold exited non-zero"
+  assert_no_grep "{SCOPE}" "$home/data/brief-scope-sm-s3/brief.md" \
+    "secondmate charter must not carry the task-scoped {SCOPE} placeholder"
+  pass "fm-brief: ship and scout briefs carry the scope and seams section by default"
+}
+
 test_script_parses
 test_no_heredoc_in_command_substitution
 test_help_includes_entire_header
 test_ship_modes_generate_clean_briefs
+test_scope_and_seams_is_a_default_section
 test_ship_mode_is_required_and_closed_set
 test_ship_mode_is_explicit_not_registry
 test_delivery_flags_are_refused_where_they_do_not_apply

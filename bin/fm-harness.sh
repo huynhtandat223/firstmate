@@ -50,6 +50,8 @@ detect_own() {
   # identified, and any rule that must be RELIABLE under grok has to test the hook
   # markers too (see .claude/settings.json Stop entries, docs/turnend-guard.md).
   [ "${GROK_AGENT:-}" = "1" ] && { echo grok; return; }
+  # agy (Antigravity CLI) sets ANTIGRAVITY_AGENT=1 in every tool/child process.
+  [ "${ANTIGRAVITY_AGENT:-}" = "1" ] && { echo agy; return; }
   # muse (Muse Code) publishes no harness-identity marker of its own. The only
   # MUSE_* variable it is documented to hand a child is MUSE_CURRENT_SESSION_LOG,
   # a per-session log PATH rather than an identity, and its export to tool
@@ -66,6 +68,7 @@ detect_own() {
       *codex*) echo codex; return ;;
       *opencode*) echo opencode; return ;;
       *grok*) echo grok; return ;;
+      *agy*|*antigravity*) echo agy; return ;;
       kimi) echo kimi; return ;;
       # muse's installed launcher ~/.local/bin/muse execs ~/.local/bin/muse-bin-<version>
       # (verified in the published launcher, muse 0.1.0-R708.1), so the live process

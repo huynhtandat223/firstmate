@@ -51,6 +51,37 @@ destination.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 PY
 }
 
+test_fenced_sample_links_are_illustration_not_navigation() {
+  local repo="$TMP_ROOT/fenced"
+  mkdir -p "$repo/docs"
+  git -C "$repo" init -q
+  printf '%s\n' '[Setup](docs/setup.md) [Policy](docs/policy.md)' > "$repo/README.md"
+  printf '%s\n' '# Setup' > "$repo/docs/setup.md"
+  printf '%s\n' '# Evidence' > "$repo/docs/evidence.md"
+  cat > "$repo/docs/policy.md" <<'MD'
+# Policy
+
+A vendored example listing points at paths that deliberately do not exist here:
+
+```md
+- [Ordering](./src/ordering/CONTEXT.md) - receives and tracks customer orders
+```
+
+~~~markdown
+<a href="./src/billing/CONTEXT.md">Billing</a>
+~~~
+MD
+  write_fixture_inventory "$repo"
+  git -C "$repo" add README.md docs
+  "$CHECK" --root "$repo" >/dev/null \
+    || fail "checker treated a fenced sample link as a navigation target"
+
+  printf '%s\n' '' '[Real](./src/ordering/CONTEXT.md)' >> "$repo/docs/policy.md"
+  git -C "$repo" add docs
+  run_expect_failure "unresolved local link" "$CHECK" --root "$repo"
+  pass "fenced sample links are skipped while the same link outside a fence still fails"
+}
+
 test_repository_inventory_passes() {
   local out
   out=$("$CHECK") || fail "repository documentation audience check failed"
@@ -139,3 +170,4 @@ test_repository_inventory_passes
 test_duplicate_and_setup_classification_fail
 test_required_pointer_fails
 test_local_links_and_no_keyword_heuristic
+test_fenced_sample_links_are_illustration_not_navigation
