@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Detect the agent harness this process tree runs on.
-# Usage: fm-harness.sh                  print own harness: claude|codex|opencode|pi|pi-signed|grok|kimi|muse|agy|unknown
+# Usage: fm-harness.sh                  print own harness: claude|codex|opencode|pi|pi-signed|grok|kimi|muse|unknown
 #        fm-harness.sh crew             print the effective CREWMATE harness
 #                                        (config/crew-harness; "default" resolves to own)
 #        fm-harness.sh secondmate       print the harness the PRIMARY uses to launch
@@ -40,13 +40,17 @@ detect_own() {
     if [ "${FM_PI_HARNESS:-}" = pi-signed ]; then echo pi-signed; else echo pi; fi
     return
   fi
-  # grok sets GROK_AGENT=1 for its child/tool processes (verified, grok 0.2.73).
-  # It does NOT set CLAUDECODE despite being Claude-Code-compatible, so this marker
-  # is unambiguous when firstmate runs natively on grok.
+  # grok set GROK_AGENT=1 for its child/tool processes (verified, grok 0.2.73).
+  # It does NOT set CLAUDECODE despite being Claude-Code-compatible, so the marker
+  # is unambiguous WHEN PRESENT - but it is not guaranteed present. A grok 1.0.0
+  # hook process carries GROK_HOOK_EVENT, GROK_HOOK_NAME, GROK_SESSION_ID, and
+  # GROK_WORKSPACE_ROOT with no GROK_AGENT at all (verified from the live process
+  # environment of a wedged grok 1.0.0 Stop hook, 2026-08-07). Treat this marker as
+  # a fast path only; the ancestry walk below is what actually guarantees grok is
+  # identified, and any rule that must be RELIABLE under grok has to test the hook
+  # markers too (see .claude/settings.json Stop entries, docs/turnend-guard.md).
   [ "${GROK_AGENT:-}" = "1" ] && { echo grok; return; }
-  # agy (Antigravity CLI) sets ANTIGRAVITY_AGENT=1 in every tool/child process
-  # (verified, cli-1.1.5, alongside ANTIGRAVITY_AGENTAPI_EXE and
-  # ANTIGRAVITY_LS_VERSION=cli-<v>). Unambiguous when firstmate runs on agy.
+  # agy (Antigravity CLI) sets ANTIGRAVITY_AGENT=1 in every tool/child process.
   [ "${ANTIGRAVITY_AGENT:-}" = "1" ] && { echo agy; return; }
   # muse (Muse Code) publishes no harness-identity marker of its own. The only
   # MUSE_* variable it is documented to hand a child is MUSE_CURRENT_SESSION_LOG,
@@ -55,10 +59,6 @@ detect_own() {
   # by ancestry alone below. Do NOT promote MUSE_CURRENT_SESSION_LOG to a marker
   # without verifying it reaches children AND that it cannot survive in a
   # multiplexer's stored environment, which is the precedence hazard above.
-  # agy (Antigravity CLI) sets ANTIGRAVITY_AGENT=1 in every tool/child process
-  # (verified, cli-1.1.5, alongside ANTIGRAVITY_AGENTAPI_EXE and
-  # ANTIGRAVITY_LS_VERSION=cli-<v>). Unambiguous when firstmate runs on agy.
-  [ "${ANTIGRAVITY_AGENT:-}" = "1" ] && { echo agy; return; }
   # Layer 2: walk the parent chain and match the command name.
   local pid=$$ comm args
   for _ in 1 2 3 4 5 6 7 8; do
@@ -68,7 +68,7 @@ detect_own() {
       *codex*) echo codex; return ;;
       *opencode*) echo opencode; return ;;
       *grok*) echo grok; return ;;
-      agy) echo agy; return ;;
+      *agy*|*antigravity*) echo agy; return ;;
       kimi) echo kimi; return ;;
       # muse's installed launcher ~/.local/bin/muse execs ~/.local/bin/muse-bin-<version>
       # (verified in the published launcher, muse 0.1.0-R708.1), so the live process
@@ -86,7 +86,6 @@ detect_own() {
           *codex*) echo codex; return ;;
           *opencode*) echo opencode; return ;;
           *grok*) echo grok; return ;;
-          *agy*|*antigravity*) echo agy; return ;;
           *" pi "*|*/pi) echo pi; return ;;
         esac ;;
     esac

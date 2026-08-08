@@ -62,15 +62,8 @@ make_home() {  # <name>
   printf '%s\n' "$home"
 }
 
-record_claude_idle() {  # <state-dir> <id>
-  local state=$1 id=$2 gen
-  gen=$("$ROOT/bin/fm-busy-event.sh" arm "$state" "$id")
-  "$ROOT/bin/fm-busy-event.sh" apply "$state" "$id" idle --gen "$gen" \
-    --source claude-hook --event stop
-}
-
 write_fixture() {  # <home>
-  local home=$1 fixture_gen
+  local home=$1
   mkdir -p "$home/projects/alpha-worktree" "$home/projects/scout-worktree" "$home/secondmate-home"
   cat > "$home/data/backlog.md" <<EOF
 ## In flight
@@ -91,18 +84,12 @@ EOF
     "window=firstmate:fm-ship-task" \
     "worktree=$home/projects/alpha-worktree" \
     "project=alpha" \
-    "harness=claude" \
+    "harness=codex" \
     "kind=ship" \
     "mode=ship" \
     "yolo=off" \
     "pr=https://github.com/kunchenguid/firstmate/pull/9"
   printf 'needs-decision: choose an API shape\n' > "$home/state/ship-task.status"
-  # A working ship task proves it through its own semantic busy-state record
-  # (bin/fm-busy-lib.sh), which is what the snapshot's current-state read
-  # consults; rendered pane text is no longer a state source.
-  fixture_gen=$("$ROOT/bin/fm-busy-event.sh" arm "$home/state" ship-task)
-  "$ROOT/bin/fm-busy-event.sh" apply "$home/state" ship-task busy --gen "$fixture_gen" \
-    --source claude-hook --event user-prompt-submit
   fm_write_meta "$home/state/scout-task.meta" \
     "window=firstmate:fm-scout-task" \
     "worktree=$home/projects/scout-worktree" \
@@ -195,6 +182,70 @@ test_fixture_snapshot_json() {
     | .state == "done" and .pr_url == "https://github.com/kunchenguid/firstmate/pull/7"
   ' >/dev/null || fail "done backlog PR row missing"
   pass "fixture snapshot covers task rows, backlog rows, pointers, and stable ordering"
+}
+
+# Whole-fleet JSON must never travel as a command-line argument. A single argv
+# string is capped at MAX_ARG_STRLEN (128 KiB), which is far below ARG_MAX, so a
+# backlog that crosses it used to make every snapshot fail outright with
+# "Argument list too long".
+test_oversized_backlog_stays_off_the_command_line() {
+  local home fakebin out summary i=0
+  home=$(make_home oversized-backlog)
+  mkdir -p "$home/projects/big-worktree"
+  {
+    printf '## In flight\n'
+    printf -- '- [ ] big-ship - Big Ship (repo: alpha) (kind: ship) (since 2026-07-20)\n'
+    printf '\n## Done\n'
+    while [ "$i" -lt 500 ]; do
+      i=$((i + 1))
+      printf -- '- [x] filler-%03d - Filler task %03d carrying a deliberately long title so the encoded backlog crosses the per-argument limit https://github.com/kunchenguid/firstmate/pull/%d (repo: alpha) (kind: ship) (merged 2026-07-20)\n' \
+        "$i" "$i" "$i"
+    done
+  } > "$home/data/backlog.md"
+  fm_write_meta "$home/state/big-ship.meta" \
+    "window=firstmate:fm-big-ship" \
+    "worktree=$home/projects/big-worktree" \
+    "project=alpha" \
+    "harness=codex" \
+    "kind=ship" \
+    "mode=ship"
+  fakebin=$(make_fakebin "$home")
+
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --json) \
+    || fail "snapshot must survive a backlog larger than the per-argument limit"
+  # Guard the fixture itself: a smaller backlog would stop exercising the limit.
+  printf '%s' "$out" | jq -e '(.backlog | tojson | length) > 131072' >/dev/null \
+    || fail "fixture backlog no longer exceeds the 128 KiB per-argument limit"
+  # Correctness, not just exit 0: a truncated or emptied inventory must fail here.
+  printf '%s' "$out" | jq -e '
+    (.backlog.records | length) == 501
+      and ([.backlog.records[] | select(.state == "done")] | length) == 500
+      and .backlog.records[0].id == "big-ship"
+      and .backlog.records[-1].id == "filler-500"
+      and .backlog.records[-1].pr_url == "https://github.com/kunchenguid/firstmate/pull/500"
+      and .backlog.records[-1].title == "Filler task 500 carrying a deliberately long title so the encoded backlog crosses the per-argument limit"
+      and (.tasks | length) == 1
+      and .tasks[0].id == "big-ship"
+      and .tasks[0].backlog.title == "Big Ship"
+      and .main_inventory.valid == true
+      and .main_inventory.reason == null
+      and (.main_inventory.orphan_in_flight | length) == 0
+      and .main_inventory.unstructured_current_count == 0
+      and (.scout_reports | type) == "array"
+      and (.secondmate_current.records | length) == 0
+  ' >/dev/null || fail "oversized-backlog snapshot lost or truncated inventory: $(printf '%s' "$out" | head -c 400)"
+
+  # The same payload also crosses the per-home summary used for secondmate reads.
+  summary=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --secondmate-home-summary) \
+    || fail "per-home summary must survive a backlog larger than the per-argument limit"
+  printf '%s' "$summary" | jq -e '
+    .schema == "fm-secondmate-home-summary.v1"
+      and .counts.landed == 500
+      and .counts.endpoints == 1
+      and .landed[0].id == "filler-500"
+      and .landed[0].pr_url == "https://github.com/kunchenguid/firstmate/pull/500"
+  ' >/dev/null || fail "oversized-backlog per-home summary wrong: $(printf '%s' "$summary" | head -c 400)"
+  pass "an oversized backlog snapshots fully instead of blowing the per-argument limit"
 }
 
 # R1 owner contract: main_inventory discloses orphan in-flight and unstructured
@@ -356,7 +407,7 @@ EOF
 }
 
 test_event_hints_follow_reconciled_current_state() {
-  local home fakebin out hint_gen
+  local home fakebin out
   home=$(make_home event-hints)
   mkdir -p \
     "$home/projects/active-decision" \
@@ -367,41 +418,33 @@ test_event_hints_follow_reconciled_current_state() {
     "window=firstmate:fm-active-decision" \
     "worktree=$home/projects/active-decision" \
     "project=alpha" \
-    "harness=claude" \
+    "harness=codex" \
     "kind=ship" \
     "mode=ship"
-  record_claude_idle "$home/state" active-decision
   printf 'needs-decision: choose an API shape\n' > "$home/state/active-decision.status"
   fm_write_meta "$home/state/active-blocked.meta" \
     "window=firstmate:fm-active-blocked" \
     "worktree=$home/projects/active-blocked" \
     "project=alpha" \
-    "harness=claude" \
+    "harness=codex" \
     "kind=ship" \
     "mode=ship"
-  record_claude_idle "$home/state" active-blocked
   printf 'blocked: waiting on access\n' > "$home/state/active-blocked.status"
   fm_write_meta "$home/state/stale-decision.meta" \
     "window=firstmate:fm-stale-decision-ship-task" \
     "worktree=$home/projects/stale-decision" \
     "project=alpha" \
-    "harness=claude" \
+    "harness=codex" \
     "kind=ship" \
     "mode=ship"
-  hint_gen=$("$ROOT/bin/fm-busy-event.sh" arm "$home/state" stale-decision)
-  "$ROOT/bin/fm-busy-event.sh" apply "$home/state" stale-decision busy --gen "$hint_gen" \
-    --source claude-hook --event user-prompt-submit
   printf 'needs-decision: already answered\n' > "$home/state/stale-decision.status"
   fm_write_meta "$home/state/stale-blocked.meta" \
     "window=firstmate:fm-stale-blocked-ship-task" \
     "worktree=$home/projects/stale-blocked" \
     "project=alpha" \
-    "harness=claude" \
+    "harness=codex" \
     "kind=ship" \
     "mode=ship"
-  hint_gen=$("$ROOT/bin/fm-busy-event.sh" arm "$home/state" stale-blocked)
-  "$ROOT/bin/fm-busy-event.sh" apply "$home/state" stale-blocked busy --gen "$hint_gen" \
-    --source claude-hook --event user-prompt-submit
   printf 'blocked: old failure\n' > "$home/state/stale-blocked.status"
   fakebin=$(make_fakebin "$home")
   out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --json)
@@ -468,10 +511,9 @@ EOF
     "window=firstmate:fm-bold-task" \
     "worktree=$projects/bold-worktree" \
     "project=alpha" \
-    "harness=claude" \
+    "harness=codex" \
     "kind=scout" \
     "mode=scout"
-  record_claude_idle "$home/state" bold-task
   printf 'done: report ready\n' > "$home/state/bold-task.status"
   fakebin=$(make_fakebin "$home")
   out=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_DATA_OVERRIDE="$data" FM_PROJECTS_OVERRIDE="$projects" "$SNAPSHOT" --json)
@@ -731,10 +773,9 @@ test_completed_scout_report_is_pointer_not_pending() {
     "window=firstmate:fm-lavish-103" \
     "worktree=$home/projects/scout-wt" \
     "project=firstmate" \
-    "harness=claude" \
+    "harness=codex" \
     "kind=scout" \
     "mode=scout"
-  record_claude_idle "$home/state" lavish-103
   # Stale needs-decision, then the scout finished (done). No keyed resolution.
   printf 'needs-decision: adopt approach A or B for Lavish issue 103\n' > "$home/state/lavish-103.status"
   printf 'done: report ready at data/lavish-103/report.md\n' >> "$home/state/lavish-103.status"
@@ -763,10 +804,9 @@ test_parked_scout_decision_stays_pending() {
     "window=firstmate:fm-parked-scout" \
     "worktree=$home/projects/scout-wt2" \
     "project=firstmate" \
-    "harness=claude" \
+    "harness=codex" \
     "kind=scout" \
     "mode=scout"
-  record_claude_idle "$home/state" parked-scout
   printf 'needs-decision [key=q1]: adopt approach A or B\n' > "$home/state/parked-scout.status"
   fakebin=$(make_fakebin "$home")
   out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --json)
@@ -779,8 +819,132 @@ test_parked_scout_decision_stays_pending() {
   pass "a scout still parked at a decision stays pending (terminal clear does not over-fire)"
 }
 
+# The secondmate evidence values are the other side of the same MAX_ARG_STRLEN
+# trap the oversized-backlog test covers. The keyed open-decision set folds a whole
+# status stream with no cap at all, and the parent activity scan and the registered
+# secondmate table are limited only by operator-tunable read windows, so all three
+# can cross the 128 KiB per-argument cap. This fixture drives every one of them
+# past that cap at once and asserts the evidence survives intact.
+test_oversized_secondmate_evidence_stays_off_the_command_line() {
+  local home sub fakebin out status_log pad i=0
+  home=$(make_home oversized-secondmate)
+  # The secondmate home must sit outside the parent home and the firstmate repo.
+  sub=$TMP_ROOT/oversized-secondmate-sub
+  mkdir -p "$sub/bin" "$sub/data" "$sub/state" "$sub/config" "$sub/projects"
+  printf '# fixture secondmate home\n' > "$sub/AGENTS.md"
+  printf 'big-mate\n' > "$sub/.fm-secondmate-home"
+  printf '## In flight\n\n## Queued\n\n## Done\n' > "$sub/data/backlog.md"
+
+  # 200 still-open decision keys and 200 still-open activity keys, each carrying a
+  # long summary, so both encoded sets clear 128 KiB on their own.
+  pad=$(printf 'x%.0s' $(seq 1 700))
+  status_log=$home/state/big-mate.status
+  : > "$status_log"
+  while [ "$i" -lt 200 ]; do
+    i=$((i + 1))
+    printf 'needs-decision [key=dec-%03d]: decision %03d %s\n' "$i" "$i" "$pad" >> "$status_log"
+    printf 'working [key=act-%03d]: activity %03d %s\n' "$i" "$i" "$pad" >> "$status_log"
+  done
+  cp "$status_log" "$home/state/bad-mate.status"
+
+  fm_write_meta "$home/state/big-mate.meta" \
+    "window=firstmate:fm-big-mate" \
+    "project=$sub" "harness=codex" "kind=secondmate" "mode=secondmate" \
+    "home=$sub" "projects=alpha"
+  # A second secondmate whose home never resolves takes the parent-event fallback
+  # branch, which carries the same three values through a different builder.
+  fm_write_meta "$home/state/bad-mate.meta" \
+    "window=firstmate:fm-bad-mate" \
+    "project=$home/missing-home" "harness=codex" "kind=secondmate" "mode=secondmate" \
+    "home=$home/missing-home" "projects=beta"
+
+  # A registered table long enough that the parsed registry itself clears 128 KiB.
+  {
+    printf -- '- big-mate (home: %s; scope: oversized evidence)\n' "$sub"
+    i=0
+    while [ "$i" -lt 400 ]; do
+      i=$((i + 1))
+      printf -- '- zfiller-%03d (home: /nonexistent/filler-%03d-%s; scope: filler)\n' "$i" "$i" "$pad"
+    done
+  } > "$home/data/secondmates.md"
+
+  fakebin=$(make_fakebin "$home")
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" \
+    FM_SNAPSHOT_SECONDMATES=2 \
+    FM_SNAPSHOT_SECONDMATE_TIMEOUT=120 \
+    FM_SNAPSHOT_REGISTRY_LINES=4000 \
+    FM_SNAPSHOT_REGISTRY_BYTES=1048576 \
+    FM_SNAPSHOT_REGISTRY_RECORDS=1000 \
+    FM_SNAPSHOT_REGISTRY_TIMEOUT=120 \
+    FM_SNAPSHOT_PARENT_ACTIVITY_LINES=4000 \
+    FM_SNAPSHOT_PARENT_ACTIVITY_BYTES=1048576 \
+    FM_SNAPSHOT_PARENT_ACTIVITIES=1000 \
+    FM_SNAPSHOT_PARENT_ACTIVITY_TIMEOUT=120 \
+    "$SNAPSHOT" --json) \
+    || fail "snapshot must survive secondmate evidence larger than the per-argument limit"
+
+  # Guard the fixture: a smaller payload would stop exercising the limit. Each of
+  # the three moved values must independently exceed 128 KiB.
+  printf '%s' "$out" | jq -e '
+    ([.tasks[] | select(.id == "big-mate")][0].hints.open_decisions | tojson | length) > 131072
+      and (.secondmate_current.registry | tojson | length) > 131072
+      and ([.secondmate_current.records[] | select(.id == "big-mate")][0].parent_event.open_activities
+           | tojson | length) > 131072
+  ' >/dev/null || fail "fixture secondmate evidence no longer exceeds the 128 KiB per-argument limit"
+
+  # Correctness, not just exit 0: truncated or emptied evidence must fail here.
+  printf '%s' "$out" | jq -e '
+    [.tasks[] | select(.id == "big-mate")][0]
+    | (.hints.open_decisions | length) == 200
+      and .hints.pending_decision == true
+      and .hints.open_decisions[0].key == "dec-001"
+      and .hints.open_decisions[-1].key == "dec-200"
+      and (.hints.open_decisions[-1].summary | startswith("decision 200 "))
+      and (.hints.open_decisions[-1].summary | length) == 713
+  ' >/dev/null || fail "oversized decision fold lost records on the task row: $(printf '%s' "$out" | head -c 400)"
+
+  printf '%s' "$out" | jq -e '
+    .secondmate_current
+    | .registry.complete == true
+      and (.registry.records | length) == 401
+      and .registry.records[0].id == "big-mate"
+      and .registry.records[-1].id == "zfiller-400"
+      and .total == 402
+      and .shown == 2
+      and .truncated == 400
+      and ([.records[].id] == ["bad-mate","big-mate"])
+  ' >/dev/null || fail "oversized registry lost records or rows: $(printf '%s' "$out" | head -c 400)"
+
+  # The structured-home branch: reconciliation reads both oversized sets.
+  printf '%s' "$out" | jq -e '
+    [.secondmate_current.records[] | select(.id == "big-mate")][0]
+    | .provenance.selected == "structured-home"
+      and (.parent_event.open_decisions | length) == 200
+      and (.parent_event.open_activities | length) == 200
+      and (.parent_event.activity_scan.records | length) == 200
+      and .parent_event.activity_scan.retained_truncated == false
+      and (.parent_event.reconciliation.decisions | length) == 200
+      and (.parent_event.reconciliation.activities | length) == 200
+      and .parent_event.reconciliation.activities[-1].key == "act-200"
+      and .parent_event.reconciliation.decisions[-1].key == "dec-200"
+  ' >/dev/null || fail "oversized reconciliation lost evidence: $(printf '%s' "$out" | head -c 400)"
+
+  # The parent-event fallback branch carries the same values through its own builder.
+  printf '%s' "$out" | jq -e '
+    [.secondmate_current.records[] | select(.id == "bad-mate")][0]
+    | .current.state == "unknown"
+      and .provenance.selected == "parent-event-fallback"
+      and (.parent_event.open_decisions | length) == 200
+      and (.parent_event.open_activities | length) == 200
+      and .parent_event.open_activities[-1].key == "act-200"
+  ' >/dev/null || fail "oversized fallback record lost evidence: $(printf '%s' "$out" | head -c 400)"
+  pass "oversized secondmate decisions, activities, and registry stay off the command line"
+}
+
 test_empty_fleet_json
 test_fixture_snapshot_json
+test_oversized_backlog_stays_off_the_command_line
+test_oversized_secondmate_evidence_stays_off_the_command_line
 test_main_inventory_orphan_and_unstructured_disclosure
 test_normalized_roles_and_plural_blocker_readiness
 test_event_hints_follow_reconciled_current_state
