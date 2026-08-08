@@ -1,29 +1,30 @@
 #!/usr/bin/env bash
-# Static contract tests for the captain-invoked planner skill, its bundled
-# planning disciplines, and the ownership split for the scope envelope and the
-# test contract across planner, program-orchestration, paired-review, and
-# bin/fm-brief.sh.
+# Static contract tests for the captain-invoked planner lifecycle skill, the
+# planner child-role contract it launches, the contract's own skill catalog,
+# and the ownership split for the scope envelope and the test contract across
+# planner, program-orchestration, paired-review, and bin/fm-brief.sh.
 # shellcheck disable=SC2016
 set -u
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-PLANNER="$ROOT/.agents/skills/planner/SKILL.md"
-BUNDLE="$ROOT/.agents/skills/planner/matt"
+LIFECYCLE="$ROOT/.agents/skills/planner/SKILL.md"
+PLANNER="$ROOT/custom-skills/planner/CONTRACT.md"
+BUNDLE="$ROOT/custom-skills/planner/matt"
 PROVENANCE="$BUNDLE/PROVENANCE.md"
-PROGRAM="$ROOT/.agents/skills/program-orchestration/SKILL.md"
+PROGRAM="$ROOT/custom-skills/program-orchestration/SKILL.md"
 PAIRED="$ROOT/.agents/skills/paired-review/SKILL.md"
 BRIEF="$ROOT/bin/fm-brief.sh"
 AGENTS="$ROOT/AGENTS.md"
 
 test_planner_is_captain_invocable_with_one_trigger() {
   local count
-  assert_present "$PLANNER" "planner skill is missing"
-  assert_grep "name: planner" "$PLANNER" "planner skill metadata has the wrong name"
-  assert_grep "user-invocable: true" "$PLANNER" "planner must be captain-invocable"
-  assert_grep "  internal: true" "$PLANNER" "planner skill must be internal"
-  assert_grep "Use when the captain invokes /planner" "$PLANNER" \
+  assert_present "$LIFECYCLE" "planner lifecycle skill is missing"
+  assert_grep "name: planner" "$LIFECYCLE" "planner skill metadata has the wrong name"
+  assert_grep "user-invocable: true" "$LIFECYCLE" "planner must be captain-invocable"
+  assert_grep "  internal: true" "$LIFECYCLE" "planner skill must be internal"
+  assert_grep "Use when the captain invokes /planner" "$LIFECYCLE" \
     "planner metadata lost its captain trigger"
 
   count=$(grep -Fc -- '- **Planner** produces a captain-approved spec or tickets' "$AGENTS")
@@ -46,11 +47,11 @@ test_direct_conversation_exception_is_always_loaded() {
 }
 
 test_launch_profile_pins() {
-  assert_grep '**Default: the pi runtime, model `cx/gpt-5.6-sol`, effort `high`.**' "$PLANNER" \
+  assert_grep '**Default: the pi runtime, model `cx/gpt-5.6-sol`, effort `high`.**' "$LIFECYCLE" \
     "planner lost its default pi Sol high pin"
-  assert_grep '**The explicit alternative: the claude runtime, model `claude-opus-5`, effort `high`**' "$PLANNER" \
+  assert_grep '**The explicit alternative: the claude runtime, model `claude-opus-5`, effort `high`**' "$LIFECYCLE" \
     "planner lost its explicit Claude Opus 5 alternative"
-  assert_grep 'a dispatch profile does not silently reroute a planner session' "$PLANNER" \
+  assert_grep 'a dispatch profile does not silently reroute a planner session' "$LIFECYCLE" \
     "planner pin can be silently overridden by a dispatch profile"
   pass "planner pins the default Sol profile and the explicit Claude Opus 5 alternative"
 }
@@ -61,11 +62,52 @@ test_reuses_existing_dispatch_mechanics() {
     'bin/fm-spawn.sh' \
     '`harness-adapters`' \
     'data/<task-id>/report.md'; do
-    assert_grep "$phrase" "$PLANNER" "planner does not reuse existing mechanics: $phrase"
+    assert_grep "$phrase" "$LIFECYCLE" "planner does not reuse existing mechanics: $phrase"
   done
-  assert_no_grep 'bin/fm-planner' "$PLANNER" "planner invented a parallel runtime script"
+  assert_no_grep 'bin/fm-planner' "$LIFECYCLE" "planner invented a parallel runtime script"
   assert_absent "$ROOT/bin/fm-planner.sh" "planner must not add a parallel launcher"
   pass "planner launches through the ordinary brief, spawn, and scout-report mechanics"
+}
+
+test_contract_is_disclosed_to_its_own_file() {
+  assert_present "$PLANNER" "planner child contract is missing"
+  assert_grep 'custom-skills/planner/CONTRACT.md' "$LIFECYCLE" \
+    "the lifecycle skill does not name the contract for the brief to point at"
+  assert_grep 'It is your contract for this whole session.' "$LIFECYCLE" \
+    "the brief no longer binds the session to the contract"
+  assert_grep 'the brief carries the pointer and none of the content' "$LIFECYCLE" \
+    "the lifecycle skill may restate the contract into the brief"
+
+  # Progressive disclosure: firstmate reads the lifecycle skill, the session
+  # reads the contract. Inlining the session's phases back into the lifecycle
+  # skill would charge every firstmate turn for them.
+  assert_no_grep '**The captain opens this gate, in words, and nobody else.**' "$LIFECYCLE" \
+    "the lifecycle skill inlined the session contract firstmate never runs"
+  assert_no_grep '## The scope envelope' "$LIFECYCLE" \
+    "the lifecycle skill inlined the scope-envelope owner"
+  pass "the session contract stays in custom-skills/planner/CONTRACT.md and costs firstmate a pointer"
+}
+
+test_contract_carries_the_role_skill_catalog() {
+  local catalog
+  catalog=$(sed -n '/^## Available skills$/,/^### Phase 1/p' "$PLANNER")
+  assert_contains "$catalog" '## Available skills' \
+    "planner contract has no available-skills catalog"
+  assert_contains "$catalog" 'custom-skills/planner/CONTRACT.md' \
+    "planner catalog does not name its own contract"
+  for f in grilling grill-me grill-with-docs domain-modeling tdd to-spec to-tickets; do
+    assert_contains "$catalog" "custom-skills/planner/matt/$f.md" \
+      "planner catalog omits the $f discipline"
+  done
+  assert_contains "$catalog" 'a skill outside this list is not part of your role' \
+    "planner catalog does not bound the role's skill set"
+
+  # The catalog is planner-only: none of the orchestrator role's skills leak in.
+  assert_not_contains "$catalog" 'program-orchestration/SKILL.md' \
+    "planner catalog leaks the orchestrator procedure"
+  assert_not_contains "$catalog" 'paired-review/SKILL.md' \
+    "planner catalog leaks the pairing protocol"
+  pass "the planner contract carries exactly the planner role's skill catalog"
 }
 
 test_investigation_precedes_grilling_and_runs_nothing() {
@@ -115,7 +157,7 @@ test_publication_and_write_boundary() {
     "planner may execute the TDD loop"
   assert_grep 'You do not edit product code, implement, run validation, commit product changes, open an implementation pull request, create workers, or widen the captain'"'"'s scope.' \
     "$PLANNER" "planner lost its write boundary"
-  assert_grep '**Planning never authorizes implementation.**' "$PLANNER" \
+  assert_grep '**Planning never authorizes implementation.**' "$LIFECYCLE" \
     "planner lost the no-implementation-authority boundary"
   pass "planner publishes only approved artifacts and never implements"
 }
@@ -158,7 +200,7 @@ test_scope_envelope_fields_and_single_owner() {
   assert_grep '# Scope and seams' "$BRIEF" \
     "fm-brief.sh no longer generates the heading the ticket block mirrors"
 
-  # One owner: the field list lives in planner only.
+  # One owner: the field list lives in the planner contract only.
   for field in 'Contracts consumed and contracts changed' 'Callers not to disturb'; do
     assert_no_grep "$field" "$PROGRAM" "program-orchestration duplicated the envelope schema"
     assert_no_grep "$field" "$PAIRED" "paired-review duplicated the envelope schema"
@@ -198,8 +240,8 @@ test_test_contract_fields_and_single_owner() {
 test_downstream_consumption_owners() {
   assert_grep '## Consuming an upstream scope envelope and test contract' "$PROGRAM" \
     "program-orchestration does not own consumption"
-  assert_grep '`planner` owns those artifact fields; this section owns consuming them' "$PROGRAM" \
-    "program-orchestration does not defer the field list to planner"
+  assert_grep 'The planner contract at `custom-skills/planner/CONTRACT.md` owns those artifact fields; this section owns consuming them' "$PROGRAM" \
+    "program-orchestration does not defer the field list to the planner contract"
   for phrase in \
     '**Preserve provenance.**' \
     '**Revalidate before every dispatch.**' \
@@ -296,6 +338,8 @@ test_planner_is_captain_invocable_with_one_trigger
 test_direct_conversation_exception_is_always_loaded
 test_launch_profile_pins
 test_reuses_existing_dispatch_mechanics
+test_contract_is_disclosed_to_its_own_file
+test_contract_carries_the_role_skill_catalog
 test_investigation_precedes_grilling_and_runs_nothing
 test_grilling_disciplines
 test_crystallize_gate_is_the_captains_alone

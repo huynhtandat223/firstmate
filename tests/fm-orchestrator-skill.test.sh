@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Static contract tests for the captain-invoked orchestrator skill: its
 # captain-facing trigger, its launch pin, the two-file split that keeps the
-# session's own contract out of firstmate's context, and the AGENTS.md wiring
-# that must survive with no skill loaded.
+# session's own contract out of firstmate's context, the contract's own skill
+# catalog, and the AGENTS.md wiring that must survive with no skill loaded.
 # shellcheck disable=SC2016
 set -u
 
@@ -10,8 +10,8 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 SKILL="$ROOT/.agents/skills/orchestrator/SKILL.md"
-CONTRACT="$ROOT/.agents/skills/orchestrator/CONTRACT.md"
-PROGRAM="$ROOT/.agents/skills/program-orchestration/SKILL.md"
+CONTRACT="$ROOT/custom-skills/orchestrator/CONTRACT.md"
+PROGRAM="$ROOT/custom-skills/program-orchestration/SKILL.md"
 BRIEF="$ROOT/bin/fm-brief.sh"
 AGENTS="$ROOT/AGENTS.md"
 
@@ -66,8 +66,8 @@ test_launch_profile_pin() {
 
 test_contract_is_disclosed_to_its_own_file() {
   assert_present "$CONTRACT" "orchestrator CONTRACT.md is missing"
-  assert_grep '[`CONTRACT.md`](CONTRACT.md)' "$SKILL" \
-    "SKILL.md does not point at the session contract"
+  assert_grep 'custom-skills/orchestrator/CONTRACT.md' "$SKILL" \
+    "SKILL.md does not point at the session contract by path"
   assert_grep 'orchestrator/CONTRACT.md' "$SKILL" \
     "the brief does not name the contract by path for the session to read"
 
@@ -78,7 +78,30 @@ test_contract_is_disclosed_to_its_own_file() {
     "SKILL.md inlined the session contract firstmate never runs"
   assert_no_grep 'Integration is yours alone' "$SKILL" \
     "SKILL.md inlined the session's integration rule"
-  pass "the session contract stays in CONTRACT.md and costs firstmate a pointer"
+  assert_no_grep '## Available skills' "$SKILL" \
+    "the skill catalog leaked into firstmate's lifecycle skill"
+  pass "the session contract stays in custom-skills/orchestrator/CONTRACT.md and costs firstmate a pointer"
+}
+
+test_contract_carries_the_role_skill_catalog() {
+  local catalog
+  catalog=$(sed -n '/^## Available skills$/,/^## Source over report/p' "$CONTRACT")
+  assert_contains "$catalog" '## Available skills' \
+    "orchestrator contract has no available-skills catalog"
+  assert_contains "$catalog" 'custom-skills/orchestrator/CONTRACT.md' \
+    "orchestrator catalog does not name its own contract"
+  assert_contains "$catalog" 'custom-skills/program-orchestration/SKILL.md' \
+    "orchestrator catalog omits its program procedure"
+  assert_contains "$catalog" '.agents/skills/paired-review/SKILL.md' \
+    "orchestrator catalog omits the pairing protocol"
+  assert_contains "$catalog" 'a skill outside this list is not part of your role' \
+    "orchestrator catalog does not bound the role's skill set"
+
+  # The catalog is orchestrator-only: none of the planner role's disciplines
+  # leak in.
+  assert_not_contains "$catalog" 'planner/matt' \
+    "orchestrator catalog leaks the planner disciplines"
+  pass "the orchestrator contract carries exactly the orchestrator role's skill catalog"
 }
 
 test_reuses_existing_dispatch_mechanics() {
@@ -177,6 +200,7 @@ test_input_is_authorized_work_rather_than_the_backlog
 test_direct_conversation_exception_is_always_loaded
 test_launch_profile_pin
 test_contract_is_disclosed_to_its_own_file
+test_contract_carries_the_role_skill_catalog
 test_reuses_existing_dispatch_mechanics
 test_brief_scaffold_names_both_contracts_absolutely
 test_home_is_isolated_and_unregistered

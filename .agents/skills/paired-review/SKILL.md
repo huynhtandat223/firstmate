@@ -13,7 +13,7 @@ metadata:
 
 This skill is the single owner of the paired implement-and-check protocol, which is a universal way to execute an implementation task rather than one program's local procedure.
 Whichever firstmate owns the task dispatches and supervises the pair, so a standalone paired task runs entirely inside that firstmate, needing no persistent orchestrator to exist, be created, or be routed through.
-A program orchestrator reaches this same protocol for a program ticket under `program-orchestration` and dispatches it unchanged.
+A program orchestrator reaches this same protocol for a program ticket under `custom-skills/program-orchestration/SKILL.md` and dispatches it unchanged.
 
 It exists because firstmate supervises several threads at once, so relaying every exchange between the two workers makes firstmate the latency bottleneck and the pair stalls waiting for a firstmate turn.
 `AGENTS.md` section 1 keeps the narrowed communication rule always loaded, section 7 keeps the dispatch trigger, and section 13 keeps the load condition.
@@ -98,7 +98,7 @@ Write the same statement into both briefs and cite every firstmate-home path in 
 
 The stated scope and seam assumptions are part of the accepted contract, so widening or correcting them is an escalation, never something the pair settles between themselves.
 
-When the task came from a planner artifact, the ticket also carries an approved test contract - the acceptance intent the captain signed off with the scope, whose fields `planner` owns.
+When the task came from a planner artifact, the ticket also carries an approved test contract - the acceptance intent the captain signed off with the scope, whose fields `custom-skills/planner/CONTRACT.md` owns.
 At the plan gate the navigator challenges and refines it independently, the same way it challenges the plan: would what the driver is about to build actually be proven by the approved acceptance intent, observed where the contract says it is observed?
 That challenge sharpens acceptance intent within the accepted product scope and never expands it.
 The driver alone writes production and test code and runs validation; exact test names, fixtures, mocks, and commands are its decisions unless one is materially contract-defining.
@@ -153,7 +153,7 @@ More precise checks narrow the aperture rather than widening it, which is why th
 
 A navigator is given one ticket, so a direction error that spans packages, or that lives at whole-solution level, sits outside its field of view rather than being something it missed.
 One program produced two of them: two approved packages that claimed the same route, caught only when the merged application refused to boot, and domain code accumulating inside a declared composition root, caught by the captain reading code.
-No sharper checklist and no larger model reaches either, which is why the destination above stays with the owning firstmate, and why `program-orchestration` puts direction across tickets on the program orchestrator.
+No sharper checklist and no larger model reaches either, which is why the destination above stays with the owning firstmate, and why `custom-skills/program-orchestration/SKILL.md` puts direction across tickets on the program orchestrator.
 
 What does cross that boundary is the decision record.
 Where durable decisions exist, the navigator's brief names the ones bearing on its ticket by absolute path, so the navigator reads them itself rather than being told what they say, and can ask whether the work contradicts a decision it can see without ever seeing the package that decision was made in.

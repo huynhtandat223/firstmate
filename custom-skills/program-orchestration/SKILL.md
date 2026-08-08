@@ -65,7 +65,7 @@ The orchestrator may recommend a route, but the worker's per-task profile remain
 ## Consuming an upstream scope envelope and test contract
 
 A planner artifact carries a scope envelope and a test contract, at spec level and per ticket.
-`planner` owns those artifact fields; this section owns consuming them, and neither restates the other's list.
+The planner contract at `custom-skills/planner/CONTRACT.md` owns those artifact fields; this section owns consuming them, and neither restates the other's list.
 
 When a program's source spec or tickets carry them, they are the upstream draft for each ticket's worker brief:
 

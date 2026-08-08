@@ -1,6 +1,6 @@
 # Provenance of the bundled planning disciplines
 
-These files are vendored copies of Matt Pocock's public skills, kept here so the `planner` skill can hand them to a planner worker by absolute path on any runtime.
+These files are vendored copies of Matt Pocock's public skills, kept here so the planner contract can hand them to a planner worker by absolute path on any runtime.
 They are reference documents read by path, never installed skills.
 
 ## Upstream
@@ -65,4 +65,4 @@ The per-skill `agents/openai.yaml` display metadata is omitted; it configures an
 
 Re-copy from a current upstream checkout, then re-apply exactly the table above.
 Update the commit pin and the vendored date here in the same change.
-Adapt only paths, issue-tracker assumptions, and delegation wording; anything further belongs in the `planner` skill, which is the owner of how these disciplines are used.
+Adapt only paths, issue-tracker assumptions, and delegation wording; anything further belongs in the planner contract, which is the owner of how these disciplines are used.

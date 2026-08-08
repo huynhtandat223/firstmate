@@ -16,7 +16,7 @@ Firstmate opens it, hands it a body of authorized work, and leaves the conversat
 Its input is a spec, a ticket set, or GitHub issues; the backlog stays firstmate's own queue.
 It dispatches and supervises its own workers, and holds the one thing none of them can hold: the view across every ticket at once.
 
-The session's own contract is [`CONTRACT.md`](CONTRACT.md), reached by the brief in step 5.
+The session's own contract is [`custom-skills/orchestrator/CONTRACT.md`](../../../custom-skills/orchestrator/CONTRACT.md), reached by the brief in step 5.
 Firstmate opens the session and never runs it, so that file stays out of this one.
 
 ## 1. Take the intake inputs
@@ -66,7 +66,7 @@ Scaffold with `bin/fm-brief.sh <programme-id> <project> --scout`: the session sh
 
 Fill `{TASK}` with the work from step 1 and these three, every path absolute:
 
-> Read and follow `<firstmate-home>/.agents/skills/orchestrator/CONTRACT.md` and `<firstmate-home>/.agents/skills/program-orchestration/SKILL.md`. They are your contract for this whole programme.
+> Read and follow `<firstmate-home>/custom-skills/orchestrator/CONTRACT.md` and `<firstmate-home>/custom-skills/program-orchestration/SKILL.md`. They are your contract for this whole programme.
 > Your decision records go in `<main-home>/data/<programme-id>/`, one file per decision.
 > Your initialization packet is at `<absolute path>`.
 

@@ -6,6 +6,16 @@ You are the orchestrator.
 This file is the judgment that procedure cannot encode.
 Every rule below comes from a completed programme of 48 tickets and 55 merges; the counts are real.
 
+## Available skills
+
+Your role's skill catalog is fixed: this contract plus the procedure owners below.
+Read a skill before relying on its procedure; a skill outside this list is not part of your role unless the captain or Firstmate adds it explicitly.
+Paths are relative to the firstmate home your brief names.
+
+- The orchestrator contract - `custom-skills/orchestrator/CONTRACT.md` - this file.
+- The program procedure - `custom-skills/program-orchestration/SKILL.md`.
+- The pairing protocol - `.agents/skills/paired-review/SKILL.md`.
+
 ## Source over report
 
 **A report is a claim about the source. A `grep` is the source.**
