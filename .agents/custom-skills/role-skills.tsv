@@ -1,0 +1,6 @@
+worker	.agents/skills/tdd/SKILL.md,.agents/skills/codebase-design/SKILL.md,.agents/skills/resolving-merge-conflicts/SKILL.md,@handoff
+scout	.agents/skills/research/SKILL.md,@handoff
+planner	.agents/custom-skills/planner/SKILL.md,.agents/skills/grilling/SKILL.md,.agents/skills/grill-me/SKILL.md,.agents/skills/grill-with-docs/SKILL.md,.agents/skills/domain-modeling/SKILL.md,.agents/skills/research/SKILL.md,.agents/skills/prototype/SKILL.md,.agents/skills/to-questionnaire/SKILL.md,.agents/skills/to-spec/SKILL.md,.agents/skills/to-tickets/SKILL.md,.agents/skills/tdd/SKILL.md,@handoff
+orchestrator	.agents/custom-skills/orchestrator/SKILL.md,.agents/custom-skills/orchestrator/CONTRACT.md,.agents/custom-skills/program-orchestration/SKILL.md,.agents/custom-skills/paired-review/SKILL.md,@handoff
+paired-driver	.agents/custom-skills/paired-review/SKILL.md,.agents/skills/tdd/SKILL.md,.agents/skills/codebase-design/SKILL.md,.agents/skills/resolving-merge-conflicts/SKILL.md,@handoff
+paired-navigator	.agents/custom-skills/paired-review/SKILL.md,.agents/skills/code-review/SKILL.md,.agents/skills/codebase-design/SKILL.md,@handoff

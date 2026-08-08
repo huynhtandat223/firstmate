@@ -22,6 +22,7 @@
 #   omitting both still fails loudly so an accidental omission is never silent.
 #   Set FM_SECONDMATE_CHARTER='<charter>' to fill the charter text.
 #   Set FM_SECONDMATE_SCOPE='<scope>' to write a routing scope distinct from the charter text.
+#   --available-skills supplies the task-role Markdown bullets for the Required Available skills section.
 #   --herdr-lab is mandatory when the task will issue Herdr lifecycle commands.
 #   It adds the hard isolation contract backed by bin/fm-herdr-lab.sh.
 #   The flag must be explicit because {TASK} is filled after scaffolding and the
@@ -106,6 +107,7 @@ HERDR_LAB=0
 NO_PROJECTS=0
 MODE=
 MODE_SET=0
+ROLE=
 POS=()
 want_value=
 for a in "$@"; do
@@ -115,6 +117,8 @@ for a in "$@"; do
     esac
     case "$want_value" in
       mode) MODE=$a; MODE_SET=1 ;;
+      role) ROLE=$a ;;
+      available-skills) AVAILABLE_SKILLS=$a ;;
       *) echo "error: internal parser state for --$want_value" >&2; exit 1 ;;
     esac
     want_value=
@@ -126,6 +130,10 @@ for a in "$@"; do
     --herdr-lab) HERDR_LAB=1 ;;
     --no-projects) NO_PROJECTS=1 ;;
     --mode) want_value=mode ;;
+    --role) want_value=role ;;
+    --role=*) ROLE=${a#--role=} ;;
+    --available-skills) want_value=available-skills ;;
+    --available-skills=*) AVAILABLE_SKILLS=${a#--available-skills=} ;;
     --mode=*) MODE=${a#--mode=}; MODE_SET=1 ;;
     # yolo never reaches the worker: it is firstmate's approval authority, not a
     # brief input. Refuse it loudly so it is never silently dropped here and then
@@ -177,10 +185,19 @@ shell_quote() {
 }
 
 STATUS_FILE=$(shell_quote "$STATE/$ID.status")
-AVAILABLE_SKILLS=${FM_AVAILABLE_SKILLS:-"- \`$FM_ROOT/.agents/skills/tdd/SKILL.md\`
-- \`$FM_ROOT/.agents/skills/codebase-design/SKILL.md\`
-- \`$FM_ROOT/.agents/skills/resolving-merge-conflicts/SKILL.md\`
-- \`$HOME/.agents/skills/handoff/SKILL.md\`"}
+if [ -z "${AVAILABLE_SKILLS:-}" ] && [ -n "$ROLE" ]; then
+  AVAILABLE_SKILLS=$(awk -F '\t' -v role="$ROLE" '$1 == role { print $2; exit }' "$FM_ROOT/.agents/custom-skills/role-skills.tsv" 2>/dev/null || true)
+  if [ -n "$AVAILABLE_SKILLS" ]; then
+    AVAILABLE_SKILLS=$(printf '%s\n' "$AVAILABLE_SKILLS" | tr ',' '\n' | while IFS= read -r path; do
+      if [ "$path" = @handoff ]; then
+        printf '%s\n' "- \`$HOME/.agents/skills/handoff/SKILL.md\`"
+      else
+        printf '%s\n' "- \`$FM_ROOT/$path\`"
+      fi
+    done)
+  fi
+fi
+AVAILABLE_SKILLS=${AVAILABLE_SKILLS:-'\{AVAILABLE_SKILLS\}'}
 
 if [ "$KIND" = secondmate ]; then
 SECONDMATE_PROJECTS=""
