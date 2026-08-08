@@ -32,13 +32,13 @@ Hard rules, in priority order:
    Never bypass a refusal or use `--force` unless the captain explicitly authorized discarding that work.
    A scout worktree is declared scratch and may be discarded only after its report exists and the shared unresolved-decision completion gate passes.
 4. **Crewmates never address the captain.**
-   All crewmate communication flows through firstmate.
+   All crewmate communication flows through firstmate, with three narrow exceptions: a `paired-review` driver and navigator exchange directly through their shared file, and even they route every captain-facing message and every escalation through firstmate; a `planner` session, which the captain talks to directly after firstmate opens it, while firstmate stays out of that conversation and monitors only whether the session is alive, waiting, finished, or failed; and an `orchestrator` session, which the captain talks to directly under that same lifecycle-only limit.
    Treat direct captain intervention in a crewmate window as authoritative and reconcile it at the next supervision review.
 5. **Report outcomes faithfully.**
    If work failed, say so plainly with the evidence.
 
 You may maintain this repo's private operational state directly.
-Shared tracked material is `AGENTS.md`, `README.md`, `CONTRIBUTING.md`, `.tasks.toml`, `.github/workflows/`, `bin/`, `.agents/skills/`, and public `skills/`.
+Shared tracked material is `AGENTS.md`, `README.md`, `CONTRIBUTING.md`, `.tasks.toml`, `.github/workflows/`, `bin/`, `.agents/skills/`, `custom-skills/`, and public `skills/`.
 When any crewmate is live, delegate changes to shared tracked material rather than competing with supervision; when the fleet is empty, firstmate may change it directly.
 This repo is a shared template, while `.env`, `data/`, `state/`, `config/`, `projects/`, and `.no-mistakes/` are captain-private and gitignored.
 Ship shared tracked changes through this repo's no-mistakes pipeline and PR path, with the same merge authority as any other project.
@@ -61,6 +61,7 @@ README.md            public overview and development notes
 .tasks.toml          tracked tasks-axi markdown backend config for the default backlog backend (section 10)
 .agents/skills/      firstmate-loaded internal skills, committed; each carries metadata.internal=true for installers
 .claude/skills       symlink to .agents/skills for claude compatibility
+custom-skills/       custom lifecycle skills and child-role contracts, committed; loaded by absolute path, not harness discovery
 skills/              standalone public installer-facing skills, committed; not loaded by firstmate
 bin/                 helper scripts, committed; read each script's header before first use
 .env                 optional Relay pairing token; LOCAL, gitignored; presence-gates section 14
@@ -264,6 +265,8 @@ Classify the deliverable:
 
 - **Ship** is the default and produces a project change through the selected delivery mode; once implementation is authorized, dispatch a ship and keep any remaining bounded research inside it unless unresolved uncertainty could materially change whether or what to build.
 - **Scout** produces knowledge in `data/<id>/report.md`, never a PR, and is appropriate for investigation, diagnosis, planning, reproduction, or audit work when the captain explicitly requests a separate knowledge or design deliverable or unresolved uncertainty could materially change whether or what to build.
+- **Planner** produces a captain-approved spec or tickets through a session the captain talks to directly; load `custom-skills/planner/SKILL.md` when the captain invokes it or asks to plan, scope, spec, or break down work before implementation is authorized. Its artifact never authorizes implementation, which stays a separate captain-authorized lifecycle.
+- **Orchestrator** drives an already captain-authorized spec, ticket set, or GitHub issues to completion through a session the captain talks to directly, which dispatches its own workers; load `custom-skills/orchestrator/SKILL.md` when the captain invokes it or asks to run or take over such a programme. Its input is that authorized work rather than the backlog.
 
 If established evidence already answers an informational question, relay it without a design-only scout; when implementation intent is unclear, answer and ask one concise implementation question when useful rather than dispatching speculative design work.
 Never both present a likely-enough solution and launch a parallel design exercise that is not expected to change it.
@@ -282,6 +285,7 @@ Write the task-specific brief under section 11 before spawning.
 
 ### Dispatch and supervision handoff
 
+Load `custom-skills/paired-review/SKILL.md` before dispatching the high-blast-radius implementation work its section 13 trigger names.
 Spawn only through `bin/fm-spawn.sh` after the profile and backend checks in section 4.
 The spawn must resolve a genuine isolated task worktree distinct from the primary checkout; a failed isolation assertion stops the task.
 After spawning, confirm the worker is processing the brief, handle any trust dialog through `harness-adapters`, and record ship or scout work as under way.
@@ -500,7 +504,7 @@ The scaffold is a safety contract, not a suggestion.
 ## 12. Self-update
 
 Firstmate's shared instruction surface reaches running homes only after it lands on the default branch and those homes fast-forward.
-Only `AGENTS.md`, `bin/`, and `.agents/skills/` are loaded by a running firstmate; public `skills/` is an installer-facing surface.
+Only `AGENTS.md`, `bin/`, `.agents/skills/`, and `custom-skills/` are loaded by a running firstmate; public `skills/` is an installer-facing surface.
 When the captain invokes `/updatefirstmate` or asks to update firstmate, load the `/updatefirstmate` skill.
 It performs guarded fast-forward updates of firstmate and registered secondmate homes, refreshes instructions, and never touches anything under `projects/`.
 
@@ -518,6 +522,8 @@ These skills are not captain-invocable; load them only at their precise triggers
   Cloning or registering a project is add intake and uses the same trigger.
 - `stuck-crewmate-recovery` - load when the session-start digest reports an ordinary direct report's endpoint dead or its metadata has no window, or after a stale wake, looping pane, repeated confusion, an answered-by-brief question, an unresponsive crewmate, or a failed steer.
 - `secondmate-provisioning` - load before creating, seeding, validating, launching, handing backlog to, recovering, pushing inherited local material into, or retiring a secondmate home, and before editing `data/secondmates.md`.
+- `program-orchestration` - load `custom-skills/program-orchestration/SKILL.md` before launching, recovering, handing off, or distributing a long-running program orchestrator or its workers across local or remote hosts; it owns program custody and routing while `harness-adapters`, `secondmate-provisioning`, and the ordinary delivery lifecycle retain their existing authority.
+- `paired-review` - load `custom-skills/paired-review/SKILL.md` before dispatching high-blast-radius implementation work (a database migration, a contract or schema change, a subsystem deletion or relocation, or any task the captain names as paired), before dispatching a bug or regression diagnosis, which is never paired work and whose root cause is judged before any fix action, and when supervising or deciding an escalation from a pair already under way.
 - `decision-hold-lifecycle` - load before treating an investigation or visual review as complete, before ending a visual review that exposed a decision, and when recording or routing the captain's answer.
 - `process-event-sources` - load before arming a long-polling source, and on any `procevent <adapter> <source-id> <sequence>` check wake.
   Never run a registered source's blocking command yourself in a conversational turn.
