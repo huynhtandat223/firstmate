@@ -10,8 +10,15 @@
 # It names the owning layer, out-of-bounds locations, and seam assumptions.
 # The stated scope is part of the accepted contract, so a worker that must widen it escalates.
 # Both members of a paired-review dispatch read the same statement.
-# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--herdr-lab]
-#        fm-brief.sh <task-id> <repo-name> --scout [--herdr-lab]
+#   --role driver|navigator marks a paired-review brief and is the paired-dispatch pointer
+#   that leads the worker to the custom policy and the paired-review owner.
+#   The generated brief carries the authoritative role=<name> marker and a pointer to
+#   custom-skills/policy/SKILL.md, so the worker routes to its role-specific capability.
+#   --role driver requires a ship brief (--mode <mode>): a driver implements the plan.
+#   --role navigator requires --scout: a navigator reviews read-only and never pushes.
+#   Unmarked briefs keep the ordinary worker behavior unchanged.
+# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--role driver] [--herdr-lab]
+#        fm-brief.sh <task-id> <repo-name> --scout [--role navigator] [--herdr-lab]
 #        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
 #   --scout writes the scout contract instead: the deliverable is a report at
 #   data/<task-id>/report.md (no branch, no push, no PR) and the worktree is scratch.
@@ -110,6 +117,8 @@ HERDR_LAB=0
 NO_PROJECTS=0
 MODE=
 MODE_SET=0
+ROLE=
+ROLE_SET=0
 POS=()
 want_value=
 for a in "$@"; do
@@ -119,6 +128,7 @@ for a in "$@"; do
     esac
     case "$want_value" in
       mode) MODE=$a; MODE_SET=1 ;;
+      role) ROLE=$a; ROLE_SET=1 ;;
       *) echo "error: internal parser state for --$want_value" >&2; exit 1 ;;
     esac
     want_value=
@@ -131,6 +141,8 @@ for a in "$@"; do
     --no-projects) NO_PROJECTS=1 ;;
     --mode) want_value=mode ;;
     --mode=*) MODE=${a#--mode=}; MODE_SET=1 ;;
+    --role) want_value=role ;;
+    --role=*) ROLE=${a#--role=}; ROLE_SET=1 ;;
     # yolo never reaches the worker: it is firstmate's approval authority, not a
     # brief input. Refuse it loudly so it is never silently dropped here and then
     # believed to have been recorded.
@@ -156,6 +168,30 @@ if [ "$KIND" = ship ]; then
   esac
 elif [ "$MODE_SET" -eq 1 ]; then
   echo "error: --mode applies only to ship briefs; a scout delivers a report and a secondmate charter is not a delivery contract" >&2
+  exit 1
+fi
+
+# Paired roles are a closed set and bind to the brief kind that matches the
+# role's deliverable shape. A driver implements, so a driver brief must be a
+# ship brief; a navigator reviews read-only and never pushes, so a navigator
+# brief must be a scout brief. Refuse misuse loudly instead of accepting a role
+# that contradicts the deliverable.
+if [ "$ROLE_SET" -eq 1 ]; then
+  case "$ROLE" in
+    driver|navigator) ;;
+    *) echo "error: --role must be driver or navigator (got '$ROLE')" >&2; exit 1 ;;
+  esac
+fi
+if [ "$KIND" = secondmate ] && [ "$ROLE_SET" -eq 1 ]; then
+  echo "error: --role applies only to paired crewmate ship or scout briefs" >&2
+  exit 1
+fi
+if [ "$ROLE" = driver ] && [ "$KIND" = scout ]; then
+  echo "error: --role driver requires a ship brief (--mode <no-mistakes|direct-PR|local-only>); a driver implements and a scout delivers a report" >&2
+  exit 1
+fi
+if [ "$ROLE" = navigator ] && [ "$KIND" = ship ]; then
+  echo "error: --role navigator requires --scout; a navigator reviews read-only and never pushes a ship branch" >&2
   exit 1
 fi
 ID=${POS[0]}
@@ -302,11 +338,39 @@ EOF
 HERDR_SECTION=${HERDR_SECTION%$'\n'}
 fi
 
+# A paired role brief carries the authoritative role marker and the custom policy
+# pointer, so the worker routes to its role-specific capability. The section ends
+# with a blank line so it reads cleanly above the task heading when present and
+# vanishes entirely for unmarked briefs.
+ROLE_SECTION=
+if [ "$ROLE_SET" -eq 1 ]; then
+  case "$ROLE" in
+    driver)
+      IFS= read -r -d '' ROLE_SECTION <<EOF || true
+# Role
+role=driver
+You are the paired driver and implement the accepted plan.
+Read \`$FM_ROOT/custom-skills/policy/SKILL.md\` once and follow the \`role=driver\` route it names.
+
+EOF
+      ;;
+    navigator)
+      IFS= read -r -d '' ROLE_SECTION <<EOF || true
+# Role
+role=navigator
+You are the paired navigator and hold the independent view of the work.
+Read \`$FM_ROOT/custom-skills/policy/SKILL.md\` once and follow the \`role=navigator\` route it names.
+
+EOF
+      ;;
+  esac
+fi
+
 if [ "$KIND" = scout ]; then
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
 
-# Task
+${ROLE_SECTION}# Task
 {TASK}
 
 # Scope and seams
@@ -350,7 +414,7 @@ Before reporting done, read and follow \`$FM_ROOT/.agents/skills/decision-hold-l
 When the report is complete, append \`done: {one-line conclusion}\` to the status file and stop.
 If your findings reveal work that should ship (e.g. you reproduced a bug and the fix is clear), say so in the report; firstmate may promote this task in place, and you would then receive mode-specific ship instructions as a follow-up message.
 EOF
-echo "scaffolded: $BRIEF (scout; replace {TASK} and {SCOPE})"
+echo "scaffolded: $BRIEF (scout${ROLE:+ role=$ROLE}; replace {TASK} and {SCOPE})"
 exit 0
 fi
 
@@ -419,7 +483,7 @@ DOD=${DOD%$'\n'}
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
 
-# Task
+${ROLE_SECTION}# Task
 {TASK}
 
 # Scope and seams
@@ -471,4 +535,4 @@ Keep it proportionate: skip \`AGENTS.md\` edits for trivial tasks that produced 
 
 $DOD
 EOF
-echo "scaffolded: $BRIEF (ship, mode=$MODE; replace {TASK} and {SCOPE})"
+echo "scaffolded: $BRIEF (ship, mode=$MODE${ROLE:+ role=$ROLE}; replace {TASK} and {SCOPE})"

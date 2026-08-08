@@ -26,6 +26,72 @@ mkdir -p "$BRIEF_HOME/data"
 # CI and locally, where the issue #958/#1069 parser bug does not fire, so this
 # is a weak guard on its own; test_no_heredoc_in_command_substitution and the
 # macos-stock-bash CI job carry the real cross-version enforcement.
+# Paired role briefs carry the authoritative role marker and the custom policy
+# pointer, so the worker routes to its role-specific capability, and unmarked
+# briefs keep the ordinary worker shape.
+test_paired_role_markers_route_to_custom_policy() {
+  local home id brief out status
+  home="$TMP_ROOT/paired-role-home"
+  mkdir -p "$home/data"
+
+  # A paired driver is a ship brief carrying the authoritative role=driver marker.
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" paired-driver-r1 some-proj --mode direct-PR --role driver 2>&1); status=$?
+  expect_code 0 "$status" "paired driver ship brief should scaffold (got: $out)"
+  brief="$home/data/paired-driver-r1/brief.md"
+  assert_present "$brief" "paired driver brief was not scaffolded"
+  grep -qx "role=driver" "$brief" \
+    || fail "driver brief missing the authoritative role=driver marker line"
+  assert_grep 'custom-skills/policy/SKILL.md' "$brief" "driver brief missing the custom policy pointer"
+  assert_grep "follow the \`role=driver\` route it names" "$brief" "driver brief did not route through the custom policy"
+  grep -qx "Delivery contract: mode=direct-PR" "$brief" \
+    || fail "driver ship brief lost its delivery contract line"
+  assert_contains "$out" "role=driver" "driver scaffold completion line did not expose the role contract"
+
+  # A paired navigator is a scout brief carrying the authoritative role=navigator marker.
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" paired-nav-r2 some-proj --scout --role navigator 2>&1); status=$?
+  expect_code 0 "$status" "paired navigator scout brief should scaffold (got: $out)"
+  brief="$home/data/paired-nav-r2/brief.md"
+  assert_present "$brief" "paired navigator brief was not scaffolded"
+  grep -qx "role=navigator" "$brief" \
+    || fail "navigator brief missing the authoritative role=navigator marker line"
+  assert_grep "follow the \`role=navigator\` route it names" "$brief" "navigator brief did not route through the custom policy"
+  assert_grep "SCOUT task" "$brief" "navigator brief must remain a scout deliverable"
+  assert_contains "$out" "role=navigator" "navigator scaffold completion line did not expose the role contract"
+
+  # An unmarked brief carries no role marker and keeps the ordinary ship shape.
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" plain-worker-r3 some-proj --mode direct-PR >/dev/null 2>&1 \
+    || fail "unmarked ship brief should scaffold"
+  assert_no_grep "role=" "$home/data/plain-worker-r3/brief.md" \
+    "unmarked brief picked up a paired role marker"
+  pass "fm-brief.sh: paired role briefs carry marker + policy pointer and leave unmarked briefs unchanged"
+}
+
+# Paired roles are a closed set bound to the deliverable shape: a driver
+# implements (ship) and a navigator reviews read-only (scout). Every misuse is
+# refused loudly with nothing written.
+test_paired_role_kind_misuse_is_refused() {
+  local home out status label args expect
+  home="$TMP_ROOT/paired-role-refusal-home"
+  mkdir -p "$home/data"
+  while IFS='|' read -r label args expect; do
+    [ -n "$label" ] || continue
+    # shellcheck disable=SC2086  # args is an intentional word-split arg list
+    out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" $args 2>&1)
+    status=$?
+    [ "$status" -ne 0 ] || fail "$label: expected a non-zero exit"
+    assert_contains "$out" "$expect" "$label: refusal did not explain the contract"
+  done <<'ROWS'
+unknown role value|brief-role-b1 some-proj --mode direct-PR --role captain|--role must be driver or navigator
+driver on a scout brief|brief-role-b2 some-proj --scout --role driver|--role driver requires a ship brief
+navigator on a ship brief|brief-role-b3 some-proj --mode direct-PR --role navigator|--role navigator requires --scout
+role on a secondmate charter|brief-role-b4 --secondmate --no-projects --role driver|--role applies only to paired crewmate
+ROWS
+  for refused in brief-role-b1 brief-role-b2 brief-role-b3 brief-role-b4; do
+    assert_absent "$home/data/$refused/brief.md" "refused role misuse $refused still wrote a brief"
+  done
+  pass "fm-brief.sh: --role misuse is refused loudly with nothing written"
+}
+
 test_script_parses() {
   local out rc
   out=$(bash -n "$ROOT/bin/fm-brief.sh" 2>&1); rc=$?
@@ -745,6 +811,8 @@ test_scope_and_seams_is_a_default_section
 test_ship_mode_is_required_and_closed_set
 test_ship_mode_is_explicit_not_registry
 test_delivery_flags_are_refused_where_they_do_not_apply
+test_paired_role_markers_route_to_custom_policy
+test_paired_role_kind_misuse_is_refused
 test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
 test_ship_project_memory_wording

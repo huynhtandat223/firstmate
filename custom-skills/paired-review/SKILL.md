@@ -13,10 +13,14 @@ metadata:
 
 This skill is the single owner of the paired implement-and-check protocol, which is a universal way to execute an implementation task rather than one program's local procedure.
 Whichever firstmate owns the task dispatches and supervises the pair, so a standalone paired task runs entirely inside that firstmate, needing no persistent orchestrator to exist, be created, or be routed through.
-A program orchestrator reaches this same protocol for a program ticket under `program-orchestration` and dispatches it unchanged.
+A programme orchestrator reaches this same protocol for a programme ticket under `program-orchestration` and dispatches it unchanged.
+
+This owner supplies only the stable pair interface.
+The separate `/orchestrator` and `program-orchestration` owners retain programme runtime, custody, and cross-ticket direction, and this owner does not copy their procedures or implement their launch seam.
+The pair's durable exchange is three-participant truth: the driver's plan and milestones, the navigator's independent findings, and the owning firstmate's decisions all land in the same canonical log, so a programme orchestrator reads the pair through that log rather than through a second channel.
 
 It exists because firstmate supervises several threads at once, so relaying every exchange between the two workers makes firstmate the latency bottleneck and the pair stalls waiting for a firstmate turn.
-`AGENTS.md` section 1 keeps the narrowed communication rule always loaded, section 7 keeps the dispatch trigger, and section 13 keeps the load condition.
+`custom-skills/policy/SKILL.md` carries the role route and communication boundary for a paired session, and `bin/fm-brief.sh --role` emits the authoritative `role=driver` or `role=navigator` marker at dispatch, which is the paired-dispatch pointer that leads a worker here.
 
 A pair runs the protocol it was dispatched with, because both briefs are written at dispatch and neither side re-reads this file afterwards.
 A change here therefore reaches the next dispatch, and a pair already under way keeps the briefs and protocol it launched with.
@@ -79,6 +83,10 @@ This is the same reason a two-axis code review runs its axes as independent para
 
 The navigator needs its own task id because spawn, worktree, state, and status are all per task id; `<task-id>-nav` is the conventional form.
 Record both sides under the same backlog work item rather than filing the navigator as a second work item.
+
+A Herdr pair is composed in one pair-specific workspace and tab, with the driver and navigator in adjacent role panes, while `fm-spawn.sh` still provides each side its own isolated copy and branch.
+Record the current workspace, tab, and pane geometry and both copy and branch identities as task evidence in the canonical log, and never embed stale identifiers in this skill or the briefs.
+The pair shares no Git directory: each side's copy, branch, and history stay its own, and no commit by one side ever lands in the other's branch.
 
 ## Routing
 
@@ -208,8 +216,10 @@ The driver answers only a question plainly about its own implementation choices 
 Intent, scope, and prior decisions are firstmate's to answer, so the driver leaves those to firstmate, and names the question id in a `needs-decision:` status line when its own work waits on the answer.
 The navigator does not have to route a question perfectly, because firstmate reads the log either way.
 
-Wait for the other side by polling that file, not by nudging its pane: re-read it on a bounded cadence, roughly every thirty seconds for up to about twenty minutes.
+The canonical `pair-log.md` is the authority for every exchange: write the durable entry first, then a short existing task-id pointer may follow it for correlation, but the pointer is never a substitute for the entry.
+Polling that file is recovery-only: re-read it on a bounded cadence, roughly every thirty seconds for up to about twenty minutes, only when a delivery is unconfirmed, and never treat a poll result as truth until the durable entry exists.
 If the cadence expires with no entry, append `paused: awaiting <gate> from <task-id>` and stop, and firstmate reconciles the pair.
+The pair introduces no transport: the canonical log is the only channel between the two sides, and pane messaging and every other delivery mechanism stay out of the protocol.
 The navigator's last act is its PR-gate entry, after which it appends `done:` and firstmate cleans up both copies together.
 
 ## One round trip per finding or question
@@ -230,6 +240,9 @@ Escalate to firstmate with a `needs-decision:` status line, and stop on that poi
 
 This is the same boundary as the standing rule that an implementation worker never answers its own finding, which `ask-user-authority` owns.
 Two crewmates agreeing with each other can quietly approve a scope expansion that belongs to the captain, and that agreement is exactly what this boundary prevents: a pair reaching consensus is not the same thing as a decision being authorized.
+
+The safe-boundary hold defines what stopping means: finish only a command already running, then hold edits, validation, push, and PR work until the one response or the Firstmate escalation is durably recorded in the canonical log.
+Direct agreement between the two sides never widens scope, never changes the accepted contract, never authorizes destructive, irreversible, or security-sensitive work, and never settles a disagreement surviving its one round trip.
 
 ## Navigator constraints
 
