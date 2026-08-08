@@ -40,6 +40,8 @@ Load only the exact file named by the first matching trigger, when the trigger o
 | Planning shapes acceptance seams or a test contract | `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/tdd/SKILL.md` |
 | The captain explicitly asks to crystallize a spec | `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/to-spec/SKILL.md` |
 | The captain explicitly asks to crystallize dependency-aware tickets | `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/to-tickets/SKILL.md` |
+| A paired driver is asked to implement | `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/implement/SKILL.md`, then `/home/dathuynh/codes/firstmate/custom-skills/paired-review/SKILL.md` |
+| A paired navigator task is opened | `/home/dathuynh/codes/firstmate/custom-skills/paired-review/SKILL.md`, then `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/code-review/SKILL.md` |
 | An implementation worker is asked to implement | `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/implement/SKILL.md` |
 | A review or navigator task is opened | `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/code-review/SKILL.md` |
 | A diagnosis task is opened | `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/diagnosing-bugs/SKILL.md` |
@@ -76,6 +78,7 @@ Planning is evidence and direction; implementation remains a separate captain-au
 
 The policy is read once per role session.
 Matt capabilities are read only on their trigger, by exact absolute path.
+For paired implementation, the relocated paired-review skill is the protocol owner and is loaded after the implementation capability.
 Do not preload the catalog, copy Matt procedures into another document, or substitute a similarly named installed skill.
 
 The captain owns product and engineering contract decisions, unresolved choices, planner crystallization, and planner return or close.
