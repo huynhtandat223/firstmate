@@ -435,6 +435,206 @@
     {
       "path": "skills/stow/SKILL.md",
       "audience": "public-product"
+    },
+    {
+      "path": "custom-skills/matt/PROVENANCE.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "custom-skills/matt/engineering/README.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "custom-skills/matt/engineering/ask-matt/PHASE-BOUNDARIES.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "custom-skills/matt/engineering/ask-matt/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "custom-skills/matt/engineering/code-review/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "custom-skills/matt/engineering/codebase-design/DEEPENING.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "custom-skills/matt/engineering/codebase-design/DESIGN-IT-TWICE.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "custom-skills/matt/engineering/codebase-design/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "custom-skills/matt/engineering/diagnosing-bugs/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "custom-skills/matt/engineering/domain-modeling/ADR-FORMAT.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "custom-skills/matt/engineering/domain-modeling/CONTEXT-FORMAT.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "custom-skills/matt/engineering/domain-modeling/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "custom-skills/matt/engineering/grill-with-docs/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "custom-skills/matt/engineering/implement/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "custom-skills/matt/engineering/improve-codebase-architecture/HTML-REPORT.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "custom-skills/matt/engineering/improve-codebase-architecture/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "custom-skills/matt/engineering/prototype/LOGIC.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "custom-skills/matt/engineering/prototype/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "custom-skills/matt/engineering/prototype/UI.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "custom-skills/matt/engineering/research/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "custom-skills/matt/engineering/resolving-merge-conflicts/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "custom-skills/matt/engineering/setup-matt-pocock-skills/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "custom-skills/matt/engineering/setup-matt-pocock-skills/domain.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "custom-skills/matt/engineering/setup-matt-pocock-skills/issue-tracker-github.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "custom-skills/matt/engineering/setup-matt-pocock-skills/issue-tracker-gitlab.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "custom-skills/matt/engineering/setup-matt-pocock-skills/issue-tracker-local.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "custom-skills/matt/engineering/setup-matt-pocock-skills/triage-labels.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "custom-skills/matt/engineering/tdd/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "custom-skills/matt/engineering/tdd/mocking.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "custom-skills/matt/engineering/tdd/tests.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "custom-skills/matt/engineering/to-spec/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "custom-skills/matt/engineering/to-tickets/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "custom-skills/matt/engineering/triage/AGENT-BRIEF.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "custom-skills/matt/engineering/triage/OUT-OF-SCOPE.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "custom-skills/matt/engineering/triage/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "custom-skills/matt/engineering/wayfinder/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "custom-skills/matt/engineering/wizard/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "custom-skills/matt/productivity/README.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "custom-skills/matt/productivity/grill-me/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "custom-skills/matt/productivity/grilling/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "custom-skills/matt/productivity/handoff/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "custom-skills/matt/productivity/teach/GLOSSARY-FORMAT.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "custom-skills/matt/productivity/teach/LEARNING-RECORD-FORMAT.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "custom-skills/matt/productivity/teach/MISSION-FORMAT.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "custom-skills/matt/productivity/teach/RESOURCES-FORMAT.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "custom-skills/matt/productivity/teach/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "custom-skills/matt/productivity/to-questionnaire/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "custom-skills/matt/productivity/wait-what/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "custom-skills/matt/productivity/writing-for-agents/SKILL-MECHANICS.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "custom-skills/matt/productivity/writing-for-agents/SKILL.md",
+      "audience": "agent-runtime"
     }
   ]
 }
