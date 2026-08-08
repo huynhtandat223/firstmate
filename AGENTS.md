@@ -266,7 +266,6 @@ Classify the deliverable:
 
 - **Ship** is the default and produces a project change through the selected delivery mode; once implementation is authorized, dispatch a ship and keep any remaining bounded research inside it unless unresolved uncertainty could materially change whether or what to build.
 - **Scout** produces knowledge in `data/<id>/report.md`, never a PR, and is appropriate for investigation, diagnosis, planning, reproduction, or audit work when the captain explicitly requests a separate knowledge or design deliverable or unresolved uncertainty could materially change whether or what to build.
-- **Planner** produces a captain-approved spec or tickets through a session the captain talks to directly; load `planner` when the captain invokes it or asks to plan, scope, spec, or break down work before implementation is authorized. Its artifact never authorizes implementation, which stays a separate captain-authorized lifecycle.
 - **Orchestrator** drives an already captain-authorized spec, ticket set, or GitHub issues to completion through a session the captain talks to directly, which dispatches its own workers; load `orchestrator` when the captain invokes it or asks to run or take over such a programme. Its input is that authorized work rather than the backlog.
 
 If established evidence already answers an informational question, relay it without a design-only scout; when implementation intent is unclear, answer and ask one concise implementation question when useful rather than dispatching speculative design work.

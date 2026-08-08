@@ -244,6 +244,41 @@ ROWS
   pass "fm-brief.sh: ship --mode is required and closed-set validated"
 }
 
+# The paired role marker is a public scaffold contract consumed by the policy router.
+test_role_markers_and_refusals() {
+  local home driver nav out status
+  home="$TMP_ROOT/role-marker-home"
+  mkdir -p "$home/data"
+
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" role-driver ship-proj --mode direct-PR --role driver >/dev/null 2>&1 \
+    || fail "driver role scaffold should succeed"
+  driver="$home/data/role-driver/brief.md"
+  [ "$(grep -Ec '^role=driver$' "$driver")" -eq 1 ] \
+    || fail "driver ship brief must contain exactly one role=driver marker"
+  pass "fm-brief.sh: driver ship brief emits its public role marker"
+
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" role-navigator ship-proj --scout --role navigator >/dev/null 2>&1 \
+    || fail "navigator scout scaffold should succeed"
+  nav="$home/data/role-navigator/brief.md"
+  [ "$(grep -Ec '^role=navigator$' "$nav")" -eq 1 ] \
+    || fail "navigator scout brief must contain exactly one role=navigator marker"
+  pass "fm-brief.sh: navigator scout brief emits its public role marker"
+
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" role-invalid ship-proj --mode direct-PR --role planner 2>&1); status=$?
+  [ "$status" -ne 0 ] || fail "invalid role should be refused"
+  assert_contains "$out" "--role must be driver or navigator" "invalid role refusal was not explicit"
+  assert_absent "$home/data/role-invalid/brief.md" "invalid role refusal wrote a brief"
+  pass "fm-brief.sh: invalid role is refused before writing"
+
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" role-driver-scout ship-proj --scout --role driver 2>&1); status=$?
+  [ "$status" -ne 0 ] || fail "driver role on a scout should be refused"
+  assert_contains "$out" "scout briefs may use --role navigator only" "driver-scout refusal was not explicit"
+  assert_absent "$home/data/role-driver-scout/brief.md" "driver-scout refusal wrote a brief"
+  pass "fm-brief.sh: driver role on a scout is refused before writing"
+}
+
+test_role_markers_and_refusals
+
 # The registry is the captain's standing posture, not this task's answer: the
 # scaffold must follow the explicit flag even when the project is registered
 # with a different mode, and must not consult the registry at all.
