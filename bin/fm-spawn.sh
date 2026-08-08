@@ -1346,14 +1346,14 @@ fi
 validate_brief_skills() {
   grep -Fqx '## Available skills' "$BRIEF" || { echo "error: $BRIEF has no Available skills section" >&2; return 1; }
   ! grep -Fq '{AVAILABLE_SKILLS}' "$BRIEF" || { echo "error: $BRIEF has unresolved Available skills" >&2; return 1; }
-  local path home_real global
-  home_real=$(cd "$FM_HOME" && pwd -P)
+  local path root_real global
+  root_real=$(cd "$FM_ROOT" && pwd -P)
   global="$HOME/.agents/skills/handoff/SKILL.md"
   while IFS= read -r path; do
     case "$path" in /*) ;; *) continue ;; esac
     [ -f "$path" ] || { echo "error: listed skill does not exist: $path" >&2; return 1; }
     [ "$path" = "$global" ] && continue
-    case "$(cd "$(dirname "$path")" && pwd -P)/$(basename "$path")" in "$home_real"/*) ;; *) echo "error: listed skill escapes Firstmate home: $path" >&2; return 1 ;; esac
+    case "$(cd "$(dirname "$path")" && pwd -P)/$(basename "$path")" in "$root_real"/*) ;; *) echo "error: listed skill escapes Firstmate home: $path" >&2; return 1 ;; esac
   done < <(sed -n '/^## Available skills$/,/^# /p' "$BRIEF" | grep -Eo '/[^` )]+(SKILL\.md|CONTRACT\.md)' || true)
 }
 validate_brief_skills || exit 1
