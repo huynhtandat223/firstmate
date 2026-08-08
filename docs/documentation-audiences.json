@@ -157,67 +157,67 @@
       "audience": "agent-runtime"
     },
     {
-      "path": ".agents/skills/orchestrator/CONTRACT.md",
+      "path": ".agents/custom-skills/orchestrator/CONTRACT.md",
       "audience": "agent-runtime"
     },
     {
-      "path": ".agents/skills/orchestrator/SKILL.md",
+      "path": ".agents/custom-skills/orchestrator/SKILL.md",
       "audience": "agent-runtime"
     },
     {
-      "path": ".agents/skills/paired-review/SKILL.md",
+      "path": ".agents/custom-skills/paired-review/SKILL.md",
       "audience": "agent-runtime"
     },
     {
-      "path": ".agents/skills/planner/SKILL.md",
+      "path": ".agents/custom-skills/planner/SKILL.md",
       "audience": "agent-runtime"
     },
     {
-      "path": ".agents/skills/planner/matt/PROVENANCE.md",
+      "path": ".agents/custom-skills/planner/matt/PROVENANCE.md",
       "audience": "agent-runtime"
     },
     {
-      "path": ".agents/skills/planner/matt/domain-modeling.ADR-FORMAT.md",
+      "path": ".agents/custom-skills/planner/matt/domain-modeling.ADR-FORMAT.md",
       "audience": "agent-runtime"
     },
     {
-      "path": ".agents/skills/planner/matt/domain-modeling.CONTEXT-FORMAT.md",
+      "path": ".agents/custom-skills/planner/matt/domain-modeling.CONTEXT-FORMAT.md",
       "audience": "agent-runtime"
     },
     {
-      "path": ".agents/skills/planner/matt/domain-modeling.md",
+      "path": ".agents/custom-skills/planner/matt/domain-modeling.md",
       "audience": "agent-runtime"
     },
     {
-      "path": ".agents/skills/planner/matt/grill-me.md",
+      "path": ".agents/custom-skills/planner/matt/grill-me.md",
       "audience": "agent-runtime"
     },
     {
-      "path": ".agents/skills/planner/matt/grill-with-docs.md",
+      "path": ".agents/custom-skills/planner/matt/grill-with-docs.md",
       "audience": "agent-runtime"
     },
     {
-      "path": ".agents/skills/planner/matt/grilling.md",
+      "path": ".agents/custom-skills/planner/matt/grilling.md",
       "audience": "agent-runtime"
     },
     {
-      "path": ".agents/skills/planner/matt/tdd.md",
+      "path": ".agents/custom-skills/planner/matt/tdd.md",
       "audience": "agent-runtime"
     },
     {
-      "path": ".agents/skills/planner/matt/tdd.mocking.md",
+      "path": ".agents/custom-skills/planner/matt/tdd.mocking.md",
       "audience": "agent-runtime"
     },
     {
-      "path": ".agents/skills/planner/matt/tdd.tests.md",
+      "path": ".agents/custom-skills/planner/matt/tdd.tests.md",
       "audience": "agent-runtime"
     },
     {
-      "path": ".agents/skills/planner/matt/to-spec.md",
+      "path": ".agents/custom-skills/planner/matt/to-spec.md",
       "audience": "agent-runtime"
     },
     {
-      "path": ".agents/skills/planner/matt/to-tickets.md",
+      "path": ".agents/custom-skills/planner/matt/to-tickets.md",
       "audience": "agent-runtime"
     },
     {
@@ -225,7 +225,7 @@
       "audience": "agent-runtime"
     },
     {
-      "path": ".agents/skills/program-orchestration/SKILL.md",
+      "path": ".agents/custom-skills/program-orchestration/SKILL.md",
       "audience": "agent-runtime"
     },
     {
@@ -435,6 +435,106 @@
     {
       "path": "skills/stow/SKILL.md",
       "audience": "public-product"
+    },
+    {
+      "path": ".agents/skills/tdd/tests.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/tdd/mocking.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/tdd/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/resolving-merge-conflicts/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/to-questionnaire/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/diagnosing-bugs/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/to-tickets/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/to-spec/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/prototype/UI.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/prototype/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/prototype/LOGIC.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/grilling/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/grill-with-docs/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/wait-what/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/grill-me/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/codebase-design/DESIGN-IT-TWICE.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/codebase-design/DEEPENING.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/codebase-design/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/research/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/code-review/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/domain-modeling/CONTEXT-FORMAT.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/domain-modeling/ADR-FORMAT.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/domain-modeling/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/wizard/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "docs/verification/role-skill-sources.md",
+      "audience": "maintainer-verification"
     }
   ]
 }

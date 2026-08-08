@@ -9,9 +9,9 @@ set -u
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-SKILL="$ROOT/.agents/skills/orchestrator/SKILL.md"
-CONTRACT="$ROOT/.agents/skills/orchestrator/CONTRACT.md"
-PROGRAM="$ROOT/.agents/skills/program-orchestration/SKILL.md"
+SKILL="$ROOT/.agents/custom-skills/orchestrator/SKILL.md"
+CONTRACT="$ROOT/.agents/custom-skills/orchestrator/CONTRACT.md"
+PROGRAM="$ROOT/.agents/custom-skills/program-orchestration/SKILL.md"
 BRIEF="$ROOT/bin/fm-brief.sh"
 AGENTS="$ROOT/AGENTS.md"
 

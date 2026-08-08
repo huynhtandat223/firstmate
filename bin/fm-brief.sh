@@ -177,6 +177,10 @@ shell_quote() {
 }
 
 STATUS_FILE=$(shell_quote "$STATE/$ID.status")
+AVAILABLE_SKILLS=${FM_AVAILABLE_SKILLS:-"- \`$FM_ROOT/.agents/skills/tdd/SKILL.md\`
+- \`$FM_ROOT/.agents/skills/codebase-design/SKILL.md\`
+- \`$FM_ROOT/.agents/skills/resolving-merge-conflicts/SKILL.md\`
+- \`$HOME/.agents/skills/handoff/SKILL.md\`"}
 
 if [ "$KIND" = secondmate ]; then
 SECONDMATE_PROJECTS=""
@@ -249,6 +253,12 @@ When a keyed phase ends without another reportable state, append \`resolved [key
 The main firstmate's answer normally writes that closing line at answer time; when a blocker or wait clears WITHOUT an answer from the main firstmate, append \`resolved: {how it cleared}\` yourself (keyed with \`[key=<slug>]\` if you opened it with one) as your domain resumes.
 Routine internal supervision, heartbeats, retries, and crewmate churn stay inside your own home and must not touch that status file.
 
+## Available skills
+
+Use the applicable skills below. Read a skill before relying on its procedure. An unlisted skill is not part of this worker's assigned role unless the captain or Firstmate adds it explicitly.
+
+$AVAILABLE_SKILLS
+
 # Definition of done
 You are persistent by default. Do not exit just because your queue is empty.
 On startup and restart, run normal firstmate bootstrap and recovery through \`bin/fm-session-start.sh\` for your own home, but only to RECONCILE work that is already yours: in-flight crewmates, tracked backlog items, and durable watches recorded in this home.
@@ -307,6 +317,12 @@ You are a crewmate: an autonomous worker agent managed by firstmate. Work on you
 
 # Scope and seams
 {SCOPE}
+
+## Available skills
+
+Use the applicable skills below. Read a skill before relying on its procedure. An unlisted skill is not part of this worker's assigned role unless the captain or Firstmate adds it explicitly.
+
+$AVAILABLE_SKILLS
 
 $HERDR_SECTION
 
@@ -420,6 +436,12 @@ You are a crewmate: an autonomous worker agent managed by firstmate. Work on you
 
 # Scope and seams
 {SCOPE}
+
+## Available skills
+
+Use the applicable skills below. Read a skill before relying on its procedure. An unlisted skill is not part of this worker's assigned role unless the captain or Firstmate adds it explicitly.
+
+$AVAILABLE_SKILLS
 
 $HERDR_SECTION
 

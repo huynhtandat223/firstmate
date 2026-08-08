@@ -236,8 +236,8 @@ Classify the deliverable:
 
 - **Ship** is the default and produces a project change through the selected delivery mode; once implementation is authorized, dispatch a ship and keep any remaining bounded research inside it unless unresolved uncertainty could materially change whether or what to build.
 - **Scout** produces knowledge in `data/<id>/report.md`, never a PR, and is appropriate for investigation, diagnosis, planning, reproduction, or audit work when the captain explicitly requests a separate knowledge or design deliverable or unresolved uncertainty could materially change whether or what to build.
-- **Planner** produces a captain-approved spec or tickets through a session the captain talks to directly; load `planner` when the captain invokes it or asks to plan, scope, spec, or break down work before implementation is authorized. Its artifact never authorizes implementation, which stays a separate captain-authorized lifecycle.
-- **Orchestrator** drives an already captain-authorized spec, ticket set, or GitHub issues to completion through a session the captain talks to directly, which dispatches its own workers; load `orchestrator` when the captain invokes it or asks to run or take over such a programme. Its input is that authorized work rather than the backlog.
+- **Planner** produces a captain-approved spec or tickets through a session the captain talks to directly; load `.agents/custom-skills/planner/SKILL.md` when the captain invokes it or asks to plan, scope, spec, or break down work before implementation is authorized. Its artifact never authorizes implementation, which stays a separate captain-authorized lifecycle.
+- **Orchestrator** drives an already captain-authorized spec, ticket set, or GitHub issues to completion through a session the captain talks to directly, which dispatches its own workers; load `.agents/custom-skills/orchestrator/SKILL.md` when the captain invokes it or asks to run or take over such a programme. Its input is that authorized work rather than the backlog.
 
 If established evidence already answers an informational question, relay it without a design-only scout; when implementation intent is unclear, answer and ask one concise implementation question when useful rather than dispatching speculative design work.
 Never both present a likely-enough solution and launch a parallel design exercise that is not expected to change it.
@@ -250,7 +250,7 @@ Write the task-specific brief under section 11 before spawning.
 
 ### Dispatch and supervision handoff
 
-Load `paired-review` before dispatching the high-blast-radius implementation work its section 13 trigger names, because that protocol launches a second worker in the same dispatch.
+Load `.agents/custom-skills/paired-review/SKILL.md` before dispatching the high-blast-radius implementation work its section 13 trigger names, because that protocol launches a second worker in the same dispatch.
 Spawn only through `bin/fm-spawn.sh` after the profile and backend checks in section 4.
 The spawn must resolve a genuine isolated task worktree distinct from the primary checkout; a failed isolation assertion stops the task.
 After spawning, confirm the worker is processing the brief, handle any trust dialog through `harness-adapters`, and record ship or scout work as under way.
@@ -478,7 +478,7 @@ These skills are not captain-invocable; load them only at their precise triggers
 - `project-management` - load before adding, creating, removing, or initializing a project.
 - `stuck-crewmate-recovery` - load when the session-start digest reports an ordinary direct report's endpoint dead or its metadata has no window, or after a stale wake, looping pane, repeated confusion, an answered-by-brief question, an unresponsive crewmate, or a failed steer.
 - `secondmate-provisioning` - load before creating, seeding, validating, launching, handing backlog to, recovering, pushing inherited local material into, or retiring a secondmate home, and before editing `data/secondmates.md`.
-- `program-orchestration` - load before launching, recovering, handing off, or distributing a long-running program orchestrator or its workers across local or remote hosts; it owns program custody and routing while `harness-adapters`, `secondmate-provisioning`, and the ordinary delivery lifecycle retain their existing authority.
+- `program-orchestration` - load `.agents/custom-skills/program-orchestration/SKILL.md` before launching, recovering, handing off, or distributing a long-running program orchestrator or its workers across local or remote hosts; it owns program custody and routing while `harness-adapters`, `secondmate-provisioning`, and the ordinary delivery lifecycle retain their existing authority.
 - `paired-review` - load before dispatching high-blast-radius implementation work (a database migration, a contract or schema change, a subsystem deletion or relocation, or any task the captain names as paired), before dispatching a bug or regression diagnosis, which is never paired work and whose root cause is judged before any fix action, and when supervising or deciding an escalation from a pair already under way.
 - `decision-hold-lifecycle` - load before treating an investigation or visual review as complete, before ending a visual review that exposed a decision, and when recording or routing the captain's answer.
 - `fmx-respond` - load on an `x-mention <request_id>` `check:` wake to handle the mention, on an `x-mode-error ...` `check:` wake to report the X-mode configuration blocker, and on any milestone or terminal wake for an X-mode-linked task before posting its completion follow-up; relevant only when X mode is on.

@@ -58,7 +58,7 @@ Fill `{SCOPE}` with the captain's scope from step 1, under the ordinary scope an
 
 Fill `{TASK}` with the planning question, the captain's own words, and this instruction, with every path written in absolute form:
 
-> Read and follow `<firstmate-home>/.agents/skills/planner/SKILL.md` from "Part 2" onward. It is your contract for this whole session.
+> Read and follow `<firstmate-home>/.agents/custom-skills/planner/SKILL.md` from "Part 2" onward. It is your contract for this whole session.
 
 Do not restate Part 2 in the brief.
 The planner reads it from the same file firstmate does, so the two can never drift apart.
