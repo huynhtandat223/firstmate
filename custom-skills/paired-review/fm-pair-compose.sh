@@ -7,6 +7,7 @@
 #   --navigator-harness NAME [--navigator-model NAME] [--navigator-effort LEVEL]
 #   [--context SOURCE]... [--check TEXT]...
 #   fm-pair-compose.sh send <recovery.json> <driver|navigator> <message>
+#   fm-pair-compose.sh recover <recovery.json>
 #   fm-pair-compose.sh gate <recovery.json> <gate> <driver-head>
 #   fm-pair-compose.sh finding <recovery.json> open|close <N-id>
 #
@@ -14,6 +15,15 @@
 # the recipient task from the recovery evidence and submits through fm-send.sh,
 # so a signal counts as delivered only when submission is verified. Herdr
 # arranges pair topology only and is never used for text delivery.
+#
+# Herdr assigns a new pane id every time a pane moves, so a recorded pane id is
+# a hint and never authority. A role's stable identity is its registered agent
+# name (<pair-id>-driver, <pair-id>-navigator) bound to that role's isolated
+# copy, and both composition and `recover` resolve the current pane, workspace,
+# and tab from Herdr's own agent inventory under that identity. `recover`
+# re-verifies a live pair after a move and records the resulting topology
+# generation. Either path refuses, and records no generation, when a role
+# identity is missing, duplicated, or bound to a copy that is not that role's.
 #
 # The task and scope files are owner-supplied authority. Context values are
 # pointers, not copied requirements. The helper creates <ID> and <ID>-nav through
@@ -31,7 +41,7 @@ SEND=${FM_PAIR_SEND:-$ROOT/bin/fm-send.sh}
 HERDR=${FM_PAIR_HERDR:-herdr}
 ACK_TIMEOUT=${FM_PAIR_ACK_TIMEOUT:-30}
 
-usage() { sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,/^[^#]/p' "$0" | sed -n 's/^# \{0,1\}//p'; }
 die() { echo "error: $*" >&2; exit 1; }
 atom() { [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; }
 
@@ -47,6 +57,94 @@ pair_send() {
   FM_HOME="$owner_home" "$SEND" "$task_id" "$message" || return 1
 }
 
+# Resolve one live role endpoint from Herdr's own agent inventory and print
+# "<pane>\t<workspace>\t<tab>" for it. With an agent name, exactly one live
+# agent must carry that name and it must sit in this role's isolated copy; with
+# an empty name - before composition has published the role names - exactly one
+# live agent must sit in that copy. Every other outcome (missing, duplicated, or
+# bound to another copy) returns non-zero so the caller refuses rather than
+# acting on a guess. A copy matches when the agent's shell or foreground working
+# directory is that copy or a directory inside it.
+pair_resolve_role() {  # <session> <agent-name|''> <copy>
+  local session=$1 name=$2 copy=$3 agents
+  [ -n "$session" ] && [ -n "$copy" ] || return 1
+  agents=$("$HERDR" --session "$session" agent list 2>/dev/null) || return 1
+  printf '%s' "$agents" | jq -er --arg name "$name" --arg copy "$copy" '
+    def in_copy($p): ($p != null) and (($p == $copy) or ($p | startswith($copy + "/")));
+    def role_copy: in_copy(.foreground_cwd) or in_copy(.cwd);
+    [ .result.agents[]? ] as $all
+    | (if $name == "" then [ $all[] | select(role_copy) ]
+       else [ $all[] | select(.name == $name) ] end)
+    | select(length == 1)[0]
+    | select(role_copy)
+    | select(((.pane_id // "") != "") and ((.workspace_id // "") != "") and ((.tab_id // "") != ""))
+    | [.pane_id, .workspace_id, .tab_id] | @tsv'
+}
+
+# Herdr answers `pane neighbor` with the queried pane in `pane_id` and the
+# adjacent pane in `neighbor_pane_id`; reading `pane_id` returns the query
+# itself and turns the reciprocal check below into a guaranteed mismatch.
+pair_neighbor_pane() {  # <session> <direction> <pane>
+  "$HERDR" --session "$1" pane neighbor --direction "$2" --pane "$3" 2>/dev/null \
+    | jq -r '(.result.neighbor.neighbor_pane_id // .result.neighbor_pane_id) // empty'
+}
+
+# Prove one live pair topology from both roles' stable identities and print
+# "<driver-pane>\t<navigator-pane>\t<workspace>\t<tab>". On refusal it prints
+# the failed invariant instead and returns non-zero, so no caller records a
+# topology generation from an unproven pair.
+pair_verify_topology() {  # <session> <driver-agent> <driver-copy> <navigator-agent> <navigator-copy>
+  local session=$1 dname=$2 dcopy=$3 nname=$4 ncopy=$5
+  local drole nrole dp dws dtab np nws ntab left right
+  { [ -n "$dname" ] && [ -n "$nname" ] && [ "$dname" != "$nname" ]; } \
+    || { printf 'unique role agent targets\n'; return 1; }
+  drole=$(pair_resolve_role "$session" "$dname" "$dcopy") || { printf 'driver role identity\n'; return 1; }
+  nrole=$(pair_resolve_role "$session" "$nname" "$ncopy") || { printf 'navigator role identity\n'; return 1; }
+  IFS=$'\t' read -r dp dws dtab <<<"$drole"
+  IFS=$'\t' read -r np nws ntab <<<"$nrole"
+  [ "$dp" != "$np" ] || { printf 'distinct role panes\n'; return 1; }
+  { [ "$dws" = "$nws" ] && [ "$dtab" = "$ntab" ]; } || { printf 'shared pair tab\n'; return 1; }
+  left=$(pair_neighbor_pane "$session" left "$np")
+  right=$(pair_neighbor_pane "$session" right "$dp")
+  { [ "$left" = "$dp" ] && [ "$right" = "$np" ]; } || { printf 'reciprocal adjacency\n'; return 1; }
+  printf '%s\t%s\t%s\t%s\n' "$dp" "$np" "$dws" "$dtab"
+}
+
+# Re-verify a composed pair from each role's stable identity and record the
+# proven topology as a new generation. A topology that already matches the
+# latest generation is reported as unchanged rather than appended twice, and any
+# refusal leaves the recorded topology and the live pair untouched.
+pair_recover() {  # <recovery.json>
+  local evidence=$1 session dname nname dcopy ncopy topo dp np ws tab generation
+  session=$(jq -r '[.topology_generations[]?.session] | last // empty' "$evidence")
+  dname=$(jq -r '.roles.driver.agent_target // empty' "$evidence")
+  nname=$(jq -r '.roles.navigator.agent_target // empty' "$evidence")
+  dcopy=$(jq -r '.roles.driver.copy // empty' "$evidence")
+  ncopy=$(jq -r '.roles.navigator.copy // empty' "$evidence")
+  { [ -n "$session" ] && [ -n "$dname" ] && [ -n "$nname" ] && [ -n "$dcopy" ] && [ -n "$ncopy" ]; } \
+    || die "recovery evidence records no composed pair topology"
+  topo=$(pair_verify_topology "$session" "$dname" "$dcopy" "$nname" "$ncopy") \
+    || die "pair topology not recovered: $topo"
+  IFS=$'\t' read -r dp np ws tab <<<"$topo"
+  jq --arg session "$session" --arg ws "$ws" --arg tab "$tab" --arg dp "$dp" --arg np "$np" \
+    --arg da "$dname" --arg na "$nname" \
+    '(.topology_generations | last) as $latest
+     | (if ($latest.session == $session and $latest.workspace == $ws and $latest.tab == $tab
+            and $latest.driver_pane == $dp and $latest.navigator_pane == $np)
+        then .
+        else .topology_generations += [{
+          generation: (([.topology_generations[]?.generation] | max // 0) + 1),
+          session:$session,workspace:$ws,tab:$tab,
+          driver_pane:$dp,navigator_pane:$np,driver_agent:$da,navigator_agent:$na}]
+        end)
+     | .roles.driver.pane=$dp | .roles.navigator.pane=$np' "$evidence" > "$evidence.tmp" \
+    || die "recovered topology not recorded"
+  mv "$evidence.tmp" "$evidence"
+  generation=$(jq -r '[.topology_generations[]?.generation] | max // 0' "$evidence")
+  printf 'paired %s topology generation %s session=%s workspace=%s tab=%s driver=%s navigator=%s\n' \
+    "$(jq -r '.pair_id // empty' "$evidence")" "$generation" "$session" "$ws" "$tab" "$dp" "$np"
+}
+
 case "${1:-}" in
   send)
     [ "$#" -eq 4 ] || die "send requires <recovery.json> <driver|navigator> <message>"
@@ -58,6 +156,13 @@ case "${1:-}" in
     # inject via Herdr, or fall back to a different message.
     pair_send "$evidence" "$role" "$message" \
       || die "pair signal to $role not sent: submission failed or unconfirmed; no retry, injection, or fallback"
+    exit
+    ;;
+  recover)
+    [ "$#" -eq 2 ] || die "recover requires <recovery.json>"
+    evidence=$2
+    [ -f "$evidence" ] || die "recovery evidence is missing"
+    pair_recover "$evidence"
     exit
     ;;
   gate)
@@ -73,6 +178,7 @@ case "${1:-}" in
     [ "$#" -eq 4 ] || die "finding requires <recovery.json> open|close <N-id>"
     evidence=$2; action=$3; finding=$4
     [[ "$finding" =~ ^[NQ][1-9][0-9]*$ ]] || die "invalid finding id"
+    # shellcheck disable=SC2016 # $finding is a jq variable bound by --arg below.
     case "$action" in
       open) filter='.open_findings = ((.open_findings + [$finding]) | unique)' ;;
       close) filter='.open_findings = [.open_findings[] | select(. != $finding)]' ;;
@@ -164,6 +270,7 @@ fail_pair() {
 write_evidence composing
 printf '# Pair %s\n\nDurable reasoning and gate history. Live coordination uses Herdr.\n' "$PAIR_ID" > "$PAIR_LOG"
 
+# shellcheck disable=SC2016 # Backticks here are Markdown code spans in the brief.
 render_brief() {
   local id=$1 role=$2 peer=$3 role_skill=$4 peer_role=$5 ack=$6 peer_ack=$7
   "$BRIEF" "$id" "$(basename "$PROJECT")" --mode "$MODE" >/dev/null
@@ -224,36 +331,37 @@ meta_value() { sed -n "s/^$2=//p" "$FM_HOME/state/$1.meta" | head -1; }
 DS=$(meta_value "$DRIVER_ID" herdr_session); NS=$(meta_value "$NAV_ID" herdr_session)
 DW=$(meta_value "$DRIVER_ID" worktree); NW=$(meta_value "$NAV_ID" worktree)
 DB=$(git -C "$DW" branch --show-current); NB=$(git -C "$NW" branch --show-current)
-DP=$(meta_value "$DRIVER_ID" herdr_pane_id); NP=$(meta_value "$NAV_ID" herdr_pane_id)
 [ -n "$DS" ] && [ "$DS" = "$NS" ] || fail_pair "same Herdr session"
-[ -n "$DP" ] && [ -n "$NP" ] || fail_pair "role pane identity"
 [ "$DW" != "$NW" ] || fail_pair "distinct role copies"
 [ "$(git -C "$DW" rev-parse --absolute-git-dir)" != "$(git -C "$NW" rev-parse --absolute-git-dir)" ] || fail_pair "distinct Git directories"
+DW=$(cd "$DW" && pwd -P); NW=$(cd "$NW" && pwd -P)
 
 h() { "$HERDR" --session "$DS" "$@"; }
+# Every move below reassigns the moved pane's id, so each step re-resolves its
+# role from the live agent inventory bound to that role's isolated copy rather
+# than carrying the id it was launched with. Until the role names are published
+# the copy is the whole identity, which is why an ambiguous copy refuses here.
+DROLE=$(pair_resolve_role "$DS" '' "$DW") || fail_pair "driver role identity"
+NROLE=$(pair_resolve_role "$DS" '' "$NW") || fail_pair "navigator role identity"
+IFS=$'\t' read -r DP _ _ <<<"$DROLE"
+IFS=$'\t' read -r NP _ _ <<<"$NROLE"
 h pane move "$DP" --new-workspace --label "pair-$PAIR_ID" --tab-label pair --no-focus >/dev/null || fail_pair "pair workspace creation"
-DINFO=$(h pane get "$DP") || fail_pair "driver pane verification"
-WS=$(printf '%s' "$DINFO" | jq -r '.result.pane.workspace_id // empty')
-TAB=$(printf '%s' "$DINFO" | jq -r '.result.pane.tab_id // empty')
-[ -n "$WS" ] && [ -n "$TAB" ] || fail_pair "driver workspace and tab identity"
+DROLE=$(pair_resolve_role "$DS" '' "$DW") || fail_pair "driver workspace and tab identity"
+IFS=$'\t' read -r DP WS TAB <<<"$DROLE"
 h pane move "$NP" --tab "$TAB" --split right --target-pane "$DP" --no-focus >/dev/null || fail_pair "navigator topology move"
+NROLE=$(pair_resolve_role "$DS" '' "$NW") || fail_pair "navigator pane identity"
+IFS=$'\t' read -r NP _ _ <<<"$NROLE"
 h pane rename "$DP" driver >/dev/null || fail_pair "driver role label"
 h pane rename "$NP" navigator >/dev/null || fail_pair "navigator role label"
 DRIVER_TARGET="$PAIR_ID-driver"; NAV_TARGET="$PAIR_ID-navigator"
 h agent rename "$DP" "$DRIVER_TARGET" >/dev/null || fail_pair "driver agent identity"
 h agent rename "$NP" "$NAV_TARGET" >/dev/null || fail_pair "navigator agent identity"
-DINFO=$(h pane get "$DP"); NINFO=$(h pane get "$NP")
-printf '%s' "$DINFO" | jq -e --arg ws "$WS" --arg tab "$TAB" '.result.pane.workspace_id==$ws and .result.pane.tab_id==$tab' >/dev/null || fail_pair "driver topology"
-printf '%s' "$NINFO" | jq -e --arg ws "$WS" --arg tab "$TAB" '.result.pane.workspace_id==$ws and .result.pane.tab_id==$tab' >/dev/null || fail_pair "navigator topology"
-LEFT=$(h pane neighbor --direction left --pane "$NP" | jq -r '.result.pane.pane_id // .result.neighbor.pane_id // empty')
-RIGHT=$(h pane neighbor --direction right --pane "$DP" | jq -r '.result.pane.pane_id // .result.neighbor.pane_id // empty')
-[ "$LEFT" = "$DP" ] && [ "$RIGHT" = "$NP" ] || fail_pair "reciprocal adjacency"
-DA=$(h agent get "$DRIVER_TARGET" | jq -r '.result.pane.pane_id // .result.agent.pane_id // empty')
-NA=$(h agent get "$NAV_TARGET" | jq -r '.result.pane.pane_id // .result.agent.pane_id // empty')
-[ "$DA" = "$DP" ] && [ "$NA" = "$NP" ] && [ "$DRIVER_TARGET" != "$NAV_TARGET" ] || fail_pair "unique role agent targets"
+TOPO=$(pair_verify_topology "$DS" "$DRIVER_TARGET" "$DW" "$NAV_TARGET" "$NW") || fail_pair "$TOPO"
+IFS=$'\t' read -r DP NP WS TAB <<<"$TOPO"
 
 DHEAD=$(git -C "$DW" rev-parse HEAD); NHEAD=$(git -C "$NW" rev-parse HEAD)
 SOURCE_REV=$(git -C "$ROOT" rev-parse HEAD)
+# shellcheck disable=SC2016 # Backticks here are Markdown code spans in the brief.
 for role_id in "$DRIVER_ID" "$NAV_ID"; do
   {
     printf '\n## Verified pair composition\n\n'

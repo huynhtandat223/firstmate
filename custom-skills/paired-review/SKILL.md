@@ -57,6 +57,7 @@ Escalate scope or accepted-contract change, destructive, irreversible, or securi
 Pair agreement never expands authority.
 The captain retains merge authority.
 
-On navigator loss or topology break, report it, restore the endpoint, append a topology generation, and re-verify composition.
+On navigator loss or topology break, report it, restore the endpoint, then run `fm-pair-compose.sh recover <recovery.json>`, which re-verifies composition from each role's stable identity and appends the topology generation.
+Never hand-edit a recorded pane into the evidence: Herdr reassigns a pane id on every move, and a refusal from that command means the pair is not proven, not that the evidence needs correcting.
 The driver may continue accepted-scope work under an approved plan, but cannot bypass the initial plan gate, an authority decision, an active stop, or final navigator review.
 A recovered navigator reconciles current driver Git truth and durable history before another outcome.
