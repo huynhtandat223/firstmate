@@ -81,6 +81,15 @@ esac
 SH
 chmod +x "$FAKEBIN/herdr"
 
+cat > "$FAKEBIN/fm-send" <<'SH'
+#!/usr/bin/env bash
+set -eu
+printf '%s|%s\n' "${FM_HOME:-}" "$*" >> "$FM_SEND_LOG"
+[ "${FM_FAKE_SEND_FAIL:-0}" = 1 ] && exit 23
+exit 0
+SH
+chmod +x "$FAKEBIN/fm-send"
+
 HELPER="$ROOT/custom-skills/paired-review/fm-pair-compose.sh"
 run_pair() {
   FM_HOME="$HOME_DIR" FM_FIXTURE="$TMP_ROOT" FM_HERDR_LOG="$TMP_ROOT/herdr.log" \
@@ -105,12 +114,24 @@ assert_grep 'current task remains implementation scope' "$HOME_DIR/data/pair-nav
 assert_grep 'agent send pair-driver PAIR READY pair;' "$TMP_ROOT/herdr.log" "driver release signal missing"
 assert_grep 'agent send pair-navigator PAIR READY pair;' "$TMP_ROOT/herdr.log" "navigator release signal missing"
 
-FM_PAIR_HERDR="$FAKEBIN/herdr" FM_HERDR_LOG="$TMP_ROOT/herdr.log" "$HELPER" send "$HOME_DIR/data/pair/recovery.json" navigator 'MILESTONE M2' >/dev/null
-FM_PAIR_HERDR="$FAKEBIN/herdr" FM_HERDR_LOG="$TMP_ROOT/herdr.log" "$HELPER" send "$HOME_DIR/data/pair/recovery.json" driver 'STOP N3' >/dev/null
-FM_PAIR_HERDR="$FAKEBIN/herdr" FM_HERDR_LOG="$TMP_ROOT/herdr.log" "$HELPER" send "$HOME_DIR/data/pair/recovery.json" navigator 'ACK STOP N3' >/dev/null
-assert_grep 'agent send pair-navigator MILESTONE M2' "$TMP_ROOT/herdr.log" "milestone live signal missing"
-assert_grep 'agent send pair-driver STOP N3' "$TMP_ROOT/herdr.log" "stop live signal missing"
-assert_grep 'agent send pair-navigator ACK STOP N3' "$TMP_ROOT/herdr.log" "stop acknowledgement missing"
+FM_PAIR_SEND="$FAKEBIN/fm-send" FM_SEND_LOG="$TMP_ROOT/send.log" "$HELPER" send "$HOME_DIR/data/pair/recovery.json" navigator 'MILESTONE M2' >/dev/null
+FM_PAIR_SEND="$FAKEBIN/fm-send" FM_SEND_LOG="$TMP_ROOT/send.log" "$HELPER" send "$HOME_DIR/data/pair/recovery.json" driver 'STOP N3' >/dev/null
+FM_PAIR_SEND="$FAKEBIN/fm-send" FM_SEND_LOG="$TMP_ROOT/send.log" "$HELPER" send "$HOME_DIR/data/pair/recovery.json" navigator 'ACK STOP N3' >/dev/null
+assert_grep "$HOME_DIR|pair-nav MILESTONE M2" "$TMP_ROOT/send.log" "milestone signal not submitted via fm-send to the navigator task id"
+assert_grep "$HOME_DIR|pair STOP N3" "$TMP_ROOT/send.log" "stop signal not submitted via fm-send to the driver task id"
+assert_grep "$HOME_DIR|pair-nav ACK STOP N3" "$TMP_ROOT/send.log" "stop acknowledgement not submitted via fm-send to the navigator task id"
+assert_no_grep 'agent send pair-navigator MILESTONE M2' "$TMP_ROOT/herdr.log" "milestone injected via Herdr instead of fm-send"
+assert_no_grep 'agent send pair-driver STOP N3' "$TMP_ROOT/herdr.log" "stop injected via Herdr instead of fm-send"
+assert_no_grep 'agent send pair-navigator ACK STOP N3' "$TMP_ROOT/herdr.log" "stop acknowledgement injected via Herdr instead of fm-send"
+
+# A failed or unconfirmed fm-send result is an unsent pair signal: fail, do not retry or inject.
+: > "$TMP_ROOT/send.log"
+FM_FAKE_SEND_FAIL=1 FM_PAIR_SEND="$FAKEBIN/fm-send" FM_SEND_LOG="$TMP_ROOT/send.log" \
+  "$HELPER" send "$HOME_DIR/data/pair/recovery.json" navigator 'UNSENT M4' >/dev/null 2>&1 \
+  && fail "unconfirmed fm-send submission reported as sent"
+assert_grep "$HOME_DIR|pair-nav UNSENT M4" "$TMP_ROOT/send.log" "failed submission attempt not recorded"
+[ "$(grep -c 'UNSENT M4' "$TMP_ROOT/send.log")" -eq 1 ] || fail "failed pair signal was retried"
+assert_no_grep 'UNSENT M4' "$TMP_ROOT/herdr.log" "unsent pair signal was injected via Herdr"
 "$HELPER" finding "$HOME_DIR/data/pair/recovery.json" open N3
 "$HELPER" gate "$HOME_DIR/data/pair/recovery.json" M2 abcdef1234567
 jq -e '.open_findings == ["N3"] and .last_completed_gate == "M2" and .current_driver_head == "abcdef1234567"' "$HOME_DIR/data/pair/recovery.json" >/dev/null || fail "durable finding and gate recovery update missing"
