@@ -10,11 +10,17 @@
 #   fm-pair-compose.sh gate <recovery.json> <gate> <driver-head>
 #   fm-pair-compose.sh finding <recovery.json> open|close <N-id>
 #
+# `send` is the single live-signal delivery API for both pair roles: it resolves
+# the recipient task from the recovery evidence and submits through fm-send.sh,
+# so a signal counts as delivered only when submission is verified. Herdr
+# arranges pair topology only and is never used for text delivery.
+#
 # The task and scope files are owner-supplied authority. Context values are
 # pointers, not copied requirements. The helper creates <ID> and <ID>-nav through
 # fm-spawn.sh, waits for both role barrier acknowledgements, composes their Herdr
 # panes, verifies role identity and reciprocal adjacency, writes recovery.json,
-# and releases the barrier. It never changes generic fm-spawn behavior.
+# and releases both role barriers through the verified send path. It never
+# changes generic fm-spawn behavior.
 set -eu
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
@@ -25,9 +31,21 @@ SEND=${FM_PAIR_SEND:-$ROOT/bin/fm-send.sh}
 HERDR=${FM_PAIR_HERDR:-herdr}
 ACK_TIMEOUT=${FM_PAIR_ACK_TIMEOUT:-30}
 
-usage() { sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; }
 die() { echo "error: $*" >&2; exit 1; }
 atom() { [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; }
+
+# Verified submission of one live pair signal through fm-send. A non-zero result
+# means the signal was NOT submitted (failed or unconfirmed), so callers fail
+# loudly and never retry, inject via Herdr, or fall back to a different message.
+pair_send() {
+  local evidence=$1 role=$2 message=$3
+  local owner_home task_id
+  owner_home=$(jq -r '.owner_home // empty' "$evidence" 2>/dev/null) || return 1
+  task_id=$(jq -r --arg role "$role" '.roles[$role].task_id // empty' "$evidence" 2>/dev/null) || return 1
+  [ -n "$owner_home" ] && [ -n "$task_id" ] || return 1
+  FM_HOME="$owner_home" "$SEND" "$task_id" "$message" || return 1
+}
 
 case "${1:-}" in
   send)
@@ -35,14 +53,11 @@ case "${1:-}" in
     evidence=$2; role=$3; message=$4
     [ -f "$evidence" ] || die "recovery evidence is missing"
     case "$role" in driver|navigator) ;; *) die "invalid target role" ;; esac
-    owner_home=$(jq -r '.owner_home // empty' "$evidence")
-    task_id=$(jq -r --arg role "$role" '.roles[$role].task_id // empty' "$evidence")
-    [ -n "$owner_home" ] && [ -n "$task_id" ] || die "recovery evidence lacks a task target"
     # Verified submission through fm-send: a non-zero result means the signal
     # was NOT submitted (failed or unconfirmed), so fail loudly and never retry,
     # inject via Herdr, or fall back to a different message.
-    FM_HOME="$owner_home" "$SEND" "$task_id" "$message" \
-      || die "pair signal to $role not sent (task $task_id): submission failed or unconfirmed; no retry, injection, or fallback"
+    pair_send "$evidence" "$role" "$message" \
+      || die "pair signal to $role not sent: submission failed or unconfirmed; no retry, injection, or fallback"
     exit
     ;;
   gate)
@@ -244,8 +259,7 @@ for role_id in "$DRIVER_ID" "$NAV_ID"; do
     printf '\n## Verified pair composition\n\n'
     printf -- '- Driver copy and branch: `%s` at `%s`\n' "$DW" "$DB"
     printf -- '- Navigator copy and branch: `%s` at `%s`\n' "$NW" "$NB"
-    printf -- '- Driver Herdr target: `%s`\n- Navigator Herdr target: `%s`\n' "$DRIVER_TARGET" "$NAV_TARGET"
-    printf -- '- Herdr session/workspace/tab: `%s` / `%s` / `%s`\n' "$DS" "$WS" "$TAB"
+    printf -- '- Pair topology session/workspace/tab: `%s` / `%s` / `%s`\n' "$DS" "$WS" "$TAB"
   } >> "$FM_HOME/data/$role_id/brief.md"
 done
 jq \
@@ -259,7 +273,9 @@ jq \
    | .roles.navigator += {copy:$nw,branch:$nb,head:$nh,pane:$np,agent_target:$na,skill:$navigator_skill,skill_source_revision:$source_revision}
    | .topology_generations += [{generation:1,session:$session,workspace:$ws,tab:$tab,driver_pane:$dp,navigator_pane:$np,driver_agent:$da,navigator_agent:$na}]' \
   "$EVIDENCE" > "$EVIDENCE.tmp" && mv "$EVIDENCE.tmp" "$EVIDENCE"
-h agent send "$DRIVER_TARGET" "PAIR READY $PAIR_ID; read verified runtime facts in $EVIDENCE" >/dev/null || fail_pair "driver readiness release"
-h agent send "$NAV_TARGET" "PAIR READY $PAIR_ID; read verified runtime facts in $EVIDENCE" >/dev/null || fail_pair "navigator readiness release"
+# Release both role barriers through the same verified send path used for every
+# live pair signal; Herdr never delivers text.
+pair_send "$EVIDENCE" driver "PAIR READY $PAIR_ID; read verified runtime facts in $EVIDENCE" || fail_pair "driver readiness release"
+pair_send "$EVIDENCE" navigator "PAIR READY $PAIR_ID; read verified runtime facts in $EVIDENCE" || fail_pair "navigator readiness release"
 : > "$READY"
 printf 'paired %s ready session=%s workspace=%s tab=%s driver=%s navigator=%s\n' "$PAIR_ID" "$DS" "$WS" "$TAB" "$DRIVER_TARGET" "$NAV_TARGET"
