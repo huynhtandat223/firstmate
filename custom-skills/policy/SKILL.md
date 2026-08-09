@@ -40,8 +40,8 @@ Load only the exact file named by the first matching trigger, when the trigger o
 | Planning shapes acceptance seams or a test contract | `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/tdd/SKILL.md` |
 | The captain explicitly asks to crystallize a spec | `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/to-spec/SKILL.md` |
 | The captain explicitly asks to crystallize dependency-aware tickets | `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/to-tickets/SKILL.md` |
-| A paired brief carries `role=driver` | `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/implement/SKILL.md`, then `/home/dathuynh/codes/firstmate/custom-skills/paired-review/SKILL.md` |
-| A paired brief carries `role=navigator` | `/home/dathuynh/codes/firstmate/custom-skills/paired-review/SKILL.md`, then `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/code-review/SKILL.md` |
+| A paired brief carries `role=driver` | `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/implement/SKILL.md`, then `/home/dathuynh/codes/firstmate/custom-skills/paired-review/driver/SKILL.md` |
+| A paired brief carries `role=navigator` | `/home/dathuynh/codes/firstmate/custom-skills/paired-review/navigator/SKILL.md`, then `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/code-review/SKILL.md` |
 | An implementation worker is asked to implement | `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/implement/SKILL.md` |
 | A review or navigator task is opened | `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/code-review/SKILL.md` |
 | A diagnosis task is opened | `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/diagnosing-bugs/SKILL.md` |
@@ -83,7 +83,7 @@ Do not preload the catalog, copy Matt procedures into another document, or subst
 The captain owns product and engineering contract decisions, unresolved choices, planner crystallization, and planner return or close.
 A planner speaks directly with the captain.
 Firstmate does not answer, steer, summarise, or relay that conversation, and monitors lifecycle only.
-Other workers report through Firstmate, except a paired driver and navigator may use their durable shared exchange under the paired-review contract.
+Other workers report through Firstmate, except a paired driver and navigator may coordinate through their Herdr role-agent channel and preserve material reasoning in their durable shared history under the paired-review contract.
 
 ## Absorbed cleanup
 

@@ -1,0 +1,37 @@
+---
+name: paired-review-navigator
+description: Navigator procedure for an executable paired-review task.
+disable-model-invocation: true
+---
+
+# Paired-review navigator
+
+Your brief carries `role=navigator`, the driver's read-only copy path, and all runtime facts.
+Create the named barrier acknowledgement and wait for the release file before investigating.
+Your own copy preserves independent analysis.
+You may read the driver's copy but never write, edit, commit, push, or merge there.
+
+## Navigate
+
+1. Independently read the task, owner context, and relevant code before reading the driver's plan or history entry.
+   Record your conclusion in `pair-log.md`.
+2. On `PLAN READY`, inspect the driver's branch and HEAD, then compare its plan with your independent conclusion.
+   Record the plan outcome, current driver HEAD, last completed gate, and open finding ids.
+   The driver cannot edit until this outcome passes.
+3. On each milestone, inspect the driver's Git status, diff summary, diff, branch, HEAD, changed source, and task checks directly.
+   Use the same evidence at the final gate.
+   `pair-log.md` never substitutes for current Git truth.
+4. For a credible wrong direction or scope breach, send `STOP <finding-id>` first.
+   Require `ACK STOP <finding-id>` as semantic delivery confirmation, then record the finding and evidence.
+   Report a missing acknowledgement to the owner.
+5. For non-urgent material findings or questions, record the unique `N<n>` or `Q<n>` entry first, then send a short direct pointer.
+   Accept one response only; surviving disagreement goes to the owner.
+6. At every gate answer: Was the stated reason delivered? Where did the coupling go? Does this repeat a harmful repository shape? What did the task leave for implementation to decide?
+7. Record the final outcome and current driver HEAD before completion.
+
+Stay active at gates and between direct signals.
+Routine pings and acknowledgements do not enter durable history.
+Escalate scope or accepted-contract change, destructive, irreversible, or security-sensitive action, and surviving disagreement.
+Pair agreement never expands authority.
+
+After navigator or topology recovery, reconcile the current driver Git evidence, topology generation, durable gate history, and open finding ids before issuing an outcome.

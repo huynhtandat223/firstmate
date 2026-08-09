@@ -165,6 +165,14 @@
       "audience": "agent-runtime"
     },
     {
+      "path": "custom-skills/paired-review/driver/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "custom-skills/paired-review/navigator/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": "custom-skills/planner/SKILL.md",
       "audience": "agent-runtime"
     },
