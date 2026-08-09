@@ -45,6 +45,12 @@
 # Projected closes share the presentation-order lock, refuse to close the
 # captain's active tab, and restore the exact response-derived pre-close tab
 # if Herdr's last-pane cleanup focuses an unrelated neighboring workspace.
+# Temporary supervisors (kind=supervisor in meta) follow the same home-retiring
+# path as a secondmate, and additionally refuse until every one of the four
+# things the supervisor owns is reconciled: no child worker record is left in
+# its home, its own home holds no unlanded work, its programme report exists at
+# data/<task-id>/report.md, and the shared unresolved-decision completion gate
+# passes. Retiring the home returns its durable treehouse lease.
 # Secondmates (kind=secondmate in meta) are retired explicitly. Normal
 # teardown refuses while their home has in-flight crewmate meta files; --force
 # is the approved discard path that prevalidates child removal targets, discards
@@ -142,6 +148,10 @@ CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 SECONDMATE_REG="$DATA/secondmates.md"
 SUB_HOME_MARKER=".fm-secondmate-home"
 SUB_HOME_PARENT_MARKER=".fm-secondmate-parent"
+# The complete temporary-supervisor lifecycle - home identity and the cleanup
+# gates below - lives in one place.
+# shellcheck source=bin/fm-supervisor-lib.sh
+. "$SCRIPT_DIR/fm-supervisor-lib.sh"
 # shellcheck source=bin/fm-tasks-axi-lib.sh
 . "$SCRIPT_DIR/fm-tasks-axi-lib.sh"
 # shellcheck source=bin/fm-backend.sh
@@ -408,6 +418,11 @@ ORCA_PATH_MATCH_VERIFIED=0
 
 KIND=$(grep '^kind=' "$META" | cut -d= -f2- || true)
 [ -n "$KIND" ] || KIND=ship
+# A secondmate and a temporary supervisor share one cleanup shape: the
+# worktree IS a firstmate home, so the home-retiring path at the bottom owns
+# their runtime lifecycle instead of ordinary task-worktree cleanup.
+OWN_HOME=0
+fm_supervisor_kind_self_supervising "$KIND" && OWN_HOME=1
 MODE=$(grep '^mode=' "$META" | cut -d= -f2- || true)
 [ -n "$MODE" ] || MODE=no-mistakes
 PUBLIC_FOLLOWUP_HOME=$FM_HOME
@@ -591,7 +606,7 @@ require_orca_terminal() {
   printf '%s\n' "$terminal"
 }
 
-if [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then
+if [ "$BACKEND" = orca ] && [ "$OWN_HOME" -eq 0 ]; then
   ORCA_WORKTREE_ID=$(require_orca_worktree_id "$META") || exit 1
   T_ORCA=$(meta_value "$META" terminal)
   [ -z "$T_ORCA" ] || T=$T_ORCA
@@ -842,7 +857,7 @@ backlog_refresh_reminder() {
   [ "$KIND" = secondmate ] && return 0
   if fm_tasks_axi_backend_available "$CONFIG"; then
     case "$KIND" in
-      scout)
+      scout|supervisor)
         report_path="data/$ID/report.md"
         done_cmd="tasks-axi done $ID --report $report_path"
         ;;
@@ -1621,22 +1636,27 @@ safe_rm_rf_child_worktree() {
   rm -rf -- "$target"
 }
 
+# <marker> selects which identity marker proves the home: the secondmate marker
+# by default, or the temporary-supervisor marker owned by
+# bin/fm-supervisor-lib.sh. <label> names the kind of home in every refusal, so
+# the two read the same and neither claims to be the other. Only a secondmate
+# home is bound to the registry, so the registry checks stay on that marker.
 validate_firstmate_home_for_removal() {
-  local home=$1 label=$2 expected_id=${3:-} abs_home_path marker_id conflict child_id child_home
+  local home=$1 label=$2 expected_id=${3:-} marker=${4:-$SUB_HOME_MARKER} abs_home_path marker_id conflict child_id child_home
   [ -n "$home" ] || return 0
   [ -e "$home" ] || return 0
   abs_home_path=$(validate_removal_target "$home" "$label") || return 1
-  if [ ! -f "$abs_home_path/$SUB_HOME_MARKER" ]; then
-    echo "REFUSED: unsafe $label removal target $home is not a seeded secondmate home" >&2
+  if [ ! -f "$abs_home_path/$marker" ] || [ -L "$abs_home_path/$marker" ]; then
+    echo "REFUSED: unsafe $label removal target $home is not a seeded $label" >&2
     return 1
   fi
   if [ -n "$expected_id" ]; then
-    marker_id=$(cat "$abs_home_path/$SUB_HOME_MARKER" 2>/dev/null || true)
+    marker_id=$(cat "$abs_home_path/$marker" 2>/dev/null || true)
     if [ "$marker_id" != "$expected_id" ]; then
-      echo "REFUSED: unsafe $label removal target $home is marked for secondmate ${marker_id:-unknown}, expected $expected_id" >&2
+      echo "REFUSED: unsafe $label removal target $home is marked for ${marker_id:-unknown}, expected $expected_id" >&2
       return 1
     fi
-    if [ -e "$SECONDMATE_REG" ] || [ -L "$SECONDMATE_REG" ]; then
+    if [ "$marker" = "$SUB_HOME_MARKER" ] && { [ -e "$SECONDMATE_REG" ] || [ -L "$SECONDMATE_REG" ]; }; then
       if ! secondmate_registry_validate_bindings "$SECONDMATE_REG" secondmate_registry_path_key "$expected_id" "$abs_home_path"; then
         case "$SECONDMATE_REGISTRY_ERROR" in
           overlapping\ secondmate\ home\ assignment:*)
@@ -1675,10 +1695,10 @@ EOF
 }
 
 remove_firstmate_home() {
-  local home=$1 label=$2 expected_id=${3:-} abs_home_path process_event_backup
+  local home=$1 label=$2 expected_id=${3:-} marker=${4:-$SUB_HOME_MARKER} abs_home_path process_event_backup
   [ -n "$home" ] || return 0
   [ -e "$home" ] || return 0
-  abs_home_path=$(validate_firstmate_home_for_removal "$home" "$label" "$expected_id") || return 1
+  abs_home_path=$(validate_firstmate_home_for_removal "$home" "$label" "$expected_id" "$marker") || return 1
   [ -n "$abs_home_path" ] || return 0
   process_event_backup=$(snapshot_firstmate_home_process_events "$abs_home_path" "$label") || return 1
   if ! cleanup_firstmate_home_process_events "$abs_home_path" "$label"; then
@@ -2108,9 +2128,15 @@ remove_secondmate_registry_entry() {
 
 validate_pr_poll_cleanup "$STATE" "$ID" || exit 1
 
-if [ "$KIND" = secondmate ]; then
+if [ "$OWN_HOME" -eq 1 ]; then
+  HOME_LABEL="secondmate home"
+  HOME_MARKER=$SUB_HOME_MARKER
+  if [ "$KIND" = supervisor ]; then
+    HOME_LABEL="supervisor home"
+    HOME_MARKER=$FM_SUPERVISOR_HOME_MARKER
+  fi
   [ -n "$HOME_PATH" ] || HOME_PATH=$WT
-  validate_firstmate_home_for_removal "$HOME_PATH" "secondmate home" "$ID" >/dev/null || exit 1
+  validate_firstmate_home_for_removal "$HOME_PATH" "$HOME_LABEL" "$ID" "$HOME_MARKER" >/dev/null || exit 1
   if [ "$FORCE" = "--force" ]; then
     validate_firstmate_home_children_removal "$HOME_PATH" || exit 1
     if [ "$BACKEND" = herdr ]; then
@@ -2120,36 +2146,39 @@ if [ "$KIND" = secondmate ]; then
   fi
 fi
 
-if [ "$KIND" = secondmate ] && [ "$FORCE" != "--force" ]; then
+if [ "$OWN_HOME" -eq 1 ] && [ "$FORCE" != "--force" ]; then
   SUB_STATE="$HOME_PATH/state"
   if [ -d "$SUB_STATE" ]; then
     for child_meta in "$SUB_STATE"/*.meta; do
       [ -e "$child_meta" ] || continue
-      echo "REFUSED: secondmate $ID still has in-flight work in $SUB_STATE." >&2
+      echo "REFUSED: $KIND $ID still has in-flight work in $SUB_STATE." >&2
       echo "Found $(basename "$child_meta"). Let that home finish or explicitly discard with --force." >&2
       exit 1
     done
   fi
 fi
 
-if [ "$KIND" = secondmate ]; then
-  preflight_firstmate_home_process_event_tree "$HOME_PATH" "secondmate home" || exit 1
+if [ "$OWN_HOME" -eq 1 ]; then
+  preflight_firstmate_home_process_event_tree "$HOME_PATH" "$HOME_LABEL" || exit 1
 fi
 
-if [ "$KIND" = secondmate ] && [ "$FORCE" = "--force" ]; then
+if [ "$OWN_HOME" -eq 1 ] && [ "$FORCE" = "--force" ]; then
   cleanup_firstmate_home_children "$HOME_PATH" || exit $?
 fi
 
-if [ "$KIND" = scout ] && [ "$FORCE" != "--force" ]; then
+# A scout's report and a temporary supervisor's programme report are the same
+# kind of work product: the only thing that survives cleanup. Both pass the
+# shared unresolved-decision completion gate before the source can be erased.
+if { [ "$KIND" = scout ] || [ "$KIND" = supervisor ]; } && [ "$FORCE" != "--force" ]; then
   REPORT="$DATA/$ID/report.md"
   if [ ! -f "$REPORT" ]; then
-    echo "REFUSED: scout task $ID has no report at $REPORT." >&2
+    echo "REFUSED: $KIND task $ID has no report at $REPORT." >&2
     echo "The report is the work product. Have the crewmate write it, or use --force after explicit discard approval." >&2
     exit 1
   fi
   if ! FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
       FM_CONFIG_OVERRIDE="$CONFIG" "$SCRIPT_DIR/fm-decision-hold.sh" verify "$ID" >/dev/null; then
-    echo "REFUSED: scout task $ID has not passed the unresolved-decision completion gate." >&2
+    echo "REFUSED: $KIND task $ID has not passed the unresolved-decision completion gate." >&2
     echo "Inventory its report and any visual review through bin/fm-decision-hold.sh before teardown." >&2
     exit 1
   fi
@@ -2177,7 +2206,7 @@ if [ "$FORCE" != "--force" ] \
   fi
 fi
 
-if [ "$BACKEND" = orca ] && [ "$KIND" != scout ] && [ "$KIND" != secondmate ] && [ "$FORCE" != "--force" ]; then
+if [ "$BACKEND" = orca ] && [ "$KIND" != scout ] && [ "$OWN_HOME" -eq 0 ] && [ "$FORCE" != "--force" ]; then
   if ! inspectable_git_worktree "$WT"; then
     echo "REFUSED: Orca ship task $ID has no inspectable git worktree at ${WT:-<missing>}." >&2
     echo "Cannot verify dirty or unlanded work; restore the worktree path or get explicit OK to discard, then --force." >&2
@@ -2204,11 +2233,11 @@ fi
 # Every landed/discard-work refusal above has now passed (or --force skipped
 # them). Fix 1 and Fix 2 (see script header) run here, unconditionally on
 # --force, and before ANY destructive step below - a still-parked run or a
-# leaked process can own live work in this exact worktree. Not for
-# kind=secondmate: a secondmate home's own runtime lifecycle is owned by the
-# dedicated process-event and firstmate-home removal machinery further below,
-# not by task-worktree cleanup.
-if [ "$KIND" != secondmate ]; then
+# leaked process can own live work in this exact worktree.
+# A home-owning report (secondmate or temporary supervisor) is excluded: its
+# runtime lifecycle is owned by the dedicated process-event and firstmate-home
+# removal machinery further below, not by task-worktree cleanup.
+if [ "$OWN_HOME" -eq 0 ]; then
   conclude_task_no_mistakes_run "$WT"
   reap_task_worktree_processes worktree "$WT" "$TASK_TMP"
 fi
@@ -2234,7 +2263,7 @@ if [ "$BACKEND" = herdr ]; then
 fi
 
 # Best-effort: drop the local task branch so the shared repo does not accumulate refs.
-if [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then
+if [ "$BACKEND" = orca ] && [ "$OWN_HOME" -eq 0 ]; then
   if [ "$ORCA_PATH_MATCH_VERIFIED" != 1 ]; then
     require_orca_worktree_path_match_if_present "$ORCA_WORKTREE_ID" "$WT" || exit 1
     ORCA_PATH_MATCH_VERIFIED=1
@@ -2252,7 +2281,7 @@ if [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then
   fi
   [ -z "$T_ORCA" ] || fm_backend_kill "$BACKEND" "$T" "$(meta_value "$META" zellij_tab_id)" "fm-$ID" 2>/dev/null || true
   fm_backend_remove_worktree "$BACKEND" "$ORCA_WORKTREE_ID"
-elif [ -d "$WT" ] && [ "$KIND" != secondmate ]; then
+elif [ -d "$WT" ] && [ "$OWN_HOME" -eq 0 ]; then
   branch=$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
   if [ "$branch" != "HEAD" ]; then
     if git -C "$WT" checkout --detach -q 2>/dev/null; then
@@ -2267,7 +2296,7 @@ elif [ -d "$WT" ] && [ "$KIND" != secondmate ]; then
   # the project. teardown_treehouse_return tolerates transient and stale git locks
   # left by a killed crew process; see the script header for retry and stale-lock proof.
   post_lock_cleanup_check=
-  if [ "$FORCE" != "--force" ] && [ "$KIND" != scout ] && [ "$KIND" != secondmate ]; then
+  if [ "$FORCE" != "--force" ] && [ "$KIND" != scout ] && [ "$OWN_HOME" -eq 0 ]; then
     post_lock_cleanup_check=validate_worktree_teardown_safety
   fi
   teardown_treehouse_return "$WT" "$PROJ" "worktree" "$post_lock_cleanup_check" || {
@@ -2350,10 +2379,12 @@ if [ "$BACKEND" = herdr ]; then
     exit 1
   fi
 fi
-if [ "$KIND" = secondmate ]; then
+if [ "$OWN_HOME" -eq 1 ]; then
   [ -n "$HOME_PATH" ] || HOME_PATH=$WT
-  remove_firstmate_home "$HOME_PATH" "secondmate home" "$ID" || exit $?
-  remove_secondmate_registry_entry "$ID"
+  # Retiring the home returns its worktree, which is also what releases the
+  # durable treehouse lease a supervisor home was created with.
+  remove_firstmate_home "$HOME_PATH" "$HOME_LABEL" "$ID" "$HOME_MARKER" || exit $?
+  [ "$KIND" != secondmate ] || remove_secondmate_registry_entry "$ID"
 fi
 remove_grok_turnend_auth "$STATE" "$ID"
 remove_kimi_turnend_auth "$STATE" "$ID"
@@ -2368,7 +2399,7 @@ rm -f "$STATE/$ID.status" "$STATE/$ID.turn-ended" "$STATE/$ID.meta" \
   "$STATE/$ID.kimi-turnend-token" "$STATE/$ID.muse-session" \
   "$STATE/$ID.muse-session-current" \
   "$STATE/.$ID.open-decisions-cursor"
-if [ "$KIND" != scout ] && [ "$KIND" != secondmate ] && [ "$MODE" != local-only ]; then
+if [ "$KIND" != scout ] && [ "$OWN_HOME" -eq 0 ] && [ "$MODE" != local-only ]; then
   "$FM_ROOT/bin/fm-fleet-sync.sh" "$PROJ" || true
 fi
 echo "teardown $ID complete (window $T, worktree $WT)"

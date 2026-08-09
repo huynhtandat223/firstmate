@@ -14,7 +14,7 @@ It names exact vendored Matt documents and does not copy their procedures.
 ## Role and capability boundaries
 
 Use the explicit `role=<name>` marker in the brief as authoritative.
-Recognised roles are `planner`, `driver`, `navigator`, `worker`, and `firstmate`.
+Recognised roles are `planner`, `driver`, `navigator`, `worker`, `supervisor`, and `firstmate`.
 If the marker is absent or unknown, resolve the role before loading a capability.
 
 The role controls the role-allowed capability set and communication boundary.
@@ -23,6 +23,7 @@ The role controls the role-allowed capability set and communication boundary.
 - `driver` may use this policy and the implementation, test, and review capabilities named by its brief.
 - `navigator` may use this policy, the review capability, and exact evidence capabilities named by its brief.
 - `worker` may use this policy and only the capability named by its delivery path.
+- `supervisor` may use this policy, the programme contract and procedure named by its brief, and the ordinary Firstmate lifecycle owners for the workers it dispatches.
 - `firstmate` may use this policy and the ordinary Firstmate lifecycle owners.
 
 A role may use a capability only when its trigger is active.
@@ -45,6 +46,8 @@ Load only the exact file named by the first matching trigger, when the trigger o
 | An implementation worker is asked to implement | `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/implement/SKILL.md` |
 | A review or navigator task is opened | `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/code-review/SKILL.md` |
 | A diagnosis task is opened | `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/diagnosing-bugs/SKILL.md` |
+| The captain invokes `/orchestrator`, asks to run an authorized programme, or a programme supervisor has stopped | `/home/dathuynh/codes/firstmate/custom-skills/orchestrator/SKILL.md` |
+| A brief carries `role=supervisor` | `/home/dathuynh/codes/firstmate/custom-skills/orchestrator/CONTRACT.md`, then `/home/dathuynh/codes/firstmate/custom-skills/program-orchestration/SKILL.md` |
 
 The vendored bytes under `custom-skills/matt/` are immutable.
 Read the exact path, preserve its procedure, and return here only for Firstmate authority and communication boundaries.

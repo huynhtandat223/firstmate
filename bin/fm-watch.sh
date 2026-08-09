@@ -82,6 +82,10 @@ mkdir -p "$STATE"
 . "$SCRIPT_DIR/fm-pending-reply-lib.sh"
 # shellcheck source=bin/fm-busy-lib.sh
 . "$SCRIPT_DIR/fm-busy-lib.sh"
+# Which report kinds are supervised through their status writes instead of their
+# pane; bin/fm-supervisor-lib.sh owns that set.
+# shellcheck source=bin/fm-supervisor-lib.sh
+. "$SCRIPT_DIR/fm-supervisor-lib.sh"
 
 WATCH_LOCK="$STATE/.watch.lock"
 WATCH_PATH="$SCRIPT_DIR/fm-watch.sh"
@@ -378,7 +382,7 @@ pause_state_class() {  # <window> <task>
     return
   fi
   if [ -e "$STATE/.paused-$key" ] && [ "$(age_of "$recheck_file")" -lt "$STALE_ESCALATE_SECS" ]; then
-    if [ "$(window_kind "$win")" != secondmate ]; then
+    if ! fm_supervisor_kind_self_supervising "$(window_kind "$win")"; then
       agent_alive=$(fm_backend_agent_alive "$(window_backend "$win")" "$win" 2>/dev/null) || agent_alive=unknown
       if [ "$agent_alive" != dead ]; then
         rm -f "$recheck_file"
@@ -395,7 +399,7 @@ pause_state_class() {  # <window> <task>
     printf 'working'
     return
   fi
-  if [ "$(window_kind "$win")" != secondmate ]; then
+  if ! fm_supervisor_kind_self_supervising "$(window_kind "$win")"; then
     agent_alive=$(fm_backend_agent_alive "$(window_backend "$win")" "$win" 2>/dev/null) || agent_alive=unknown
     if [ "$agent_alive" != dead ]; then
       rm -f "$recheck_file"
@@ -638,11 +642,11 @@ event_wait_or_sleep() {
   while IFS= read -r w; do
     b=$(window_backend "$w")
     fm_backend_has_push "$b" || continue
-    # Secondmate endpoints are supervised via status writes, not pane/agent
-    # state (an idle or blocked secondmate agent pane is healthy by design), so
-    # they are excluded from the fast escalation exactly as the stale loop skips
-    # them.
-    [ "$(window_kind "$w")" = secondmate ] && continue
+    # A report that runs its own firstmate session is supervised via status
+    # writes, not pane/agent state (its idle or blocked agent pane is healthy by
+    # design), so it is excluded from the fast escalation exactly as the stale
+    # loop skips it.
+    fm_supervisor_kind_self_supervising "$(window_kind "$w")" && continue
     session=${w%%:*}
     if [ -z "$first_backend" ]; then first_backend=$b; first_session=$session; fi
     # One socket connection covers one backend+session; a home normally has a
@@ -933,7 +937,7 @@ EOF
     if ! status_is_paused_or_captain_held "$last" && [ -e "$STATE/.paused-$key" ]; then
       clear_pause_tracking "$w"
     fi
-    if [ "$kind" = secondmate ] && ! status_is_paused "$last"; then
+    if fm_supervisor_kind_self_supervising "$kind" && ! status_is_paused "$last"; then
       continue
     fi
     tail40=$(fm_backend_capture "$(window_backend "$w")" "$w" 40 "$(window_label "$w")" 2>/dev/null) || continue
@@ -958,7 +962,7 @@ EOF
       if [ "$n" -ge 2 ] && [ "$busy_now" -ne 0 ]; then
         # The pane is idle/stale at hash $h. Triage decides whether this wakes
         # firstmate. Detection itself is unchanged from above.
-        if [ "$kind" = secondmate ]; then
+        if fm_supervisor_kind_self_supervising "$kind"; then
           case "$(pause_state_class "$w" "$task")" in
             paused) handle_paused_stale "$w" "$task" "$h" ;;
             *)      clear_pause_tracking "$w" ;;

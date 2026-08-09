@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# Spawn a direct report: a crewmate in a treehouse or Orca worktree, or a
-# secondmate in its isolated firstmate home.
+# Spawn a direct report: a crewmate in a treehouse or Orca worktree, a temporary
+# supervisor in its own leased firstmate home, or a secondmate in its isolated
+# firstmate home.
 # Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>]
 #        fm-spawn.sh <task-id> <project-dir> --scout [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>]
+#        fm-spawn.sh <task-id> --supervisor [--harness <name>] [--model <name>] [--effort <level>] [--backend <name>]
 #        fm-spawn.sh <task-id> [<firstmate-home>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] --secondmate
 #   --mode and --yolo are this task's delivery contract, REQUIRED for every ship
-#   spawn and refused on --scout and --secondmate spawns. Firstmate resolves both
+#   spawn and refused on --scout, --supervisor, and --secondmate spawns. Firstmate resolves both
 #   per task at intake (AGENTS.md section 7); data/projects.md holds the captain's
 #   standing posture as context, not as this task's answer, so a spawn never looks
 #   the mode up. A ship spawn additionally reads the brief's recorded
@@ -108,6 +110,24 @@
 #   --scout records kind=scout in the task's meta (report deliverable, scratch worktree;
 #   see AGENTS.md task lifecycle); --secondmate records kind=secondmate and launches in a
 #   provisioned firstmate home; the default is kind=ship.
+#   --supervisor records kind=supervisor and launches ONE temporary supervisor: a
+#   direct report whose worktree IS its own firstmate home. It takes no
+#   project-dir positional, because its home is a firstmate copy rather than a
+#   product checkout. A fresh spawn durably leases an isolated firstmate worktree
+#   with `treehouse get --lease` (the lease is what keeps the home alive with no
+#   process in it) and writes the gitignored .fm-supervisor-home identity marker,
+#   which bin/fm-primary-scope-lib.sh accepts as a primary scope so the
+#   supervisor's own hooks and supervision cycle work in that home. No product
+#   project is cloned there: the parent home's existing clones stay read-only
+#   allocation sources for the ordinary workers the supervisor spawns itself.
+#   A RELAUNCH reuses the home already recorded in state/<id>.meta rather than
+#   leasing a second one, so a stopped supervisor comes back to its own recorded
+#   child inventory and cannot re-dispatch duplicates; a recorded home that is
+#   missing or wrongly marked refuses instead of silently starting over. The
+#   supervisor carries no secondmate registry, charter, inherited local material,
+#   or automatic liveness sweep - the parent supervises exactly one report and
+#   never reconstructs its child tree. Only session-provider backends can host
+#   it: orca and cmux are refused exactly as for --secondmate.
 #   Before a secondmate launch, the home is locally fast-forwarded to the primary
 #   default-branch commit when safe; skipped syncs warn and launch unchanged.
 #   Ship/scout spawns refuse to launch unless the resolved task path is a real
@@ -139,9 +159,10 @@
 # muse installs no hook at all - its plugin engine is off in the default build - so
 # it writes state/<id>.muse-session to bind the pane to muse's own session event
 # log; muse is crewmate/scout only and is refused for --secondmate.
-# On success prints: spawned <id> harness=<name> kind=<ship|scout|secondmate> [mode=<mode> yolo=<on|off>] window=<backend-target> worktree=<path>
+# On success prints: spawned <id> harness=<name> kind=<ship|scout|supervisor|secondmate> [mode=<mode> yolo=<on|off>] window=<backend-target> worktree=<path>
 # A ship task records the explicit mode/yolo it was passed; a secondmate spawn records
-# mode=secondmate, yolo=off, home=, and projects=; a scout records neither, and both the
+# mode=secondmate, yolo=off, home=, and projects=; a supervisor records home= and
+# parent_home= and no delivery posture; a scout records neither, and both the
 # success line and state/<id>.meta omit them.
 # When the home session's frozen trace-context decision is enabled (see
 # docs/configuration.md and bin/fm-trace-context-lib.sh), the meta also records
@@ -197,6 +218,10 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 PROJECTS="${FM_PROJECTS_OVERRIDE:-$FM_HOME/projects}"
 CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 SUB_HOME_MARKER=".fm-secondmate-home"
+# The complete temporary-supervisor lifecycle - home identity, lease, relaunch
+# reuse, and isolation assertions - lives in one place.
+# shellcheck source=bin/fm-supervisor-lib.sh
+. "$SCRIPT_DIR/fm-supervisor-lib.sh"
 # shellcheck source=bin/fm-ff-lib.sh
 . "$SCRIPT_DIR/fm-ff-lib.sh"
 # shellcheck source=bin/fm-wake-lib.sh
@@ -260,6 +285,7 @@ for a in "$@"; do
   fi
   case "$a" in
     --scout) KIND=scout ;;
+    --supervisor) KIND=supervisor ;;
     --secondmate) KIND=secondmate ;;
     --harness) want_value=harness ;;
     --harness=*) HARNESS_ARG=${a#--harness=}; HARNESS_SET=1 ;;
@@ -330,11 +356,11 @@ if [ "$KIND" = ship ]; then
   esac
 else
   [ "$MODE_SET" -eq 0 ] || {
-    echo "error: --mode applies only to ship spawns; a scout delivers a report and a secondmate records its own fixed posture" >&2
+    echo "error: --mode applies only to ship spawns; a scout delivers a report, a temporary supervisor delegates every delivery to the workers it spawns, and a secondmate records its own fixed posture" >&2
     exit 1
   }
   [ "$YOLO_SET" -eq 0 ] || {
-    echo "error: --yolo applies only to ship spawns; a scout delivers a report and a secondmate records its own fixed posture" >&2
+    echo "error: --yolo applies only to ship spawns; a scout delivers a report, a temporary supervisor delegates every delivery to the workers it spawns, and a secondmate records its own fixed posture" >&2
     exit 1
   }
 fi
@@ -606,6 +632,13 @@ else
 fi
 fm_backend_validate_spawn "$BACKEND" || exit 1
 fm_backend_source "$BACKEND" || exit 1
+# A secondmate and a temporary supervisor share ONE launch shape: the agent's
+# worktree IS a firstmate home, so neither takes a treehouse task worktree, arms
+# a task-pane turn-end hook, nor records a delivery posture. OWN_HOME is that
+# shared shape; every branch below that carved secondmates out for exactly this
+# reason asks it instead of naming a kind twice.
+OWN_HOME=0
+fm_supervisor_kind_self_supervising "$KIND" && OWN_HOME=1
 if [ "$BACKEND" = orca ] && [ "$KIND" = secondmate ]; then
   echo "error: backend=orca does not support --secondmate spawns yet" >&2
   exit 1
@@ -614,10 +647,26 @@ if [ "$BACKEND" = cmux ] && [ "$KIND" = secondmate ]; then
   echo "error: backend=cmux does not support --secondmate spawns yet" >&2
   exit 1
 fi
+# A temporary supervisor's home is a leased firstmate worktree this script owns,
+# so it needs a backend that only provides the session. Orca owns the worktree
+# itself and cmux has no verified separate-home support, exactly as for a
+# secondmate; both refuse here rather than half-standing up a second home.
+if [ "$KIND" = supervisor ]; then
+  case "$BACKEND" in
+    orca|cmux)
+      echo "error: backend=$BACKEND does not support --supervisor spawns yet" >&2
+      exit 1
+      ;;
+  esac
+fi
 if [ "$BACKEND" = orca ]; then
   fm_backend_orca_runtime_check || exit 1
 fi
 ORCA_ABORT_CLEANUP=0
+# Set only when THIS invocation leased a fresh supervisor home. A launch that
+# aborts after the lease must give it back, or the pool slot stays leased
+# forever with nothing in it. A relaunch reusing a recorded home never sets it.
+SUPERVISOR_LEASE_ABORT_HOME=
 ORCA_WORKTREE_ID=
 ORCA_TERMINAL=
 HERDR_PROJECTION_ABORT_CLEANUP=0
@@ -650,6 +699,10 @@ parse_orca_worktree_result() {
 
 spawn_abort_cleanup() {
   local status=$?
+  if [ -n "$SUPERVISOR_LEASE_ABORT_HOME" ]; then
+    fm_supervisor_home_release "$FM_ROOT" "$SUPERVISOR_LEASE_ABORT_HOME" || true
+    SUPERVISOR_LEASE_ABORT_HOME=
+  fi
   if [ "$HERDR_PROJECTION_ABORT_CLEANUP" = 1 ] \
      && [ "$HERDR_PRESENTATION_ORDER_LOCK_HELD" != 1 ]; then
     if ! spawn_herdr_presentation_order_lock_acquire "${HERDR_PROJECTION_ABORT_SESSION:-}"; then
@@ -763,8 +816,8 @@ if [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart" ] && case "$idpart" in *
       *=*) : ;;
       *) echo "error: batch dispatch expects every argument as id=repo; got '$pair'" >&2; rc=2; continue ;;
     esac
-    if [ "$KIND" = secondmate ]; then
-      echo "error: batch dispatch does not support --secondmate; spawn each secondmate explicitly" >&2
+    if [ "$OWN_HOME" -eq 1 ]; then
+      echo "error: batch dispatch does not support --$KIND; spawn each one explicitly" >&2
       rc=2
       continue
     elif [ "$KIND" = scout ]; then
@@ -805,6 +858,13 @@ if [ "$KIND" = secondmate ]; then
       ARG3=${POS[2]:-}
       ;;
   esac
+elif [ "$KIND" = supervisor ]; then
+  # A temporary supervisor's home is a firstmate copy this script leases, so
+  # there is no project-dir positional to interpret and no positional harness.
+  [ "${#POS[@]}" -le 1 ] || {
+    echo "error: --supervisor takes only <task-id>; its home is a firstmate copy rather than a project checkout, and the harness goes in --harness" >&2
+    exit 1
+  }
 else
   PROJ=${POS[1]}
   ARG3=${POS[2]:-}
@@ -828,7 +888,7 @@ launch_template() {
     # the defense-in-depth backstop for any pane this flag cannot reach.
     claude) printf '%s' 'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude --dangerously-skip-permissions __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
     codex)
-      if [ "$kind" = secondmate ]; then
+      if fm_supervisor_kind_self_supervising "$kind"; then
         printf '%s' 'codex __MODELFLAG____EFFORTFLAG__--dangerously-bypass-approvals-and-sandbox "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
       else
         printf '%s' 'codex __MODELFLAG____EFFORTFLAG__--dangerously-bypass-approvals-and-sandbox -c "notify=[\"bash\",\"-c\",\"touch __TURNEND__\"]" "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
@@ -836,7 +896,7 @@ launch_template() {
       ;;
     opencode) printf '%s' 'OPENCODE_CONFIG_CONTENT='\''{"permission":{"*":"allow"}}'\'' opencode __MODELFLAG__--prompt "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
     pi|pi-signed)
-      if [ "$kind" = secondmate ]; then
+      if fm_supervisor_kind_self_supervising "$kind"; then
         printf '%s%s' "$harness" ' __MODELFLAG____EFFORTFLAG__-e __PITURNEND__ -e __PIWATCH__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
       else
         printf '%s%s' "$harness" ' __MODELFLAG____EFFORTFLAG__-e __PIEXT__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
@@ -922,14 +982,15 @@ case "$HARNESS" in
   pi|pi-signed) LAUNCH="FM_PI_HARNESS=$HARNESS $LAUNCH" ;;
 esac
 
-# muse is verified as a CREWMATE/SCOUT adapter only. A secondmate is a firstmate
-# instance, so it needs a primary supervision protocol; muse has none, and its
-# Claude-compatible hook dialect explicitly rejects the model-reawakening and
-# asyncRewake handlers that firstmate's primary turn-end supervision is built on
-# (muse 0.1.0-R708.1). Refusing here keeps that gap loud instead of standing up a
-# secondmate whose supervision cycle could never be armed.
-if [ "$KIND" = secondmate ] && [ "$HARNESS" = muse ]; then
-  echo "error: muse is a verified crewmate/scout adapter only and cannot run a secondmate; it has no primary supervision protocol. Select a harness verified for secondmates." >&2
+# muse is verified as a CREWMATE/SCOUT adapter only. A secondmate and a
+# temporary supervisor are both firstmate instances, so each needs a primary
+# supervision protocol; muse has none, and its Claude-compatible hook dialect
+# explicitly rejects the model-reawakening and asyncRewake handlers that
+# firstmate's primary turn-end supervision is built on (muse 0.1.0-R708.1).
+# Refusing here keeps that gap loud instead of standing up a home whose
+# supervision cycle could never be armed.
+if [ "$OWN_HOME" -eq 1 ] && [ "$HARNESS" = muse ]; then
+  echo "error: muse is a verified crewmate/scout adapter only and cannot run a $KIND; it has no primary supervision protocol. Select a harness verified for a firstmate session." >&2
   exit 1
 fi
 
@@ -1141,7 +1202,7 @@ case "$LAUNCH" in
   *__KIMIBIN__*)
     KIMI_BIN=$(resolve_kimi_binary) || exit 1
     LAUNCH=${LAUNCH//__KIMIBIN__/$(shell_quote "$KIMI_BIN")}
-    if [ "$KIND" != secondmate ]; then
+    if [ "$OWN_HOME" -eq 0 ]; then
       "$FM_ROOT/bin/fm-kimi-turnend-hook.sh" install || {
         echo "error: refusing Kimi spawn because the global turn-end hook could not be installed safely" >&2
         exit 1
@@ -1329,6 +1390,24 @@ if [ "$KIND" = secondmate ]; then
   else
     BRIEF="$DATA/$ID/brief.md"
   fi
+elif [ "$KIND" = supervisor ]; then
+  # Relaunch reuses the recorded home; only a first launch leases one. Either
+  # way the same assertion runs before anything is created, so a supervisor can
+  # never be stood up in the primary checkout or the parent home.
+  SUPERVISOR_HOME=$(fm_supervisor_recorded_home "$STATE/$ID.meta" "$ID") || exit 1
+  if [ -n "$SUPERVISOR_HOME" ]; then
+    SUPERVISOR_HOME=$(fm_supervisor_home_assert "$SUPERVISOR_HOME" "$ID" "$FM_ROOT" "$FM_HOME") || exit 1
+  else
+    SUPERVISOR_HOME=$(fm_supervisor_home_acquire "$FM_ROOT" "$ID" "$FM_HOME") || exit 1
+    SUPERVISOR_LEASE_ABORT_HOME=$SUPERVISOR_HOME
+  fi
+  PROJ_ABS=$SUPERVISOR_HOME
+  WT=$SUPERVISOR_HOME
+  mkdir -p "$PROJ_ABS/state" || {
+    echo "error: could not create the supervisor state directory for $PROJ_ABS" >&2
+    exit 1
+  }
+  BRIEF="$DATA/$ID/brief.md"
 else
   PROJ_ABS="$(cd "$(resolve_project_dir_arg "$PROJ")" && pwd)"
   WT=""
@@ -1531,13 +1610,13 @@ case "$BACKEND" in
     # the per-home container instead of inheriting this launcher's.
     HERDR_LABEL_HOME=$FM_HOME
     HERDR_LAUNCHER_RELATIONSHIP=launcher-home
-    if [ "$KIND" = secondmate ]; then
+    if [ "$OWN_HOME" -eq 1 ]; then
       HERDR_LABEL_HOME=$PROJ_ABS
       HERDR_LAUNCHER_RELATIONSHIP=other-home
     fi
     HERDR_PRESENTATION_JOURNAL=$(fm_backend_herdr_projection_journal_path "$STATE" "$ID")
     HERDR_PROJECTED=0
-    if [ "$KIND" != secondmate ] && fm_backend_herdr_presentation_enabled "$CONFIG" "$STATE"; then
+    if [ "$OWN_HOME" -eq 0 ] && fm_backend_herdr_presentation_enabled "$CONFIG" "$STATE"; then
       HERDR_SES=$(fm_backend_herdr_session)
       HERDR_PARENT_LABEL=$(FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_workspace_label)
       if [ -e "$HERDR_PRESENTATION_JOURNAL" ] || [ -L "$HERDR_PRESENTATION_JOURNAL" ]; then
@@ -1825,7 +1904,7 @@ kimi_spawn_fail() {  # <detail>
   echo "error: $1; inspect window $T" >&2
 }
 
-if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
+if [ "$OWN_HOME" -eq 0 ] && [ "$BACKEND" != orca ]; then
   spawn_send_text_line "$WT_TARGET" 'treehouse get'
 
   # Wait for the treehouse subshell: the pane's cwd moves from the project to the worktree.
@@ -1897,7 +1976,7 @@ exclude_path() {
   mkdir -p "$(dirname "$EXCL")"
   grep -qxF "$rel" "$EXCL" 2>/dev/null || echo "$rel" >> "$EXCL"
 }
-if [ "$KIND" != secondmate ]; then
+if [ "$OWN_HOME" -eq 0 ]; then
   # Arm the semantic busy-state contract (bin/fm-busy-lib.sh) for every
   # adapter with a verified semantic source. The launch brief sent below IS a
   # submitted turn, so the seed record is busy/fm-spawn. The minted gen is
@@ -2156,7 +2235,7 @@ if [ "$KIND" = secondmate ]; then
   MODE=secondmate
   YOLO=off
   : "${SECONDMATE_PROJECTS:=}"
-elif [ "$KIND" = scout ]; then
+elif [ "$KIND" = scout ] || [ "$KIND" = supervisor ]; then
   MODE=
   YOLO=
 fi
@@ -2233,8 +2312,18 @@ META_WINDOW=$T
     echo "home=$PROJ_ABS"
     echo "projects=$SECONDMATE_PROJECTS"
   fi
+  if [ "$KIND" = supervisor ]; then
+    # home= is what a relaunch comes back to and what cleanup retires;
+    # parent_home= names the home whose project clones this supervisor may use
+    # as read-only allocation sources for its own workers.
+    echo "home=$PROJ_ABS"
+    echo "parent_home=$FM_HOME"
+  fi
 } > "$STATE/$ID.meta"
 [ "$BACKEND" = orca ] && ORCA_ABORT_CLEANUP=0
+# The home is durably recorded from here on, so a relaunch can find it and
+# cleanup owns retiring its lease; this invocation must no longer give it back.
+SUPERVISOR_LEASE_ABORT_HOME=
 
 sq_brief=$(shell_quote "$BRIEF")
 sq_turnend=$(shell_quote "$TURNEND")
@@ -2262,7 +2351,7 @@ LAUNCH=${LAUNCH//__OPINPUT__/$sq_opinput}
 if [ "$HARNESS" = claude ] && [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
   LAUNCH="CLAUDE_CONFIG_DIR=$(shell_quote "$CLAUDE_CONFIG_DIR") $LAUNCH"
 fi
-if [ "$KIND" = secondmate ]; then
+if [ "$OWN_HOME" -eq 1 ]; then
   sq_home=$(shell_quote "$PROJ_ABS")
   sq_primary_home=$(shell_quote "$FM_HOME")
   case "$HARNESS" in

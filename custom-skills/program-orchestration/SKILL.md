@@ -1,9 +1,9 @@
 ---
 name: program-orchestration
 description: >-
-  Agent-only procedure for long-running program orchestrators.
-  Use before launching, recovering, handing off, or distributing a program orchestrator or its implementation workers across hosts.
-  It owns orchestrator-only model pins, evidence-gated host expansion, one-ticket worker custody, capability-based routing, and no-duplicate handoff reconciliation.
+  Agent-only procedure for a programme supervisor and the implementation workers it owns.
+  Use before launching, recovering, handing off, or distributing a programme supervisor or its workers across hosts.
+  It owns supervisor-only model pins, evidence-gated host expansion, one-ticket worker custody, capability-based routing, and no-duplicate handoff reconciliation.
 user-invocable: false
 metadata:
   internal: true
@@ -11,37 +11,41 @@ metadata:
 
 # program-orchestration
 
-This skill is the single owner of cross-host coordination for a long-running program secondmate.
-Load it before launching, recovering, handing off, or distributing a program orchestrator or its implementation workers across hosts.
-A program orchestrator is a persistent secondmate that coordinates a long-lived program; `/home/dathuynh/codes/firstmate/.agents/skills/secondmate-provisioning/SKILL.md` remains the owner of its persistent home, charter, harness pin mechanics, inherited material, and retirement.
-This skill decides program custody and worker placement, not concrete launch commands, delivery mode, evidence format, or approval authority.
+This skill is the single owner of cross-host coordination for a programme supervisor.
+Load it before launching, recovering, handing off, or distributing a programme supervisor or its implementation workers across hosts.
+
+A programme supervisor is a TEMPORARY firstmate session in a leased home of its own, opened for one authorized programme and returned when that programme ends.
+It is not a second mate: it has no registry line, no charter, no inherited local material, and no liveness sweep, so no part of the secondmate lifecycle applies to it.
+`/home/dathuynh/codes/firstmate/custom-skills/orchestrator/SKILL.md` owns opening, relaunching, and closing one; `/home/dathuynh/codes/firstmate/bin/fm-supervisor-lib.sh` owns the lease, the home identity, and the cleanup gates.
+This skill decides programme custody and worker placement, not concrete launch commands, delivery mode, evidence format, or approval authority.
 
 ## Authority map
 
-Load `/home/dathuynh/codes/firstmate/.agents/skills/harness-adapters/SKILL.md` before any concrete orchestrator or worker launch, recovery, runtime or model check, interrupt, exit, resume, or skill invocation.
-Load `/home/dathuynh/codes/firstmate/.agents/skills/secondmate-provisioning/SKILL.md` before creating, seeding, validating, launching, recovering, handing backlog to, or retiring the persistent secondmate home.
+Load `/home/dathuynh/codes/firstmate/.agents/skills/harness-adapters/SKILL.md` before any concrete supervisor or worker launch, recovery, runtime or model check, interrupt, exit, resume, or skill invocation.
+Load `/home/dathuynh/codes/firstmate/custom-skills/orchestrator/SKILL.md` before opening, relaunching, or closing the supervisor session itself.
 Use `/home/dathuynh/codes/firstmate/.agents/skills/stuck-crewmate-recovery/SKILL.md` for a dead or unresponsive ordinary worker and preserve its recorded copy and unlanded work.
-Use `/home/dathuynh/codes/firstmate/custom-skills/paired-review/SKILL.md` when the task meets its high-blast-radius pairing trigger, and do not invent a second program-specific review gate.
+Use `/home/dathuynh/codes/firstmate/custom-skills/paired-review/SKILL.md` when the task meets its high-blast-radius pairing trigger, and do not invent a second programme-specific review gate.
 Use `/home/dathuynh/codes/firstmate/.agents/skills/diagnostic-reasoning/SKILL.md` before scoping a reported worker bug, and use `/home/dathuynh/codes/firstmate/.agents/skills/ask-user-authority/SKILL.md` for any finding or decision that belongs above the implementation worker.
 The ordinary delivery lifecycle remains authoritative for task briefs, branches, evidence, cleanup, approval, merging, and destructive actions.
 This skill references those owners instead of restating their contracts.
 
 ## Durable records and private capability knowledge
 
-Keep the program ledger, host records, capability matrix, orchestrator pin, custody map, and handoff receipts in the effective home's private `data/`, `state/`, or `config/` surfaces.
+Keep the programme ledger, host records, capability matrix, supervisor pin, custody map, and handoff receipts in the effective home's private `data/`, `state/`, or `config/` surfaces.
+The supervisor's leased home is disposable, so anything the programme must outlive it with belongs in the parent home's `data/<programme-id>/` directory the brief names.
 Keep machine-specific host names, runtime versions, model availability, load limits, credentials, live-data permissions, and evidence locations out of tracked skills, docs, project memory, and `AGENTS.md`.
 A host record is usable only when its capability claims have a current verification timestamp, exact runtime and model identifiers, reachable evidence storage, and a known load reading.
 An unknown, expired, or contradictory host record is unavailable for remote expansion until re-verified through `/home/dathuynh/codes/firstmate/.agents/skills/harness-adapters/SKILL.md` and the host's normal operational checks.
-Do not create a new tracked schema when an existing private host or program record can carry the fact.
+Do not create a new tracked schema when an existing private host or programme record can carry the fact.
 
-## Orchestrator pin boundary
+## Supervisor pin boundary
 
-Resolve the orchestrator's runtime and model pin once from the program's private record before launch or recovery.
-Apply that pin only to the orchestrator process and record the exact resolved runtime and model with its launch evidence.
-Resolve every implementation worker through the ordinary per-task routing precedence, even when the worker runs on the orchestrator's host.
-Never inherit the orchestrator's model, runtime, effort, or host choice into a worker by default.
-Changing the orchestrator pin affects only a future orchestrator launch or an explicitly authorized orchestrator replacement; it never restarts, moves, or retunes an existing implementation worker.
-If a persistent-secondmate config pin and a program-specific pin both exist, `/home/dathuynh/codes/firstmate/.agents/skills/secondmate-provisioning/SKILL.md` owns the persistent launch mechanics and this skill records which explicit pin was selected for the orchestrator.
+Resolve the supervisor's runtime and model pin once from the programme's private record before launch or recovery.
+Apply that pin only to the supervisor process and record the exact resolved runtime and model with its launch evidence.
+Resolve every implementation worker through the ordinary per-task routing precedence, even when the worker runs on the supervisor's host.
+Never inherit the supervisor's model, runtime, effort, or host choice into a worker by default.
+Changing the supervisor pin affects only a future supervisor launch or an explicitly authorized supervisor replacement; it never restarts, moves, or retunes an existing implementation worker.
+A relaunch into the same leased home keeps that recorded pin, so the pin is a programme record rather than a per-launch decision.
 
 ## Candidate routing
 
@@ -60,27 +64,27 @@ A local host and a remote host are equal candidates when their verified capabili
 A missing capability, stale load value, absent evidence path, or unverified live-data permission removes a candidate instead of being guessed around.
 A ticket that has no eligible candidate becomes a concrete blocker or captain decision under the ordinary authority rules; it is not silently downgraded.
 After selecting a host, resolve the worker's concrete runtime, model, and effort through the ordinary dispatch profile and `/home/dathuynh/codes/firstmate/.agents/skills/harness-adapters/SKILL.md` rules.
-The orchestrator may recommend a route, but the worker's per-task profile remains the dispatch record of authority.
+The supervisor may recommend a route, but the worker's per-task profile remains the dispatch record of authority.
 
 ## Consuming an upstream scope envelope and test contract
 
 A planner artifact carries a scope envelope and a test contract, at spec level and per ticket.
 `planner` owns those artifact fields; this section owns consuming them, and neither restates the other's list.
 
-When a program's source spec or tickets carry them, they are the upstream draft for each ticket's worker brief:
+When a programme's source spec or tickets carry them, they are the upstream draft for each ticket's worker brief:
 
-1. **Preserve provenance.** Record which artifact and which version each ticket's envelope and test contract came from, so a later reader can tell an approved boundary from an orchestrator inference.
+1. **Preserve provenance.** Record which artifact and which version each ticket's envelope and test contract came from, so a later reader can tell an approved boundary from a supervisor inference.
 2. **Revalidate before every dispatch.** Check the envelope and contract against the current code, the current dependency frontier, and the tickets that have already landed. An artifact approved days ago describes a codebase that has since moved.
 3. **Narrow into the worker brief.** Fill `{SCOPE}` by narrowing the ticket's block to what this one worker touches, under the statement contract `bin/fm-brief.sh` owns. Copying a stale block unchanged is the failure this step exists to prevent.
 4. **Never widen.** Anything beyond the accepted envelope, and any required behavior the captain never approved, is a scope decision that returns to the captain under `/home/dathuynh/codes/firstmate/.agents/skills/ask-user-authority/SKILL.md`.
-5. **Escalate a stale, incorrect, or insufficient envelope** as a concrete blocker rather than repairing it in place. Repairing it silently replaces a captain-approved boundary with an orchestrator-chosen one.
+5. **Escalate a stale, incorrect, or insufficient envelope** as a concrete blocker rather than repairing it in place. Repairing it silently replaces a captain-approved boundary with a supervisor-chosen one.
 
 For a paired ticket, the navigator independently challenges and refines the approved test contract at the plan gate; `/home/dathuynh/codes/firstmate/custom-skills/paired-review/SKILL.md` owns that gate.
 
 ## Cross-ticket decisions
 
-A program settles things that outlive the ticket that settled them: which package owns a concern, which contract or route is authoritative, which shape was rejected and why.
-Keep them in the program's decision record alongside the durable private records above, each decision identified so a brief can name it and a worker can read it, and each carrying its reason, because the reason is what a later challenge is measured against.
+A programme settles things that outlive the ticket that settled them: which package owns a concern, which contract or route is authoritative, which shape was rejected and why.
+Keep them in the programme's decision record alongside the durable private records above, each decision identified so a brief can name it and a worker can read it, and each carrying its reason, because the reason is what a later challenge is measured against.
 Record a decision as soon as a ticket settles something a later ticket would otherwise re-decide.
 
 When dispatching a paired ticket, hand the decisions bearing on it to both the driver and the navigator, named by absolute path in each brief; `/home/dathuynh/codes/firstmate/custom-skills/paired-review/SKILL.md` owns what the navigator does with them.
@@ -111,10 +115,10 @@ A high-blast-radius, destructive, irreversible, or security-sensitive expansion 
 
 Maintain the invariant `one ticket = one worker = one branch` for the lifetime of an implementation ticket.
 The custody record names the ticket, worker, host, runtime, model, branch, starting SHA, current SHA, current diff identity, evidence pointers, and custody owner.
-Before dispatching, search the program ledger, backlog, host records, and live structured worker inventory for an existing custody record for that ticket.
+Before dispatching, search the programme ledger, backlog, host records, and live structured worker inventory for an existing custody record for that ticket.
 Treat an ambiguous or unreadable existing record as owned work that needs reconciliation, never as permission to dispatch a duplicate.
 A worker may not pick up a second ticket until the first ticket's delivery owner records a terminal outcome or an explicit parked handoff.
-A ticket branch and its completed evidence remain attached to that ticket when its host, orchestrator, or supervisor changes.
+A ticket branch and its completed evidence remain attached to that ticket when its host or supervisor changes.
 Never move an existing worker between hosts or restart it merely to change its runtime, model, effort, or load placement.
 If a worker is dead, use the ordinary recovery owner to reconcile its endpoint and unlanded work before considering a successor.
 If a worker is alive but its requested profile is no longer available, keep it on the current work and escalate a future-task routing change rather than interrupting it.
@@ -122,7 +126,7 @@ If a worker is alive but its requested profile is no longer available, keep it o
 ## Handoff and custody change
 
 A handoff transfers supervision, not code ownership.
-Before accepting custody, take a current structured inventory of every program worker in `active`, `idle`, and `parked` state.
+Before accepting custody, take a current structured inventory of every programme worker in `active`, `idle`, and `parked` state.
 For each worker, reconcile the ticket, host, endpoint, command-running state, branch, starting and current SHA, diff identity, completed evidence, pending evidence, and last durable owner.
 Use current-state reconciliation rather than treating an append-only status event or a quiet endpoint as proof of a worker's state.
 Do not declare the handoff complete while any worker lacks an inventory result or an explicit unresolved blocker.
@@ -132,13 +136,13 @@ For an active worker, deliver the notification without interrupting its running 
 For an idle or parked worker, deliver the notification before assigning any new work or changing its routing record.
 If notification delivery is uncertain, retain a durable pending notification and keep the old custody visible until delivery is reconciled.
 Preserve each worker's branch, exact SHA, current diff, completed evidence, and evidence pointers without copying or rebasing them as part of handoff.
-Do not restart a worker to make the new orchestrator or supervisor visible.
+Do not restart a worker to make the new supervisor visible.
 After notifications are recorded, atomically update custody ownership and make the new owner the only dispatcher for each ticket.
 Re-scan for duplicate ticket assignments after the update and before dispatching anything new.
 A handoff with a missing worker, conflicting branch, changed SHA, unexplained diff, or missing evidence is incomplete and becomes a blocker for reconciliation rather than a clean transfer.
 
 ## Completion checks
 
-This procedure is complete only when the orchestrator pin is isolated from worker profiles, every dispatched ticket has exactly one custody record, every selected host has verified capability evidence, every remote host obeys the onboarding and widening limits, every dispatched paired ticket carries the decisions bearing on it, and every handoff worker has a reconciled inventory and custody notification.
-Retain the program ledger and evidence references needed for recovery, delivery review, and cleanup under the existing private-record and delivery owners.
-When a worker reaches a delivery milestone or terminal result, follow the ordinary lifecycle and approval rules instead of adding a program-specific merge, cleanup, or evidence gate.
+This procedure is complete only when the supervisor pin is isolated from worker profiles, every dispatched ticket has exactly one custody record, every selected host has verified capability evidence, every remote host obeys the onboarding and widening limits, every dispatched paired ticket carries the decisions bearing on it, and every handoff worker has a reconciled inventory and custody notification.
+Retain the programme ledger and evidence references needed for recovery, delivery review, and cleanup under the existing private-record and delivery owners.
+When a worker reaches a delivery milestone or terminal result, follow the ordinary lifecycle and approval rules instead of adding a programme-specific merge, cleanup, or evidence gate.
