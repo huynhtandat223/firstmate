@@ -21,6 +21,7 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 FM_HOME=${FM_HOME:-$ROOT}
 SPAWN=${FM_PAIR_SPAWN:-$ROOT/bin/fm-spawn.sh}
 BRIEF=${FM_PAIR_BRIEF:-$ROOT/bin/fm-brief.sh}
+SEND=${FM_PAIR_SEND:-$ROOT/bin/fm-send.sh}
 HERDR=${FM_PAIR_HERDR:-herdr}
 ACK_TIMEOUT=${FM_PAIR_ACK_TIMEOUT:-30}
 
@@ -34,10 +35,14 @@ case "${1:-}" in
     evidence=$2; role=$3; message=$4
     [ -f "$evidence" ] || die "recovery evidence is missing"
     case "$role" in driver|navigator) ;; *) die "invalid target role" ;; esac
-    session=$(jq -r '.topology_generations[-1].session // empty' "$evidence")
-    target=$(jq -r --arg role "$role" '.roles[$role].agent_target // empty' "$evidence")
-    [ -n "$session" ] && [ -n "$target" ] || die "recovery evidence lacks a live target"
-    "$HERDR" --session "$session" agent send "$target" "$message"
+    owner_home=$(jq -r '.owner_home // empty' "$evidence")
+    task_id=$(jq -r --arg role "$role" '.roles[$role].task_id // empty' "$evidence")
+    [ -n "$owner_home" ] && [ -n "$task_id" ] || die "recovery evidence lacks a task target"
+    # Verified submission through fm-send: a non-zero result means the signal
+    # was NOT submitted (failed or unconfirmed), so fail loudly and never retry,
+    # inject via Herdr, or fall back to a different message.
+    FM_HOME="$owner_home" "$SEND" "$task_id" "$message" \
+      || die "pair signal to $role not sent (task $task_id): submission failed or unconfirmed; no retry, injection, or fallback"
     exit
     ;;
   gate)
