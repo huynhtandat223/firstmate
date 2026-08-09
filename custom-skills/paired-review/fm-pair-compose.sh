@@ -16,8 +16,10 @@
 # so a signal counts as delivered only when submission is verified. Herdr
 # arranges pair topology only and is never used for text delivery.
 #
-# Herdr assigns a new pane id every time a pane moves, so a recorded pane id is
-# a hint and never authority. A role's stable identity is its registered agent
+# Herdr assigns a pane a new id every time it moves. It still accepts the old id
+# as a LOOKUP KEY, but every response reports the pane's CURRENT id, so a
+# recorded pane id is a hint that must never be compared against a live answer.
+# A role's stable identity is its registered agent
 # name (<pair-id>-driver, <pair-id>-navigator) bound to that role's isolated
 # copy, and both composition and `recover` resolve the current pane, workspace,
 # and tab from Herdr's own agent inventory under that identity. `recover`
@@ -337,9 +339,10 @@ DB=$(git -C "$DW" branch --show-current); NB=$(git -C "$NW" branch --show-curren
 DW=$(cd "$DW" && pwd -P); NW=$(cd "$NW" && pwd -P)
 
 h() { "$HERDR" --session "$DS" "$@"; }
-# Every move below reassigns the moved pane's id, so each step re-resolves its
-# role from the live agent inventory bound to that role's isolated copy rather
-# than carrying the id it was launched with. Until the role names are published
+# Every move below reassigns the moved pane's id, and Herdr answers a stale id
+# with the pane's CURRENT one, so carrying the launch id forward guarantees a
+# mismatch. Each step re-resolves its role from the live agent inventory bound
+# to that role's isolated copy instead. Until the role names are published
 # the copy is the whole identity, which is why an ambiguous copy refuses here.
 DROLE=$(pair_resolve_role "$DS" '' "$DW") || fail_pair "driver role identity"
 NROLE=$(pair_resolve_role "$DS" '' "$NW") || fail_pair "navigator role identity"
