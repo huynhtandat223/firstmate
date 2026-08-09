@@ -56,7 +56,7 @@ shift 2
 cmd="$1 $2"; shift 2
 case "$cmd" in
   'pane move') exit 0 ;;
-  'pane rename'|'agent rename'|'agent send') exit 0 ;;
+  'pane rename'|'agent rename') exit 0 ;;
   'pane get')
     pane=$1
     ws=pair-ws; tab=pair-tab
@@ -94,11 +94,12 @@ HELPER="$ROOT/custom-skills/paired-review/fm-pair-compose.sh"
 run_pair() {
   FM_HOME="$HOME_DIR" FM_FIXTURE="$TMP_ROOT" FM_HERDR_LOG="$TMP_ROOT/herdr.log" \
     FM_PAIR_SPAWN="$FAKEBIN/spawn" FM_PAIR_BRIEF="$FAKEBIN/brief" FM_PAIR_HERDR="$FAKEBIN/herdr" \
+    FM_PAIR_SEND="$FAKEBIN/fm-send" FM_SEND_LOG="$TMP_ROOT/send.log" \
     FM_PAIR_ACK_TIMEOUT=1 "$HELPER" --pair-id pair --project "$PROJECT" --mode direct-PR --yolo off \
     --task-file "$TMP_ROOT/task.md" --scope-file "$TMP_ROOT/scope.md" \
     --driver-harness pi --navigator-harness pi --context issue:27 --check 'focused behavior'
 }
-reset_pair() { rm -rf "$HOME_DIR/data/pair" "$HOME_DIR/data/pair-nav" "$HOME_DIR/state" "$TMP_ROOT/pair" "$TMP_ROOT/pair-nav"; mkdir -p "$HOME_DIR/state"; : > "$TMP_ROOT/herdr.log"; }
+reset_pair() { rm -rf "$HOME_DIR/data/pair" "$HOME_DIR/data/pair-nav" "$HOME_DIR/state" "$TMP_ROOT/pair" "$TMP_ROOT/pair-nav"; mkdir -p "$HOME_DIR/state"; : > "$TMP_ROOT/herdr.log"; : > "$TMP_ROOT/send.log"; }
 
 run_pair >/dev/null || fail "success composition failed"
 jq -e '.state == "ready"' "$HOME_DIR/data/pair/recovery.json" >/dev/null || fail "ready evidence missing"
@@ -111,8 +112,10 @@ assert_no_grep 'paired-review/SKILL.md' "$HOME_DIR/data/pair/brief.md" "driver r
 assert_grep 'role=navigator' "$HOME_DIR/data/pair-nav/brief.md" "navigator role fact missing"
 assert_grep 'Driver copy and branch' "$HOME_DIR/data/pair-nav/brief.md" "navigator lacks driver copy fact"
 assert_grep 'current task remains implementation scope' "$HOME_DIR/data/pair-nav/brief.md" "epic scope boundary missing"
-assert_grep 'agent send pair-driver PAIR READY pair;' "$TMP_ROOT/herdr.log" "driver release signal missing"
-assert_grep 'agent send pair-navigator PAIR READY pair;' "$TMP_ROOT/herdr.log" "navigator release signal missing"
+assert_grep "$HOME_DIR|pair PAIR READY pair;" "$TMP_ROOT/send.log" "driver readiness release not submitted via fm-send"
+assert_grep "$HOME_DIR|pair-nav PAIR READY pair;" "$TMP_ROOT/send.log" "navigator readiness release not submitted via fm-send"
+assert_no_grep 'agent send' "$TMP_ROOT/herdr.log" "raw herdr agent send used for a delivery path"
+assert_no_grep 'pane send-text' "$TMP_ROOT/herdr.log" "raw pane send-text used for a delivery path"
 
 FM_PAIR_SEND="$FAKEBIN/fm-send" FM_SEND_LOG="$TMP_ROOT/send.log" "$HELPER" send "$HOME_DIR/data/pair/recovery.json" navigator 'MILESTONE M2' >/dev/null
 FM_PAIR_SEND="$FAKEBIN/fm-send" FM_SEND_LOG="$TMP_ROOT/send.log" "$HELPER" send "$HOME_DIR/data/pair/recovery.json" driver 'STOP N3' >/dev/null

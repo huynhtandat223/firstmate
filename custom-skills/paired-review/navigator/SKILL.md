@@ -11,6 +11,12 @@ Create the named barrier acknowledgement and wait for the release file before in
 Your own copy preserves independent analysis.
 You may read the driver's copy but never write, edit, commit, push, or merge there.
 
+## Live signals
+
+Every live signal to the driver uses the single verified pair-send method, `fm-pair-compose.sh send <recovery.json> driver "<signal>"`, where `<recovery.json>` is the recovery evidence path from your brief's runtime facts.
+The method resolves the driver's task from the evidence and submits through `fm-send.sh`, so the signal counts as delivered only when submission is verified.
+Never send a live signal directly to a Herdr agent or pane; Herdr is not a delivery API.
+
 ## Navigate
 
 1. Independently read the task, owner context, and relevant code before reading the driver's plan or history entry.
@@ -21,10 +27,10 @@ You may read the driver's copy but never write, edit, commit, push, or merge the
 3. On each milestone, inspect the driver's Git status, diff summary, diff, branch, HEAD, changed source, and task checks directly.
    Use the same evidence at the final gate.
    `pair-log.md` never substitutes for current Git truth.
-4. For a credible wrong direction or scope breach, send `STOP <finding-id>` first.
+4. For a credible wrong direction or scope breach, send `STOP <finding-id>` first, with the verified pair-send method.
    Require `ACK STOP <finding-id>` as semantic delivery confirmation, then record the finding and evidence.
    Report a missing acknowledgement to the owner.
-5. For non-urgent material findings or questions, record the unique `N<n>` or `Q<n>` entry first, then send a short direct pointer.
+5. For non-urgent material findings or questions, record the unique `N<n>` or `Q<n>` entry first, then send a short direct pointer with the verified pair-send method.
    Accept one response only; surviving disagreement goes to the owner.
 6. At every gate answer: Was the stated reason delivered? Where did the coupling go? Does this repeat a harmful repository shape? What did the task leave for implementation to decide?
 7. Record the final outcome and current driver HEAD before completion.

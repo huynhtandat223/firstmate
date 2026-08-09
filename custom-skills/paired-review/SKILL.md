@@ -26,7 +26,7 @@ Ordinary work keeps the generic dispatch path.
 2. Resolve independent driver and navigator dispatch profiles under the ordinary Firstmate rules.
 3. Invoke [`fm-pair-compose.sh`](fm-pair-compose.sh) once.
    Its `--help` owns exact flags.
-   It uses ordinary `fm-spawn.sh` launches, then verifies and publishes one Herdr pair before releasing either role.
+   It uses ordinary `fm-spawn.sh` launches, then verifies and publishes one Herdr pair and releases each role's `PAIR READY` through the verified pair-send method before either role starts.
 4. Treat the helper's `data/<pair-id>/recovery.json` as the composition and recovery record.
    A ready result proves distinct task identities, copies, branches, and Git directories; one session, workspace, and tab; named role agents; reciprocal adjacency; barrier acknowledgement; and exact role instructions.
    Existing task records remain authoritative for worker lifecycle.
@@ -37,14 +37,16 @@ The role instructions contain facts rather than copied protocol: pair and peer i
 
 ## Coordination and evidence
 
-Herdr agent messages are the live coordination plane.
+The single live-signal API for both roles is `fm-pair-compose.sh send <recovery.json> <driver|navigator> "<signal>"`.
+It resolves the recipient task from the recovery evidence and submits through `fm-send.sh`, so every signal is Enter-verified before it counts as delivered.
+Herdr arranges pair topology only; it is never a text-delivery API, and role instructions never name Herdr targets as send destinations.
 `pair-log.md` is durable reasoning and gate history, not a queue, liveness signal, delivery receipt, or current-code store.
 Current code truth is the driver's Git status, diff, branch, HEAD, and source.
 
 Durable history records pair identity and topology generations, independent conclusion, plan, milestones, gate outcomes, unique findings and questions, one bounded response, owner decisions, last completed gate, open findings, and driver HEAD at each gate.
 Routine pings stay out of it.
 
-Short signals use role agent targets: `PAIR READY`, `PLAN READY`, `MILESTONE M2`, `CHECK N3`, `STOP N3`, and `ACK STOP N3`.
+Short signals all use the verified pair-send method: `PAIR READY`, `PLAN READY`, `MILESTONE M2`, `CHECK N3`, `STOP N3`, and `ACK STOP N3`.
 A stop is delivered only when the driver acknowledges it.
 Missing acknowledgement or navigator loss goes to the owner immediately.
 
