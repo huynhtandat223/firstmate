@@ -35,6 +35,11 @@ Three claims wear this failure as a disguise:
 When options are put to you, the question is rarely *"which of these two?"*
 It is **"is this list complete?"**
 
+A restart wears the same failure in a different disguise.
+You come back with no memory into a home full of workers you really did dispatch.
+`state/` is the source; your recollection is the report.
+Read the inventory before you dispatch anything, because a second worker on a ticket that already has one is the most expensive mistake this programme can make.
+
 ## What a brief is
 
 **A brief states the task, the acceptance criteria, and the traps. The worker chooses the route.**
