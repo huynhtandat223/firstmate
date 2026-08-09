@@ -60,9 +60,10 @@ else:
 PY
 
 # Fake Herdr, faithful to the real CLI's identity model: a pane id is positional
-# and is REASSIGNED on every move, an agent name is the stable role identity,
-# and `pane neighbor` reports the adjacent pane in `neighbor_pane_id` while
-# `pane_id` echoes the query.
+# and is REASSIGNED on every move; a superseded id still RESOLVES as a lookup
+# key but every response reports the pane's current id; an agent name is the
+# stable role identity; and `pane neighbor` reports the adjacent pane in
+# `neighbor_pane_id` while `pane_id` echoes the (resolved) query.
 cat > "$FAKEBIN/herdr" <<'PY'
 #!/usr/bin/env python3
 import json, os, sys
@@ -84,7 +85,7 @@ def save():
 
 def find(pane_id):
     for pane in state["panes"]:
-        if pane["pane_id"] == pane_id:
+        if pane["pane_id"] == pane_id or pane_id in pane.get("former_ids", []):
             return pane
     return None
 
@@ -152,6 +153,7 @@ elif (group, cmd) == ("pane", "move"):
     if pane is None:
         sys.exit(94)
     previous = pane["pane_id"]
+    pane.setdefault("former_ids", []).append(previous)
     pane["pane_id"] = next_id("p")
     detach(pane)
     if "--new-workspace" in args or os.environ.get("FM_FAKE_WRONG_TAB") == "1":
@@ -214,8 +216,9 @@ session=test
 [ "$id" != pair-nav ] || [ "${FM_FAKE_WRONG_SESSION:-0}" != 1 ] || session=other
 "$FM_FAKE_FIXTURE" register "$pane" "$(cd "$wt" && pwd -P)"
 # Herdr may move a pane straight after launch, which reassigns its id. The
-# recorded herdr_pane_id is then a stale hint that no longer names any pane.
-[ "${FM_FAKE_STALE_PANE:-0}" != 1 ] || pane=stale-$pane
+# recorded herdr_pane_id then still resolves, but to a different current id.
+[ "${FM_FAKE_STALE_PANE:-0}" != 1 ] \
+  || "$FM_FAKE_HERDR" --session "$session" pane move "$pane" --new-workspace --label drift --tab-label drift --no-focus >/dev/null
 cat > "$FM_HOME/state/$id.meta" <<EOF
 worktree=$wt
 herdr_session=$session
@@ -240,6 +243,7 @@ chmod +x "$FAKEBIN/brief" "$FAKEBIN/spawn" "$FAKEBIN/herdr" "$FAKEBIN/herdr-fixt
 export FM_HERDR_STATE="$HERDR_STATE"
 export FM_HERDR_LOG="$TMP_ROOT/herdr.log"
 export FM_FAKE_FIXTURE="$FAKEBIN/herdr-fixture"
+export FM_FAKE_HERDR="$FAKEBIN/herdr"
 
 EVIDENCE=$HOME_DIR/data/pair/recovery.json
 HELPER="$ROOT/custom-skills/paired-review/fm-pair-compose.sh"
@@ -376,6 +380,11 @@ reset_pair
 FM_FAKE_STALE_PANE=1 run_pair >/dev/null || fail "stale recorded pane id refused a live pair"
 jq -e '.state == "ready"' "$EVIDENCE" >/dev/null || fail "stale recorded pane id blocked ready evidence"
 assert_present "$HOME_DIR/data/pair/ready" "stale recorded pane id withheld the barrier"
+# Keep the case from going vacuous: the recorded id must really be a superseded
+# alias - resolvable, but no longer the role's current pane.
+SUPERSEDED=$(sed -n 's/^herdr_pane_id=//p' "$HOME_DIR/state/pair.meta")
+[ "$SUPERSEDED" != "$(role_field pair-driver pane_id)" ] || fail "stale-pane case never superseded the recorded pane id"
+herdr_cli pane get "$SUPERSEDED" >/dev/null || fail "superseded pane id stopped resolving; the stale-pane case no longer models Herdr"
 
 for scenario in missing wrongsession wrongtab nonadjacent dupname lostname copydrift noack; do
   reset_pair
