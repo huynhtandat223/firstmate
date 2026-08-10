@@ -221,6 +221,7 @@ session=test
   || "$FM_FAKE_HERDR" --session "$session" pane move "$pane" --new-workspace --label drift --tab-label drift --no-focus >/dev/null
 cat > "$FM_HOME/state/$id.meta" <<EOF
 worktree=$wt
+window=$session:$pane
 herdr_session=$session
 herdr_workspace_id=old-$id
 herdr_tab_id=old-$id
@@ -286,10 +287,11 @@ assert_no_grep 'pane send-text' "$FM_HERDR_LOG" "raw pane send-text used for a d
 
 # Composition's own moves reassign both pane ids, so the published topology must
 # be the panes the roles occupy NOW, never the ones they were launched with.
-LAUNCH_DRIVER_PANE=$(sed -n 's/^herdr_pane_id=//p' "$HOME_DIR/state/pair.meta")
-LAUNCH_NAV_PANE=$(sed -n 's/^herdr_pane_id=//p' "$HOME_DIR/state/pair-nav.meta")
-jq -e --arg dp "$LAUNCH_DRIVER_PANE" --arg np "$LAUNCH_NAV_PANE" \
-  '(.topology_generations | last) | .driver_pane != $dp and .navigator_pane != $np' "$EVIDENCE" >/dev/null \
+# The fixture launches the roles as p-driver and p-nav; meta no longer carries
+# those, because composition now writes the proven topology back into the task
+# records, so the launch identities are asserted directly.
+jq -e '(.topology_generations | last)
+       | .driver_pane != "p-driver" and .navigator_pane != "p-nav"' "$EVIDENCE" >/dev/null \
   || fail "topology generation recorded the launch pane ids instead of the current panes"
 jq -e --arg dp "$(role_field pair-driver pane_id)" --arg np "$(role_field pair-navigator pane_id)" \
   '(.topology_generations | last) | .driver_pane == $dp and .navigator_pane == $np' "$EVIDENCE" >/dev/null \
@@ -312,6 +314,50 @@ FM_FAKE_SEND_FAIL=1 FM_PAIR_SEND="$FAKEBIN/fm-send" FM_SEND_LOG="$TMP_ROOT/send.
   && fail "unconfirmed fm-send submission reported as sent"
 assert_grep "$HOME_DIR|pair-nav UNSENT M4" "$TMP_ROOT/send.log" "failed submission attempt not recorded"
 [ "$(grep -c 'UNSENT M4' "$TMP_ROOT/send.log")" -eq 1 ] || fail "failed pair signal was retried"
+
+# Composition moves both role panes into the pair workspace, so each task record
+# must be told where its role actually lives. It was not, and both roles of a
+# live pair then read their own spawn-time meta as current, called the proven
+# recovery evidence stale, and blocked a pair whose topology was intact.
+meta_field() { sed -n "s/^$2=//p" "$HOME_DIR/state/$1.meta" | head -1; }
+for role in driver navigator; do
+  case "$role" in driver) task=pair ;; *) task=pair-nav ;; esac
+  recorded_pane=$(jq -r --arg r "$role" '.roles[$r].pane' "$EVIDENCE")
+  recorded_ws=$(jq -r '.topology_generations[-1].workspace' "$EVIDENCE")
+  recorded_tab=$(jq -r '.topology_generations[-1].tab' "$EVIDENCE")
+  [ "$(meta_field "$task" herdr_pane_id)" = "$recorded_pane" ] \
+    || fail "$role meta pane '$(meta_field "$task" herdr_pane_id)' disagrees with proven topology '$recorded_pane'"
+  [ "$(meta_field "$task" herdr_workspace_id)" = "$recorded_ws" ] \
+    || fail "$role meta workspace '$(meta_field "$task" herdr_workspace_id)' disagrees with proven topology '$recorded_ws'"
+  [ "$(meta_field "$task" herdr_tab_id)" = "$recorded_tab" ] \
+    || fail "$role meta tab still holds the spawn-time value, not the pair tab"
+  # window= is what fm-send resolves a target from, so it must move too.
+  [ "$(meta_field "$task" window)" = "test:$recorded_pane" ] \
+    || fail "$role meta window '$(meta_field "$task" window)' does not target the pair pane"
+done
+
+# A fully composed pair must survive an unconfirmable READINESS notification.
+# Submission cannot be confirmed for a worker that is already mid-turn, and both
+# roles are mid-turn by construction at this point - they are sitting in the
+# barrier wait - so making the announcement fatal destroyed pairs that had
+# passed every invariant: the driver was notified, the navigator was never told,
+# and no release file was ever written. The barrier is the FILE; the messages
+# only point at the evidence. Delivery is still never overstated - an
+# unconfirmed send is recorded as unconfirmed.
+reset_pair
+export FM_FAKE_SEND_FAIL=1
+run_pair >/dev/null 2>"$TMP_ROOT/release.err" \
+  || fail "an unconfirmed readiness notification must not destroy a fully composed pair"
+unset FM_FAKE_SEND_FAIL
+assert_present "$HOME_DIR/data/pair/ready" "unconfirmed notification withheld the barrier file"
+jq -e '.state == "ready"' "$EVIDENCE" >/dev/null || fail "unconfirmed notification left the pair not ready"
+jq -e '.release_notifications.driver == "unconfirmed" and .release_notifications.navigator == "unconfirmed"' "$EVIDENCE" >/dev/null \
+  || fail "unconfirmed readiness notifications were not recorded honestly"
+assert_grep 'readiness notification was unconfirmed' "$TMP_ROOT/release.err" "degraded release was not reported"
+# The second role is still notified after the first notification fails, which is
+# exactly the step the old ordering never reached.
+assert_grep "$HOME_DIR|pair PAIR READY pair;" "$TMP_ROOT/send.log" "driver was not notified"
+assert_grep "$HOME_DIR|pair-nav PAIR READY pair;" "$TMP_ROOT/send.log" "navigator was not notified after the driver notification went unconfirmed"
 assert_no_grep 'UNSENT M4' "$FM_HERDR_LOG" "unsent pair signal was injected via Herdr"
 "$HELPER" finding "$EVIDENCE" open N3
 "$HELPER" gate "$EVIDENCE" M2 abcdef1234567
@@ -380,11 +426,16 @@ reset_pair
 FM_FAKE_STALE_PANE=1 run_pair >/dev/null || fail "stale recorded pane id refused a live pair"
 jq -e '.state == "ready"' "$EVIDENCE" >/dev/null || fail "stale recorded pane id blocked ready evidence"
 assert_present "$HOME_DIR/data/pair/ready" "stale recorded pane id withheld the barrier"
-# Keep the case from going vacuous: the recorded id must really be a superseded
-# alias - resolvable, but no longer the role's current pane.
-SUPERSEDED=$(sed -n 's/^herdr_pane_id=//p' "$HOME_DIR/state/pair.meta")
-[ "$SUPERSEDED" != "$(role_field pair-driver pane_id)" ] || fail "stale-pane case never superseded the recorded pane id"
-herdr_cli pane get "$SUPERSEDED" >/dev/null || fail "superseded pane id stopped resolving; the stale-pane case no longer models Herdr"
+# Keep the case from going vacuous: the id the fixture recorded (p-driver) must
+# really be a superseded alias - resolvable, but no longer the role's current
+# pane. meta is no longer the witness for that, because composition now writes
+# the proven topology back into it - which is exactly what the last assertion
+# here pins, since leaving meta on a superseded alias is what made both roles of
+# a live pair read their own record as current and call the evidence stale.
+[ "p-driver" != "$(role_field pair-driver pane_id)" ] || fail "stale-pane case never superseded the recorded pane id"
+[ "$(sed -n 's/^herdr_pane_id=//p' "$HOME_DIR/state/pair.meta")" = "$(role_field pair-driver pane_id)" ] \
+  || fail "composition left the driver's task record on a superseded pane id"
+herdr_cli pane get p-driver >/dev/null || fail "superseded pane id stopped resolving; the stale-pane case no longer models Herdr"
 
 for scenario in missing wrongsession wrongtab nonadjacent dupname lostname copydrift noack; do
   reset_pair
