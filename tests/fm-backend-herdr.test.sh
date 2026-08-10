@@ -3563,10 +3563,14 @@ test_send_text_submit_confirms_blocked_after_enter() {
 test_send_text_submit_preexisting_working_does_not_false_confirm_swallowed_enter() {
   local dir log resp fb out enter_count read_count
   dir="$TMP_ROOT/submit-preexisting-working-swallow"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  # 2: baseline agent get (already working). 3: the anchor read, taken before
+  # Enter while the typed payload is still on screen. 5 and 7: the post-Enter
+  # reads. The payload never leaves the composer, so the Enter really was
+  # swallowed and the verdict must stay unconfirmed.
   printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/2.out"
-  printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/3.out"
-  printf '  \xe2\x9d\xaf hello captain\n' > "$resp/4.out"
-  printf '  \xe2\x9d\xaf hello captain\n' > "$resp/6.out"
+  printf '  \xe2\x9d\xaf hello captain\n' > "$resp/3.out"
+  printf '  \xe2\x9d\xaf hello captain\n' > "$resp/5.out"
+  printf '  \xe2\x9d\xaf hello captain\n' > "$resp/7.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 2 0.01 0.01' "$ROOT" )
@@ -3574,7 +3578,7 @@ test_send_text_submit_preexisting_working_does_not_false_confirm_swallowed_enter
   enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
   [ "$enter_count" -eq 2 ] || fail "preexisting-working swallowed Enter should retry Enter up to the configured count, sent $enter_count Enter(s)"
   read_count=$(grep -c $'\x1f''pane'$'\x1f''read' "$log")
-  [ "$read_count" -eq 2 ] || fail "preexisting-working confirmation should fall back to composer reads, made $read_count read(s)"
+  [ "$read_count" -eq 3 ] || fail "preexisting-working confirmation should anchor once then read after each Enter, made $read_count read(s)"
   pass "fm_backend_herdr_send_text_submit: preexisting working is not accepted as submit proof when the composer still holds the message"
 }
 
@@ -3742,14 +3746,42 @@ test_composer_state_real_captures_unreadable_harnesses() {
   pass "fm_backend_herdr_composer_state: real opencode and agy captures refuse as unknown, the safe direction, unchanged by the blank fold"
 }
 
+# The case that made every paired-review signal to a Pi navigator unconfirmable.
+# The injection classifier refuses a working Pi by design ("a working Pi cannot
+# authorize injection"), which is right for injection and fatal for delivery,
+# because delivery is ONLY ever asked while the target is mid-turn - both pair
+# roles are mid-turn whenever they are waiting on each other. Anchoring on the
+# payload asks a question identity cannot veto: is the text I typed still there?
+# Driven by the real captured Pi composer, holding the probe text and then clear.
+submit_busy_capture_case() {  # <harness> <agent> <expected>
+  local h=$1 agent=$2 want=$3 dir log resp fb out
+  dir="$TMP_ROOT/submit-busy-$h"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"result":{"agent":{"agent":"%s","agent_status":"working"}}}\n' "$agent" > "$resp/2.out"
+  cp "$ROOT/tests/fixtures/composer-captures/$h.typed.ansi" "$resp/3.out"
+  cp "$ROOT/tests/fixtures/composer-captures/$h.idle.ansi" "$resp/5.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "fm composer drift probe" 2 0.01 0.01' "$ROOT" )
+  [ "$out" = "$want" ] || fail "busy $h submit should report '$want', got '$out'"
+}
+
+test_send_text_submit_busy_pi_and_agy_confirm_by_payload() {
+  submit_busy_capture_case pi pi empty
+  submit_busy_capture_case agy agy empty
+  pass "fm_backend_herdr_send_text_submit: a busy Pi and a busy agy confirm delivery from the payload, which their injection rules can never authorize"
+}
+
 # Direction 1: the message was accepted while the worker was mid-turn. The
 # composer really is clear, so submission is confirmed on the FIRST Enter and
 # the caller is not told to give up on a delivered message.
 test_send_text_submit_busy_baseline_confirms_cleared_claude_composer() {
   local dir log resp fb out enters types
   dir="$TMP_ROOT/submit-busy-confirms"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  # 2: baseline (already mid-turn). 3: the anchor read, payload still typed.
+  # 5: after Enter, claude has queued the message and cleared the composer.
   printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/2.out"
-  claude_composer_capture '\033[2mPress up to edit queued messages\033[0m' > "$resp/4.out"
+  claude_composer_capture 'PAIR READY demo' > "$resp/3.out"
+  claude_composer_capture '\033[2mPress up to edit queued messages\033[0m' > "$resp/5.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "PAIR READY demo" 2 0.01 0.01' "$ROOT" )
@@ -3770,8 +3802,9 @@ test_send_text_submit_busy_baseline_refuses_genuinely_unsent_text() {
   local dir log resp fb out enters
   dir="$TMP_ROOT/submit-busy-refuses"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/2.out"
-  claude_composer_capture 'PAIR READY demo' > "$resp/4.out"
-  claude_composer_capture 'PAIR READY demo' > "$resp/6.out"
+  claude_composer_capture 'PAIR READY demo' > "$resp/3.out"
+  claude_composer_capture 'PAIR READY demo' > "$resp/5.out"
+  claude_composer_capture 'PAIR READY demo' > "$resp/7.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "PAIR READY demo" 2 0.01 0.01' "$ROOT" )
@@ -4585,6 +4618,7 @@ test_composer_state_claude_nbsp_padded_empty_composer_is_empty
 test_composer_state_claude_queued_message_placeholder_is_empty
 test_composer_state_real_captures_supported_harnesses
 test_composer_state_real_captures_unreadable_harnesses
+test_send_text_submit_busy_pi_and_agy_confirm_by_payload
 test_send_text_submit_busy_baseline_confirms_cleared_claude_composer
 test_send_text_submit_busy_baseline_refuses_genuinely_unsent_text
 test_send_text_submit_slow_transition_within_one_enter_needs_no_extra_enter

@@ -59,5 +59,7 @@ The captain retains merge authority.
 
 On navigator loss or topology break, report it, restore the endpoint, then run `fm-pair-compose.sh recover <recovery.json>`, which re-verifies composition from each role's stable identity and appends the topology generation.
 Never hand-edit a recorded pane into the evidence: Herdr reassigns a pane id on every move, and a refusal from that command means the pair is not proven, not that the evidence needs correcting.
-The driver may continue accepted-scope work under an approved plan, but cannot bypass the initial plan gate, an authority decision, an active stop, or final navigator review.
+The driver never stops implementing for want of a navigator: paired review lowers the risk of building the wrong thing rather than gating that it gets built.
+Each gate carries a bounded wait, after which the driver goes solo, announces in durable history and its PR body that pair review fell, and records the gate outcome itself; open findings and every authority, scope, or destructive decision still come to you.
+A solo PR arrives without independent review, so review it yourself or route it to one.
 A recovered navigator reconciles current driver Git truth and durable history before another outcome.

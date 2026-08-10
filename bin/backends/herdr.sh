@@ -2800,18 +2800,20 @@ fm_backend_herdr_agent_identity_raw() {  # <session> <pane> -> <agent>\t<status>
   printf '%s' "$out" | jq -r '[.result.agent.agent // "", .result.agent.agent_status // ""] | @tsv' 2>/dev/null
 }
 
-fm_backend_herdr_composer_state() {  # <target> -> empty|pending|unknown
-  local target=$1 session pane cap line trimmed found=0 shape="" raw_match="" bordered=0 stripped
-  local identity agent agent_status row=0 generic_line=0 identity_fetched=0
-  fm_backend_herdr_parse_target "$target" || { printf 'unknown'; return 0; }
-  session=$FM_BACKEND_HERDR_SESSION
-  pane=$FM_BACKEND_HERDR_PANE
-  cap=$(fm_backend_herdr_capture_ansi "$target" "$FM_BACKEND_HERDR_COMPOSER_LINES" 2>/dev/null \
-    || fm_backend_herdr_capture "$target" "$FM_BACKEND_HERDR_COMPOSER_LINES") || { printf 'unknown'; return 0; }
-  # Structural scan: locate the bottom-most composer row and remember its RAW
-  # (styled) bytes. Shape detection runs on the plain row (fm_backend_herdr_strip_ansi
-  # keeps ghost text so the border/prompt glyph is still visible); the raw row is
-  # kept for ANSI-aware content extraction after the scan.
+# fm_backend_herdr_scan_generic_row: the STRUCTURAL half of the composer scan -
+# find the bottom-most bordered or bare-prompt row in <capture> and publish its
+# raw styled bytes, shape and 1-based line. Structure only: it renders no safety
+# verdict and consults no agent identity, so the injection guard and the
+# delivery check below can share one locator without sharing a judgement.
+# Shape detection runs on the plain row (fm_backend_herdr_strip_ansi keeps ghost
+# text so the border/prompt glyph stays visible); the raw row is kept for
+# ANSI-aware content extraction afterwards.
+fm_backend_herdr_scan_generic_row() {  # <capture>
+  local cap=$1 line trimmed row=0
+  FM_BACKEND_HERDR_GENERIC_SHAPE=""
+  FM_BACKEND_HERDR_GENERIC_RAW=""
+  FM_BACKEND_HERDR_GENERIC_LINE=0
+  FM_BACKEND_HERDR_GENERIC_FOUND=0
   while IFS= read -r line; do
     row=$((row + 1))
     trimmed=$(fm_backend_herdr_strip_ansi "$line")
@@ -2820,21 +2822,91 @@ fm_backend_herdr_composer_state() {  # <target> -> empty|pending|unknown
     [ -n "$trimmed" ] || continue
     case "$trimmed" in
       '│'*'│'|'┃'*'┃'|'|'*'|')
-        shape=bordered
-        raw_match=$line
-        generic_line=$row
-        found=1
+        FM_BACKEND_HERDR_GENERIC_SHAPE=bordered
+        FM_BACKEND_HERDR_GENERIC_RAW=$line
+        FM_BACKEND_HERDR_GENERIC_LINE=$row
+        FM_BACKEND_HERDR_GENERIC_FOUND=1
         ;;
       *)
         if printf '%s' "$trimmed" | grep -qE "$FM_BACKEND_HERDR_BARE_PROMPT_RE"; then
-          shape=bare
-          raw_match=$line
-          generic_line=$row
-          found=1
+          FM_BACKEND_HERDR_GENERIC_SHAPE=bare
+          FM_BACKEND_HERDR_GENERIC_RAW=$line
+          FM_BACKEND_HERDR_GENERIC_LINE=$row
+          FM_BACKEND_HERDR_GENERIC_FOUND=1
         fi
         ;;
     esac
   done < <(printf '%s\n' "$cap")
+}
+
+# fm_backend_herdr_payload_in_composer: does the input row still hold the text we
+# just typed? Prints yes | no | unreadable.
+#
+# This is the DELIVERY question, and it is deliberately NOT the injection
+# question fm_backend_herdr_composer_state answers. Injection asks "is it safe to
+# type here", so it must refuse a working Pi, an unidentified agy `>`, and every
+# ambiguity. Delivery asks "did the Enter I already sent land", it is only ever
+# asked while the target is mid-turn, and it is asked about text we put there
+# ourselves - so none of those refusals apply. Applying them anyway is what made
+# every paired-review signal to a busy Pi navigator unconfirmable: the Pi rule
+# reads `pi:working -> found=0 -> unknown`, correct for injection and fatal here.
+#
+# Anchoring on OUR OWN payload is what removes the per-harness guesswork: before
+# Enter the payload is on screen and identifies the input row by itself, so this
+# needs no idle-placeholder list, no padding rules, and no agent identity. It is
+# also immune to the whole blank-padding class of fault, because it asks whether
+# OUR text is still there rather than whether anything is there.
+#
+# Only the structural locators are consulted, bottom-most winning, and a row that
+# cannot be located reports `unreadable` so the caller keeps its existing
+# behaviour rather than inventing a verdict.
+FM_BACKEND_HERDR_PAYLOAD_PROBE_CHARS=${FM_BACKEND_HERDR_PAYLOAD_PROBE_CHARS:-24}
+
+fm_backend_herdr_payload_in_composer() {  # <target> <payload> -> yes|no|unreadable
+  local target=$1 payload=$2 cap row="" plain probe
+  cap=$(fm_backend_herdr_capture_ansi "$target" "$FM_BACKEND_HERDR_COMPOSER_LINES" 2>/dev/null \
+    || fm_backend_herdr_capture "$target" "$FM_BACKEND_HERDR_COMPOSER_LINES") \
+    || { printf 'unreadable'; return 0; }
+  fm_backend_herdr_scan_generic_row "$cap"
+  row=$FM_BACKEND_HERDR_GENERIC_RAW
+  # Pi draws no glyph or side border, and agy's bare `>` is not a generic match.
+  # Take whichever structural candidate sits lowest on the screen.
+  fm_backend_herdr_pi_composer_find "$cap"
+  if [ "$FM_BACKEND_HERDR_PI_PAIR_VALID" -eq 1 ] \
+     && [ "$FM_BACKEND_HERDR_PI_PAIR_LINE" -gt "$FM_BACKEND_HERDR_GENERIC_LINE" ]; then
+    row=$FM_BACKEND_HERDR_PI_CONTENT
+  fi
+  fm_backend_herdr_agy_composer_find "$cap"
+  if [ "$FM_BACKEND_HERDR_AGY_ROW_FOUND" -eq 1 ] \
+     && [ "$FM_BACKEND_HERDR_AGY_ROW_LINE" -gt "$FM_BACKEND_HERDR_GENERIC_LINE" ] \
+     && [ "$FM_BACKEND_HERDR_AGY_ROW_LINE" -gt "$FM_BACKEND_HERDR_PI_PAIR_LINE" ]; then
+    row=$FM_BACKEND_HERDR_AGY_ROW_RAW
+  fi
+  [ -n "$row" ] || { printf 'unreadable'; return 0; }
+  plain=$(fm_backend_herdr_strip_ansi "$row")
+  # A bounded head of the payload: enough to identify it, short enough to survive
+  # a composer that truncates or wraps a long steer.
+  probe=$(printf '%s' "$payload" | cut -c1-"$FM_BACKEND_HERDR_PAYLOAD_PROBE_CHARS")
+  [ -n "$probe" ] || { printf 'unreadable'; return 0; }
+  case "$plain" in
+    *"$probe"*) printf 'yes' ;;
+    *) printf 'no' ;;
+  esac
+}
+
+fm_backend_herdr_composer_state() {  # <target> -> empty|pending|unknown
+  local target=$1 session pane cap found=0 shape="" raw_match="" bordered=0 stripped
+  local identity agent agent_status generic_line=0 identity_fetched=0
+  fm_backend_herdr_parse_target "$target" || { printf 'unknown'; return 0; }
+  session=$FM_BACKEND_HERDR_SESSION
+  pane=$FM_BACKEND_HERDR_PANE
+  cap=$(fm_backend_herdr_capture_ansi "$target" "$FM_BACKEND_HERDR_COMPOSER_LINES" 2>/dev/null \
+    || fm_backend_herdr_capture "$target" "$FM_BACKEND_HERDR_COMPOSER_LINES") || { printf 'unknown'; return 0; }
+  fm_backend_herdr_scan_generic_row "$cap"
+  shape=$FM_BACKEND_HERDR_GENERIC_SHAPE
+  raw_match=$FM_BACKEND_HERDR_GENERIC_RAW
+  generic_line=$FM_BACKEND_HERDR_GENERIC_LINE
+  found=$FM_BACKEND_HERDR_GENERIC_FOUND
   # Pi has no prompt glyph or side border. Compare its bottom-most complete
   # separator pair with the last generic match so an earlier bordered transcript
   # row can never suppress the live Pi composer. Identity is consulted only when
@@ -3013,17 +3085,33 @@ EOF
 # literally "the composer read empty".
 fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep> <settle>
   local target=$1 text=$2 retries=$3 sleep_s=$4 settle=$5 i=0 verdict baseline confirm_sleep
+  local anchored=0
   fm_backend_herdr_parse_target "$target" || { printf 'unknown'; return 0; }
   fm_backend_herdr_send_literal "$target" "$text" || { printf 'send-failed'; return 0; }
   sleep "$settle"
   baseline=$(fm_backend_herdr_classify_submit_agent_status \
     "$(fm_backend_herdr_agent_status_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")")
   confirm_sleep=$(fm_backend_herdr_submit_confirm_budget "$sleep_s")
+  # The text is typed but not yet submitted, so it is on screen and identifies
+  # the input row by itself. Anchor on it when the target is already mid-turn,
+  # where native agent-state cannot discriminate (it reads busy before Enter and
+  # busy after) and the injection classifier refuses by design.
+  if [ "$baseline" != idle ] \
+     && [ "$(fm_backend_herdr_payload_in_composer "$target" "$text")" = yes ]; then
+    anchored=1
+  fi
   while :; do
     fm_backend_herdr_send_key "$target" Enter || true
     if [ "$baseline" = idle ]; then
       verdict=$(fm_backend_herdr_wait_for_working "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE" \
         "$confirm_sleep" "$FM_BACKEND_HERDR_SUBMIT_POLLS")
+    elif [ "$anchored" = 1 ]; then
+      sleep "$sleep_s"
+      case "$(fm_backend_herdr_payload_in_composer "$target" "$text")" in
+        no) verdict=empty ;;
+        yes) verdict=pending ;;
+        *) verdict=unknown ;;
+      esac
     else
       sleep "$sleep_s"
       verdict=$(fm_backend_herdr_composer_state "$target")
