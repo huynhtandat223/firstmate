@@ -3628,6 +3628,100 @@ test_composer_state_guard_still_refuses_real_pending_text_after_submit_confirmat
   pass "fm_backend_composer_state (herdr): the pre-injection empty-box guard still refuses a genuinely non-empty composer, unaffected by the submit-confirmation change"
 }
 
+# --- Claude's U+00A0-padded composer, and the busy-baseline submit path -------
+#
+# Task fm-pair-delivery-false-negative-fix. Verified live against real claude
+# 2.1.226 under herdr 0.7.3: claude draws its composer row as
+# `ESC[38;2;153;153;153m` `❯` `U+00A0`, between two solid `─` rules, and after a
+# submit that landed while it was mid-turn it appends the DIM placeholder
+# "Press up to edit queued messages" and shows the queued text above. The blank
+# is bright enough to survive ghost stripping and is not ASCII whitespace, so
+# the empty composer classified `pending`.
+#
+# That is invisible on an ordinary steer, because an idle-baseline submit is
+# confirmed by native agent-state and never reads the composer. It surfaces only
+# on the busy-baseline branch below - the branch a paired-review barrier release
+# takes, because both roles sit inside a blocking wait when the release is sent.
+# fm-send then reported `delivery unconfirmed; verdict=pending` for a message
+# that had already been delivered, and the composer aborted the pair.
+
+# The real claude 2.1.226 composer window: transcript, spinner, rule, composer
+# row, rule, footer. <1> is appended inside the composer row (the dim queued
+# placeholder, or real unsubmitted text).
+claude_composer_capture() {  # <composer-row-tail>
+  printf '\033[0m● Running 1 shell command…\n'
+  printf '\033[0m\342\234\275 Scampering… (1m 4s \302\267 \342\206\223 3.1k tokens)\n'
+  printf '\n'
+  printf '\033[0m\033[38;2;136;136;136m──────────────────────────────\033[0m\n'
+  printf '\033[0m\033[38;2;153;153;153m\342\235\257\302\240\033[0m%b\n' "$1"
+  printf '\033[0m\033[38;2;136;136;136m──────────────────────────────\033[0m\n'
+  printf '  \342\217\265\342\217\265 bypass permissions on (shift+tab to cycle) \302\267 esc to interrupt\n'
+}
+
+test_composer_state_claude_nbsp_padded_empty_composer_is_empty() {
+  local dir log resp fb out
+  dir="$TMP_ROOT/composer-claude-nbsp"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  claude_composer_capture '' > "$resp/1.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_composer_state default:w1:p2' "$ROOT" )
+  [ "$out" = empty ] \
+    || fail "claude's real empty composer ('❯' + U+00A0 between two rules) must read empty, got '$out'"
+  pass "fm_backend_herdr_composer_state: claude's U+00A0-padded empty composer reads empty, not pending"
+}
+
+test_composer_state_claude_queued_message_placeholder_is_empty() {
+  local dir log resp fb out
+  dir="$TMP_ROOT/composer-claude-queued"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  claude_composer_capture '\033[2mPress up to edit queued messages\033[0m' > "$resp/1.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_composer_state default:w1:p2' "$ROOT" )
+  [ "$out" = empty ] \
+    || fail "the composer claude shows after queueing a submitted message must read empty, got '$out'"
+  pass "fm_backend_herdr_composer_state: claude's post-submit queued-message composer reads empty"
+}
+
+# Direction 1: the message was accepted while the worker was mid-turn. The
+# composer really is clear, so submission is confirmed on the FIRST Enter and
+# the caller is not told to give up on a delivered message.
+test_send_text_submit_busy_baseline_confirms_cleared_claude_composer() {
+  local dir log resp fb out enters types
+  dir="$TMP_ROOT/submit-busy-confirms"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/2.out"
+  claude_composer_capture '\033[2mPress up to edit queued messages\033[0m' > "$resp/4.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "PAIR READY demo" 2 0.01 0.01' "$ROOT" )
+  [ "$out" = empty ] \
+    || fail "a submit accepted by a mid-turn claude must confirm as empty, got '$out' (the paired-review false negative)"
+  enters=$(grep -c $'\x1fpane\x1fsend-keys' "$log")
+  [ "$enters" -eq 1 ] || fail "a confirmed submit should send Enter once, got $enters"
+  types=$(grep -c $'\x1fpane\x1fsend-text' "$log")
+  [ "$types" -eq 1 ] || fail "the text must be typed exactly once, got $types"
+  pass "fm_backend_herdr_send_text_submit: a busy-baseline submit that cleared claude's composer confirms as empty"
+}
+
+# Direction 2 (the boundary this fix must not cross): the Enter really was
+# swallowed. The text is still sitting in the composer, so the retry budget is
+# spent and the verdict stays `pending` - fm-send exits non-zero and the pair
+# still stops on unproven delivery.
+test_send_text_submit_busy_baseline_refuses_genuinely_unsent_text() {
+  local dir log resp fb out enters
+  dir="$TMP_ROOT/submit-busy-refuses"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/2.out"
+  claude_composer_capture 'PAIR READY demo' > "$resp/4.out"
+  claude_composer_capture 'PAIR READY demo' > "$resp/6.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "PAIR READY demo" 2 0.01 0.01' "$ROOT" )
+  [ "$out" = pending ] \
+    || fail "text still sitting in a mid-turn claude's composer must stay unconfirmed, got '$out'"
+  enters=$(grep -c $'\x1fpane\x1fsend-keys' "$log")
+  [ "$enters" -eq 2 ] || fail "a swallowed Enter should spend the retry budget, got $enters Enter(s)"
+  pass "fm_backend_herdr_send_text_submit: a busy-baseline submit whose text remains in the composer still refuses"
+}
+
 # A slow transition landing partway through a single Enter attempt's own
 # budget must not provoke a needless extra Enter - end-to-end through
 # send_text_submit itself (test_wait_for_working_catches_a_slow_transition_mid_window
@@ -4427,6 +4521,10 @@ test_send_text_submit_preexisting_working_does_not_false_confirm_swallowed_enter
 test_send_text_submit_confirms_despite_codex_idle_tip_composer
 test_composer_state_codex_dynamic_idle_tip_reads_empty_when_faint
 test_composer_state_guard_still_refuses_real_pending_text_after_submit_confirmation_change
+test_composer_state_claude_nbsp_padded_empty_composer_is_empty
+test_composer_state_claude_queued_message_placeholder_is_empty
+test_send_text_submit_busy_baseline_confirms_cleared_claude_composer
+test_send_text_submit_busy_baseline_refuses_genuinely_unsent_text
 test_send_text_submit_slow_transition_within_one_enter_needs_no_extra_enter
 test_send_text_submit_send_failed
 test_send_text_submit_unknown_on_capture_failure

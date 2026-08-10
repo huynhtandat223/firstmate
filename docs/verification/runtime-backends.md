@@ -502,6 +502,25 @@ Real captures verified these active distinctions:
 - Dim or faint suggestion text is ghost content, while normally styled text is pending input.
 - Grok dark truecolor placeholders are ghost content, while bright truecolor typed input remains pending.
 - A bare shell prompt has no safe agent-composer container and is unknown.
+- A composer padded with a non-ASCII Unicode blank is empty, not pending input.
+
+Claude 2.1.226 pads its empty composer row with U+00A0 after the prompt glyph, verified 2026-08-10 on Herdr 0.7.3 and on tmux, byte-identical through both capture paths:
+
+```
+0000000 033   [   0   m 033   [   3   8   ;   2   ;   1   5   3   ;   1
+0000020   5   3   ;   1   5   3   m 342 235 257 302 240 033   [   0   m
+```
+
+The blank is drawn at luminance 153, above the de-emphasis threshold, so ghost stripping correctly keeps it and only the blank folding in `bin/fm-composer-lib.sh` reads that row as empty.
+After a submit accepted by a mid-turn Claude, the same row carries the dim `Press up to edit queued messages` placeholder, which ghost stripping removes, leaving the same padded-empty row.
+Refresh this per-harness result with the real-harness guard, which fails naming the harness, its version, and the offending bytes:
+
+```sh
+FM_COMPOSER_BLANK_DRIFT=1 \
+  tests/fm-composer-blank-drift-live-e2e.test.sh
+```
+
+Observed 2026-08-10: claude 2.1.226 and pi 0.84.1 read empty untouched and pending with typed text; codex 0.145.0 held a first-run trust screen and was reported unverified; opencode 1.17.20 draws a left-only `┃` composer edge that the tmux reader refuses as unknown, which denies both delivery confirmation and injection and is reported unverified rather than passed.
 
 `tests/fm-composer-ghost.test.sh`, `tests/fm-composer-lib.test.sh`, and the Herdr composer cases pin the exact captured ANSI bytes.
 The U+2063 operational and routed-request separators were exercised through a real Pi-on-Herdr path; the byte-exact active regression is:
