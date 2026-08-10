@@ -133,6 +133,64 @@ test_real_text_is_pending() {
   pass "fm_composer_classify_content: real unsubmitted text reads pending (including a popup argument-hint fill)"
 }
 
+# --- Non-ASCII blank padding ------------------------------------------------
+#
+# Task fm-pair-delivery-false-negative-fix. Claude 2.1.226 pads its EMPTY
+# composer row with U+00A0 after the `❯` glyph. The blank is not ghost text
+# (luminance 153 keeps it), and every trim in this library and its callers is
+# ASCII-only, so an empty composer read as `pending` - a delivery false negative
+# on herdr's busy-baseline submit confirmation, which aborted a paired review
+# after its release message had already landed.
+
+test_nonascii_blank_padded_glyph_is_empty() {
+  local nbsp=$'\302\240' out
+  out=$(classify 0 "❯$nbsp")
+  [ "$out" = empty ] || fail "bare '❯'+U+00A0 (claude's real empty composer) should be empty, got '$out'"
+  out=$(classify 1 "> $nbsp")
+  [ "$out" = empty ] || fail "bordered '> '+U+00A0 should be empty, got '$out'"
+  out=$(classify 0 "$nbsp" "" sensitive "❯$nbsp")
+  [ "$out" = empty ] || fail "a blank-only stripped row with a '❯' plain row should be empty, got '$out'"
+  pass "fm_composer_classify_content: a composer padded with U+00A0 after the prompt glyph reads empty"
+}
+
+test_every_unicode_blank_reads_empty() {
+  local blank out
+  for blank in "${FM_COMPOSER_BLANKS[@]}"; do
+    out=$(classify 0 "❯$blank")
+    [ "$out" = empty ] \
+      || fail "'❯' padded with the blank $(printf '%s' "$blank" | od -An -c | tr -s ' ') should be empty, got '$out'"
+    out=$(classify 1 "$blank")
+    [ "$out" = empty ] \
+      || fail "a bordered composer holding only that blank should be empty, got '$out'"
+  done
+  pass "fm_composer_classify_content: every declared Unicode blank reads as an empty composer"
+}
+
+# The divergence assertion: folding blanks must not make a composer that really
+# holds text read empty. Same padding byte, one visible character apart - the
+# case cannot go vacuous by classifying everything empty.
+test_blank_padding_does_not_swallow_real_text() {
+  local nbsp=$'\302\240' empty_out text_out
+  empty_out=$(classify 0 "❯$nbsp")
+  text_out=$(classify 0 "❯${nbsp}PAIR READY psak-dms-kernel-canonicalization")
+  [ "$empty_out" = empty ] || fail "the padded-but-empty composer should be empty, got '$empty_out'"
+  [ "$text_out" = pending ] \
+    || fail "blank-padded REAL text must stay pending (a swallowed Enter), got '$text_out'"
+  [ "$empty_out" != "$text_out" ] \
+    || fail "empty and text-carrying composers must not classify alike, both read '$empty_out'"
+  text_out=$(classify 1 "${nbsp}deploy staging now${nbsp}")
+  [ "$text_out" = pending ] || fail "text surrounded by blanks must stay pending, got '$text_out'"
+  pass "fm_composer_classify_content: blank folding keeps real unsubmitted text pending"
+}
+
+test_blank_padding_preserves_dead_shell_refusal() {
+  local nbsp=$'\302\240' out
+  out=$(classify 0 ">$nbsp")
+  [ "$out" = unknown ] \
+    || fail "a bare shell prompt padded with U+00A0 is still a dead shell and must read unknown, got '$out'"
+  pass "fm_composer_classify_content: blank folding does not turn a padded dead-shell prompt into empty"
+}
+
 test_bare_shell_glyphs_are_unknown
 test_stripped_unbordered_content_uses_plain_content
 test_bare_shell_prompt_with_command_is_not_empty
@@ -142,3 +200,7 @@ test_empty_content_is_empty
 test_idle_placeholder_is_empty
 test_idle_placeholder_case_mode_is_explicit
 test_real_text_is_pending
+test_nonascii_blank_padded_glyph_is_empty
+test_every_unicode_blank_reads_empty
+test_blank_padding_does_not_swallow_real_text
+test_blank_padding_preserves_dead_shell_refusal

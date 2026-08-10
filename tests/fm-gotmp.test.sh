@@ -59,6 +59,11 @@ make_fake_root() {
   ln -s "$ROOT/bin/fm-tmux-lib.sh" "$fake/bin/fm-tmux-lib.sh"
   ln -s "$ROOT/bin/fm-composer-lib.sh" "$fake/bin/fm-composer-lib.sh"
   ln -s "$ROOT/bin/fm-nm-run-lib.sh" "$fake/bin/fm-nm-run-lib.sh"
+  # fm-supervisor-lib.sh: teardown sources it for the temporary-supervisor
+  # lifecycle, and it sources fm-primary-scope-lib.sh in turn. Both are real
+  # siblings the fake root needs, like every other library above.
+  ln -s "$ROOT/bin/fm-supervisor-lib.sh" "$fake/bin/fm-supervisor-lib.sh"
+  ln -s "$ROOT/bin/fm-primary-scope-lib.sh" "$fake/bin/fm-primary-scope-lib.sh"
   # fm-lock-lib.sh: teardown sources it for the shared lock-staleness proof.
   ln -s "$ROOT/bin/fm-lock-lib.sh" "$fake/bin/fm-lock-lib.sh"
   # fm-gate-refuse-lib.sh: teardown sources it before any fleet mutation.
@@ -137,6 +142,11 @@ test_teardown_skips_gracefully_without_tasktmp() {
   ln -s "$ROOT/bin/fm-tmux-lib.sh" "$fake/bin/fm-tmux-lib.sh"
   ln -s "$ROOT/bin/fm-composer-lib.sh" "$fake/bin/fm-composer-lib.sh"
   ln -s "$ROOT/bin/fm-nm-run-lib.sh" "$fake/bin/fm-nm-run-lib.sh"
+  # fm-supervisor-lib.sh: teardown sources it for the temporary-supervisor
+  # lifecycle, and it sources fm-primary-scope-lib.sh in turn. Both are real
+  # siblings the fake root needs, like every other library above.
+  ln -s "$ROOT/bin/fm-supervisor-lib.sh" "$fake/bin/fm-supervisor-lib.sh"
+  ln -s "$ROOT/bin/fm-primary-scope-lib.sh" "$fake/bin/fm-primary-scope-lib.sh"
   ln -s "$ROOT/bin/fm-lock-lib.sh" "$fake/bin/fm-lock-lib.sh"
   # fm-gate-refuse-lib.sh: teardown sources it before any fleet mutation.
   ln -s "$ROOT/bin/fm-gate-refuse-lib.sh" "$fake/bin/fm-gate-refuse-lib.sh"

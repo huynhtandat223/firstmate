@@ -3628,6 +3628,160 @@ test_composer_state_guard_still_refuses_real_pending_text_after_submit_confirmat
   pass "fm_backend_composer_state (herdr): the pre-injection empty-box guard still refuses a genuinely non-empty composer, unaffected by the submit-confirmation change"
 }
 
+# --- Claude's U+00A0-padded composer, and the busy-baseline submit path -------
+#
+# Task fm-pair-delivery-false-negative-fix. Verified live against real claude
+# 2.1.226 under herdr 0.7.3: claude draws its composer row as
+# `ESC[38;2;153;153;153m` `❯` `U+00A0`, between two solid `─` rules, and after a
+# submit that landed while it was mid-turn it appends the DIM placeholder
+# "Press up to edit queued messages" and shows the queued text above. The blank
+# is bright enough to survive ghost stripping and is not ASCII whitespace, so
+# the empty composer classified `pending`.
+#
+# That is invisible on an ordinary steer, because an idle-baseline submit is
+# confirmed by native agent-state and never reads the composer. It surfaces only
+# on the busy-baseline branch below - the branch a paired-review barrier release
+# takes, because both roles sit inside a blocking wait when the release is sent.
+# fm-send then reported `delivery unconfirmed; verdict=pending` for a message
+# that had already been delivered, and the composer aborted the pair.
+
+# The real claude 2.1.226 composer window: transcript, spinner, rule, composer
+# row, rule, footer. <1> is appended inside the composer row (the dim queued
+# placeholder, or real unsubmitted text).
+claude_composer_capture() {  # <composer-row-tail>
+  printf '\033[0m● Running 1 shell command…\n'
+  printf '\033[0m\342\234\275 Scampering… (1m 4s \302\267 \342\206\223 3.1k tokens)\n'
+  printf '\n'
+  printf '\033[0m\033[38;2;136;136;136m──────────────────────────────\033[0m\n'
+  printf '\033[0m\033[38;2;153;153;153m\342\235\257\302\240\033[0m%b\n' "$1"
+  printf '\033[0m\033[38;2;136;136;136m──────────────────────────────\033[0m\n'
+  printf '  \342\217\265\342\217\265 bypass permissions on (shift+tab to cycle) \302\267 esc to interrupt\n'
+}
+
+test_composer_state_claude_nbsp_padded_empty_composer_is_empty() {
+  local dir log resp fb out
+  dir="$TMP_ROOT/composer-claude-nbsp"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  claude_composer_capture '' > "$resp/1.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_composer_state default:w1:p2' "$ROOT" )
+  [ "$out" = empty ] \
+    || fail "claude's real empty composer ('❯' + U+00A0 between two rules) must read empty, got '$out'"
+  pass "fm_backend_herdr_composer_state: claude's U+00A0-padded empty composer reads empty, not pending"
+}
+
+test_composer_state_claude_queued_message_placeholder_is_empty() {
+  local dir log resp fb out
+  dir="$TMP_ROOT/composer-claude-queued"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  claude_composer_capture '\033[2mPress up to edit queued messages\033[0m' > "$resp/1.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_composer_state default:w1:p2' "$ROOT" )
+  [ "$out" = empty ] \
+    || fail "the composer claude shows after queueing a submitted message must read empty, got '$out'"
+  pass "fm_backend_herdr_composer_state: claude's post-submit queued-message composer reads empty"
+}
+
+# --- Real captured composer rows, per installed harness ----------------------
+#
+# Task fm-pair-delivery-false-negative-fix. The fixtures under
+# tests/fixtures/composer-captures are byte-exact bottom-of-screen captures
+# taken 2026-08-10 from the real binaries (claude 2.1.226, codex 0.145.0,
+# pi 0.84.1, opencode 1.17.20, agy 1.1.11), idle and holding typed-but-unsent
+# text, with paths and account names replaced by same-length placeholders so
+# column geometry is untouched. They exist because the fault this task fixed was
+# a byte a vendor added to its own composer: a hand-written fixture can only
+# ever replay what someone already transcribed from an older release.
+#
+# Measured against the pre-fix classifier, exactly one of these ten verdicts
+# moves: claude idle, pending -> empty. Every other harness and state is
+# byte-for-byte unchanged, which is the evidence that the blank fold is
+# confined to the fault it was written for.
+real_capture_case() {  # <harness> <state> <agent> <expected>
+  local h=$1 st=$2 agent=$3 want=$4 dir log resp fb out
+  dir="$TMP_ROOT/real-capture-$h-$st"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  cp "$ROOT/tests/fixtures/composer-captures/$h.$st.ansi" "$resp/1.out" \
+    || fail "missing real capture fixture for $h $st"
+  printf '{"result":{"agent":{"agent":"%s","agent_status":"idle"}}}\n' "$agent" > "$resp/2.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_composer_state default:w1:p2' "$ROOT" )
+  [ "$out" = "$want" ] || fail "real $h $st capture should classify '$want', got '$out'"
+}
+
+test_composer_state_real_captures_supported_harnesses() {
+  real_capture_case claude idle  claude empty
+  real_capture_case claude typed claude pending
+  real_capture_case codex  idle  codex  empty
+  real_capture_case codex  typed codex  pending
+  real_capture_case pi     idle  pi     empty
+  real_capture_case pi     typed pi     pending
+  pass "fm_backend_herdr_composer_state: real claude, codex and pi captures read empty when idle and pending when holding unsent text"
+}
+
+# The other half of the same evidence: two installed harnesses whose real
+# composer this backend cannot locate at all, recorded so neither is mistaken
+# for covered.
+#   opencode 1.17.20 draws a composer row carrying a LEFT-only `┃` edge and a
+#     `╹▀▀▀` foot, matching neither the bordered shape (which requires the same
+#     glyph at both ends) nor a bare agent prompt glyph.
+#   agy 1.1.11 draws a bare `>` - byte-identical to a dead shell prompt - and
+#     the agy rule that would admit it on native identity requires that row to
+#     sit BELOW all separator activity, while real agy draws a rule underneath
+#     its prompt.
+# Both refuse as `unknown`, which is the safe direction: unknown never confirms
+# a submit and never authorises away-mode injection. Neither verdict is affected
+# by the blank fold. Reading these two composers is a separate change with its
+# own safety argument - admitting a bare `>` is exactly the dead-shell hazard
+# the shared rule exists to prevent - and is deliberately not attempted here.
+test_composer_state_real_captures_unreadable_harnesses() {
+  real_capture_case opencode idle  opencode unknown
+  real_capture_case opencode typed opencode unknown
+  real_capture_case agy      idle  agy      unknown
+  real_capture_case agy      typed agy      unknown
+  pass "fm_backend_herdr_composer_state: real opencode and agy captures refuse as unknown, the safe direction, unchanged by the blank fold"
+}
+
+# Direction 1: the message was accepted while the worker was mid-turn. The
+# composer really is clear, so submission is confirmed on the FIRST Enter and
+# the caller is not told to give up on a delivered message.
+test_send_text_submit_busy_baseline_confirms_cleared_claude_composer() {
+  local dir log resp fb out enters types
+  dir="$TMP_ROOT/submit-busy-confirms"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/2.out"
+  claude_composer_capture '\033[2mPress up to edit queued messages\033[0m' > "$resp/4.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "PAIR READY demo" 2 0.01 0.01' "$ROOT" )
+  [ "$out" = empty ] \
+    || fail "a submit accepted by a mid-turn claude must confirm as empty, got '$out' (the paired-review false negative)"
+  enters=$(grep -c $'\x1fpane\x1fsend-keys' "$log")
+  [ "$enters" -eq 1 ] || fail "a confirmed submit should send Enter once, got $enters"
+  types=$(grep -c $'\x1fpane\x1fsend-text' "$log")
+  [ "$types" -eq 1 ] || fail "the text must be typed exactly once, got $types"
+  pass "fm_backend_herdr_send_text_submit: a busy-baseline submit that cleared claude's composer confirms as empty"
+}
+
+# Direction 2 (the boundary this fix must not cross): the Enter really was
+# swallowed. The text is still sitting in the composer, so the retry budget is
+# spent and the verdict stays `pending` - fm-send exits non-zero and the pair
+# still stops on unproven delivery.
+test_send_text_submit_busy_baseline_refuses_genuinely_unsent_text() {
+  local dir log resp fb out enters
+  dir="$TMP_ROOT/submit-busy-refuses"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/2.out"
+  claude_composer_capture 'PAIR READY demo' > "$resp/4.out"
+  claude_composer_capture 'PAIR READY demo' > "$resp/6.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "PAIR READY demo" 2 0.01 0.01' "$ROOT" )
+  [ "$out" = pending ] \
+    || fail "text still sitting in a mid-turn claude's composer must stay unconfirmed, got '$out'"
+  enters=$(grep -c $'\x1fpane\x1fsend-keys' "$log")
+  [ "$enters" -eq 2 ] || fail "a swallowed Enter should spend the retry budget, got $enters Enter(s)"
+  pass "fm_backend_herdr_send_text_submit: a busy-baseline submit whose text remains in the composer still refuses"
+}
+
 # A slow transition landing partway through a single Enter attempt's own
 # budget must not provoke a needless extra Enter - end-to-end through
 # send_text_submit itself (test_wait_for_working_catches_a_slow_transition_mid_window
@@ -4427,6 +4581,12 @@ test_send_text_submit_preexisting_working_does_not_false_confirm_swallowed_enter
 test_send_text_submit_confirms_despite_codex_idle_tip_composer
 test_composer_state_codex_dynamic_idle_tip_reads_empty_when_faint
 test_composer_state_guard_still_refuses_real_pending_text_after_submit_confirmation_change
+test_composer_state_claude_nbsp_padded_empty_composer_is_empty
+test_composer_state_claude_queued_message_placeholder_is_empty
+test_composer_state_real_captures_supported_harnesses
+test_composer_state_real_captures_unreadable_harnesses
+test_send_text_submit_busy_baseline_confirms_cleared_claude_composer
+test_send_text_submit_busy_baseline_refuses_genuinely_unsent_text
 test_send_text_submit_slow_transition_within_one_enter_needs_no_extra_enter
 test_send_text_submit_send_failed
 test_send_text_submit_unknown_on_capture_failure

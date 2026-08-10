@@ -232,7 +232,8 @@ The adapter locates the bottom-most recognized bordered row, Claude `❯` row, C
 A working Pi, pending middle row, missing identity, incomplete separator pair, or over-tall candidate remains pending or unknown.
 
 ANSI capture preserves de-emphasized placeholder style.
-`bin/fm-composer-lib.sh` is the fleet-wide owner that strips dim or faint runs and dark truecolor placeholders while retaining bright typed input.
+`bin/fm-composer-lib.sh` is the fleet-wide owner that strips dim or faint runs and dark truecolor placeholders while retaining bright typed input, and that folds non-ASCII Unicode blanks so a composer padded with one still reads empty.
+That blank folding is what keeps the composer-clearance fallback below usable: Claude pads its own empty composer row, so without it every busy-baseline submit to a Claude worker reported pending for a message that had landed.
 If a future Herdr version strips ANSI style, ghost suggestions become pending rather than empty, which safely defers injection and eventually raises the wedge alarm.
 
 A bare shell prompt is never an empty agent composer.

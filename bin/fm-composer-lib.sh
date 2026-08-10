@@ -42,6 +42,25 @@
 # byte-pattern check missed claude's own dim ghost (its prompt glyph is not
 # bold-wrapped) and no adapter covered grok's truecolor placeholder at all.
 #
+# NON-ASCII BLANK PADDING is the third half-hidden way an EMPTY composer reads
+# as typed text (task fm-pair-delivery-false-negative-fix). Verified live
+# (claude 2.1.226 under herdr 0.7.3): claude draws its empty composer row as the
+# bytes `ESC[38;2;153;153;153m` `❯` `\302\240` - its prompt glyph followed by
+# U+00A0 NO-BREAK SPACE. That padding is legitimately NOT ghost text (luminance
+# 153 is above the de-emphasis threshold, so the stripper correctly keeps it),
+# and every trim in this file and in its callers is ASCII-only, so the blank
+# survived as "real typed content" and a genuinely empty claude composer
+# classified `pending`. That is invisible wherever a caller has a stronger
+# signal, and a delivery FALSE NEGATIVE on the one path that has none: herdr
+# confirms a submit from the composer whenever the target was already mid-turn
+# before Enter, so a message that really landed left fm-send reporting
+# `delivery unconfirmed; verdict=pending` (bin/backends/herdr.sh).
+# fm_composer_normalize_blanks below folds these blanks to ASCII space before
+# the verdict. It can only ever move content that is ENTIRELY blank from
+# `pending` to `empty`; content carrying any visible character keeps its
+# verdict, so the swallowed-Enter refusal and the away-mode injector's
+# pending-input guard both keep their exact meaning.
+#
 # Each adapter still owns its own CAPTURE and structural row-finding, because
 # those use genuinely different primitives (tmux's visible-pane box scan,
 # herdr's ANSI tail scan, orca/cmux's plain read-screen). Once an adapter has a
@@ -169,6 +188,46 @@ fm_composer_strip_ghost() {
   '
 }
 
+# UTF-8 byte sequences for every Unicode blank a harness may pad a composer row
+# with: the whole space-separator category (Zs) above ASCII space, plus the two
+# zero-width blanks that render as nothing. The Unicode category is the durable
+# fact to key on; which member a given harness picks is a rendering detail its
+# next release can change (claude 2.1.226 uses U+00A0). Written as octal escapes
+# so the bytes stay exact under LC_ALL=C, the fleet default, where bash matches
+# patterns per byte rather than per character.
+FM_COMPOSER_BLANKS=(
+  $'\302\240'      # U+00A0 NO-BREAK SPACE (verified: claude 2.1.226)
+  $'\341\232\200'  # U+1680 OGHAM SPACE MARK
+  $'\342\200\200'  # U+2000 EN QUAD
+  $'\342\200\201'  # U+2001 EM QUAD
+  $'\342\200\202'  # U+2002 EN SPACE
+  $'\342\200\203'  # U+2003 EM SPACE
+  $'\342\200\204'  # U+2004 THREE-PER-EM SPACE
+  $'\342\200\205'  # U+2005 FOUR-PER-EM SPACE
+  $'\342\200\206'  # U+2006 SIX-PER-EM SPACE
+  $'\342\200\207'  # U+2007 FIGURE SPACE
+  $'\342\200\210'  # U+2008 PUNCTUATION SPACE
+  $'\342\200\211'  # U+2009 THIN SPACE
+  $'\342\200\212'  # U+200A HAIR SPACE
+  $'\342\200\213'  # U+200B ZERO WIDTH SPACE
+  $'\342\200\257'  # U+202F NARROW NO-BREAK SPACE
+  $'\342\201\237'  # U+205F MEDIUM MATHEMATICAL SPACE
+  $'\343\200\200'  # U+3000 IDEOGRAPHIC SPACE
+  $'\357\273\277'  # U+FEFF ZERO WIDTH NO-BREAK SPACE
+)
+
+# fm_composer_normalize_blanks: fold every non-ASCII blank in <text> to an ASCII
+# space and trim, so the ASCII-only tests below see a padded-but-empty composer
+# as empty. Prints the normalized text.
+fm_composer_normalize_blanks() {  # <text>
+  local text=$1 blank
+  for blank in "${FM_COMPOSER_BLANKS[@]}"; do
+    text=${text//"$blank"/ }
+  done
+  text="${text#"${text%%[![:space:]]*}"}"
+  printf '%s' "${text%"${text##*[![:space:]]}"}"
+}
+
 # fm_composer_classify_content: the single shared composer-content verdict.
 #   <bordered> 1 when <content> came from a genuine agent-composer container (a
 #              bordered composer box, or a structurally-identified bare AGENT
@@ -192,6 +251,11 @@ fm_composer_idle_matches() {
 fm_composer_classify_content() {  # <bordered> <content> [idle_re] [idle_case] [plain_content]
   local bordered=$1 content=$2 idle_re=${3:-} idle_case=${4:-sensitive} plain_content
   plain_content=${5:-$content}
+  # Callers trim ASCII whitespace only, so a composer padded with a Unicode
+  # blank still arrives non-empty here. Fold those blanks first, before any test
+  # below reads the content as typed text.
+  content=$(fm_composer_normalize_blanks "$content")
+  plain_content=$(fm_composer_normalize_blanks "$plain_content")
   if [ "$bordered" != 1 ] && [ -z "$content" ] && [ -n "$plain_content" ]; then
     case "$plain_content" in
       '❯'|'›'|'⟩') printf 'empty'; return 0 ;;
