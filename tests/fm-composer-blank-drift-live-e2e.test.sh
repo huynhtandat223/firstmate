@@ -34,9 +34,16 @@
 # screen owning the keyboard) is reported as unverified rather than passed over
 # silently, and does not count toward the checked total.
 #
-# The windows are opened in the firstmate repo itself rather than a scratch
-# directory, because a harness meeting an unknown directory asks to trust it
-# before it will draw a composer, which would leave every harness unverified.
+# The windows are opened in a scratch directory by default, NEVER in a checkout.
+# These are real agents, not stubs: during this guard's own development a real
+# harness launched in the firstmate worktree modified a tracked file with no
+# prompt ever submitted to it. A test must not run live agents inside the tree it
+# is testing. The cost is coverage - a harness that demands directory trust
+# before drawing a composer is reported unverified from a scratch directory.
+# FM_COMPOSER_BLANK_DRIFT_DIR points the launches at a directory the operator has
+# already trusted, which is how a machine gets full coverage. Whatever directory
+# it names must be disposable and hold no unlanded work, because a harness that
+# starts there may write there.
 #
 # Standard CI has no harness binaries or credentials, so this real-harness guard
 # is opt-in and on-demand. The portable counterparts pin the classifier logic in
@@ -63,6 +70,9 @@ SOCKET="fm-composer-drift-$$"
 LAB=$(mktemp -d "${TMPDIR:-/tmp}/fm-composer-drift.XXXXXX")
 SESSION=drift
 PROBE='fm composer drift probe'
+# Never a checkout: see the header. A caller-supplied directory must be
+# disposable, because a live harness launched there may write to it.
+LAUNCH_DIR=${FM_COMPOSER_BLANK_DRIFT_DIR:-}
 
 cleanup_all() {
   "$REAL_TMUX" -L "$SOCKET" kill-server >/dev/null 2>&1 || true
@@ -71,6 +81,13 @@ cleanup_all() {
 trap cleanup_all EXIT
 
 mkdir -p "$LAB/shim" "$LAB/wt"
+if [ -z "$LAUNCH_DIR" ]; then
+  LAUNCH_DIR="$LAB/wt"
+elif [ ! -d "$LAUNCH_DIR" ]; then
+  fail "FM_COMPOSER_BLANK_DRIFT_DIR='$LAUNCH_DIR' is not a directory"
+elif [ "$(cd "$LAUNCH_DIR" && pwd -P)" = "$(cd "$ROOT" && pwd -P)" ]; then
+  fail "FM_COMPOSER_BLANK_DRIFT_DIR must not be this checkout; live harnesses launched here can write to tracked files"
+fi
 cat > "$LAB/shim/tmux" <<SH
 #!/usr/bin/env bash
 exec "$REAL_TMUX" -L "$SOCKET" "\$@"
@@ -146,8 +163,11 @@ SKIPPED=
 UNOBSERVED=
 
 # The verified adapters, in the order .agents/skills/harness-adapters/SKILL.md
-# records them. An adapter that gains a verified launch path belongs here too.
-for harness in claude codex opencode pi pi-signed grok kimi muse; do
+# records them, including agy - the shared classifier carries an agy-specific
+# prompt rule, so leaving it out of this loop would leave that rule unexercised
+# against the real binary. An adapter that gains a verified launch path belongs
+# here too.
+for harness in claude codex opencode pi pi-signed grok kimi muse agy; do
   if ! bin_path=$(resolve_harness_binary "$harness"); then
     SKIPPED="$SKIPPED $harness"
     note "skip: $harness is not installed on this machine, so its composer is unverified here"
@@ -158,7 +178,7 @@ for harness in claude codex opencode pi pi-signed grok kimi muse; do
   [ -n "$version" ] || version="unknown"
 
   target="$SESSION:$harness"
-  "$REAL_TMUX" -L "$SOCKET" new-window -d -t "$SESSION:" -n "$harness" -c "$ROOT" -- "$bin_path" \
+  "$REAL_TMUX" -L "$SOCKET" new-window -d -t "$SESSION:" -n "$harness" -c "$LAUNCH_DIR" -- "$bin_path" \
     || fail "$harness ($version): could not launch a window for the composer probe"
 
   wait_settled "$target" || note "$harness $version: pane never settled; reading it anyway"
@@ -218,7 +238,7 @@ fi
 if [ -n "$UNOBSERVED" ]; then
   note "unverified on this machine (composer not structurally readable):$UNOBSERVED"
 fi
-note "checked $CHECKED installed harness(es)"
+note "checked $CHECKED installed harness(es) launched in $LAUNCH_DIR"
 
 cleanup_all
 trap - EXIT

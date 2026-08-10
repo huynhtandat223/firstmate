@@ -3682,6 +3682,66 @@ test_composer_state_claude_queued_message_placeholder_is_empty() {
   pass "fm_backend_herdr_composer_state: claude's post-submit queued-message composer reads empty"
 }
 
+# --- Real captured composer rows, per installed harness ----------------------
+#
+# Task fm-pair-delivery-false-negative-fix. The fixtures under
+# tests/fixtures/composer-captures are byte-exact bottom-of-screen captures
+# taken 2026-08-10 from the real binaries (claude 2.1.226, codex 0.145.0,
+# pi 0.84.1, opencode 1.17.20, agy 1.1.11), idle and holding typed-but-unsent
+# text, with paths and account names replaced by same-length placeholders so
+# column geometry is untouched. They exist because the fault this task fixed was
+# a byte a vendor added to its own composer: a hand-written fixture can only
+# ever replay what someone already transcribed from an older release.
+#
+# Measured against the pre-fix classifier, exactly one of these ten verdicts
+# moves: claude idle, pending -> empty. Every other harness and state is
+# byte-for-byte unchanged, which is the evidence that the blank fold is
+# confined to the fault it was written for.
+real_capture_case() {  # <harness> <state> <agent> <expected>
+  local h=$1 st=$2 agent=$3 want=$4 dir log resp fb out
+  dir="$TMP_ROOT/real-capture-$h-$st"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  cp "$ROOT/tests/fixtures/composer-captures/$h.$st.ansi" "$resp/1.out" \
+    || fail "missing real capture fixture for $h $st"
+  printf '{"result":{"agent":{"agent":"%s","agent_status":"idle"}}}\n' "$agent" > "$resp/2.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_composer_state default:w1:p2' "$ROOT" )
+  [ "$out" = "$want" ] || fail "real $h $st capture should classify '$want', got '$out'"
+}
+
+test_composer_state_real_captures_supported_harnesses() {
+  real_capture_case claude idle  claude empty
+  real_capture_case claude typed claude pending
+  real_capture_case codex  idle  codex  empty
+  real_capture_case codex  typed codex  pending
+  real_capture_case pi     idle  pi     empty
+  real_capture_case pi     typed pi     pending
+  pass "fm_backend_herdr_composer_state: real claude, codex and pi captures read empty when idle and pending when holding unsent text"
+}
+
+# The other half of the same evidence: two installed harnesses whose real
+# composer this backend cannot locate at all, recorded so neither is mistaken
+# for covered.
+#   opencode 1.17.20 draws a composer row carrying a LEFT-only `┃` edge and a
+#     `╹▀▀▀` foot, matching neither the bordered shape (which requires the same
+#     glyph at both ends) nor a bare agent prompt glyph.
+#   agy 1.1.11 draws a bare `>` - byte-identical to a dead shell prompt - and
+#     the agy rule that would admit it on native identity requires that row to
+#     sit BELOW all separator activity, while real agy draws a rule underneath
+#     its prompt.
+# Both refuse as `unknown`, which is the safe direction: unknown never confirms
+# a submit and never authorises away-mode injection. Neither verdict is affected
+# by the blank fold. Reading these two composers is a separate change with its
+# own safety argument - admitting a bare `>` is exactly the dead-shell hazard
+# the shared rule exists to prevent - and is deliberately not attempted here.
+test_composer_state_real_captures_unreadable_harnesses() {
+  real_capture_case opencode idle  opencode unknown
+  real_capture_case opencode typed opencode unknown
+  real_capture_case agy      idle  agy      unknown
+  real_capture_case agy      typed agy      unknown
+  pass "fm_backend_herdr_composer_state: real opencode and agy captures refuse as unknown, the safe direction, unchanged by the blank fold"
+}
+
 # Direction 1: the message was accepted while the worker was mid-turn. The
 # composer really is clear, so submission is confirmed on the FIRST Enter and
 # the caller is not told to give up on a delivered message.
@@ -4523,6 +4583,8 @@ test_composer_state_codex_dynamic_idle_tip_reads_empty_when_faint
 test_composer_state_guard_still_refuses_real_pending_text_after_submit_confirmation_change
 test_composer_state_claude_nbsp_padded_empty_composer_is_empty
 test_composer_state_claude_queued_message_placeholder_is_empty
+test_composer_state_real_captures_supported_harnesses
+test_composer_state_real_captures_unreadable_harnesses
 test_send_text_submit_busy_baseline_confirms_cleared_claude_composer
 test_send_text_submit_busy_baseline_refuses_genuinely_unsent_text
 test_send_text_submit_slow_transition_within_one_enter_needs_no_extra_enter
