@@ -301,7 +301,7 @@ PY
       printf -- '- Task-specific checks:\n'
       printf '  - %s\n' "${CHECKS[@]}"
     fi
-    printf '\nBefore task investigation, create your acknowledgement file and wait until the release file exists.\n'
+    printf '\nBefore task investigation, create your acknowledgement file and wait until the release file exists, for a bounded five minutes; your role skill owns what to do when that wait runs out.\n'
     printf 'The helper will add exact copy, branch, Herdr pane, and peer agent facts to the recovery evidence before release.\n'
   } >> "$FM_HOME/data/$id/brief.md"
 }
@@ -384,9 +384,36 @@ jq \
    | .roles.navigator += {copy:$nw,branch:$nb,head:$nh,pane:$np,agent_target:$na,skill:$navigator_skill,skill_source_revision:$source_revision}
    | .topology_generations += [{generation:1,session:$session,workspace:$ws,tab:$tab,driver_pane:$dp,navigator_pane:$np,driver_agent:$da,navigator_agent:$na}]' \
   "$EVIDENCE" > "$EVIDENCE.tmp" && mv "$EVIDENCE.tmp" "$EVIDENCE"
-# Release both role barriers through the same verified send path used for every
-# live pair signal; Herdr never delivers text.
-pair_send "$EVIDENCE" driver "PAIR READY $PAIR_ID; read verified runtime facts in $EVIDENCE" || fail_pair "driver readiness release"
-pair_send "$EVIDENCE" navigator "PAIR READY $PAIR_ID; read verified runtime facts in $EVIDENCE" || fail_pair "navigator readiness release"
+# The barrier both roles actually wait on is the release FILE; the readiness
+# messages only point at the evidence. Publish the barrier FIRST, then notify.
+#
+# The old order did the opposite and made an unconfirmable notification fatal to
+# a pair whose composition had fully verified. Submission cannot be confirmed
+# for a worker that is already mid-turn on several harnesses, and both roles are
+# mid-turn by construction here - they are sitting in the barrier wait. So the
+# release aborted between its two sends, leaving the driver notified, the
+# navigator never told, and no release file: a pair that had passed every
+# invariant, destroyed by its own announcement.
+#
+# Notification stays honest: an unconfirmed send is recorded as unconfirmed,
+# never as delivered. It is written into the evidence so each role can announce
+# degraded coverage rather than stall on it.
 : > "$READY"
+release_note() {  # <role>
+  local role=$1
+  if pair_send "$EVIDENCE" "$role" "PAIR READY $PAIR_ID; read verified runtime facts in $EVIDENCE"; then
+    printf 'confirmed'
+  else
+    printf 'unconfirmed'
+  fi
+}
+DRIVER_NOTIFY=$(release_note driver)
+NAV_NOTIFY=$(release_note navigator)
+jq --arg d "$DRIVER_NOTIFY" --arg n "$NAV_NOTIFY" \
+  '.release_notifications = {driver:$d, navigator:$n}' "$EVIDENCE" > "$EVIDENCE.tmp" \
+  && mv "$EVIDENCE.tmp" "$EVIDENCE"
+if [ "$DRIVER_NOTIFY" != confirmed ] || [ "$NAV_NOTIFY" != confirmed ]; then
+  printf 'warning: pair %s released, but readiness notification was unconfirmed (driver=%s navigator=%s); both roles are released by the barrier file and must read the recovery evidence themselves\n' \
+    "$PAIR_ID" "$DRIVER_NOTIFY" "$NAV_NOTIFY" >&2
+fi
 printf 'paired %s ready session=%s workspace=%s tab=%s driver=%s navigator=%s\n' "$PAIR_ID" "$DS" "$WS" "$TAB" "$DRIVER_TARGET" "$NAV_TARGET"

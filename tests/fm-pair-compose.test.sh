@@ -312,6 +312,29 @@ FM_FAKE_SEND_FAIL=1 FM_PAIR_SEND="$FAKEBIN/fm-send" FM_SEND_LOG="$TMP_ROOT/send.
   && fail "unconfirmed fm-send submission reported as sent"
 assert_grep "$HOME_DIR|pair-nav UNSENT M4" "$TMP_ROOT/send.log" "failed submission attempt not recorded"
 [ "$(grep -c 'UNSENT M4' "$TMP_ROOT/send.log")" -eq 1 ] || fail "failed pair signal was retried"
+
+# A fully composed pair must survive an unconfirmable READINESS notification.
+# Submission cannot be confirmed for a worker that is already mid-turn, and both
+# roles are mid-turn by construction at this point - they are sitting in the
+# barrier wait - so making the announcement fatal destroyed pairs that had
+# passed every invariant: the driver was notified, the navigator was never told,
+# and no release file was ever written. The barrier is the FILE; the messages
+# only point at the evidence. Delivery is still never overstated - an
+# unconfirmed send is recorded as unconfirmed.
+reset_pair
+export FM_FAKE_SEND_FAIL=1
+run_pair >/dev/null 2>"$TMP_ROOT/release.err" \
+  || fail "an unconfirmed readiness notification must not destroy a fully composed pair"
+unset FM_FAKE_SEND_FAIL
+assert_present "$HOME_DIR/data/pair/ready" "unconfirmed notification withheld the barrier file"
+jq -e '.state == "ready"' "$EVIDENCE" >/dev/null || fail "unconfirmed notification left the pair not ready"
+jq -e '.release_notifications.driver == "unconfirmed" and .release_notifications.navigator == "unconfirmed"' "$EVIDENCE" >/dev/null \
+  || fail "unconfirmed readiness notifications were not recorded honestly"
+assert_grep 'readiness notification was unconfirmed' "$TMP_ROOT/release.err" "degraded release was not reported"
+# The second role is still notified after the first notification fails, which is
+# exactly the step the old ordering never reached.
+assert_grep "$HOME_DIR|pair PAIR READY pair;" "$TMP_ROOT/send.log" "driver was not notified"
+assert_grep "$HOME_DIR|pair-nav PAIR READY pair;" "$TMP_ROOT/send.log" "navigator was not notified after the driver notification went unconfirmed"
 assert_no_grep 'UNSENT M4' "$FM_HERDR_LOG" "unsent pair signal was injected via Herdr"
 "$HELPER" finding "$EVIDENCE" open N3
 "$HELPER" gate "$EVIDENCE" M2 abcdef1234567
