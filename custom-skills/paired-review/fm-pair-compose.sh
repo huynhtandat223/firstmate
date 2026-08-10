@@ -112,12 +112,37 @@ pair_verify_topology() {  # <session> <driver-agent> <driver-copy> <navigator-ag
   printf '%s\t%s\t%s\t%s\n' "$dp" "$np" "$dws" "$dtab"
 }
 
+# fm-spawn records where it PUT each role's pane; composition then moves both
+# into the pair workspace and never told the task record. Every consumer that
+# resolves a task through state/<id>.meta - fm-send's target resolution, and
+# each role reading its own runtime facts - kept seeing a workspace the pair no
+# longer occupied.
+#
+# Both roles of a live pair then diagnosed that exactly backwards: they read
+# their own stale meta as current, concluded the PROVEN recovery evidence was
+# stale, and blocked a pair whose topology `recover` verified as intact. Writing
+# the proven topology back is what keeps the two records from disagreeing.
+meta_set() {  # <home> <task-id> <key> <value>
+  local home=$1 id=$2 key=$3 value=$4
+  local file="$home/state/$id.meta"
+  [ -f "$file" ] || return 0
+  awk -v k="$key" -v v="$value" 'BEGIN{FS="="} $1==k {print k "=" v; next} {print}' "$file" > "$file.tmp" \
+    && mv "$file.tmp" "$file"
+}
+
+meta_record_topology() {  # <home> <task-id> <session> <workspace> <tab> <pane>
+  meta_set "$1" "$2" window "$3:$6"
+  meta_set "$1" "$2" herdr_workspace_id "$4"
+  meta_set "$1" "$2" herdr_tab_id "$5"
+  meta_set "$1" "$2" herdr_pane_id "$6"
+}
+
 # Re-verify a composed pair from each role's stable identity and record the
 # proven topology as a new generation. A topology that already matches the
 # latest generation is reported as unchanged rather than appended twice, and any
 # refusal leaves the recorded topology and the live pair untouched.
 pair_recover() {  # <recovery.json>
-  local evidence=$1 session dname nname dcopy ncopy topo dp np ws tab generation
+  local evidence=$1 session dname nname dcopy ncopy topo dp np ws tab generation owner_home
   session=$(jq -r '[.topology_generations[]?.session] | last // empty' "$evidence")
   dname=$(jq -r '.roles.driver.agent_target // empty' "$evidence")
   nname=$(jq -r '.roles.navigator.agent_target // empty' "$evidence")
@@ -143,6 +168,15 @@ pair_recover() {  # <recovery.json>
     || die "recovered topology not recorded"
   mv "$evidence.tmp" "$evidence"
   generation=$(jq -r '[.topology_generations[]?.generation] | max // 0' "$evidence")
+  # A recovered topology is only half recorded until the task records agree with
+  # it; otherwise the next reader of meta repeats the stale-topology misreading.
+  owner_home=$(jq -r '.owner_home // empty' "$evidence")
+  if [ -n "$owner_home" ]; then
+    meta_record_topology "$owner_home" "$(jq -r '.roles.driver.task_id // empty' "$evidence")" \
+      "$session" "$ws" "$tab" "$dp"
+    meta_record_topology "$owner_home" "$(jq -r '.roles.navigator.task_id // empty' "$evidence")" \
+      "$session" "$ws" "$tab" "$np"
+  fi
   printf 'paired %s topology generation %s session=%s workspace=%s tab=%s driver=%s navigator=%s\n' \
     "$(jq -r '.pair_id // empty' "$evidence")" "$generation" "$session" "$ws" "$tab" "$dp" "$np"
 }
@@ -361,6 +395,10 @@ h agent rename "$DP" "$DRIVER_TARGET" >/dev/null || fail_pair "driver agent iden
 h agent rename "$NP" "$NAV_TARGET" >/dev/null || fail_pair "navigator agent identity"
 TOPO=$(pair_verify_topology "$DS" "$DRIVER_TARGET" "$DW" "$NAV_TARGET" "$NW") || fail_pair "$TOPO"
 IFS=$'\t' read -r DP NP WS TAB <<<"$TOPO"
+# The moves above reassigned both panes; tell each task record where its role
+# actually lives now, so meta and the recovery evidence cannot disagree.
+meta_record_topology "$FM_HOME" "$DRIVER_ID" "$DS" "$WS" "$TAB" "$DP"
+meta_record_topology "$FM_HOME" "$NAV_ID" "$DS" "$WS" "$TAB" "$NP"
 
 DHEAD=$(git -C "$DW" rev-parse HEAD); NHEAD=$(git -C "$NW" rev-parse HEAD)
 SOURCE_REV=$(git -C "$ROOT" rev-parse HEAD)
