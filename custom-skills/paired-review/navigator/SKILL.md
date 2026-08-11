@@ -28,6 +28,7 @@ Never send a live signal directly to a Herdr agent or pane; Herdr is not a deliv
    The driver waits for this outcome before editing, but only for a bounded wait, after which it proceeds solo; deliver the outcome regardless and reconcile against its current HEAD.
 3. On each milestone, inspect the driver's Git status, diff summary, diff, branch, HEAD, changed source, and task checks directly.
    Use the same evidence at the final gate.
+   At the plan gate and each milestone, when the driver's work touches an agent-facing document (a skill, `AGENTS.md`, `CLAUDE.md`, or docs/guidance an agent consumes), remind the driver once to load and apply `custom-skills/matt/productivity/writing-for-agents/SKILL.md`; that skill owns the writing process, so point to it, never restate it.
    `pair-log.md` never substitutes for current Git truth.
 4. For a credible wrong direction or scope breach, send `STOP <finding-id>` first, with the verified pair-send method.
    Require `ACK STOP <finding-id>` as semantic delivery confirmation, then record the finding and evidence.
