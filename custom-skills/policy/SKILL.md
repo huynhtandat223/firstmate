@@ -26,6 +26,8 @@ The role controls the role-allowed capability set and communication boundary.
 - `supervisor` may use this policy, the programme contract and procedure named by its brief, and the ordinary Firstmate lifecycle owners for the workers it dispatches.
 - `firstmate` may use this policy and the ordinary Firstmate lifecycle owners.
 
+A `driver` or `worker` may also use the verification capability when it verifies expected behavior or claims a task done.
+
 A role may use a capability only when its trigger is active.
 A capability can guide a step, but it cannot widen scope, change an accepted contract, merge, perform destructive or security-sensitive work, or turn planning into implementation.
 
@@ -44,6 +46,7 @@ Load only the exact file named by the first matching trigger, when the trigger o
 | A paired brief carries `role=driver` | `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/implement/SKILL.md`, then `/home/dathuynh/codes/firstmate/custom-skills/paired-review/driver/SKILL.md` |
 | A paired brief carries `role=navigator` | `/home/dathuynh/codes/firstmate/custom-skills/paired-review/navigator/SKILL.md`, then `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/code-review/SKILL.md` |
 | An implementation worker is asked to implement | `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/implement/SKILL.md` |
+| Verification of a task's expected behavior begins, or a completion claim is about to be made | `/home/dathuynh/codes/firstmate/custom-skills/classical-testing/SKILL.md` |
 | A review or navigator task is opened | `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/code-review/SKILL.md` |
 | A diagnosis task is opened | `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/diagnosing-bugs/SKILL.md` |
 | The captain invokes `/orchestrator`, asks to run an authorized programme, or a programme supervisor has stopped | `/home/dathuynh/codes/firstmate/custom-skills/orchestrator/SKILL.md` |

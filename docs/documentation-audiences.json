@@ -161,6 +161,10 @@
       "audience": "agent-runtime"
     },
     {
+      "path": "custom-skills/classical-testing/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": "custom-skills/orchestrator/SKILL.md",
       "audience": "agent-runtime"
     },
