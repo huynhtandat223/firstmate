@@ -5,8 +5,9 @@
 # What this file pins is the half a script cannot enforce: that the skill the
 # captain reaches still routes to a TEMPORARY supervisor with a leased home,
 # never back to a persistent secondmate or to a scout that cannot supervise
-# children, and that the brief it scaffolds states the boundaries the runtime
-# will actually enforce.
+# children, that firstmate's part stops at intake while task decomposition and
+# per-child routing stay with the supervisor, and that the brief it scaffolds
+# states the boundaries the runtime will actually enforce.
 set -u
 
 . "$(dirname "${BASH_SOURCE[0]}")/../../tests/lib.sh"
@@ -35,6 +36,46 @@ test_skill_covers_relaunch_and_cleanup() {
   assert_grep 'reconciles the workers already recorded there' "$SKILL" "the skill does not require child reconciliation on relaunch"
   assert_grep 'Cleanup names anything still outstanding' "$SKILL" "the skill does not describe the cleanup refusals"
   pass "orchestrator: the skill covers relaunch into the same home and the cleanup refusals"
+}
+
+test_skill_gives_child_routing_to_the_supervisor() {
+  local bad
+  assert_no_grep '{TASK}' "$SKILL" "the skill still carries the scaffold's task placeholder"
+  assert_no_grep '{SCOPE}' "$SKILL" "the skill still carries the scaffold's scope placeholder"
+
+  assert_grep 'The supervisor owns the programme' "$SKILL" \
+    "the skill does not state who owns the programme after launch"
+  assert_grep 'It decomposes the authorized work into task cards' "$SKILL" \
+    "the skill does not give task decomposition to the supervisor"
+  assert_grep "It resolves each child worker's concrete harness, model, and effort" "$SKILL" \
+    "the skill does not give per-child profile resolution to the supervisor"
+  assert_grep "records that routing on the child's card" "$SKILL" \
+    "the skill does not make the supervisor record the child's routing"
+
+  # Firstmate resolves the SUPERVISOR's own profile and nothing below it, so no
+  # line may name firstmate, a child or worker, and a profile axis together.
+  bad=$(grep -n -i -E 'firstmate' "$SKILL" \
+    | grep -i -E 'worker|child' \
+    | grep -i -E 'harness|model|effort|profile|routing' || true)
+  [ -z "$bad" ] \
+    || fail "the skill reads as firstmate owning a child worker's profile:"$'\n'"$bad"
+
+  pass "orchestrator: the skill gives task decomposition and child routing to the supervisor"
+}
+
+test_skill_names_an_explicit_profile_on_every_launch() {
+  local launches bad
+  launches=$(grep -n -E 'fm-spawn\.sh' "$SKILL" | grep -v -e '--help' || true)
+  [ -n "$launches" ] || fail "the skill shows no supervisor launch command"
+  bad=$(printf '%s\n' "$launches" | awk '!/--harness/ || !/--model/ || !/--effort/')
+  [ -z "$bad" ] \
+    || fail "a launch command in the skill omits an explicit profile flag:"$'\n'"$bad"
+
+  # shellcheck disable=SC2016 # Fixed-string match; the backticks are the skill's markdown.
+  assert_grep 'Every launch in this programme names its profile out loud with `--harness`, `--model`, and `--effort`' \
+    "$SKILL" "the skill does not require an explicit profile on every launch"
+
+  pass "orchestrator: every supervisor and worker launch names harness, model, and effort"
 }
 
 test_procedure_is_not_a_secondmate_procedure() {
@@ -91,6 +132,8 @@ test_brief_refuses_to_overwrite() {
 
 test_skill_opens_a_temporary_supervisor
 test_skill_covers_relaunch_and_cleanup
+test_skill_gives_child_routing_to_the_supervisor
+test_skill_names_an_explicit_profile_on_every_launch
 test_procedure_is_not_a_secondmate_procedure
 test_contract_requires_reading_the_inventory_after_a_restart
 test_policy_routes_the_captain_to_the_skill
