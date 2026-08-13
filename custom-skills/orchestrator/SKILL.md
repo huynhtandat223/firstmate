@@ -31,12 +31,12 @@ From there firstmate holds lifecycle only - alive, waiting, finished, or failed 
 
 The supervisor owns the programme from launch on:
 
-- Its contract is [`CONTRACT.md`](CONTRACT.md) and [`program-orchestration`](../program-orchestration/SKILL.md), which the step 4 brief points it at.
+- Its procedure is [`PROGRAMME.md`](PROGRAMME.md), which the step 4 brief points it at, and which reaches [`ROUTING.md`](ROUTING.md) and [`program-orchestration`](../program-orchestration/SKILL.md) on their own triggers.
 - It decomposes the authorized work into task cards and maps their dependencies and custody.
 - It resolves each child worker's concrete harness, model, and effort through the ordinary per-task routing, and records that routing on the child's card.
 - It spawns, supervises, and reconciles its own children, and owns the programme's evidence and delivery.
 
-Those two contract files stay out of this one: firstmate opens the session and never runs it.
+That procedure stays out of this file: firstmate opens the session and never runs it.
 
 ## 1. Take the intake inputs
 
@@ -49,6 +49,8 @@ Ask one concise question for whichever is missing, and open nothing until it is 
 A spec, report, or recommendation is evidence that work is worth doing; the captain's word is what makes it startable.
 
 The supervisor allocates every worker copy from this home's existing clones and clones nothing itself, so a named project missing from `projects/` is a gap to close before opening, not after.
+
+The supervisor adds the interpreted revision and the non-goals on top of these three; [`PROGRAMME.md`](PROGRAMME.md) step 1 owns that half, so do not collect it here.
 
 **Done when:** all three are written in the captain's terms, the authorization is a captain sentence you can quote, and every named project is present under `projects/`.
 
@@ -85,7 +87,7 @@ It writes the home, worker-allocation, status, records, and definition-of-done c
 
 Its **Task** section takes the work from step 1 and these three, every path absolute:
 
-> Read and follow `<firstmate-home>/custom-skills/orchestrator/CONTRACT.md` and `<firstmate-home>/custom-skills/program-orchestration/SKILL.md`. They are your contract for this whole programme.
+> Read and follow `<firstmate-home>/custom-skills/orchestrator/PROGRAMME.md`. It is your procedure for this whole programme.
 > Your decision records go in `<firstmate-home>/data/<programme-id>/`, one file per decision.
 > Your initialization packet is at `<absolute path>`.
 

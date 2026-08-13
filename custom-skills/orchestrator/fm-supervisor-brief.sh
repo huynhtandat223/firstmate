@@ -13,7 +13,7 @@
 #
 # Writes the contract and leaves {TASK} and {SCOPE} for the caller to fill:
 #   {TASK}   the programme, its authorization, and the pointer to
-#            custom-skills/orchestrator/CONTRACT.md
+#            custom-skills/orchestrator/PROGRAMME.md
 #   {SCOPE}  the boundary this programme may not widen without the captain
 #
 # Refuses to overwrite an existing brief. Absolute paths only, because the

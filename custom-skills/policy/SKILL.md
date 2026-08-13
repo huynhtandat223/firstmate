@@ -23,7 +23,7 @@ The role controls the role-allowed capability set and communication boundary.
 - `driver` may use this policy and the implementation, test, and review capabilities named by its brief.
 - `navigator` may use this policy, the review capability, and exact evidence capabilities named by its brief.
 - `worker` may use this policy and only the capability named by its delivery path.
-- `supervisor` may use this policy, the programme contract and procedure named by its brief, and the ordinary Firstmate lifecycle owners for the workers it dispatches.
+- `supervisor` may use this policy, the programme procedure named by its brief together with the branches that procedure reaches, and the ordinary Firstmate lifecycle owners for the workers it dispatches.
 - `firstmate` may use this policy and the ordinary Firstmate lifecycle owners.
 
 A `driver` or `worker` may also use the verification capability when it verifies expected behavior or claims a task done.
@@ -50,7 +50,7 @@ Load only the exact file named by the first matching trigger, when the trigger o
 | A review or navigator task is opened | `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/code-review/SKILL.md` |
 | A diagnosis task is opened | `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/diagnosing-bugs/SKILL.md` |
 | The captain invokes `/orchestrator`, asks to run an authorized programme, or a programme supervisor has stopped | `/home/dathuynh/codes/firstmate/custom-skills/orchestrator/SKILL.md` |
-| A brief carries `role=supervisor` | `/home/dathuynh/codes/firstmate/custom-skills/orchestrator/CONTRACT.md`, then `/home/dathuynh/codes/firstmate/custom-skills/program-orchestration/SKILL.md` |
+| A brief carries `role=supervisor` | `/home/dathuynh/codes/firstmate/custom-skills/orchestrator/PROGRAMME.md` |
 
 The vendored bytes under `custom-skills/matt/` are immutable.
 Read the exact path, preserve its procedure, and return here only for Firstmate authority and communication boundaries.
