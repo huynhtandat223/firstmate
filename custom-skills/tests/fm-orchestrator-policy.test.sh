@@ -14,7 +14,7 @@ set -u
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SKILL="$ROOT_DIR/custom-skills/orchestrator/SKILL.md"
-CONTRACT="$ROOT_DIR/custom-skills/orchestrator/CONTRACT.md"
+PROGRAMME="$ROOT_DIR/custom-skills/orchestrator/PROGRAMME.md"
 PROCEDURE="$ROOT_DIR/custom-skills/program-orchestration/SKILL.md"
 POLICY="$ROOT_DIR/custom-skills/policy/SKILL.md"
 BRIEF_WRITER="$ROOT_DIR/custom-skills/orchestrator/fm-supervisor-brief.sh"
@@ -86,11 +86,13 @@ test_procedure_is_not_a_secondmate_procedure() {
   pass "program-orchestration: the procedure no longer routes through secondmate provisioning"
 }
 
-test_contract_requires_reading_the_inventory_after_a_restart() {
-  assert_present "$CONTRACT" "the supervisor contract is missing"
-  assert_grep 'A restart wears the same failure' "$CONTRACT" "the contract has no restart judgment"
-  assert_grep 'Read the inventory before you dispatch anything' "$CONTRACT" "the contract does not require reading the inventory first"
-  pass "orchestrator: the contract requires reading the worker inventory after a restart"
+test_programme_requires_reading_the_inventory_after_a_restart() {
+  assert_present "$PROGRAMME" "the programme procedure is missing"
+  assert_grep 'After any relaunch, read the recorded worker inventory as the source before dispatching' \
+    "$PROGRAMME" "the programme procedure does not require reading the inventory first"
+  assert_grep 'your recollection of the inventory is a report about it' \
+    "$PROGRAMME" "the programme procedure lost the restart judgment behind that rule"
+  pass "orchestrator: the programme procedure requires reading the worker inventory after a restart"
 }
 
 test_policy_routes_the_captain_to_the_skill() {
@@ -135,7 +137,7 @@ test_skill_covers_relaunch_and_cleanup
 test_skill_gives_child_routing_to_the_supervisor
 test_skill_names_an_explicit_profile_on_every_launch
 test_procedure_is_not_a_secondmate_procedure
-test_contract_requires_reading_the_inventory_after_a_restart
+test_programme_requires_reading_the_inventory_after_a_restart
 test_policy_routes_the_captain_to_the_skill
 test_brief_states_the_boundaries_the_runtime_enforces
 test_brief_refuses_to_overwrite

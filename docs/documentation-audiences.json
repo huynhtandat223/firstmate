@@ -169,7 +169,11 @@
       "audience": "agent-runtime"
     },
     {
-      "path": "custom-skills/orchestrator/CONTRACT.md",
+      "path": "custom-skills/orchestrator/PROGRAMME.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "custom-skills/orchestrator/ROUTING.md",
       "audience": "agent-runtime"
     },
     {

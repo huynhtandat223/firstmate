@@ -978,6 +978,14 @@ families_for_changed_path() {
     .agents/skills/*/SKILL.md|skills/*/SKILL.md)
       printf '%s\n' pure-contract-unit
       ;;
+    custom-skills/*)
+      # Role-session skill material, plus the policy tests colocated with it.
+      # Select whichever tests/ suite names the changed path. The colocated
+      # custom-skills/tests/ scripts are not part of this runner's tests/
+      # inventory, so a path no suite names selects nothing rather than refusing,
+      # the same rule the deleted-script cases below apply.
+      families_for_test_reference "$path" || true
+      ;;
     .github/workflows/ci.yml|.no-mistakes.yaml)
       printf '%s\n' pure-contract-unit
       printf '%s\n' real-herdr-gated
