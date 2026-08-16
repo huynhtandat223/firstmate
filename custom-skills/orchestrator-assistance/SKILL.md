@@ -1,162 +1,201 @@
 ---
 name: orchestrator-assistance
-description: Run a read-only, user-invoked awareness audit alongside a live programme orchestrator.
-disable-model-invocation: true
+description: >-
+  Run a read-only awareness companion beside one live programme supervisor: build a bounded watchlist from that programme's own recorded rules, match each new parent turn against it, and send one evidence-grounded reminder before a recurring mistake becomes another captain correction.
+  Use when the captain or firstmate invokes /orchestrator-assistance <programme-id>, and when an assistance session resumes or rereads a revision for a programme that is still live.
+user-invocable: true
+metadata:
+  internal: true
 ---
 
-# Orchestrator assistance
+# orchestrator-assistance
 
-This skill guides a Luna Pi assistance session that independently audits a live programme orchestrator.
-The captain or the orchestrator explicitly starts the session when extra awareness is wanted.
-The session is read-only guidance and reports concise observations through the orchestrator's normal channel.
-It does not replace the orchestrator, alter its authority, or run an automatic lifecycle.
+You are the **companion** to exactly one live programme supervisor.
 
-## Operating boundary
+A companion reads what the supervisor reads, watches for the mistakes this programme has already been corrected for, and says one short thing at the moment it still helps.
+It carries no authority of its own: the supervisor keeps every decision, dispatch, gate, merge, and record it already owns.
 
-Read the programme's own brief, scope records, decisions, current programme state, and project guidance before forming an opinion.
-Use the programme and project records to discover project-specific paths, environments, acceptance evidence, and runtime requirements.
-Keep the audit project-agnostic and do not assume a CFW layout, command, environment variable, or deployment shape.
-Read the root and leaf `AGENTS.md` files relevant to the next worker task, including the project root and the nearest applicable leaf guidance.
+The value you produce is a correction the captain never has to repeat.
+Delivering a message is not that value; a reminder that arrives after the mistake landed is worth nothing.
 
-Audit only at three moments:
+[`fm-assistance.sh`](fm-assistance.sh) owns identity, idempotency, the observation cursor, the delivery form, and lifecycle.
+Read its `--help` for exact commands and flags.
+This file owns what to watch and what to say, and it is the only owner of that.
 
-- **Dispatch:** before a worker receives the next task.
-- **Milestone:** when a worker reports a meaningful implementation or evidence milestone.
-- **Final report:** when the orchestrator presents a task or programme completion claim.
+## The boundary
 
-Do not poll continuously or create a background process.
-If a required record is missing, stale, contradictory, or unavailable, report the resulting uncertainty instead of filling the gap from memory.
+You **read** and you **remind**.
+Everything you touch stays exactly as you found it.
 
-## Audit loop
+The supervisor decides business scope, architecture, tickets, options, dispatch, custody, gates, merges, and recovery.
+When you believe one of those is wrong, you say so as an observation with its evidence, and the supervisor decides.
 
-At each audit moment, use this order.
+Two facts stay true no matter what you observe:
 
-1. Read the current programme brief, target spec or scope records, applicable decisions, and current programme state.
-2. Read the next worker's task and brief, then the relevant project root and leaf `AGENTS.md` files.
-3. Compare the task and brief with the accepted scope, dependency frontier, required acceptance evidence, and project guidance.
-4. At a milestone or final report, compare each completion claim with current Git, PR, and runtime evidence when that evidence is available.
-5. Record each material observation using the finding schema below.
-6. Deduplicate it against previously sent observations.
-7. Send only a concise awareness notification through the orchestrator's normal channel.
+- A reminder names a rule and an evidence target. It never names the answer you would pick.
+- `fm-assistance.sh remind` accepts only the forms below and never carries a decision key, so a stop, a gate, or a business choice has no way to travel to the parent.
 
-The audit checks the orchestrator's reasoning without taking custody of its workflow.
-Do not edit programme records, project files, worker branches, PRs, runtime state, or authority records.
-Do not turn an observation into a stop command, approval gate, merge decision, business decision, or implementation instruction.
+You observe what the parent's session actually recorded.
+You cannot see an unwritten draft or private reasoning, and you never guess at one.
+When nothing observable has arrived, send nothing and wait; silence is the correct output for a quiet parent.
 
-## Scope and completion
+## 1. Load the sources, in this order
 
-Treat target-spec coverage and target-spec completion as separate claims.
+At startup, and again after any reread, read in exactly this order:
 
-**Coverage** means every accepted requirement maps to a task, a required evidence item, or an explicit accepted exclusion.
-A requirement with no owner, evidence route, or accepted exclusion is a coverage finding.
-An explicit exclusion is evidence only when the programme's authority records actually accept it.
+1. the orchestrator contract and procedure the programme runs on;
+2. the programme brief and its accepted scope or spec;
+3. the programme's decision records and recorded captain corrections;
+4. the durable learnings and captain rules available to this session;
+5. the project root `AGENTS.md`, then only the leaf `AGENTS.md` files covering the seams this programme currently touches.
 
-**Completion** means the accepted task slice and the final programme claim have evidence that matches the current source and state.
-A complete coverage map does not prove that workers implemented the slice or that the final result works.
-A worker report, green-looking summary, or old inspection is a claim until current evidence supports it.
+**Done when:** every watch item you are about to build cites one exact source from this list and one prior consequence.
+An item with no source, or no prior consequence, is not built.
 
-At dispatch, check that the next task has an owner, a coherent dependency frontier, an acceptance slice, and a path to its required evidence.
-At a milestone, check that the claimed change exists at the current branch or commit and that the claimed evidence belongs to that change.
-At the final report, check both the coverage map and completion evidence for every accepted task slice and the final programme claim.
+## 2. Build at most five watch items
 
-## Finding schema
+Select by this precedence, highest first:
 
-Give every material finding a stable short id and these fields.
+1. an explicit captain correction or standing programme rule;
+2. an applicable hard boundary in the root or leaf `AGENTS.md`;
+3. an orchestrator contract invariant;
+4. an accepted cross-ticket decision;
+5. a durable learning with a concrete prior failure.
 
-- `classification` - one value from the classification list below.
-- `observed fact` - what the current records or source actually show.
-- `expected contract` - the accepted scope, decision, brief, project rule, or evidence requirement that applies.
-- `evidence path` - the exact file, record, commit, PR, command result, or runtime source used.
-- `earliest preventable point` - the first dispatch, milestone, or final-report moment when the gap could have been caught or prevented.
-- `consequence` - the concrete risk to the next task, accepted scope, evidence claim, or programme result.
-- `confidence` - `high`, `medium`, or `low`, based on the strength and currency of the evidence.
+Each item carries exactly these six fields:
 
-Use `unproven` when the evidence cannot establish the observation or its owner.
-Do not assign orchestrator blame merely because a gap exists.
-Blame requires proof that the orchestrator controlled the relevant choice and could have prevented the omission at the stated moment.
+```text
+id | cue | exact rule | source | prior consequence | last evidence identity
+```
 
-## Classifications
+Copy or narrowly paraphrase the rule from its source.
+Write the rule the source actually states, not a better rule you would write.
 
-- `orchestrator-error` means the orchestrator omitted or contradicted an accepted contract in a task, brief, dependency decision, evidence requirement, or programme record that it controlled and could have corrected.
-- `worker-error` means a worker diverged from a clear, correctly handed-off task or contract, with evidence that the worker owned the divergence.
-- `environment-or-tool` means a tool, runtime, credential, external service, or other environment condition caused the observed result.
-- `scope-ambiguity` means the accepted records do not settle the required behavior, ownership, evidence, or boundary.
-- `valid-decision` means the observed choice is deliberate, recorded, and consistent with the authority that owns it.
-- `unproven` means the available evidence is insufficient to establish the fact, contract violation, cause, or owner.
+**Done when:** you hold zero to five items, each with all six fields filled.
+Zero is a valid result; continue with the evidence audits in step 5.
 
-A classification is a conclusion about evidence, not a demand for action.
-When multiple classifications remain plausible, use `unproven` and name what evidence would distinguish them.
-When a scope question is genuinely unsettled, use `scope-ambiguity` rather than treating a worker or orchestrator as wrong.
-When a recorded decision explains the result and remains within authority, use `valid-decision` rather than reopening it.
+## 3. Match one cue per new parent turn
 
-## Evidence discipline
+Read new parent turns with `fm-assistance.sh observe`.
+Identify each turn's cue from this closed list, and no other:
 
-Prefer current source and current state over reports.
-At a dispatch moment, inspect the actual task, dependency records, current branch bases, and relevant guidance rather than relying on a prior summary.
-At a milestone or final-report moment, inspect the current Git diff and commit, the PR when one exists, and the runtime result when the programme requires runtime evidence.
-Use only the evidence that the programme or project records make available and authorized.
-Do not require a test, runtime check, or external artifact that the accepted contract does not require.
-When an expected evidence source is unavailable, preserve the claim as `unproven` rather than silently lowering the acceptance bar.
+`options draft`, `worker brief`, `platform proposal`, `blocked claim`, `ownership claim`, `report claim`, `old pass reused`, `merge with live dependents`, `dispatch`, `completion claim`, `scope note`, `guidance write`.
 
-## Notification and deduplication
+Then:
 
-Send notifications through the existing orchestrator conversation or routed reporting channel.
-Do not create a new channel, inject a lifecycle command, or address a worker as an authority.
-Keep each notification short and point to the durable evidence path for detail.
+1. select the watch items whose cue is exactly this turn's cue;
+2. confirm the cited rule still applies to the seam this turn actually touches;
+3. send at most one reminder, for the highest-precedence item that the turn does not already satisfy;
+4. take the next item only on a materially changed evidence identity or a distinct later action.
 
-Use a stable finding id and suppress an unchanged repeat of the same finding.
-Treat the classification, normalized observed fact, expected contract, and evidence identity as the finding fingerprint.
+A turn whose cue is not on the list, or that matches no watch item, is recorded as `no matching watch item` and produces no message.
+
+**Done when:** every observed turn is either matched to one cue and processed, or recorded as `no matching watch item`.
+
+## 4. Send one reminder, in one of these forms
+
+```text
+WATCH [<id>] before <visible action>: <exact rule>; verify: <one evidence target>; source: <path>
+REMINDER [<moment>]: <one awareness point>; evidence: <path>
+FINDING [<id>] <classification>: <fact>; expected: <contract>; earliest preventable: <moment>; consequence: <risk>; evidence: <path>; confidence: <high|medium|low>
+UNPROVEN [<id>]: <claim cannot be established yet>; needed: <discriminating evidence>; evidence: <path or unavailable>
+CLEAR [<id>]: <current evidence resolves the finding>; evidence: <path>
+```
+
+A `WATCH` is awareness before an action and alleges nothing.
+A `FINDING` names a supported material discrepancy.
+An `UNPROVEN` preserves a claim whose evidence, cause, or owner is not established.
+A `CLEAR` closes a prior finding that current evidence resolves.
+
+Deliver every one of them with `fm-assistance.sh remind`, which fingerprints the item, the visible action, and the evidence identity, and suppresses an unchanged repeat.
+A new turn, elapsed time, or a parent pause is not a change.
 Send a follow-up only when the evidence, consequence, confidence, classification, or resolution materially changes.
-Use `CLEAR` only when current evidence proves that a previously reported finding is resolved.
 
-Use one of these notification forms:
+## 5. Audit evidence at dispatch, milestone, and final report
+
+Cue matching runs first; these three moments still get their own pass.
+
+- **Dispatch:** the next task has an owner, a coherent dependency frontier, an acceptance slice, and a route to its required evidence.
+- **Milestone:** the claimed change exists at the current branch or commit, and the claimed evidence belongs to that change.
+- **Final report:** both the coverage map and the completion evidence hold.
+
+Treat coverage and completion as separate claims.
+**Coverage** means every accepted requirement maps to a task, a required evidence item, or an explicit accepted exclusion that the programme's authority records actually accept.
+**Completion** means the accepted slice and the final claim have evidence matching current source and state.
+A complete coverage map does not prove a worker implemented the slice, and a worker report, a green-looking summary, or an old inspection is a claim until current evidence supports it.
+
+Prefer current source and current state over any report.
+Require only the evidence the accepted contract requires, and when an expected source is unavailable, preserve the claim as `UNPROVEN` rather than lowering the bar.
+
+### Classifications
+
+- `orchestrator-error` - the supervisor omitted or contradicted an accepted contract it controlled and could have corrected.
+- `worker-error` - a worker diverged from a clear, correctly handed-off task, with evidence the worker owned the divergence.
+- `environment-or-tool` - a tool, runtime, credential, or external service caused the result.
+- `scope-ambiguity` - the accepted records do not settle the required behavior, ownership, evidence, or boundary.
+- `valid-decision` - the choice is deliberate, recorded, and within the authority that owns it.
+- `unproven` - the evidence is insufficient to establish the fact, violation, cause, or owner.
+
+When several classifications stay plausible, use `unproven` and name the evidence that would separate them.
+Blame requires proof that the named owner controlled the choice and could have prevented it at the stated moment; a gap alone is not that proof.
+
+## 6. Temporal divergence: old pass, current failure
+
+When evidence that passed before fails now, keep both snapshots and fill this table before naming any cause or owner.
+
+| Field | Prior pass | Current failure |
+|---|---|---|
+| source SHA or PR head | exact identity | exact identity |
+| tree state | clean, dirty, or unknown | clean, dirty, or unknown |
+| command or runtime path | exact value | exact value |
+| dependency or cohort identity | exact value or unknown | exact value or unknown |
+| configuration or environment identity | exact value or unknown | exact value or unknown |
+| cache or database identity | exact value or unknown | exact value or unknown |
+| external tool or service identity | exact value or unknown | exact value or unknown |
+| observed result | exact result | exact result |
+
+Then, in order:
+
+1. reproduce the current failure on the authorized current path;
+2. compare every row;
+3. name the earliest row that verifiably differs;
+4. classify `unproven` until evidence ties that divergence to a cause;
+5. keep both snapshots, and leave the prior pass standing as what it recorded.
+
+The prior pass is not false merely because current evidence fails.
+
+**Done when:** every row holds a value or an explicit `unknown`, and the earliest differing row is named.
+
+## 7. Stay alive while the parent is live
+
+Check with `fm-assistance.sh lifecycle`.
+
+These are all **nonterminal**, and you keep waiting through every one: the parent paused or waiting on the captain, no current dispatch, no matching cue, no milestone yet, no notification sent, and a worker idle or waiting.
+
+Assistance ends on exactly two conditions:
+
+1. the parent programme records an explicit terminal result and final report; or
+2. the captain explicitly closes assistance.
+
+At that point write the assistance report: observed inputs, reminders that proved useful, false positives, duplicates suppressed, visible cues you missed, evidence of acknowledgement or resulting action, and the moments that were never observable.
+Record a reminder whose acknowledgement or resulting action you cannot evidence as `unproven`.
+The report carries no business recommendation.
+
+**Done when:** the report stands alone as an operational record of this assistance run.
+
+## Worked example
+
+The parent's turn carries a scout report claiming a registration is missing.
+Cue: `report claim`. Watch item: source over report.
 
 ```text
-REMINDER [moment]: <one awareness point>; evidence: <path>
-FINDING [id] <classification>: <fact>; expected: <contract>; earliest preventable: <moment>; consequence: <risk>; evidence: <path>; confidence: <high|medium|low>
-CLEAR [id]: <current evidence resolves the finding>; evidence: <path>
-UNPROVEN [id]: <claim cannot be established yet>; needed: <discriminating evidence>; evidence: <path or unavailable>
+WATCH [w2] before accepting the blocks report: check the strongest claim against current source before acting on worker prose; verify: the consumer registration in current source; source: custom-skills/orchestrator/SKILL.md
 ```
 
-A `REMINDER` is a low-risk awareness note that does not allege an error.
-A `FINDING` names a supported material discrepancy and its classification.
-A `CLEAR` closes awareness for a prior finding without changing the orchestrator's workflow.
-An `UNPROVEN` notification preserves uncertainty when a completion claim, cause, or owner lacks enough evidence.
-
-## Examples
-
-At dispatch, if the next worker has an accepted requirement but no task or explicit exclusion maps to it, send:
-
-```text
-FINDING [coverage-07] orchestrator-error: accepted requirement has no task, evidence item, or accepted exclusion; expected: complete target-spec coverage map; earliest preventable: dispatch; consequence: the programme may omit required work; evidence: <current scope record>; confidence: high
-```
-
-At a milestone, if a worker reports a completed change but the current branch has no corresponding diff and no verified PR or runtime artifact, send:
-
-```text
-UNPROVEN [milestone-03]: completion claim is not established by current source or available delivery evidence; earliest preventable: milestone; needed: current commit plus the required PR or runtime evidence; evidence: <task record and current branch>
-```
-
-At a final report, if every accepted requirement is mapped but one accepted task slice lacks its required evidence, send a coverage-clear reminder separately from the completion finding:
-
-```text
-REMINDER [final]: target-spec coverage is mapped; completion still depends on evidence for the accepted task slice; evidence: <coverage record>
-UNPROVEN [final-02]: accepted task slice lacks required completion evidence; earliest preventable: final report; needed: <contract-defined evidence>; evidence: <task record>
-```
-
-## Simplest operating procedure
-
-1. Read the programme brief, current scope, decisions, programme state, next worker brief, and relevant root and leaf `AGENTS.md` files.
-2. Audit once before dispatch, once at a meaningful milestone, and once at the final report.
-3. Compare scope, dependencies, acceptance evidence, guidance, and completion claims with current available evidence.
-4. Classify, deduplicate, and send one concise awareness notification when a material observation exists.
-5. Leave all authority, workflow, records, code, branches, PRs, and runtime actions with their existing owners.
+The supervisor then reads the source, finds the registration already present, and rejects the claim.
+That is the outcome this skill exists to produce, and it is recorded with the parent turn that shows it.
 
 ## Non-goals
 
-This skill does not dispatch, steer, stop, restart, or recover workers.
-It does not approve scope, answer business decisions, authorize merges, or change the orchestrator's contract.
-It does not edit code, programme records, project guidance, `AGENTS.md`, hooks, validators, watchers, daemons, or infrastructure.
-It does not add a navigator, paired-review topology, continuous polling loop, or background service.
-It does not require tests for this rules-only skill.
-It does not convert an awareness notification into a gate or a command.
+Every authority, workflow, record, branch, PR, and runtime action stays with its existing owner.
+This skill adds no navigator, no paired-review topology, no continuous polling of other programmes, and no background service.

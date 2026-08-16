@@ -177,6 +177,10 @@
       "audience": "agent-runtime"
     },
     {
+      "path": "custom-skills/orchestrator-assistance/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": "custom-skills/program-orchestration/SKILL.md",
       "audience": "agent-runtime"
     },

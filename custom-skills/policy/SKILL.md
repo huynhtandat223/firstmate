@@ -51,6 +51,7 @@ Load only the exact file named by the first matching trigger, when the trigger o
 | A diagnosis task is opened | `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/diagnosing-bugs/SKILL.md` |
 | The captain invokes `/orchestrator`, asks to run an authorized programme, or a programme supervisor has stopped | `/home/dathuynh/codes/firstmate/custom-skills/orchestrator/SKILL.md` |
 | A brief carries `role=supervisor` | `/home/dathuynh/codes/firstmate/custom-skills/orchestrator/PROGRAMME.md` |
+| The captain or firstmate invokes `/orchestrator-assistance <programme-id>`, or an assistance session resumes for a live programme | `/home/dathuynh/codes/firstmate/custom-skills/orchestrator-assistance/SKILL.md` |
 
 The vendored bytes under `custom-skills/matt/` are immutable.
 Read the exact path, preserve its procedure, and return here only for Firstmate authority and communication boundaries.
