@@ -360,13 +360,16 @@ The tracked Claude hook entries whose event Grok already covers through its own 
 Project-local Grok hooks require folder trust, verified with launch-time `--trust`; if the primary firstmate checkout is not trusted for Grok hooks, this primary guard fails open and `fm-guard.sh` remains the next-command alarm.
 Grok's primary watcher protocol remains background-notify around `bin/fm-watch-arm.sh`; native Stop continuation does not provide Pi-like extension ownership.
 
-## agy (VERIFIED 2026-07-23, Antigravity CLI 1.1.5)
+## agy (VERIFIED 2026-08-16, Antigravity CLI 1.1.13)
 
 Antigravity CLI (`agy`) runs interactively with `--dangerously-skip-permissions -i` so a worker remains steerable and can execute both file and shell operations unattended.
 Its verified active-turn footer is `esc to cancel`; idle reads `? for shortcuts`.
+A single Escape cancels an active turn, leaves the composer empty, and returns the idle footer.
+Typing `/exit` and pressing Enter exits the TUI; the tmux endpoint then reports no live agent process, and a replacement launch succeeds in the same copy without discarding it.
 The footer is delivery-only and has no verified semantic busy source, so agy classifies unknown outside delivery checks.
 It uses `--model <model>` and `--effort low|medium|high`; higher effort levels are omitted.
 It sets `ANTIGRAVITY_AGENT=1` for child processes, and resumes with `agy --continue` or `agy --conversation <id>`.
+Live verification command: `agy --version` returned `1.1.13`; `agy models` listed the installed account models; a tmux session launched with `agy --dangerously-skip-permissions -i --model gemini-3.6-flash-low`, received a long-running prompt, and changed from `esc to cancel` to `Interrupted` then `? for shortcuts` after one Escape; `/exit` plus Enter closed the session and a relaunch in `/tmp` reached the interactive composer.
 
 ## kimi (VERIFIED 2026-07-25, kimi 0.29.1)
 

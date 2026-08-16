@@ -63,7 +63,7 @@ fm_control_verb_allowed() {  # <verb>
 # than guessed at, exactly as a spawn on it would be.
 fm_control_harness_supported() {  # <harness>
   case "${1-}" in
-    claude|codex|opencode|pi|pi-signed|grok|kimi|muse) return 0 ;;
+    claude|codex|opencode|pi|pi-signed|grok|kimi|muse|agy) return 0 ;;
   esac
   return 1
 }
@@ -86,6 +86,7 @@ fm_control_harness_family() {  # <recorded-harness>
     grok*) printf 'grok' ;;
     kimi*) printf 'kimi' ;;
     muse*) printf 'muse' ;;
+    agy*) printf 'agy' ;;
     *) return 1 ;;
   esac
 }
@@ -108,7 +109,7 @@ fm_control_harness_supports_kind() {  # <harness> <kind>
 # whose Esc only moves focus to the scrollback; grok cancels on Ctrl+C.
 fm_control_interrupt_key() {  # <harness>
   case "${1-}" in
-    claude|codex|opencode|pi|pi-signed|kimi|muse) printf 'Escape' ;;
+    claude|codex|opencode|pi|pi-signed|kimi|muse|agy) printf 'Escape' ;;
     grok) printf 'C-c' ;;
     *) return 1 ;;
   esac
@@ -119,7 +120,7 @@ fm_control_interrupt_key() {  # <harness>
 fm_control_interrupt_repeat() {  # <harness>
   case "${1-}" in
     opencode) printf '2' ;;
-    claude|codex|pi|pi-signed|grok|kimi|muse) printf '1' ;;
+    claude|codex|pi|pi-signed|grok|kimi|muse|agy) printf '1' ;;
     *) return 1 ;;
   esac
 }
@@ -134,7 +135,7 @@ fm_control_interrupt_repeat() {  # <harness>
 fm_control_interrupt_clear_key() {  # <harness>
   case "${1-}" in
     muse) printf 'C-u' ;;
-    claude|codex|opencode|pi|pi-signed|grok|kimi) ;;
+    claude|codex|opencode|pi|pi-signed|grok|kimi|agy) ;;
     *) return 1 ;;
   esac
 }
@@ -150,7 +151,7 @@ fm_control_interrupt_ack_source() {  # <harness>
 # The command that exits the agent from its own composer.
 fm_control_exit_command() {  # <harness>
   case "${1-}" in
-    claude|opencode|grok|kimi|muse) printf '/exit' ;;
+    claude|opencode|grok|kimi|muse|agy) printf '/exit' ;;
     codex|pi|pi-signed) printf '/quit' ;;
     *) return 1 ;;
   esac
@@ -206,6 +207,7 @@ fm_control_harness_wiring_paths() {  # <harness> <worktree> <state-dir> <id>
       printf '%s\n' "$wt/.fm-kimi-turnend"
       printf '%s\n' "$state/$id.kimi-turnend-token"
       ;;
+    agy) ;;
     muse)
       # muse installs no hook: its busy source is its own session event log,
       # bound to the pane by these two firstmate-owned sidecars. A relaunch
