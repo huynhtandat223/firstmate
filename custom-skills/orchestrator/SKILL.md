@@ -66,8 +66,11 @@ An explicit per-task captain choice replaces it; a dispatch profile leaves it al
 The pin is the supervisor's alone and never propagates to a child.
 The supervisor alone resolves each child worker's harness, model, and effort, at the moment it dispatches that child.
 A child's route turns on programme state that does not exist yet at intake: what has landed, what is in flight, and what that ticket turned out to need.
+Every supervisor or worker spawn passes concrete `--harness`, `--model`, and `--effort` values.
+No programme spawn may inherit a Pi default model.
+`cx/gpt-5.6-sol` is invalid for supervisors and implementation workers; only a separately launched planner may select it.
 
-**Done when:** the supervisor's runtime, model, and effort are three concrete values ready for spawn validation, and the only profile resolved is the supervisor's.
+**Done when:** the supervisor's runtime, model, and effort are three concrete values ready for spawn validation, the only profile resolved at intake is the supervisor's, and every launch records all three explicit flags.
 
 ## 3. Write the initialization packet
 
@@ -102,6 +105,8 @@ Both sections state the body of work and its edges; the task cards inside it, an
 ```
 bin/fm-spawn.sh <programme-id> --supervisor --harness <runtime> --model <model> --effort <effort>
 ```
+
+Before any child dispatch, resolve and record the same three explicit values on that ticket's routing card, then pass all of them to `fm-spawn.sh`.
 
 That one command takes the lease, marks the home, records it, and launches the session in it.
 It takes no project argument: the home is a firstmate copy, and the product projects stay where they are.
