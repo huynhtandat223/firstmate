@@ -3,8 +3,8 @@
 # one live programme supervisor.
 #
 # Usage:
-#   fm-assistance.sh bind <programme-id>
-#   fm-assistance.sh open <programme-id> [--relaunch]
+#   fm-assistance.sh bind <programme-id> [--session <uuid> | --history <path>]
+#   fm-assistance.sh open <programme-id> [--relaunch] [--session <uuid>]
 #   fm-assistance.sh observe <programme-id> [--limit N] [--replay-until <uuid>]
 #   fm-assistance.sh remind <programme-id> --id <watch-id> --action <action>
 #                    --evidence <identity> <text...>
@@ -22,6 +22,14 @@
 # that is not a supervisor, resolves that supervisor's observable Claude session
 # history from its recorded worktree, and writes state/<id>.assistance-binding.
 # Everything after it reads that binding, so no later step re-guesses a parent.
+#
+# One worktree can hold several recorded sessions, and a supervisor's metadata
+# carries no session identity, so bind never picks by recency: "newest" is not
+# an identity, and a later write to any other session in that directory would
+# move the binding to a transcript that is not the parent's. With one candidate
+# it binds; with several it refuses and lists them until --session or --history
+# names one. The resolved absolute path is then recorded, so the binding stays
+# on that transcript no matter what is written afterwards.
 #
 # ONE SESSION
 # `open` is idempotent on the record: a programme whose assistance task is
@@ -84,8 +92,15 @@ require_binding() {  # <programme-id> -> echoes binding path
 # --- bind -------------------------------------------------------------------
 
 cmd_bind() {
-  local pid parent_meta kind worktree history binding digest
-  pid="${1:-}"; need_programme "$pid"
+  local pid pin="" parent_meta kind worktree history binding digest rc
+  pid="${1:-}"; need_programme "$pid"; shift || true
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --session|--history) pin="${2:?$1 needs a session id or history path}"; shift ;;
+      *) die "unknown bind option: $1" ;;
+    esac
+    shift
+  done
 
   parent_meta=$(fm_assistance_meta_path "$FM_HOME" "$pid")
   [ -f "$parent_meta" ] || die "no supervisor record for $pid at $parent_meta"
@@ -96,8 +111,18 @@ cmd_bind() {
   worktree=$(fm_assistance_meta_field "$parent_meta" worktree)
   [ -n "$worktree" ] || die "$pid records no worktree, so its session history cannot be resolved"
 
-  history=$(fm_assistance_history_file "$worktree") \
-    || die "no readable session history for $pid under $(fm_assistance_history_root)/$(fm_assistance_history_dir_name "$worktree"); assistance needs that observable source"
+  set +e
+  history=$(fm_assistance_history_file "$worktree" "$pin")
+  rc=$?
+  set -e
+  if [ "$rc" -eq 2 ]; then
+    printf 'fm-assistance: %s has more than one recorded session history and no session identity to choose by.\n' "$pid" >&2
+    printf 'Name the parent session with --session <uuid> or --history <path>. Candidates:\n' >&2
+    fm_assistance_history_candidates "$worktree" >&2
+    exit 1
+  fi
+  [ "$rc" -eq 0 ] \
+    || die "no readable session history for $pid${pin:+ matching $pin} under $(fm_assistance_history_root)/$(fm_assistance_history_dir_name "$worktree"); assistance needs that observable source"
 
   digest=$(fm_assistance_skill_digest "$SKILL_PATH") || die "assistance skill missing at $SKILL_PATH"
 
@@ -121,18 +146,25 @@ cmd_bind() {
 # --- open -------------------------------------------------------------------
 
 cmd_open() {
-  local pid relaunch=0 aid binding meta
+  local pid relaunch=0 pin="" aid binding meta
   pid="${1:-}"; need_programme "$pid"; shift || true
   while [ $# -gt 0 ]; do
     case "$1" in
       --relaunch) relaunch=1 ;;
+      --session|--history) pin="${2:?$1 needs a session id or history path}"; shift ;;
       *) die "unknown open option: $1" ;;
     esac
     shift
   done
 
   binding=$(fm_assistance_binding_path "$FM_HOME" "$pid")
-  [ -f "$binding" ] || cmd_bind "$pid" >/dev/null
+  if [ ! -f "$binding" ]; then
+    if [ -n "$pin" ]; then
+      cmd_bind "$pid" --session "$pin" >/dev/null
+    else
+      cmd_bind "$pid" >/dev/null
+    fi
+  fi
 
   aid=$(fm_assistance_task_id "$pid")
   meta=$(fm_assistance_meta_path "$FM_HOME" "$aid")

@@ -62,20 +62,47 @@ fm_assistance_history_root() {
   printf '%s\n' "${FM_ASSISTANCE_HISTORY_ROOT:-$HOME/.claude/projects}"
 }
 
-# The parent's current session-history file: the most recently modified .jsonl
-# in its project's history directory, which is the session still being appended
-# to. Prints nothing and returns 1 when the store, the directory, or a session
-# file is absent, so the caller reports a missing capability instead of
-# substituting a guessed channel.
-fm_assistance_history_file() {  # <worktree>
-  local dir found
+# Every session history recorded for one project worktree, one path per line.
+fm_assistance_history_candidates() {  # <worktree>
+  local dir path
   dir="$(fm_assistance_history_root)/$(fm_assistance_history_dir_name "$1")"
   [ -d "$dir" ] || return 1
-  # shellcheck disable=SC2012 # Claude names these files by session UUID, so
-  # they carry no whitespace, and ls -t is the portable mtime sort here.
-  found=$(ls -1t "$dir"/*.jsonl 2>/dev/null | head -n 1)
-  [ -n "$found" ] || return 1
-  printf '%s\n' "$found"
+  for path in "$dir"/*.jsonl; do
+    [ -f "$path" ] && printf '%s\n' "$path"
+  done
+}
+
+# The parent's session history, resolved to ONE exact file.
+#
+# A programme supervisor's worktree can hold several recorded sessions, and the
+# supervisor's own metadata carries no session identity, so "newest" is not an
+# identity: a later write to any other session in that directory would silently
+# move the binding to a transcript that is not the parent's. This function
+# therefore resolves only what is unambiguous.
+#
+# Exit codes are the caller's whole vocabulary:
+#   0  one exact history, printed
+#   1  no store, no directory, or no session file at all
+#   2  several candidates and no pin - the caller must ask for one
+fm_assistance_history_file() {  # <worktree> [pin]
+  local worktree=$1 pin=${2:-} candidates count match
+  candidates=$(fm_assistance_history_candidates "$worktree") || return 1
+  [ -n "$candidates" ] || return 1
+
+  if [ -n "$pin" ]; then
+    # A pin is an absolute path or a session id; either must name a real
+    # candidate, so a typo refuses instead of falling back to a guess.
+    match=$(printf '%s\n' "$candidates" | grep -F -x -- "$pin" || true)
+    [ -n "$match" ] || match=$(printf '%s\n' "$candidates" | grep -F -- "/$pin.jsonl" || true)
+    [ -n "$match" ] || return 1
+    [ "$(printf '%s\n' "$match" | wc -l)" -eq 1 ] || return 2
+    printf '%s\n' "$match"
+    return 0
+  fi
+
+  count=$(printf '%s\n' "$candidates" | wc -l)
+  [ "$count" -eq 1 ] || return 2
+  printf '%s\n' "$candidates"
 }
 
 # Durable sidecars for one binding, following this repo's state/<id>.* layout so

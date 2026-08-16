@@ -113,6 +113,57 @@ test_bind_refuses_non_supervisor_parent() {
   pass "bind: refuses to bind to a task that is not a programme supervisor"
 }
 
+# A worktree that has held more than one recorded session is the ordinary case
+# for a long-running supervisor. Recency is not identity there: binding to the
+# newest file would silently follow whichever transcript was written last.
+add_second_history() {  # <case-dir>
+  local dir=$1 hist
+  hist="$dir/history/$(printf '%s' "$dir/parent-worktree" | tr '/.' '--')"
+  cat > "$hist/other.jsonl" <<'JSON'
+{"type":"user","uuid":"x-900","timestamp":"2026-08-16T02:00:00Z","message":{"role":"user","content":"a different session entirely"}}
+JSON
+  # Make the WRONG file the newest, so a recency rule would choose it.
+  touch "$hist/other.jsonl"
+}
+
+test_bind_refuses_ambiguous_history() {
+  local dir out code
+  dir=$(new_case bind-two-histories); write_history "$dir"; add_second_history "$dir"
+  out=$(run_cli "$dir" bind prog); code=$?
+  expect_code 1 "$code" "bind chose between two recorded sessions instead of refusing"
+  assert_contains "$out" "more than one recorded session history" "refusal did not name the ambiguity"
+  assert_contains "$out" "session.jsonl" "refusal did not list the candidates"
+  assert_contains "$out" "other.jsonl" "refusal did not list the candidates"
+  assert_absent "$dir/home/state/prog-assistance.assistance-binding" "an ambiguous bind still wrote a binding"
+  pass "bind: refuses to guess between two recorded sessions for one worktree"
+}
+
+test_bind_pins_the_named_session() {
+  local dir out binding
+  dir=$(new_case bind-pinned); write_history "$dir"; add_second_history "$dir"
+
+  out=$(run_cli "$dir" bind prog --session session) || fail "pinned bind failed: $out"
+  binding="$dir/home/state/prog-assistance.assistance-binding"
+  assert_grep "session.jsonl" "$binding" "the pin did not select the named session"
+  assert_no_grep "other.jsonl" "$binding" "the pin bound the newest file instead of the named one"
+
+  # The pinned path is recorded, so later writes elsewhere cannot move it.
+  touch "$dir/history/$(printf '%s' "$dir/parent-worktree" | tr '/.' '--')/other.jsonl"
+  out=$(run_cli "$dir" observe prog --limit 5) || fail "observe after a newer sibling write failed: $out"
+  assert_contains "$out" "u-001" "observation followed a newer sibling session instead of the bound one"
+  assert_not_contains "$out" "x-900" "observation leaked turns from a different session"
+  pass "bind: a named session pins the transcript, and later sibling writes never move it"
+}
+
+test_bind_refuses_unknown_pin() {
+  local dir out code
+  dir=$(new_case bind-bad-pin); write_history "$dir"; add_second_history "$dir"
+  out=$(run_cli "$dir" bind prog --session no-such-session); code=$?
+  expect_code 1 "$code" "bind accepted a pin that names no recorded session"
+  assert_contains "$out" "no readable session history" "refusal did not name the unmatched pin"
+  pass "bind: refuses a pin that matches no recorded session rather than falling back"
+}
+
 test_bind_refuses_when_history_absent() {
   local dir out code
   dir=$(new_case bind-nohistory)
@@ -343,6 +394,9 @@ test_lifecycle_treats_a_pause_as_live() {
 test_bind_resolves_parent_and_history
 test_bind_refuses_unknown_programme
 test_bind_refuses_non_supervisor_parent
+test_bind_refuses_ambiguous_history
+test_bind_pins_the_named_session
+test_bind_refuses_unknown_pin
 test_bind_refuses_when_history_absent
 test_open_is_idempotent_on_the_record
 test_observe_emits_new_turns_and_advances_cursor

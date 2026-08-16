@@ -9,6 +9,7 @@ survive a shell quoting round trip:
     FM_A_CURSOR   line index already consumed (live mode)
     FM_A_LIMIT    maximum turns to emit
     FM_A_UNTIL    record uuid to stop BEFORE (replay mode)
+    FM_A_EXCERPT  per-turn excerpt budget in characters (default 300)
 
 Live mode emits turns after the cursor and reports the new cursor as the final
 "#next=<n>" line. Replay mode ignores the cursor, never reports one, and emits
@@ -24,7 +25,6 @@ import json
 import os
 import sys
 
-EXCERPT = 300
 
 
 def text_of(message):
@@ -50,10 +50,10 @@ def text_of(message):
     return " ".join(part for part in parts if part)
 
 
-def excerpt(raw):
+def excerpt(raw, budget):
     flat = " ".join(raw.split())
-    if len(flat) > EXCERPT:
-        return flat[:EXCERPT] + "..."
+    if len(flat) > budget:
+        return flat[:budget] + "..."
     return flat
 
 
@@ -63,11 +63,15 @@ def main():
     try:
         cursor = int(os.environ.get("FM_A_CURSOR", "0") or 0)
         limit = int(os.environ.get("FM_A_LIMIT", "20") or 20)
+        budget = int(os.environ.get("FM_A_EXCERPT", "300") or 300)
     except ValueError:
         print("fm-assistance-turns: cursor and limit must be integers", file=sys.stderr)
         return 1
     if limit < 1:
         print("fm-assistance-turns: limit must be at least 1", file=sys.stderr)
+        return 1
+    if budget < 1:
+        print("fm-assistance-turns: excerpt budget must be at least 1", file=sys.stderr)
         return 1
 
     try:
@@ -103,7 +107,7 @@ def main():
                     record.get("type", ""),
                     record.get("uuid", ""),
                     record.get("timestamp", ""),
-                    excerpt(text_of(record.get("message"))),
+                    excerpt(text_of(record.get("message")), budget),
                 )
             )
 
