@@ -7,6 +7,16 @@
 # never launches an agent or steers a live pane. What that proves is the
 # decision and the exact command constructed; real delivery is proven only
 # against a live session.
+#
+# N3 classical proof map (the smallest sensitive public-seam set):
+# - observe -> interruption -> observe proves pending replay and unchanged cursor;
+# - suppressed settlement proves one durable outcome and cursor advancement;
+# - delivered send -> interruption -> recovery proves one parent send, one outcome,
+#   and no duplicate delivery;
+# - out-of-order settlement proves longest-contiguous-prefix advancement;
+# - changed evidence identity proves a new delivery rather than a repeat.
+# These cases cover the changed triggers: pending observation, settlement, outcome
+# ordering, delivery linkage, suppression, recovery, and evidence fingerprinting.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -198,8 +208,8 @@ test_open_is_idempotent_on_the_record() {
 
 # --- 3. parent-turn observation ---------------------------------------------
 
-test_observe_emits_new_turns_and_advances_cursor() {
-  local dir first second cursor
+test_observe_records_pending_without_advancing_cursor() {
+  local dir first second cursor pending
   dir=$(new_case observe); write_history "$dir"
   run_cli "$dir" bind prog >/dev/null || fail "bind failed"
 
@@ -209,19 +219,90 @@ test_observe_emits_new_turns_and_advances_cursor() {
   assert_not_contains "$first" "u-004" "observe ran past its limit"
 
   cursor="$dir/home/state/prog-assistance.assistance-cursor"
-  assert_present "$cursor" "observe did not persist a cursor"
+  pending="$dir/home/state/prog-assistance.assistance-pending"
+  assert_absent "$cursor" "observe advanced the committed cursor before settlement"
+  assert_present "$pending" "observe did not persist a pending batch"
+  assert_grep "turn=2" "$pending" "pending batch lost the first parent line"
+  assert_grep "u-001" "$pending" "pending batch lost the first parent identity"
 
-  # The remaining window spans the sidechain record and the next parent turn, so
-  # a lost sidechain filter shows up here rather than passing vacuously.
-  second=$(run_cli "$dir" observe prog --limit 5) || fail "second observe failed: $second"
-  assert_not_contains "$second" "u-001" "observe repeated a turn already past the cursor"
-  assert_contains "$second" "u-004" "observe did not reach the turn after the cursor"
-  assert_not_contains "$second" "s-003" "observe emitted a subagent sidechain record as a parent turn"
+  # An interrupted turn is recoverable, not consumed. Recovery emits the same
+  # pending identities and does not read past the pending batch.
+  second=$(run_cli "$dir" observe prog --limit 5) || fail "recovery observe failed: $second"
+  assert_contains "$second" "u-001" "recovery did not re-emit the unsettled first turn"
+  assert_contains "$second" "a-002" "recovery did not re-emit the unsettled second turn"
+  assert_not_contains "$second" "u-004" "recovery read past the unsettled batch"
+  pass "observe: records a pending batch and re-emits it without advancing the committed cursor"
+}
 
-  local third
-  third=$(run_cli "$dir" observe prog --limit 5) || fail "third observe failed: $third"
-  assert_not_contains "$third" "u-004" "observe re-emitted the last turn instead of waiting"
-  pass "observe: emits only new parent turns and advances a durable cursor"
+test_suppressed_settlement_advances_once() {
+  local dir out cursor outcomes
+  dir=$(new_case settle-suppress); write_history "$dir"
+  run_cli "$dir" bind prog >/dev/null || fail "bind failed"
+  run_cli "$dir" observe prog --limit 1 >/dev/null || fail "observe failed"
+
+  out=$(run_cli "$dir" settle prog --turn u-001 --outcome suppressed --cue "options draft" \
+    --evidence "history:u-001" --reason "no watch item applies") || fail "settlement failed: $out"
+  assert_contains "$out" "settled turn=u-001 outcome=suppressed" "suppression did not settle"
+  cursor="$dir/home/state/prog-assistance.assistance-cursor"
+  assert_present "$cursor" "suppression did not advance the committed cursor"
+  outcomes="$dir/home/state/prog-assistance.assistance-outcomes"
+  [ "$(grep -c '^turn=u-001' "$outcomes")" -eq 1 ] || fail "suppression did not write exactly one outcome"
+
+  out=$(run_cli "$dir" settle prog --turn u-001 --outcome suppressed --cue "options draft" \
+    --evidence "history:u-001" --reason "repeat") || fail "repeat settlement errored: $out"
+  assert_contains "$out" "already-settled turn=u-001" "repeat settlement was not idempotent"
+  [ "$(grep -c '^turn=u-001' "$outcomes")" -eq 1 ] || fail "repeat settlement duplicated the outcome"
+  pass "settle: suppression is durable, idempotent, and advances only after settlement"
+}
+
+test_delivery_then_recovery_settles_without_duplicate_send() {
+  local dir remind_out delivery settle_out pending cursor
+  dir=$(new_case settle-delivery); write_history "$dir"
+  run_cli "$dir" bind prog >/dev/null || fail "bind failed"
+  run_cli "$dir" observe prog --limit 1 >/dev/null || fail "observe failed"
+
+  remind_out=$(run_cli "$dir" remind prog --turn u-001 --id w1 --action "draft" --evidence "e1" \
+    "WATCH [w1] before draft: check source; verify: source; source: contract") \
+    || fail "delivery failed: $remind_out"
+  delivery=$(sed -n 's/.* delivery=\([0-9a-f]*\).*/\1/p' <<<"$remind_out")
+  [ -n "$delivery" ] || fail "successful delivery did not return its settlement fingerprint"
+
+  # Simulate interruption after the successful send and before settlement.
+  pending="$dir/home/state/prog-assistance.assistance-pending"
+  assert_present "$pending" "delivery unexpectedly removed pending input"
+  settle_out=$(run_cli "$dir" observe prog --limit 1) || fail "recovery observe failed: $settle_out"
+  assert_contains "$settle_out" "u-001" "recovery did not re-emit the unsettled delivered turn"
+
+  run_cli "$dir" settle prog --turn u-001 --outcome delivered --cue "report claim" \
+    --evidence "e1" --reason "reminder delivered" --delivery "$delivery" >/dev/null \
+    || fail "delivered settlement failed"
+  [ "$(wc -l < "$dir/sent")" -eq 1 ] || fail "recovery created a duplicate parent message"
+  [ "$(grep -c '^turn=u-001' "$dir/home/state/prog-assistance.assistance-outcomes")" -eq 1 ] \
+    || fail "recovery did not create one durable outcome"
+  cursor="$dir/home/state/prog-assistance.assistance-cursor"
+  assert_present "$cursor" "delivered settlement did not advance the cursor"
+  pass "settle: recovery links one successful parent send to one durable delivered outcome"
+}
+
+test_out_of_order_settlement_advances_contiguous_prefix_only() {
+  local dir cursor pending
+  dir=$(new_case settle-order); write_history "$dir"
+  run_cli "$dir" bind prog >/dev/null || fail "bind failed"
+  run_cli "$dir" observe prog --limit 2 >/dev/null || fail "observe failed"
+
+  run_cli "$dir" settle prog --turn a-002 --outcome suppressed --cue "report claim" \
+    --evidence "a-002" --reason "not applicable" >/dev/null || fail "second settlement failed"
+  cursor="$dir/home/state/prog-assistance.assistance-cursor"
+  assert_absent "$cursor" "out-of-order settlement skipped the first turn"
+  pending="$dir/home/state/prog-assistance.assistance-pending"
+  assert_present "$pending" "out-of-order settlement discarded the pending prefix"
+  assert_grep "u-001" "$pending" "out-of-order settlement lost the first turn"
+
+  run_cli "$dir" settle prog --turn u-001 --outcome suppressed --cue "options draft" \
+    --evidence "u-001" --reason "not applicable" >/dev/null || fail "first settlement failed"
+  assert_present "$cursor" "settling the first turn did not advance the contiguous pair"
+  assert_absent "$pending" "settling the contiguous pair retained stale pending input"
+  pass "settle: an out-of-order outcome waits, then advances the longest contiguous prefix"
 }
 
 # --- 4. historical replay ---------------------------------------------------
@@ -399,7 +480,10 @@ test_bind_pins_the_named_session
 test_bind_refuses_unknown_pin
 test_bind_refuses_when_history_absent
 test_open_is_idempotent_on_the_record
-test_observe_emits_new_turns_and_advances_cursor
+test_observe_records_pending_without_advancing_cursor
+test_suppressed_settlement_advances_once
+test_delivery_then_recovery_settles_without_duplicate_send
+test_out_of_order_settlement_advances_contiguous_prefix_only
 test_replay_stops_before_the_named_record
 test_replay_refuses_unknown_record
 test_remind_delivers_to_the_exact_parent

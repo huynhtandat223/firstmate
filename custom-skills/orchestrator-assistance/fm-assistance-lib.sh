@@ -119,12 +119,47 @@ fm_assistance_sent_path() {  # <fm-home> <programme-id>
   printf '%s/state/%s.assistance-sent\n' "$1" "$(fm_assistance_task_id "$2")"
 }
 
+# A pending observation batch is the uncommitted half of observation. It keeps
+# the old cursor, the proposed next cursor, and every emitted turn identity
+# until each turn has one durable outcome.
+fm_assistance_pending_path() {  # <fm-home> <programme-id>
+  printf '%s/state/%s.assistance-pending\n' "$1" "$(fm_assistance_task_id "$2")"
+}
+
+# One outcome per pending turn. The outcome is written before the committed
+# cursor moves, so a restart can finish the contiguous prefix safely.
+fm_assistance_outcomes_path() {  # <fm-home> <programme-id>
+  printf '%s/state/%s.assistance-outcomes\n' "$1" "$(fm_assistance_task_id "$2")"
+}
+
+# Successful sends bound to a specific observed turn. A delivered settlement
+# must point at one of these exact-parent records.
+fm_assistance_deliveries_path() {  # <fm-home> <programme-id>
+  printf '%s/state/%s.assistance-deliveries\n' "$1" "$(fm_assistance_task_id "$2")"
+}
+
 # Stable short identity for one reminder. The inputs are the watch item, the
 # visible action, and the evidence identity, so the same point about the same
 # evidence fingerprints identically no matter how the sentence is worded - a new
 # turn, elapsed time, or a parent pause changes nothing.
 fm_assistance_fingerprint() {  # <watch-id> <action> <evidence>
   printf '%s\037%s\037%s' "$1" "$2" "$3" | sha256sum | cut -c1-16
+}
+
+# Identity of a successful exact-parent send. The reminder fingerprint remains
+# the deduplication key; this second fingerprint proves the target and bytes
+# that were actually delivered for a settlement.
+fm_assistance_delivery_fingerprint() {  # <parent-task> <turn-id> <reminder-fp> <text>
+  printf '%s\037%s\037%s\037%s' "$1" "$2" "$3" "$4" | sha256sum | cut -c1-16
+}
+
+# State fields are line-oriented and deliberately reject tabs/newlines. This
+# keeps sidecars parseable without inventing a second serialization format.
+fm_assistance_field_ok() {  # <value>
+  case "$1" in
+    *$'\t'*|*$'\n'*|*$'\r'*) return 1 ;;
+    *) return 0 ;;
+  esac
 }
 
 # 0 when the text opens with one of the closed delivery forms.

@@ -6,10 +6,17 @@
 #   fm-assistance.sh bind <programme-id> [--session <uuid> | --history <path>]
 #   fm-assistance.sh open <programme-id> [--relaunch] [--session <uuid>]
 #   fm-assistance.sh observe <programme-id> [--limit N] [--replay-until <uuid>]
-#   fm-assistance.sh remind <programme-id> --id <watch-id> --action <action>
-#                    --evidence <identity> <text...>
+#   fm-assistance.sh remind <programme-id> [--turn <uuid>] --id <watch-id>
+#                    --action <action> --evidence <identity> <text...>
+#   fm-assistance.sh settle <programme-id> --turn <uuid>
+#                    --outcome delivered|suppressed --cue <cue>
+#                    --evidence <identity> --reason <reason>
+#                    [--delivery <fingerprint>]
 #   fm-assistance.sh lifecycle <programme-id>
 #   fm-assistance.sh reload <programme-id>
+#
+# `settle` is the public crash-recovery boundary. A pending turn is not
+# consumed merely because `observe` printed it; every turn needs one outcome.
 #
 # WHAT THIS OWNS
 # Identity, idempotency, the observation cursor, the delivery form, and
@@ -38,17 +45,26 @@
 # session whose process is gone; it returns to the same recorded home.
 #
 # OBSERVATION
-# `observe` reads new parent turns after the durable cursor and advances it.
+# `observe` is two-phase. It records a pending batch and does not advance the
+# committed cursor until every emitted turn has a durable delivered/suppressed
+# outcome. A later invocation re-emits unsettled turns for recovery.
 # `--replay-until <uuid>` instead reads from the start and stops BEFORE that
-# record, without touching the cursor, so replaying history can never carry a
-# later correction back into the input that is supposed to precede it.
+# record, without touching live sidecars, so replaying history can never carry
+# a later correction back into the input that is supposed to precede it.
 #
 # DELIVERY
 # `remind` sends one line to the exact parent task, and only in one of the forms
 # in FM_ASSISTANCE_FORMS. It never passes --resolve-key, so assistance cannot
 # close a parent decision. A repeat of an unchanged fingerprint is suppressed
 # without delivery, and a fingerprint is recorded only after delivery succeeds,
-# so a failed send stays retryable.
+# so a failed send stays retryable. When `--turn` is supplied, a successful send
+# also records an exact-parent delivery fingerprint for `settle`.
+#
+# SETTLEMENT
+# `settle` accepts one pending turn exactly once as delivered or suppressed.
+# It writes the outcome before reconciling the committed cursor, which advances
+# only through the longest contiguous settled prefix. Delivered outcomes require
+# a matching successful `remind --turn` record; suppression never sends.
 #
 # ENVIRONMENT
 #   FM_HOME                     firstmate home holding state/ (default: this repo)
@@ -192,8 +208,80 @@ cmd_open() {
 
 # --- observe ----------------------------------------------------------------
 
+pending_emit() {  # <pending-file>
+  sed -n 's/^turn=//p' "$1"
+}
+
+pending_has_turn() {  # <pending-file> <turn-id>
+  awk -F '\t' -v wanted="$2" '$1 ~ /^turn=/ && $3 == wanted {found=1} END {exit(found ? 0 : 1)}' "$1"
+}
+
+outcome_has_turn() {  # <outcomes-file> <turn-id>
+  [ -f "$1" ] || return 1
+  awk -F '\t' -v wanted="$2" '$1 == "turn=" wanted {found=1} END {exit(found ? 0 : 1)}' "$1"
+}
+
+pending_write() {  # <path> <prior> <next> <records>
+  local path=$1 prior=$2 next=$3 records=$4 tmp
+  [ -n "$records" ] || return 0
+  tmp="$path.tmp.$$"
+  {
+    printf 'prior_cursor=%s\n' "$prior"
+    printf 'next_cursor=%s\n' "$next"
+    printf '%s\n' "$records" | while IFS= read -r record; do
+      [ -n "$record" ] || continue
+      printf 'turn=%s\n' "$record"
+    done
+  } > "$tmp"
+  mv -f "$tmp" "$path"
+}
+
+reconcile_cursor() {  # <programme-id> <pending-file> <cursor-file> <outcomes-file>
+  local pid=$1 pending=$2 cursor_file=$3 outcomes=$4 cursor initial_cursor cursor_was_present line tmp remaining prefix_open
+  cursor=0
+  cursor_was_present=0
+  if [ -f "$cursor_file" ]; then
+    cursor=$(cat "$cursor_file")
+    cursor_was_present=1
+  fi
+  initial_cursor=$cursor
+  remaining=""
+  prefix_open=0
+  while IFS=$'\t' read -r marker ptype puuid ptimestamp pexcerpt; do
+    case "$marker" in turn=*) ;; *) continue ;; esac
+    line=${marker#turn=}
+    if [ "$prefix_open" -eq 0 ] && outcome_has_turn "$outcomes" "$puuid"; then
+      cursor=$line
+    else
+      # Once an earlier turn is unsettled, retain every later turn, including
+      # already-settled ones, so a later settlement can advance the whole pair.
+      prefix_open=1
+      remaining+="${marker}"$'\t'"${ptype}"$'\t'"${puuid}"$'\t'"${ptimestamp}"$'\t'"${pexcerpt}"$'\n'
+    fi
+  done < <(grep '^turn=' "$pending" || true)
+
+  if [ "$cursor" != "$initial_cursor" ] || [ "$cursor_was_present" -eq 1 ]; then
+    printf '%s\n' "$cursor" > "$cursor_file"
+  else
+    rm -f "$cursor_file"
+  fi
+  if [ "$prefix_open" -eq 0 ]; then
+    rm -f "$pending"
+  else
+    tmp="$pending.tmp.$$"
+    {
+      printf 'prior_cursor=%s\n' "$cursor"
+      sed -n 's/^next_cursor=//p' "$pending" | sed 's/^/next_cursor=/'
+      printf '%s' "$remaining" | while IFS= read -r record; do
+        [ -n "$record" ] && printf '%s\n' "$record"
+      done
+    } > "$tmp"
+    mv -f "$tmp" "$pending"
+  fi
+}
+
 cmd_observe() {
-  local pid limit=20 until="" binding history cursor_file cursor
+  local pid limit=20 until="" binding history cursor_file cursor pending out next records
   pid="${1:-}"; need_programme "$pid"; shift || true
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -209,30 +297,53 @@ cmd_observe() {
   [ -f "$history" ] || die "recorded parent history is gone: $history"
 
   cursor_file=$(fm_assistance_cursor_path "$FM_HOME" "$pid")
+  pending=$(fm_assistance_pending_path "$FM_HOME" "$pid")
   cursor=0
   if [ -z "$until" ] && [ -f "$cursor_file" ]; then
     cursor=$(cat "$cursor_file")
   fi
 
-  local out next
+  # Recovery is deliberately ahead of the history read. A process that died
+  # after observe must see the same identities again, not skip to new input.
+  if [ -z "$until" ] && [ -f "$pending" ]; then
+    # Finish any outcomes durable before a crash, then re-emit only the still
+    # unsettled suffix. This is the recovery path for interrupted settlement.
+    reconcile_cursor "$pid" "$pending" "$cursor_file" "$(fm_assistance_outcomes_path "$FM_HOME" "$pid")"
+    if [ -f "$pending" ]; then
+      pending_emit "$pending"
+      printf '#pending=1\n'
+      return 0
+    fi
+  fi
+
   out=$(FM_A_HISTORY="$history" FM_A_CURSOR="$cursor" FM_A_LIMIT="$limit" FM_A_UNTIL="$until" \
     python3 "$SCRIPT_DIR/fm-assistance-turns.py") || exit 1
 
   next=$(printf '%s\n' "$out" | sed -n 's/^#next=//p')
-  printf '%s\n' "$out" | grep -v '^#next=' || true
+  records=$(printf '%s\n' "$out" | grep -v '^#next=' || true)
+  printf '%s\n' "$records"
 
   if [ -z "$until" ] && [ -n "$next" ]; then
-    printf '%s\n' "$next" > "$cursor_file"
+    if [ -n "$records" ]; then
+      mkdir -p "$(dirname "$pending")"
+      pending_write "$pending" "$cursor" "$next" "$records"
+      printf '#pending=1\n'
+    else
+      # No observable parent turn needs an outcome, so harmless history records
+      # can be consumed without creating a phantom pending batch.
+      printf '%s\n' "$next" > "$cursor_file"
+    fi
   fi
 }
 
 # --- remind -----------------------------------------------------------------
 
 cmd_remind() {
-  local pid wid="" action="" evidence="" text binding parent sent fp
+  local pid wid="" action="" evidence="" text binding parent sent deliveries fp turn delivery_fp
   pid="${1:-}"; need_programme "$pid"; shift || true
   while [ $# -gt 0 ]; do
     case "$1" in
+      --turn) turn="${2:?--turn needs an observed turn id}"; shift ;;
       --id) wid="${2:?--id needs a watch id}"; shift ;;
       --action) action="${2:?--action needs the visible action}"; shift ;;
       --evidence) evidence="${2:?--evidence needs the evidence identity}"; shift ;;
@@ -243,6 +354,7 @@ cmd_remind() {
     shift
   done
   text="$*"
+  turn=${turn:-}
 
   [ -n "$wid" ] || die "name the watch id with --id"
   [ -n "$action" ] || die "name the visible action with --action"
@@ -250,20 +362,94 @@ cmd_remind() {
   [ -n "$text" ] || die "the reminder text is empty"
   fm_assistance_form_ok "$text" \
     || die "a reminder must open with one of: $FM_ASSISTANCE_FORMS; assistance delivers awareness, never a decision, gate, or command"
+  fm_assistance_field_ok "$turn" && fm_assistance_field_ok "$wid" && fm_assistance_field_ok "$action" \
+    && fm_assistance_field_ok "$evidence" && fm_assistance_field_ok "$text" \
+    || die "reminder fields cannot contain tabs or newlines"
 
   binding=$(require_binding "$pid")
   parent=$(binding_get "$binding" parent_task_id)
   sent=$(fm_assistance_sent_path "$FM_HOME" "$pid")
+  deliveries=$(fm_assistance_deliveries_path "$FM_HOME" "$pid")
   fp=$(fm_assistance_fingerprint "$wid" "$action" "$evidence")
 
   if [ -f "$sent" ] && grep -qx "$fp" "$sent"; then
-    printf 'suppressed %s fingerprint=%s\n' "$wid" "$fp"
-    return 0
+    if [ -z "$turn" ]; then
+      printf 'suppressed %s fingerprint=%s\n' "$wid" "$fp"
+      return 0
+    fi
+    if [ -f "$deliveries" ]; then
+      delivery_fp=$(awk -F '\t' -v wanted_turn="$turn" '$1 == "turn=" wanted_turn {sub(/^delivery=/, "", $2); print $2; exit}' "$deliveries")
+      if [ -n "$delivery_fp" ]; then
+        printf 'suppressed %s fingerprint=%s delivery=%s\n' "$wid" "$fp" "$delivery_fp"
+        return 0
+      fi
+    fi
   fi
 
   FM_HOME="$FM_HOME" "$FM_SEND" "$parent" "$text" || die "delivery to $parent failed; fingerprint $fp stays unrecorded so the reminder can be retried"
+  mkdir -p "$(dirname "$sent")"
   printf '%s\n' "$fp" >> "$sent"
-  printf 'delivered %s to=%s fingerprint=%s\n' "$wid" "$parent" "$fp"
+  if [ -n "$turn" ]; then
+    delivery_fp=$(fm_assistance_delivery_fingerprint "$parent" "$turn" "$fp" "$text")
+    printf 'turn=%s\tdelivery=%s\tparent=%s\ttext=%s\n' "$turn" "$delivery_fp" "$parent" "$text" >> "$deliveries"
+    printf 'delivered %s to=%s fingerprint=%s delivery=%s\n' "$wid" "$parent" "$fp" "$delivery_fp"
+  else
+    printf 'delivered %s to=%s fingerprint=%s\n' "$wid" "$parent" "$fp"
+  fi
+}
+
+# --- settle -----------------------------------------------------------------
+
+cmd_settle() {
+  local pid turn="" outcome="" cue="" evidence="" reason="" delivery="" binding pending outcomes deliveries
+  pid="${1:-}"; need_programme "$pid"; shift || true
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --turn) turn="${2:?--turn needs an observed turn id}"; shift ;;
+      --outcome) outcome="${2:?--outcome needs delivered or suppressed}"; shift ;;
+      --cue) cue="${2:?--cue needs the matched cue}"; shift ;;
+      --evidence) evidence="${2:?--evidence needs the evidence identity}"; shift ;;
+      --reason) reason="${2:?--reason needs the settlement reason}"; shift ;;
+      --delivery) delivery="${2:?--delivery needs a send fingerprint}"; shift ;;
+      *) die "unknown settle option: $1" ;;
+    esac
+    shift
+  done
+  [ -n "$turn" ] || die "name the pending turn with --turn"
+  case "$outcome" in delivered|suppressed) ;; *) die "outcome must be delivered or suppressed" ;; esac
+  [ -n "$cue" ] || die "name the matched cue with --cue"
+  [ -n "$evidence" ] || die "name the evidence identity with --evidence"
+  [ -n "$reason" ] || die "name the settlement reason with --reason"
+  fm_assistance_field_ok "$turn" && fm_assistance_field_ok "$outcome" && fm_assistance_field_ok "$cue" \
+    && fm_assistance_field_ok "$evidence" && fm_assistance_field_ok "$reason" && fm_assistance_field_ok "$delivery" \
+    || die "settlement fields cannot contain tabs or newlines"
+
+  binding=$(require_binding "$pid")
+  pending=$(fm_assistance_pending_path "$FM_HOME" "$pid")
+  outcomes=$(fm_assistance_outcomes_path "$FM_HOME" "$pid")
+  deliveries=$(fm_assistance_deliveries_path "$FM_HOME" "$pid")
+  if outcome_has_turn "$outcomes" "$turn"; then
+    printf 'already-settled turn=%s\n' "$turn"
+    return 0
+  fi
+  [ -f "$pending" ] || die "turn $turn is not pending"
+  pending_has_turn "$pending" "$turn" || die "turn $turn is not in the pending batch"
+
+  if [ "$outcome" = delivered ]; then
+    [ -n "$delivery" ] || die "delivered settlement needs --delivery from a successful remind --turn"
+    parent=$(binding_get "$binding" parent_task_id)
+    awk -F '\t' -v wanted_turn="$turn" -v wanted_delivery="$delivery" -v wanted_parent="$parent" \
+      '$1 == "turn=" wanted_turn && $2 == "delivery=" wanted_delivery && $3 == "parent=" wanted_parent {found=1} END {exit(found ? 0 : 1)}' "$deliveries" \
+      || die "delivery $delivery is not a successful exact-parent send for turn $turn"
+  else
+    [ -z "$delivery" ] || die "suppressed settlement cannot claim a delivery"
+  fi
+
+  mkdir -p "$(dirname "$outcomes")"
+  printf 'turn=%s\toutcome=%s\tcue=%s\tevidence=%s\treason=%s\tdelivery=%s\tat=%s\n' \
+    "$turn" "$outcome" "$cue" "$evidence" "$reason" "$delivery" "$(date -Iseconds)" >> "$outcomes"
+  reconcile_cursor "$pid" "$pending" "$(fm_assistance_cursor_path "$FM_HOME" "$pid")" "$outcomes"
+  printf 'settled turn=%s outcome=%s\n' "$turn" "$outcome"
 }
 
 # --- lifecycle --------------------------------------------------------------
@@ -305,6 +491,7 @@ case "${1:-}" in
   open) shift; cmd_open "$@" ;;
   observe) shift; cmd_observe "$@" ;;
   remind) shift; cmd_remind "$@" ;;
+  settle) shift; cmd_settle "$@" ;;
   lifecycle) shift; cmd_lifecycle "$@" ;;
   reload) shift; cmd_reload "$@" ;;
   -h|--help|help) usage ;;
