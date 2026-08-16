@@ -49,10 +49,14 @@ At startup, and again after any reread, read in exactly this order:
 4. the durable learnings and captain rules available to this session;
 5. the project root `AGENTS.md`, then only the leaf `AGENTS.md` files covering the seams this programme currently touches.
 
-**Done when:** every watch item you are about to build cites one exact source from this list and one prior consequence.
+Source 3 is the one that decides whether you are useful.
+Enumerate this programme's recorded captain corrections before you build anything, one line each, in the captain's own words.
+A programme that has been corrected before will be corrected the same way again, and that list is the whole reason this session exists.
+
+**Done when:** you hold that enumerated correction list, and every watch item you are about to build cites one exact source from this list and one prior consequence.
 An item with no source, or no prior consequence, is not built.
 
-## 2. Build at most five watch items
+## 2. Build at most five active watch items
 
 Select by this precedence, highest first:
 
@@ -62,6 +66,11 @@ Select by this precedence, highest first:
 4. an accepted cross-ticket decision;
 5. a durable learning with a concrete prior failure.
 
+**Exhaust each tier before you take anything from the next.**
+A programme that has already been corrected has tier-1 rules, and those are the mistakes it demonstrably repeats.
+A general contract invariant is tier 3: it is what you reach for when the programme's own corrections are exhausted, never instead of them.
+If you are holding a tier-3 item while an unselected tier-1 correction exists, the selection is wrong; redo it.
+
 Each item carries exactly these six fields:
 
 ```text
@@ -70,16 +79,31 @@ id | cue | exact rule | source | prior consequence | last evidence identity
 
 Copy or narrowly paraphrase the rule from its source.
 Write the rule the source actually states, not a better rule you would write.
+A captain correction states its rule in the captain's own words; keep them.
 
-**Done when:** you hold zero to five items, each with all six fields filled.
+**Done when:** you hold zero to five items, each with all six fields filled, and no unselected item outranks a selected one.
 Zero is a valid result; continue with the evidence audits in step 5.
+
+### The five are active, not final
+
+Five is the bound on what you watch **at once**, not on what this programme can teach you.
+A programme accumulates more corrections than five over its life, and a set that never changes goes stale against a programme that moves.
+
+Rebuild the set when a turn arrives whose cue matches nothing you hold **and** a tier-1 or tier-2 source has a rule for that cue.
+Swap out your lowest-precedence item, bring that rule in, and process the turn against the rebuilt set.
+Record the swap with the turn that caused it.
+
+**Done when:** the turn is processed against a set that contains every rule its cue can bind, and the set still holds at most five items.
 
 ## 3. Match one cue per new parent turn
 
 Read new parent turns with `fm-assistance.sh observe`.
 Identify each turn's cue from this closed list, and no other:
 
-`options draft`, `worker brief`, `platform proposal`, `blocked claim`, `ownership claim`, `report claim`, `old pass reused`, `merge with live dependents`, `dispatch`, `completion claim`, `scope note`, `guidance write`.
+`options draft`, `worker brief`, `platform proposal`, `blocked claim`, `ownership claim`, `report claim`, `old pass reused`, `merge with live dependents`, `dispatch`, `verification plan`, `completion claim`, `scope note`, `guidance write`.
+
+`verification plan` is the moment a behavior or interface decision is declared settled and the next thing is to build it.
+It is a distinct cue because the evidence question there is not who decided, but how anyone will know the built thing works.
 
 Then:
 
@@ -88,9 +112,11 @@ Then:
 3. send at most one reminder, for the highest-precedence item that the turn does not already satisfy;
 4. take the next item only on a materially changed evidence identity or a distinct later action.
 
-A turn whose cue is not on the list, or that matches no watch item, is recorded as `no matching watch item` and produces no message.
+When a turn's cue matches nothing you hold, check the rebuild condition in step 2 before concluding anything.
+Only when no tier-1 or tier-2 source has a rule for that cue is the turn recorded as `no matching watch item`, and it then produces no message.
+Never invent a rule to give a turn an answer.
 
-**Done when:** every observed turn is either matched to one cue and processed, or recorded as `no matching watch item`.
+**Done when:** every observed turn is either matched to one cue and processed, or recorded as `no matching watch item` after the rebuild check found nothing to bind.
 
 ## 4. Send one reminder, in one of these forms
 
