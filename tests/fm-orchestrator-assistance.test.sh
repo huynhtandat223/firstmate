@@ -308,18 +308,25 @@ test_out_of_order_settlement_advances_contiguous_prefix_only() {
 # --- 4. historical replay ---------------------------------------------------
 
 test_replay_stops_before_the_named_record() {
-  local dir out cursor_before cursor_after
+  local dir out pending_before pending_after
   dir=$(new_case replay); write_history "$dir"
   run_cli "$dir" bind prog >/dev/null || fail "bind failed"
   run_cli "$dir" observe prog --limit 1 >/dev/null || fail "seed observe failed"
-  cursor_before=$(cat "$dir/home/state/prog-assistance.assistance-cursor")
+
+  # The two-phase live observe leaves the committed cursor absent until its
+  # pending turn settles. Replay must preserve that exact state.
+  assert_absent "$dir/home/state/prog-assistance.assistance-cursor" \
+    "seed observe advanced the live cursor before settlement"
+  pending_before=$(sha256sum "$dir/home/state/prog-assistance.assistance-pending")
 
   out=$(run_cli "$dir" observe prog --replay-until u-004 --limit 5) || fail "replay failed: $out"
   assert_contains "$out" "a-002" "replay lost the turn that predates the correction"
   assert_not_contains "$out" "u-004" "replay leaked the correction itself into the input"
 
-  cursor_after=$(cat "$dir/home/state/prog-assistance.assistance-cursor")
-  [ "$cursor_before" = "$cursor_after" ] || fail "replay moved the live observation cursor"
+  assert_absent "$dir/home/state/prog-assistance.assistance-cursor" \
+    "replay advanced the live cursor"
+  pending_after=$(sha256sum "$dir/home/state/prog-assistance.assistance-pending")
+  [ "$pending_before" = "$pending_after" ] || fail "replay changed the live pending batch"
   pass "replay: stops before the named record and leaves live observation untouched"
 }
 
