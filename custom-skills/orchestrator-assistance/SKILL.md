@@ -24,11 +24,15 @@ This file owns what to watch and what to say, and it is the only owner of that.
 
 ## The boundary
 
-You **read** and you **remind**.
-Everything you touch stays exactly as you found it.
+You **read** the programme's records, form an opinion, and **report observations through `fm-assistance.sh remind`**, which is the orchestrator's own channel.
+That is the whole job, and it is enough.
 
 The supervisor decides business scope, architecture, tickets, options, dispatch, custody, gates, merges, and recovery.
 When you believe one of those is wrong, you say so as an observation with its evidence, and the supervisor decides.
+
+The session changes nothing else: it writes no file, runs no state-changing command, spawns no agent, steers no lifecycle, merges nothing, and deploys nothing.
+`--dangerously-skip-permissions` never appears on an assistance launch, because it auto-approves every tool request and is the one flag that would silently undo that.
+[`fm-assistance-lib.sh`](fm-assistance-lib.sh) owns the pinned runtime and the measured evidence for what the launch flags actually block.
 
 Two facts stay true no matter what you observe:
 
@@ -141,9 +145,33 @@ Send a follow-up only when the evidence, consequence, confidence, classification
 
 Cue matching runs first; these three moments still get their own pass.
 
-- **Dispatch:** the next task has an owner, a coherent dependency frontier, an acceptance slice, and a route to its required evidence.
-- **Milestone:** the claimed change exists at the current branch or commit, and the claimed evidence belongs to that change.
-- **Final report:** both the coverage map and the completion evidence hold.
+- **Dispatch:** the next task has an owner, a coherent dependency frontier, an acceptance slice, and a route to its required evidence - including the nearest applicable leaf `AGENTS.md` for that task's scope, not the repository root alone.
+  A worker scoped to one module and pointed only at root guidance reads every module's rules and acts on the ones that do not apply to it.
+- **Milestone:** the claimed change exists at the current branch or commit, the claimed evidence belongs to that change, and the change's shape matches its scope.
+- **Final report:** the coverage map, the completion evidence, and the shape all hold.
+
+### Shape, not only colour
+
+A green verdict proves only what the checks ran, so ask what they did not run.
+At milestone and final report, compare:
+
+- **Modules touched against modules in scope.**
+  A change editing a module the task never named is a finding, justified or not.
+- **Files impacted against the files the task implied.**
+  A task described as one thing that lands in a different layer is a finding.
+- **Behaviour against the layer that owns it.**
+  Module behaviour implemented in the host or in a shared layer is the shape that has already cost programmes weeks of latency.
+- **Green checks against what those checks exercise.**
+  A suite that never builds the deployment image cannot report that image broken, and a suite skipped behind a failed gate job reports nothing while looking clean.
+
+### Symptoms that belong to another owner
+
+Name the observable symptom and point at the owner; do not re-teach its rule.
+
+- **Tests asserting shape instead of behaviour** - assertions bound to status codes, call counts, or internal structure rather than to what the change made observable, or a completion claim resting on unit tests alone.
+  Cue: `verification plan`, `completion claim`; owner: `classical-testing`.
+- **An agent-facing document restating what another file owns** - duplication, steering by prohibition, or repeating a contract whose owner is elsewhere.
+  Cue: `guidance write`; owner: `writing-for-agents`.
 
 Treat coverage and completion as separate claims.
 **Coverage** means every accepted requirement maps to a task, a required evidence item, or an explicit accepted exclusion that the programme's authority records actually accept.
@@ -208,18 +236,6 @@ Record a reminder whose acknowledgement or resulting action you cannot evidence 
 The report carries no business recommendation.
 
 **Done when:** the report stands alone as an operational record of this assistance run.
-
-## Worked example
-
-The parent's turn carries a scout report claiming a registration is missing.
-Cue: `report claim`. Watch item: source over report.
-
-```text
-WATCH [w2] before accepting the blocks report: check the strongest claim against current source before acting on worker prose; verify: the consumer registration in current source; source: custom-skills/orchestrator/SKILL.md
-```
-
-The supervisor then reads the source, finds the registration already present, and rejects the claim.
-That is the outcome this skill exists to produce, and it is recorded with the parent turn that shows it.
 
 ## Non-goals
 
