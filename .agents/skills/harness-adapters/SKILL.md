@@ -446,9 +446,9 @@ The footer is not a semantic lifecycle source, so `bin/fm-busy-lib.sh` uses the 
 The older `FM_TMUX_AGY_BUSY_REGEX_DEFAULT` in `bin/fm-tmux-lib.sh` was orphaned from recorded task-state classification when the semantic busy contract moved into `fm-busy-lib.sh`; it remains the delivery-only signature used by `fm_pane_is_busy` and related submit or escalation checks.
 A real tmux launch on 2026-08-18 reported `pane_current_command=agy` and foreground `comm=agy` with the full command `agy --dangerously-skip-permissions -i --model gemini-3.6-flash-low --effort low`, so `bin/backends/tmux.sh` classifies the live process as `alive`.
 The same launch showed `agy` as `alive` while the footer read `esc to cancel`, returned `idle` after one Escape with `Interrupted` and `? for shortcuts`, and returned to a bare `bash` endpoint after `/exit` plus Enter.
-The idle composer is a bare `> ` row with a separator underneath, and typed text appears as `> UNSUBMITTED_AGY_MARKER` before Enter.
-The shared composer classifier therefore keeps an unstructured `>` row `unknown` because it is byte-identical to a dead shell prompt; this task did not establish a safe tmux structural rule that distinguishes the separator-backed agy row from that dead-shell shape.
-The Herdr-specific composer rule remains separately identity-gated by `agent get` and is not evidence for tmux.
+The idle composer is a bordered container: a horizontal `─────` rule, the `> ` prompt row, a closing horizontal rule, and the `? for shortcuts` or `esc to cancel` footer; typed text appears in the prompt row before Enter.
+Herdr's shared classifier initially returned `unknown` because its Pi ordering guard treated agy's own closing rule as a lower stale separator; the agy arm now accepts only an immediately adjacent closing rule plus native `agent: agy` identity, while a non-adjacent lower separator remains unsafe.
+A real signed-in Herdr round trip verified `fm_backend_composer_state` as `empty` when untouched, `pending` with typed text, and `fm-send` delivered a prompt and received `4`.
 A single Escape cancels an active turn without restoring text into the composer, and `/exit` plus Enter closes the TUI.
 It uses `--model <model>` and `--effort low|medium|high`; `agy --help` on 1.1.14 rejects no listed value but advertises no `xhigh` or `max` level.
 It sets `ANTIGRAVITY_AGENT=1` for child processes, and resumes with `agy --continue` or `agy --conversation <id>`.

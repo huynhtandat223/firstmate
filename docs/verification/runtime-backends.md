@@ -544,7 +544,7 @@ The pre-fix column is the same capture through the composer owner as it stood be
 | codex | codex-cli 0.145.0 | empty | empty | pending | no |
 | pi | 0.84.1 | empty | empty | pending | no |
 | opencode | 1.17.20 | unknown | unknown | unknown | no |
-| agy | 1.1.11 | unknown | unknown | unknown | no |
+| agy | 1.1.14 | empty | empty | pending | no |
 
 Exactly one verdict moves, and it is the fault this fix was written for.
 Claude is also the only one of the five that pads its composer at all, so the other four are evidence that the fold changed nothing for them rather than evidence that it repaired them.
@@ -552,11 +552,11 @@ Claude is also the only one of the five that pads its composer at all, so the ot
 Two seams are unsupported rather than passing, on both backends, and neither is affected by the fold:
 
 - opencode 1.17.20 draws a composer row with a LEFT-only `┃` edge and a `╹▀▀▀` foot, matching neither the bordered shape (same glyph at both ends) nor a bare agent prompt glyph.
-- agy 1.1.11 draws a bare `>`, byte-identical to a dead shell prompt. The agy rule that would admit it on native identity requires that row to sit below all separator activity, and real agy draws a rule underneath its prompt.
+- agy 1.1.14 draws a `> ` prompt row inside a bordered composer whose closing horizontal rule is immediately below the row. The Herdr reader now distinguishes that owned closing rule from a non-adjacent stale separator and requires native `agent: agy` identity before treating the shell glyph as a composer.
 
-Both refuse as `unknown`, which denies delivery confirmation and away-mode injection alike.
-Antigravity CLI 1.1.14 was rechecked on 2026-08-18 with the same bare `>` composer shape and remains `unknown` on tmux; no safe structural distinction from a dead shell was established.
-Reading either composer is a separate change with its own safety argument and was not attempted here.
+The remaining unsupported opencode shape refuses as `unknown`, which denies delivery confirmation and away-mode injection alike.
+A signed-in Antigravity 1.1.14 Herdr probe confirmed `empty` untouched and `pending` with typed text, and a full `fm-send` round trip returned `4`.
+The Antigravity hardening is covered by `tests/fm-backend-herdr.test.sh`; the safety boundary remains native agy identity plus an immediately adjacent closing rule.
 
 Live end-to-end tmux runs on 2026-08-10 agreed with the table for claude, pi and codex; codex required dismissing an update menu and a hooks-trust prompt first, so the automated guard reports it unverified whenever either gate is pending.
 

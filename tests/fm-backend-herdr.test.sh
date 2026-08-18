@@ -3147,7 +3147,7 @@ test_composer_state_pi_separator_requires_safe_native_identity() {
 test_composer_state_agy_prompt_idle_is_empty() {
   local dir log resp fb out calls
   dir="$TMP_ROOT/composer-agy-idle"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
-  printf '  some transcript line\n  another line\n\n> \n' > "$resp/1.out"
+  printf '  some transcript line\n  another line\n\n> \n─────────────────────────────────────────────────────\n? for shortcuts\n' > "$resp/1.out"
   printf '{"result":{"agent":{"agent":"agy","agent_status":"idle"}}}\n' > "$resp/2.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
@@ -3161,7 +3161,7 @@ test_composer_state_agy_prompt_idle_is_empty() {
 test_composer_state_agy_prompt_real_text_is_pending() {
   local dir log resp fb out
   dir="$TMP_ROOT/composer-agy-pending"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
-  printf '  transcript\n\n> hello captain this is a draft\n' > "$resp/1.out"
+  printf '  transcript\n\n> hello captain this is a draft\n─────────────────────────────────────────────────────\n? for shortcuts\n' > "$resp/1.out"
   printf '{"result":{"agent":{"agent":"agy","agent_status":"done"}}}\n' > "$resp/2.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
@@ -3199,7 +3199,7 @@ test_composer_state_agy_prompt_requires_safe_native_identity() {
 test_composer_state_agy_prompt_below_stale_bordered_box_wins() {
   local dir log resp fb out
   dir="$TMP_ROOT/composer-agy-below-box"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
-  printf '\xe2\x95\xad\xe2\x94\x80\xe2\x94\x80\xe2\x95\xae\n\xe2\x94\x82 stale notice \xe2\x94\x82\n\xe2\x95\xb0\xe2\x94\x80\xe2\x94\x80\xe2\x95\xaf\n\n> \n' > "$resp/1.out"
+  printf '\xe2\x95\xad\xe2\x94\x80\xe2\x94\x80\xe2\x95\xae\n\xe2\x94\x82 stale notice \xe2\x94\x82\n\xe2\x95\xb0\xe2\x94\x80\xe2\x94\x80\xe2\x95\xaf\n\n> \n─────────────────────────────────────────────────────\n? for shortcuts\n' > "$resp/1.out"
   printf '{"result":{"agent":{"agent":"agy","agent_status":"idle"}}}\n' > "$resp/2.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
