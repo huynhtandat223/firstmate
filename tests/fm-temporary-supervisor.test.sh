@@ -110,6 +110,9 @@ SH
   git -C "$root" worktree add --detach --quiet "$home" HEAD
   mkdir -p "$parent/data" "$parent/state" "$parent/config" "$parent/projects"
   fm_git_init_commit "$parent/projects/alpha"
+  git -C "$parent/projects/alpha" remote add origin "$parent/projects/alpha"
+  git -C "$parent/projects/alpha" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+  git -C "$parent/projects/alpha" update-ref refs/remotes/origin/main HEAD
   fakebin=$(make_fakebin "$dir")
   : > "$dir/lease.log"
   FM_ROOT_DIR=$root
