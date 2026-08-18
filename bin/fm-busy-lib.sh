@@ -34,13 +34,15 @@
 #   codex-hook, codex-appserver  reserved: Codex, gated by
 #                    fm_busy_codex_semantic_source
 #   kimi-wire, kimi-hook  reserved: standalone Kimi, gated by fm_busy_kimi_verified
+#   agy-regex        Antigravity's verified active-turn footer fallback;
+#                    scoped to harness=agy and never a semantic task source
 # Firstmate-owned sources accepted for every converted adapter:
 #   fm-spawn         the launch-brief turn seeded at spawn
 #   fm-interrupt     the legacy Claude fm-send --key Escape idle event
 #   fm-recovery      a documented recovery reset after relaunch
 # Classifier-only sources (never written into a record):
-#   endpoint-gone, herdr-native, grok-regex, muse-session-log, missing,
-#   malformed, gen-mismatch, source-mismatch, kimi-unverified,
+#   endpoint-gone, herdr-native, grok-regex, agy-regex, muse-session-log,
+#   missing, malformed, gen-mismatch, source-mismatch, kimi-unverified,
 #   codex-unverified, capture-failed, no-target
 #
 # Classification (fm_busy_classify): busy | idle | unknown | dead, always
@@ -50,15 +52,18 @@
 #   3. a valid, gen-matching, source-trusted record -> its state and source
 #   4. no record at all: herdr's native busy verdict is trusted as busy
 #      (generation state is sufficient for busy, not for idle), then the
-#      muse session-log pull source, then the Grok-only temporary regex fallback
-#      classifies a grok task from its rendered tail, then unknown missing
+#      muse session-log pull source, then the Grok or agy temporary regex
+#      fallback classifies its own task from its rendered tail, then unknown
+#      missing
 #   5. malformed, stale, or untrusted records -> unknown, never a fallback
-# The Grok arm is the ONLY rendered-text classification that survives the
-# redesign, because Grok's structured lifecycle was not credited-live-verified
-# in the approved audit; it is scoped to harness=grok and can never classify
-# another adapter. The delivery guards in bin/fm-tmux-lib.sh match rendered
-# footers for submit acknowledgement and away-mode supervisor injection only;
-# neither is a recorded worker state source.
+# The Grok and agy arms are the only rendered-text classifications that survive
+# the redesign. Neither harness has a verified firstmate lifecycle writer, so
+# each arm is scoped to its own harness and can never classify another adapter.
+# They are delivery-grade fallbacks, not semantic event sources, and therefore
+# remain explicitly named in every verdict. The delivery guards in
+# bin/fm-tmux-lib.sh also match rendered footers for submit acknowledgement and
+# away-mode supervisor injection; neither guard is a recorded worker state
+# source.
 #
 # The muse pull source is semantic, not rendered: it folds muse's own durable
 # session event log. It has no writer, no arm, and no gen, because
@@ -99,6 +104,11 @@ FM_BUSY_LIB_VERSION=v1
 # docs/verification/supervision.md, add the verified version string(s) here,
 # and land the wiring in fm-spawn behind this same gate in the same change.
 FM_BUSY_KIMI_VERIFIED_VERSIONS=""
+
+# Antigravity has no verified lifecycle writer. Keep its observed footer in the
+# busy-library data table so the task-state fallback and the delivery table in
+# fm-tmux-lib.sh cannot silently drift from the same verified row.
+FM_BUSY_AGY_REGEX_DEFAULT='esc to cancel'
 
 fm_busy_kimi_verified() {
   [ -n "$FM_BUSY_KIMI_VERIFIED_VERSIONS" ]
@@ -609,7 +619,8 @@ fm_busy_grok_tail_busy() {
 # busy|idle|unknown plus the producing source (see header). Never probes
 # process state. <tail40> is optional pre-captured plain output used only by
 # the Grok arm; when absent the Grok arm captures through fm_backend_capture
-# if available, else reports unknown capture-failed.
+# if available, else reports unknown capture-failed. The agy arm uses the same
+# bounded capture path and its own verified footer row.
 fm_busy_classify() {  # <backend> <target> <harness> <id> <state-dir> [tail40]
   local backend=$1 target=$2 harness=$3 id=$4 state=$5 tail40=${6-}
   local out rc r_state r_source native log
@@ -689,6 +700,30 @@ fm_busy_classify() {  # <backend> <target> <harness> <id> <state-dir> [tail40]
         printf 'busy grok-regex'
       else
         printf 'idle grok-regex'
+      fi
+      return 0
+      ;;
+    agy*)
+      # Antigravity 1.1.14 exposes no verified lifecycle hook or API event to
+      # a firstmate-launched pane. Its active footer is the only observed
+      # positive signal: `esc to cancel`; the idle footer is `? for shortcuts`.
+      # This fallback is deliberately isolated to agy and reports its source.
+      if [ -z "$tail40" ]; then
+        if command -v fm_backend_capture >/dev/null 2>&1; then
+          tail40=$(fm_backend_capture "$backend" "$target" 40 2>/dev/null) || {
+            printf 'unknown capture-failed'
+            return 0
+          }
+        else
+          printf 'unknown capture-failed'
+          return 0
+        fi
+      fi
+      if printf '%s' "$tail40" | grep -v '^[[:space:]]*$' | tail -12 \
+        | grep -qiE "${FM_BUSY_REGEX:-$FM_BUSY_AGY_REGEX_DEFAULT}"; then
+        printf 'busy agy-regex'
+      else
+        printf 'idle agy-regex'
       fi
       return 0
       ;;

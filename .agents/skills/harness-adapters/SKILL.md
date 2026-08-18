@@ -126,7 +126,7 @@ The supported launch-profile flags below are verified locally; each row records 
 | opencode | `--model <provider/model>` | none for firstmate's interactive launch | Verified on opencode 1.17.6. `opencode run` has `--variant`, but firstmate launches the interactive `opencode --prompt` path, which has no verified effort flag. |
 | kimi | `--model <model>` | none | Verified 2026-07-25 on Kimi Code CLI 0.29.1. |
 | muse | `--model <model>` | `--reasoning-effort <low\|medium\|high\|xhigh>`, and `ultra` only for an explicit `max` | Verified 2026-08-05 on Muse Code 0.1.0-R708.1. The flag accepts `none\|minimal\|low\|medium\|high\|xhigh\|ultra` and defaults to `high`. `ultra` is muse's max-class level, so it is reachable only through an explicit captain `max`, never from the generic fallback; `none` and `minimal` sit below the shared vocabulary and stay unreachable. |
-| agy | `--model <model>` | `--effort <low\|medium\|high>` | Verified on Antigravity CLI 1.1.5. `agy models` lists names that bake effort into the suffix, but a separate `--effort` flag drives the reasoning axis. The ceiling is `high`; `xhigh` and `max` are omitted. |
+| agy | `--model <model>` | `--effort <low\|medium\|high>` | Re-verified on Antigravity CLI 1.1.14. `agy models` lists names that bake effort into the suffix, but a separate `--effort` flag drives the reasoning axis. The installed `--help` accepts only `low|medium|high`; `xhigh` and `max` are omitted. |
 
 The concrete `harness` field owns adapter identity independently of the model provider: `harness=pi` with `model=xai/grok-*` is Pi using xAI, not `harness=grok`, and does not require Grok CLI login; `harness=grok` remains the standalone Grok Build CLI adapter.
 No script resolves that split for you: establish which credential store a tuple reads from the discovery surfaces below plus `quota-axi auth --json`'s per-provider sources, and show that reasoning rather than inferring it from a harness, model, or source name.
@@ -360,16 +360,22 @@ The tracked Claude hook entries whose event Grok already covers through its own 
 Project-local Grok hooks require folder trust, verified with launch-time `--trust`; if the primary firstmate checkout is not trusted for Grok hooks, this primary guard fails open and `fm-guard.sh` remains the next-command alarm.
 Grok's primary watcher protocol remains background-notify around `bin/fm-watch-arm.sh`; native Stop continuation does not provide Pi-like extension ownership.
 
-## agy (VERIFIED 2026-08-16, Antigravity CLI 1.1.13)
+## agy (VERIFIED 2026-08-18, Antigravity CLI 1.1.14)
 
 Antigravity CLI (`agy`) runs interactively with `--dangerously-skip-permissions -i` so a worker remains steerable and can execute both file and shell operations unattended.
-Its verified active-turn footer is `esc to cancel`; idle reads `? for shortcuts`.
-A single Escape cancels an active turn, leaves the composer empty, and returns the idle footer.
-Typing `/exit` and pressing Enter exits the TUI; the tmux endpoint then reports no live agent process, and a replacement launch succeeds in the same copy without discarding it.
-The footer is delivery-only and has no verified semantic busy source, so agy classifies unknown outside delivery checks.
-It uses `--model <model>` and `--effort low|medium|high`; higher effort levels are omitted.
+Its active-turn footer is `esc to cancel` and its idle footer is `? for shortcuts`.
+The footer is not a semantic lifecycle source, so `bin/fm-busy-lib.sh` uses the harness-scoped `agy-regex` fallback only when no busy record exists and labels its result `busy agy-regex` or `idle agy-regex`.
+The older `FM_TMUX_AGY_BUSY_REGEX_DEFAULT` in `bin/fm-tmux-lib.sh` was orphaned from recorded task-state classification when the semantic busy contract moved into `fm-busy-lib.sh`; it remains the delivery-only signature used by `fm_pane_is_busy` and related submit or escalation checks.
+A real tmux launch on 2026-08-18 reported `pane_current_command=agy` and foreground `comm=agy` with the full command `agy --dangerously-skip-permissions -i --model gemini-3.6-flash-low --effort low`, so `bin/backends/tmux.sh` classifies the live process as `alive`.
+The same launch showed `agy` as `alive` while the footer read `esc to cancel`, returned `idle` after one Escape with `Interrupted` and `? for shortcuts`, and returned to a bare `bash` endpoint after `/exit` plus Enter.
+The idle composer is a bare `> ` row with a separator underneath, and typed text appears as `> UNSUBMITTED_AGY_MARKER` before Enter.
+The shared composer classifier therefore keeps an unstructured `>` row `unknown` because it is byte-identical to a dead shell prompt; this task did not establish a safe tmux structural rule that distinguishes the separator-backed agy row from that dead-shell shape.
+The Herdr-specific composer rule remains separately identity-gated by `agent get` and is not evidence for tmux.
+A single Escape cancels an active turn without restoring text into the composer, and `/exit` plus Enter closes the TUI.
+It uses `--model <model>` and `--effort low|medium|high`; `agy --help` on 1.1.14 rejects no listed value but advertises no `xhigh` or `max` level.
 It sets `ANTIGRAVITY_AGENT=1` for child processes, and resumes with `agy --continue` or `agy --conversation <id>`.
-Live verification command: `agy --version` returned `1.1.13`; `agy models` listed the installed account models; a tmux session launched with `agy --dangerously-skip-permissions -i --model gemini-3.6-flash-low`, received a long-running prompt, and changed from `esc to cancel` to `Interrupted` then `? for shortcuts` after one Escape; `/exit` plus Enter closed the session and a relaunch in `/tmp` reached the interactive composer.
+Live verification commands were `agy --version`, `agy --help`, `agy models`, a private tmux launch, `tmux capture-pane`, `tmux display-message`, `ps -t <tty>`, and the shared busy and liveness classifiers.
+`agy --version` returned `1.1.14`, `agy models` listed the installed account models, and the live launch used `gemini-3.6-flash-low`.
 
 ## kimi (VERIFIED 2026-07-25, kimi 0.29.1)
 

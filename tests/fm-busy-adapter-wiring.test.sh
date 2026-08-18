@@ -335,11 +335,20 @@ test_kimi_and_grok_install_no_unverified_wiring() {
     || fail "standalone kimi must trust no semantic source until it is verified"
   [ -z "$(fm_busy_sources_for_harness grok)" ] \
     || fail "grok must trust no semantic source while its structured path is unverified"
+  [ -z "$(fm_busy_sources_for_harness agy)" ] \
+    || fail "agy must trust no semantic source while its lifecycle writer is unverified"
   out=$(fm_busy_classify tmux fake:w kimi gate-k "$state" '🌒 · thinking')
   [ "$out" = "unknown kimi-unverified" ] || fail "kimi must classify unknown, not from its spinner, got '$out'"
   out=$(fm_busy_classify tmux fake:w grok gate-g "$state" 'Ctrl+c:cancel')
   [ "$out" = "busy grok-regex" ] || fail "grok must classify through its isolated fallback, got '$out'"
-  pass "kimi and grok install no unverified semantic wiring and classify through their own gates"
+  out=$(fm_busy_classify tmux fake:w agy gate-a "$state" 'esc to cancel')
+  [ "$out" = "busy agy-regex" ] || fail "agy must classify its observed active footer through its isolated fallback, got '$out'"
+  [ "$FM_BUSY_AGY_REGEX_DEFAULT" = 'esc to cancel' ] || fail "agy busy table must retain the observed footer row"
+  out=$(fm_busy_classify tmux fake:w agy gate-a "$state" '? for shortcuts')
+  [ "$out" = "idle agy-regex" ] || fail "agy idle footer must classify idle through its isolated fallback, got '$out'"
+  out=$(fm_busy_classify tmux fake:w claude gate-c "$state" 'esc to cancel')
+  [ "$out" = "unknown missing" ] || fail "agy footer must not leak to claude, got '$out'"
+  pass "Kimi and converted adapters keep their existing gates while agy uses only its isolated delivery fallback"
 }
 
 test_pi_extension_semantic_lifecycle

@@ -213,6 +213,10 @@ test_claude_busy_signature_uses_real_capture_shapes() {
   pane_busy live && fail "Claude signature must not match without the Claude harness"
 
   # Each verified harness must use only its own signature.
+  printf 'esc to cancel\n' > "$composer"
+  pane_busy agy agy || fail "Antigravity's observed esc-to-cancel footer should be busy"
+  printf 'esc to cancel\n' > "$composer"
+  pane_busy cross claude && fail "Claude must ignore Antigravity's cancel footer"
   printf 'Ctrl+c:cancel\n' > "$composer"
   pane_busy cross claude && fail "Claude must ignore Grok's cancel footer"
   printf 'esc interrupt\n' > "$composer"
