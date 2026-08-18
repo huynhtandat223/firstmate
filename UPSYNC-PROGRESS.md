@@ -104,6 +104,8 @@ Focused post-merge results:
 - PASS: `fm-classify-decision-key`, `fm-send-resolve-key`, `fm-decision-hold-lifecycle`, `fm-control`, `fm-control-relaunch`, `fm-spawn-dispatch-profile`, `fm-spawn-pool-base-freshen`, `fm-composer-lib`, `fm-pi-watch-extension`, `fm-wake-queue`.
 - PASS after correction: `fm-temporary-supervisor`; its fixture now supplies the local origin/default ref required by upstream pooled-base freshening.
 - PASS after correction: complete `fm-backend-herdr`, including agy identity, busy Pi/agy payload confirmation, Cursor footer transition, and swallowed-Enter refusals.
+- `bin/fm-lint.sh` reached ShellCheck and found two merge-local warnings in the Herdr agy code; the working tree fixes them. It also reported missing actionlint 1.7.12, an environment blocker still to resolve or report.
+- `bin/fm-doc-audience-check.sh` reports only this temporary `UPSYNC-PROGRESS.md` as unclassified. Delete this handover file before the final documentation check.
 
 Do not run `fm-test-run.sh --all`.
 Use explicit bounded batches and always omit `tests/fm-remote-secondmate-lifecycle-e2e.test.sh`.
@@ -116,8 +118,7 @@ Use a named non-default Herdr lab via `/home/dathuynh/.treehouse/firstmate-bd40d
 
 ## Next action
 
-1. Stage all current edits and run `git diff --cached --check`.
-2. Run `bin/fm-lint.sh` and `bin/fm-doc-audience-check.sh`.
-3. Run bounded post-merge test batches excluding the leaking remote-secondmate file; compare failures with the baseline list above.
-4. Commit the merge with both parents and push `fm/fm-upsync`.
-5. Delete this file in a final normal commit before opening the PR.
+1. Re-run `bin/fm-lint.sh`; ShellCheck should be clean, but actionlint 1.7.12 may still be missing. Do not install without authority; report the exact blocker if it remains.
+2. Run bounded post-merge test batches excluding the leaking remote-secondmate file; compare failures with the baseline list above.
+3. Delete this file, run `bin/fm-doc-audience-check.sh`, commit the final fixes, and push `fm/fm-upsync`.
+4. Open the PR with the complete baseline/post-merge evidence.

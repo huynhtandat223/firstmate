@@ -2630,7 +2630,6 @@ FM_BACKEND_HERDR_AGY_PROMPT_RE=${FM_BACKEND_HERDR_AGY_PROMPT_RE:-'^>( |$)'}
 fm_backend_herdr_agy_composer_find() {  # <ansi-capture>
   local cap=$1 line plain row=0
   FM_BACKEND_HERDR_AGY_ROW_FOUND=0
-  FM_BACKEND_HERDR_AGY_ROW_LINE=0
   FM_BACKEND_HERDR_AGY_ROW_RAW=""
   while IFS= read -r line; do
     row=$((row + 1))
@@ -2640,7 +2639,6 @@ fm_backend_herdr_agy_composer_find() {  # <ansi-capture>
     [ -n "$plain" ] || continue
     if printf '%s' "$plain" | grep -qE "$FM_BACKEND_HERDR_AGY_PROMPT_RE"; then
       FM_BACKEND_HERDR_AGY_ROW_FOUND=1
-      FM_BACKEND_HERDR_AGY_ROW_LINE=$row
       FM_BACKEND_HERDR_AGY_ROW_RAW=$line
     fi
   done <<EOF
@@ -2684,7 +2682,7 @@ fm_backend_herdr_composer_state() {  # <target> -> empty|pending|pending-unprove
   verdict=$(fm_composer_classify_screen "$caps" "$cap")
   if [ "$verdict" = need-identity ]; then
     if ! identity=$(fm_backend_herdr_composer_identity "$target" 2>/dev/null) || [ -z "$identity" ]; then
-      identity=probe-absent
+      identity='probe-absent'
     fi
     verdict=$(fm_composer_classify_screen "$caps" "$cap" '' "$identity")
     [ "$verdict" != need-identity ] || verdict=unknown
