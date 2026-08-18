@@ -14,6 +14,7 @@ set -u
 
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-busy-lib.sh"
+. "$ROOT/bin/fm-tmux-lib.sh"
 
 SPAWN="$ROOT/bin/fm-spawn.sh"
 TMP_ROOT=$(fm_test_tmproot fm-busy-adapter-wiring)
@@ -343,7 +344,9 @@ test_kimi_and_grok_install_no_unverified_wiring() {
   [ "$out" = "busy grok-regex" ] || fail "grok must classify through its isolated fallback, got '$out'"
   out=$(fm_busy_classify tmux fake:w agy gate-a "$state" 'esc to cancel')
   [ "$out" = "busy agy-regex" ] || fail "agy must classify its observed active footer through its isolated fallback, got '$out'"
-  [ "$FM_BUSY_AGY_REGEX_DEFAULT" = 'esc to cancel' ] || fail "agy busy table must retain the observed footer row"
+  if ! printf '%s\n' 'esc to cancel' | fm_busy_lines_match agy; then
+    fail "agy delivery matcher must recognize the observed active footer"
+  fi
   out=$(fm_busy_classify tmux fake:w agy gate-a "$state" '? for shortcuts')
   [ "$out" = "idle agy-regex" ] || fail "agy idle footer must classify idle through its isolated fallback, got '$out'"
   out=$(fm_busy_classify tmux fake:w claude gate-c "$state" 'esc to cancel')
