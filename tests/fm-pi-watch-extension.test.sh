@@ -609,18 +609,25 @@ await waitFor(
 if (rows().length !== 2) throw new Error(`unretired arm overlapped before fallback: ${rows().join(" | ")}`);
 if (!prompts[0]?.includes("original wake")) throw new Error(`missing original fallback: ${prompts.join(" | ")}`);
 writeFileSync(process.env.FM_RELEASE_FILE, "release\n");
-for (let i = 0; i < 500; i += 1) {
-  if (rows().length >= 3 && (process.env.FM_LATE_KIND !== "actionable" || prompts.some((message) => message.includes("late wake")))) break;
-  await new Promise((resolve) => setTimeout(resolve, 10));
-}
-if (rows().length !== 3) throw new Error(`late close did not restore one successor: ${rows().join(" | ")}`);
+await waitFor(
+  () => rows().length >= 3,
+  "late close did not restore one successor",
+);
+if (rows().length !== 3) throw new Error(`late close restored too many successors: ${rows().join(" | ")}`);
 if (process.env.FM_LATE_KIND === "actionable") {
-  if (prompts.length !== 2 || !prompts[1].includes("late wake")) throw new Error(`late actionable close was not delivered: ${prompts.join(" | ")}`);
+  await waitFor(
+    () => prompts.some((message) => message.includes("late wake")),
+    "late actionable close was not delivered",
+  );
+  if (prompts.length !== 2 || !prompts[1].includes("late wake")) throw new Error(`late actionable close delivered the wrong wakes: ${prompts.join(" | ")}`);
 } else if (prompts.length !== 1) {
   throw new Error(`late non-actionable close sent an extra wake: ${prompts.join(" | ")}`);
 }
 writeFileSync(process.env.FM_STOP_FILE, "stop\n");
-await new Promise((resolve) => setTimeout(resolve, 80));
+await waitFor(
+  () => rows().length >= 3,
+  "late successor did not remain observable after stop",
+);
 EOF
 )
     status=$?
