@@ -145,6 +145,7 @@ The detailed reconciliation and task chronology stay in the private audit report
 ## Semantic busy state
 
 The per-adapter semantic sources behind [`bin/fm-busy-lib.sh`](../../bin/fm-busy-lib.sh) were live-verified on 2026-07-28 against firstmate-launched workers wired exactly as `fm-spawn` writes them.
+Antigravity CLI 1.1.14 was separately reverified on 2026-08-18; its `esc to cancel` footer is a rendered fallback, not a semantic lifecycle source.
 Each pass polled `state/<id>.busy-state` while a real turn ran.
 
 | Harness | Version verified | Semantic source | Observed result |
@@ -155,6 +156,7 @@ Each pass polled `state/<id>.busy-state` while a real turn ran.
 | Codex | codex-cli 0.145.0 | None usable | See below; classifies `unknown codex-unverified`. |
 | Kimi (standalone) | not installed | None usable | No binary on `PATH`, so the gate stays closed and it classifies `unknown kimi-unverified`. |
 | Grok | 0.2.112 | Isolated rendered-tail fallback | Retained unconverted; the approved audit could not credit a live structured-lifecycle run. |
+| Antigravity | 1.1.14 | Isolated rendered-footer fallback | Retained unconverted; no firstmate lifecycle writer or API event was verified for a pane worker, so `esc to cancel` is used only as the harness-scoped fallback. |
 
 Codex was probed two ways, both refused:
 

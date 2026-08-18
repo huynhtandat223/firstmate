@@ -95,8 +95,7 @@ Enter, Escape, and Ctrl-C are supported.
 The composer verifier locates the last bordered composer row or a later bare agent-prompt row bounded by horizontal rules, then delegates the content decision to `bin/fm-composer-lib.sh`.
 The bounded bare shape supports Claude's borderless `❯` composer, with or without a trailing U+00A0 non-breaking space, without relying on a cursor primitive that `read-screen` does not provide.
 An unstructured bare prompt is `unknown`, and a slash-popup placeholder remains `pending`, so only Enter is retried and text is never retyped.
-cmux exposes no native generic agent busy signal, so supervision uses capture/hash polling for screen changes and each harness adapter's semantic lifecycle for worker state.
-Grok alone retains its isolated rendered-tail fallback.
+cmux exposes no native generic agent busy signal, so supervision uses capture/hash polling for screen changes and the busy-state contract in [architecture](architecture.md#busy-state-is-semantic-per-adapter) for harness-specific lifecycle and fallback classification.
 
 A task workspace's last surface cannot be closed directly.
 Cleanup owns the whole workspace and uses `close-workspace`.

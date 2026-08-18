@@ -36,6 +36,8 @@ The earlier record that every harness is observed under its own `#{pane_current_
 In this macOS run that reading reflected a rewritable process title rather than stable executable identity, so it is now one of two independent name sources rather than the sole basis of a verdict.
 
 The seven primary-capable adapters were relaunched on 2026-08-03 with tmux 3.6a on macOS 26.5.2 arm64, each on a private socket in an isolated lab.
+This matrix covers the primary-capable set; the worker-only Muse and Antigravity checks below are separate.
+Antigravity CLI 1.1.14 was verified separately on 2026-08-18 in a private tmux launch, and the opt-in liveness guard now includes `agy` as an installed adapter check.
 
 ```sh
 tmux -L "$socket" new-window -d -t "$session:" -n "$harness" -c "$wt" -- "$bin"
@@ -54,14 +56,21 @@ Observed identities, and the resulting verdict:
 | pi-signed | 0.82.0 | `pi-launcher` | `pi-signed`, `pi` | alive |
 | grok | 0.2.118 | `grok-0.2.118-ma` | `grok` | alive |
 | kimi | 0.31.1 | `kimi` | `kimi` | alive |
+| agy (worker) | 1.1.14 | `agy` | `agy` | alive |
 
-Claude Code is the harness whose title no longer attributes it at all; every other adapter is currently attributed by both sources.
+Claude Code is the harness whose title no longer attributes it at all; every primary-capable adapter is currently attributed by both sources.
+Antigravity's 2026-08-18 private tmux launch reported `pane_current_command=agy` and foreground `comm=agy` for `agy --dangerously-skip-permissions -i --model gemini-3.6-flash-low --effort low`, and `fm_backend_agent_state tmux <target>` returned `alive`.
+The same launch showed `esc to cancel` while a turn ran, `Interrupted` followed by `? for shortcuts` after one Escape, and a bare `bash` endpoint after `/exit` plus Enter.
+The task-state fallback returned `busy agy-regex` for `esc to cancel` and `idle agy-regex` for `? for shortcuts`.
+The idle composer is a bare `> ` row with a separator underneath, and typed text appears as `> UNSUBMITTED_AGY_MARKER` before Enter.
+Because that row is byte-identical to a dead shell prompt, the tmux composer classifier keeps it `unknown`; the Herdr identity-gated rule is not evidence for tmux.
 Codex reported `codex-aarch64-a` at 0.145.0 and `codex` at 0.146.0, and Kimi Code reported `kimi-code` as its foreground `comm` at 0.29.1 and `kimi` at 0.31.1, so these identities move between ordinary patch releases in both directions.
 That is the evidence for treating any single process name as a surface under vendor control rather than a stable contract.
 
 The crewmate-only Muse Code 0.1.0-R708.1 adapter was verified separately on 2026-08-05 against tmux on macOS arm64.
 Its installed `muse-bin-0.1.0-R708.1` foreground identity classified `alive`, while `musescore`, `amuse`, `muse-binary`, and `muse-bind` remained ambiguous in the portable regression.
 [`muse.md`](muse.md#process-identity) owns the artifact identity and launcher evidence for that verification.
+Antigravity CLI 1.1.14 was verified separately on 2026-08-18 against tmux on macOS arm64; its live worker `agy` identity classified `alive`.
 
 Bounded observed output:
 
@@ -81,13 +90,15 @@ On macOS the pane command reflected the rewritable title while the full install 
 The classifier therefore accepts a harness basename first, then an exact harness path component in the full executable path, then the same component in argv[0], without depending on which field carries it on a given platform.
 
 The portable regression is CI-enforced, while the real-harness drift guard is opt-in under the policy in `.agents/skills/firstmate-coding-guidelines/SKILL.md`.
+The guard covers every installed harness, including Antigravity, and reports an absent installation explicitly.
+The 2026-08-18 Antigravity run was a separate liveness verification because Antigravity is verified for worker launches, not primary sessions.
 Run the live guard after any harness upgrade and before trusting or refreshing the table above:
 
 ```sh
 FM_HARNESS_LIVENESS_DRIFT=1 bin/fm-test-run.sh tests/fm-harness-liveness-drift-live-e2e.test.sh
 ```
 
-Bounded output from the run that produced the table:
+Historical bounded output from the 2026-08-03 primary-capable run that produced the table:
 
 ```text
 ok - harness liveness: claude 2.1.220 (Claude Code) classifies alive
@@ -137,7 +148,7 @@ Firstmate therefore sets the exact `FM_PI_HARNESS` selection marker on both work
 Both recorded runtime identities now classify the exact `pi-launcher` foreground command as `alive`.
 
 Backend applicability was reviewed across every spawn adapter.
-Tmux needs the exact `pi-launcher`, `pi-signed`, `pi`, and `Pi` process identities for recovery-grade liveness.
+The tmux classifier now also accepts the exact `agy` process identity for worker liveness, alongside `pi-launcher`, `pi-signed`, `pi`, and `Pi`.
 Herdr uses native registered-agent state and needs no process-name branch.
 Zellij has no verified recovery-grade agent process probe, while Orca and cmux do not support secondmate spawns, so those three retain their existing generic ordinary-launch semantics without a new liveness matcher.
 
@@ -178,7 +189,7 @@ ok - fm-teardown: dedicated-socket invalid cleanup preserves target/control and 
 The dedicated tmux cell removed ambient tmux variables, required a socket-bound wrapper, kept one target and one independent control window, and proved the wrapper was not called for invalid metadata or a direct empty target.
 Valid cleanup removed only the exact task-bound target and left the control window live.
 The metadata-only validation covers tmux, Herdr, Zellij, Orca, and cmux before backend dispatch.
-Claude, Codex, OpenCode, Pi, pi-signed, Grok, Kimi, and Muse share that backend cleanup boundary; their harness-specific hook files, tokens, and session-log sidecars are cleaned only after it, so no harness needs a separate endpoint parser.
+Claude, Codex, OpenCode, Pi, pi-signed, Grok, Kimi, Muse, and Antigravity share that backend cleanup boundary; their harness-specific hook files, tokens, and session-log sidecars are cleaned only after it, so no harness needs a separate endpoint parser.
 
 ## Herdr
 
@@ -544,6 +555,7 @@ Two seams are unsupported rather than passing, on both backends, and neither is 
 - agy 1.1.11 draws a bare `>`, byte-identical to a dead shell prompt. The agy rule that would admit it on native identity requires that row to sit below all separator activity, and real agy draws a rule underneath its prompt.
 
 Both refuse as `unknown`, which denies delivery confirmation and away-mode injection alike.
+Antigravity CLI 1.1.14 was rechecked on 2026-08-18 with the same bare `>` composer shape and remains `unknown` on tmux; no safe structural distinction from a dead shell was established.
 Reading either composer is a separate change with its own safety argument and was not attempted here.
 
 Live end-to-end tmux runs on 2026-08-10 agreed with the table for claude, pi and codex; codex required dismissing an update menu and a hooks-trust prompt first, so the automated guard reports it unverified whenever either gate is pending.
