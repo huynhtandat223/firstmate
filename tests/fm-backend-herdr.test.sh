@@ -3208,6 +3208,18 @@ test_composer_state_agy_prompt_below_stale_bordered_box_wins() {
   pass "fm_backend_herdr_composer_state: a live agy '> ' composer below a stale bordered box wins"
 }
 
+test_composer_state_agy_prompt_with_nonadjacent_separator_stays_unknown() {
+  local dir log resp fb out
+  dir="$TMP_ROOT/composer-agy-nonadjacent"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '─────────────────────────────────────────────────────\n> \ntranscript below the prompt\n─────────────────────────────────────────────────────\n' > "$resp/1.out"
+  printf '{"result":{"agent":{"agent":"agy","agent_status":"idle"}}}\n' > "$resp/2.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_composer_state default:w1:p2' "$ROOT" )
+  [ "$out" = unknown ] || fail "an agy prompt followed by a non-adjacent separator must stay unknown, got '$out'"
+  pass "fm_backend_herdr_composer_state: a non-adjacent lower separator cannot authorize an agy prompt"
+}
+
 # --- composer_state: unbordered (bare) composer rows -------------------------
 # Regression coverage for the away-mode redelivery-loop incident
 # (docs/herdr-backend.md "Incident (2026-07-07)"): real claude and codex
@@ -4696,6 +4708,7 @@ test_composer_state_agy_prompt_idle_is_empty
 test_composer_state_agy_prompt_real_text_is_pending
 test_composer_state_agy_prompt_requires_safe_native_identity
 test_composer_state_agy_prompt_below_stale_bordered_box_wins
+test_composer_state_agy_prompt_with_nonadjacent_separator_stays_unknown
 test_composer_state_claude_unbordered_prompt_is_empty
 test_composer_state_claude_unbordered_prompt_is_pending
 test_composer_state_bare_prompt_below_stale_bordered_banner_wins
