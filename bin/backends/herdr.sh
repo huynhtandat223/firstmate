@@ -2630,6 +2630,7 @@ FM_BACKEND_HERDR_AGY_PROMPT_RE=${FM_BACKEND_HERDR_AGY_PROMPT_RE:-'^>( |$)'}
 fm_backend_herdr_agy_composer_find() {  # <ansi-capture>
   local cap=$1 line plain row=0
   FM_BACKEND_HERDR_AGY_ROW_FOUND=0
+  FM_BACKEND_HERDR_AGY_ROW_LINE=0
   FM_BACKEND_HERDR_AGY_ROW_RAW=""
   while IFS= read -r line; do
     row=$((row + 1))
@@ -2639,6 +2640,7 @@ fm_backend_herdr_agy_composer_find() {  # <ansi-capture>
     [ -n "$plain" ] || continue
     if printf '%s' "$plain" | grep -qE "$FM_BACKEND_HERDR_AGY_PROMPT_RE"; then
       FM_BACKEND_HERDR_AGY_ROW_FOUND=1
+      FM_BACKEND_HERDR_AGY_ROW_LINE=$row
       FM_BACKEND_HERDR_AGY_ROW_RAW=$line
     fi
   done <<EOF
@@ -2670,6 +2672,7 @@ fm_backend_herdr_composer_identity() {  # <target> -> "<agent>\t<status>"
 # consult-only-when-needed behavior.
 fm_backend_herdr_composer_state() {  # <target> -> empty|pending|pending-unproven|unknown
   local target=$1 cap caps verdict identity agent agent_status stripped
+  local agy_row=0 agy_close=0 agy_candidate=0 line plain row=0
   fm_backend_herdr_parse_target "$target" || { printf 'unknown'; return 0; }
   if cap=$(fm_backend_herdr_capture_ansi "$target" "$FM_COMPOSER_CAPTURE_LINES" 2>/dev/null); then
     caps=$(printf 'styled=1\ncursor=0\nidentity=1\nrows=%s' "$FM_COMPOSER_CAPTURE_LINES")
@@ -2687,13 +2690,28 @@ fm_backend_herdr_composer_state() {  # <target> -> empty|pending|pending-unprove
     verdict=$(fm_composer_classify_screen "$caps" "$cap" '' "$identity")
     [ "$verdict" != need-identity ] || verdict=unknown
   fi
-  # agy's composer is a bare ASCII shell glyph, so the shared classifier must
-  # keep it unknown for every unproven pane. Herdr can prove the exception from
-  # native identity plus the bottom-most agy prompt row without weakening that
-  # fleet-wide dead-shell rule.
-  if [ "$verdict" = unknown ]; then
-    fm_backend_herdr_agy_composer_find "$cap"
-    if [ "$FM_BACKEND_HERDR_AGY_ROW_FOUND" -eq 1 ]; then
+  # agy's composer is a shell-glyph row enclosed by a lower horizontal rule.
+  # The shared screen classifier sees that lower rule as a Pi separator, so the
+  # agy fallback must prove that the separator is its own immediate closing row
+  # before applying the native identity exception. A lower separator separated
+  # by transcript content remains stale evidence and cannot authorize injection.
+  fm_backend_herdr_agy_composer_find "$cap"
+  if [ "$FM_BACKEND_HERDR_AGY_ROW_FOUND" -eq 1 ]; then
+    agy_row=$FM_BACKEND_HERDR_AGY_ROW_LINE
+    agy_close=$((agy_row + 1))
+    agy_candidate=0
+    while IFS= read -r line; do
+      row=$((row + 1))
+      [ "$row" -eq "$agy_close" ] || continue
+      plain=$(fm_composer_strip_ansi <<< "$line")
+      fm_composer_normalize_trim_var plain
+      if _fm_composer_pi_separator_row "$plain"; then
+        agy_candidate=1
+      fi
+    done <<EOF
+$cap
+EOF
+    if [ "$agy_candidate" -eq 1 ]; then
       identity=$(fm_backend_herdr_composer_identity "$target" 2>/dev/null || true)
       IFS=$'\t' read -r agent agent_status <<EOF
 $identity

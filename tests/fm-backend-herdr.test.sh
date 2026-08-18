@@ -3147,7 +3147,7 @@ test_composer_state_pi_separator_requires_safe_native_identity() {
 test_composer_state_agy_prompt_idle_is_empty() {
   local dir log resp fb out calls
   dir="$TMP_ROOT/composer-agy-idle"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
-  printf '  some transcript line\n  another line\n\n> \n' > "$resp/1.out"
+  printf '  some transcript line\n  another line\n\n> \n─────────────────────────────────────────────────────\n? for shortcuts\n' > "$resp/1.out"
   printf '{"result":{"agent":{"agent":"agy","agent_status":"idle"}}}\n' > "$resp/2.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
@@ -3161,7 +3161,7 @@ test_composer_state_agy_prompt_idle_is_empty() {
 test_composer_state_agy_prompt_real_text_is_pending() {
   local dir log resp fb out
   dir="$TMP_ROOT/composer-agy-pending"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
-  printf '  transcript\n\n> hello captain this is a draft\n' > "$resp/1.out"
+  printf '  transcript\n\n> hello captain this is a draft\n─────────────────────────────────────────────────────\n? for shortcuts\n' > "$resp/1.out"
   printf '{"result":{"agent":{"agent":"agy","agent_status":"done"}}}\n' > "$resp/2.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
@@ -3199,13 +3199,25 @@ test_composer_state_agy_prompt_requires_safe_native_identity() {
 test_composer_state_agy_prompt_below_stale_bordered_box_wins() {
   local dir log resp fb out
   dir="$TMP_ROOT/composer-agy-below-box"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
-  printf '\xe2\x95\xad\xe2\x94\x80\xe2\x94\x80\xe2\x95\xae\n\xe2\x94\x82 stale notice \xe2\x94\x82\n\xe2\x95\xb0\xe2\x94\x80\xe2\x94\x80\xe2\x95\xaf\n\n> \n' > "$resp/1.out"
+  printf '\xe2\x95\xad\xe2\x94\x80\xe2\x94\x80\xe2\x95\xae\n\xe2\x94\x82 stale notice \xe2\x94\x82\n\xe2\x95\xb0\xe2\x94\x80\xe2\x94\x80\xe2\x95\xaf\n\n> \n─────────────────────────────────────────────────────\n? for shortcuts\n' > "$resp/1.out"
   printf '{"result":{"agent":{"agent":"agy","agent_status":"idle"}}}\n' > "$resp/2.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_composer_state default:w1:p2' "$ROOT" )
   [ "$out" = empty ] || fail "a live idle agy '> ' composer below a stale bordered box must win (empty), got '$out'"
   pass "fm_backend_herdr_composer_state: a live agy '> ' composer below a stale bordered box wins"
+}
+
+test_composer_state_agy_prompt_with_nonadjacent_separator_stays_unknown() {
+  local dir log resp fb out
+  dir="$TMP_ROOT/composer-agy-nonadjacent"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '─────────────────────────────────────────────────────\n> \ntranscript below the prompt\n─────────────────────────────────────────────────────\n' > "$resp/1.out"
+  printf '{"result":{"agent":{"agent":"agy","agent_status":"idle"}}}\n' > "$resp/2.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_composer_state default:w1:p2' "$ROOT" )
+  [ "$out" = unknown ] || fail "an agy prompt followed by a non-adjacent separator must stay unknown, got '$out'"
+  pass "fm_backend_herdr_composer_state: a non-adjacent lower separator cannot authorize an agy prompt"
 }
 
 # --- composer_state: unbordered (bare) composer rows -------------------------
@@ -4696,6 +4708,7 @@ test_composer_state_agy_prompt_idle_is_empty
 test_composer_state_agy_prompt_real_text_is_pending
 test_composer_state_agy_prompt_requires_safe_native_identity
 test_composer_state_agy_prompt_below_stale_bordered_box_wins
+test_composer_state_agy_prompt_with_nonadjacent_separator_stays_unknown
 test_composer_state_claude_unbordered_prompt_is_empty
 test_composer_state_claude_unbordered_prompt_is_pending
 test_composer_state_bare_prompt_below_stale_bordered_banner_wins

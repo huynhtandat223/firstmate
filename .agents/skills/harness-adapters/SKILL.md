@@ -438,6 +438,23 @@ Spawn a Cursor scout with an explicit model:
 bin/fm-spawn.sh <task-id> <project> --scout --harness cursor --model cursor-grok-4.5-high
 ```
 
+## agy (VERIFIED 2026-08-18, Antigravity CLI 1.1.14)
+
+Antigravity CLI (`agy`) runs interactively with `--dangerously-skip-permissions -i` so a worker remains steerable and can execute both file and shell operations unattended.
+Its active-turn footer is `esc to cancel` and its idle footer is `? for shortcuts`.
+The footer is not a semantic lifecycle source, so `bin/fm-busy-lib.sh` uses the harness-scoped `agy-regex` fallback only when no busy record exists and labels its result `busy agy-regex` or `idle agy-regex`.
+The older `FM_TMUX_AGY_BUSY_REGEX_DEFAULT` in `bin/fm-tmux-lib.sh` was orphaned from recorded task-state classification when the semantic busy contract moved into `fm-busy-lib.sh`; it remains the delivery-only signature used by `fm_pane_is_busy` and related submit or escalation checks.
+A real tmux launch on 2026-08-18 reported `pane_current_command=agy` and foreground `comm=agy` with the full command `agy --dangerously-skip-permissions -i --model gemini-3.6-flash-low --effort low`, so `bin/backends/tmux.sh` classifies the live process as `alive`.
+The same launch showed `agy` as `alive` while the footer read `esc to cancel`, returned `idle` after one Escape with `Interrupted` and `? for shortcuts`, and returned to a bare `bash` endpoint after `/exit` plus Enter.
+The idle composer is a bordered container: a horizontal `─────` rule, the `> ` prompt row, a closing horizontal rule, and the `? for shortcuts` or `esc to cancel` footer; typed text appears in the prompt row before Enter.
+Herdr's shared classifier initially returned `unknown` because its Pi ordering guard treated agy's own closing rule as a lower stale separator; the agy arm now accepts only an immediately adjacent closing rule plus native `agent: agy` identity, while a non-adjacent lower separator remains unsafe.
+A real signed-in Herdr round trip verified `fm_backend_composer_state` as `empty` when untouched, `pending` with typed text, and `fm-send` delivered a prompt and received `4`.
+A single Escape cancels an active turn without restoring text into the composer, and `/exit` plus Enter closes the TUI.
+It uses `--model <model>` and `--effort low|medium|high`; `agy --help` on 1.1.14 rejects no listed value but advertises no `xhigh` or `max` level.
+It sets `ANTIGRAVITY_AGENT=1` for child processes, and resumes with `agy --continue` or `agy --conversation <id>`.
+Live verification commands were `agy --version`, `agy --help`, `agy models`, a private tmux launch, `tmux capture-pane`, `tmux display-message`, `ps -t <tty>`, and the shared busy and liveness classifiers.
+`agy --version` returned `1.1.14`, `agy models` listed the installed account models, and the live launch used `gemini-3.6-flash-low`.
+
 ## kimi (VERIFIED 2026-07-25, kimi 0.29.1)
 
 Kimi Code CLI launches from the absolute path resolved from `PATH`, falling back to the executable `$HOME/.kimi-code/bin/kimi`.
