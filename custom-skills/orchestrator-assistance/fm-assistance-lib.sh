@@ -80,8 +80,33 @@ fm_assistance_history_root() {
   printf '%s\n' "${FM_ASSISTANCE_HISTORY_ROOT:-$HOME/.claude/projects}"
 }
 
+# The primary is whatever harness firstmate itself runs on, which is not the crew
+# harness and not fixed. Each harness owns two facts that must travel together:
+# WHERE it stores session history, and HOW one stored file is proved to be one
+# exact session. Splitting them is what made this resolve Pi-only.
+# Override to bind a harness without running under it.
+fm_assistance_primary_harness() {
+  local root
+  if [ -n "${FM_ASSISTANCE_PRIMARY_HARNESS:-}" ]; then
+    printf '%s\n' "$FM_ASSISTANCE_PRIMARY_HARNESS"
+    return 0
+  fi
+  root=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
+  "$root/bin/fm-harness.sh" 2>/dev/null || printf 'unknown\n'
+}
+
+# Root of the primary's session-history store, by harness. An unrecognised
+# harness resolves to no root, so the caller refuses with a named store rather
+# than searching one that belongs to a different harness.
 fm_assistance_primary_history_root() {
-  printf '%s\n' "${FM_ASSISTANCE_PRIMARY_HISTORY_ROOT:-$HOME/.pi/agent/sessions}"
+  if [ -n "${FM_ASSISTANCE_PRIMARY_HISTORY_ROOT:-}" ]; then
+    printf '%s\n' "$FM_ASSISTANCE_PRIMARY_HISTORY_ROOT"
+    return 0
+  fi
+  case "$(fm_assistance_primary_harness)" in
+    claude) printf '%s\n' "$HOME/.claude/projects" ;;
+    pi|pi-signed) printf '%s\n' "$HOME/.pi/agent/sessions" ;;
+  esac
 }
 
 # Every session history recorded for one project worktree, one path per line.
@@ -110,6 +135,18 @@ fm_assistance_primary_history_file() {  # <worktree> <session-uuid>
   local worktree=$1 pin=$2 root candidate
   [ -n "$pin" ] || return 1
   root=$(fm_assistance_primary_history_root)
+  [ -n "$root" ] || return 1
+
+  # Claude names the file for the session id and files it under the mangled
+  # project directory, so the path itself carries both identities and no record
+  # inside the file has to be parsed to prove them.
+  if [ "$(fm_assistance_primary_harness)" = claude ]; then
+    candidate="$root/$(fm_assistance_history_dir_name "$worktree")/$pin.jsonl"
+    [ -f "$candidate" ] || return 1
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+
   while IFS= read -r candidate; do
     if python3 - "$candidate" "$pin" "$worktree" <<'PY2'
 import json
