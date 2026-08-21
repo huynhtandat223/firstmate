@@ -371,6 +371,53 @@ test_ship_project_memory_wording() {
   pass "fm-brief.sh: ship project-memory wording carries the AGENTS.md authoring bar"
 }
 
+test_single_agents_repo_project_memory_is_unchanged() {
+  local home legacy_root current old id current_memory old_memory
+  home="$TMP_ROOT/project-memory-single-file-home"
+  legacy_root="$TMP_ROOT/project-memory-before"
+  mkdir -p "$home/data" "$legacy_root/bin"
+  cp "$ROOT/bin/"*.sh "$legacy_root/bin/"
+  git show HEAD:bin/fm-brief.sh > "$legacy_root/bin/fm-brief.sh" \
+    || fail "could not materialize the pre-change brief generator"
+  chmod +x "$legacy_root/bin/fm-brief.sh"
+  id="brief-memory-single-c2"
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" "$legacy_root/bin/fm-brief.sh" "$id" single-repo --mode direct-PR >/dev/null 2>&1 \
+    || fail "pre-change brief generator failed for the single-file shape"
+  old="$home/data/$id/brief.md"
+  old_memory="$TMP_ROOT/project-memory-before.md"
+  sed -n '/^# Project memory$/,/^# Definition of done$/p' "$old" > "$old_memory"
+  rm -f "$old"
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" "$ROOT/bin/fm-brief.sh" "$id" single-repo --mode direct-PR >/dev/null 2>&1 \
+    || fail "current brief generator failed for the single-file shape"
+  current="$home/data/$id/brief.md"
+  current_memory="$TMP_ROOT/project-memory-after.md"
+  sed -n '/^# Project memory$/,/^# Definition of done$/p' "$current" > "$current_memory"
+  diff -u "$old_memory" "$current_memory" \
+    || fail "single-AGENTS.md project-memory output changed"
+  pass "fm-brief.sh: single-AGENTS.md project-memory output is unchanged"
+}
+
+test_multi_agents_repo_project_memory_targets_nearest_tier() {
+  local home repo brief
+  home="$TMP_ROOT/project-memory-multi-file-home"
+  repo="$TMP_ROOT/multi-memory-repo"
+  mkdir -p "$home/data" "$repo/src/CFW.Component"
+  printf '# Orchestrator memory\\n' > "$repo/AGENTS.md"
+  printf '# Component memory\\n' > "$repo/src/CFW.Component/AGENTS.md"
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" "$ROOT/bin/fm-brief.sh" brief-memory-multi-c3 "$repo" --mode direct-PR >/dev/null 2>&1 \
+    || fail "current brief generator failed for the multi-file shape"
+  brief="$home/data/brief-memory-multi-c3/brief.md"
+  assert_grep "identify the nearest directory containing the \`AGENTS.md\` that governs the code you changed" "$brief" \
+    "multi-file brief did not teach the nearest-owning-file rule"
+  assert_grep "run \`$ROOT/bin/fm-ensure-agents-md.sh <that-directory>\` there" "$brief" \
+    "multi-file brief did not target the ensure command at the selected directory"
+  assert_grep "For component-scoped work, write to that component-owned file, not the repository root \`AGENTS.md\`." "$brief" \
+    "multi-file brief did not reject the root file for component knowledge"
+  assert_grep "lacks \`## Maintaining this file\`, add that short self-governance section" "$brief" \
+    "multi-file brief lost self-governance guidance"
+  pass "fm-brief.sh: multi-AGENTS.md project-memory output targets the nearest tier"
+}
+
 test_herdr_lab_contract_is_explicit_and_complete() {
   local home id brief
   home="$TMP_ROOT/herdr-lab-home"
@@ -750,6 +797,8 @@ test_delivery_flags_are_refused_where_they_do_not_apply
 test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
 test_ship_project_memory_wording
+test_single_agents_repo_project_memory_is_unchanged
+test_multi_agents_repo_project_memory_targets_nearest_tier
 test_herdr_lab_contract_is_explicit_and_complete
 test_herdr_lab_contract_quotes_foreign_firstmate_path
 test_herdr_lab_omission_is_loud_for_ship_and_scout

@@ -417,6 +417,48 @@ esac
 # briefs stay byte-identical to the historical Bash 5 output.
 DOD=${DOD%$'\n'}
 
+# Keep the common single-memory-file output byte-identical while adding the
+# nearest-owning-file rule only when the target repository exposes nested
+# project memory files. The repository argument is normally a registered name,
+# but accepting a directory also keeps this probe useful for direct callers.
+PROJECT_ROOT=
+case "$REPO" in
+  /*)
+    [ -d "$REPO" ] && PROJECT_ROOT=$(cd "$REPO" && pwd -P)
+    ;;
+  *)
+    if [ -d "$REPO" ]; then
+      PROJECT_ROOT=$(cd "$REPO" && pwd -P)
+    elif [ -d "$FM_HOME/projects/$REPO" ]; then
+      PROJECT_ROOT=$(cd "$FM_HOME/projects/$REPO" && pwd -P)
+    elif [ "$REPO" = "$(basename "$FM_ROOT")" ] && [ -f "$FM_ROOT/AGENTS.md" ]; then
+      PROJECT_ROOT=$FM_ROOT
+    fi
+    ;;
+esac
+
+ENSURE_SCRIPT="$FM_ROOT/bin/fm-ensure-agents-md.sh"
+PROJECT_MEMORY_SECTION=$(printf '%s\n' \
+  "If \`AGENTS.md\` or \`CLAUDE.md\` already exists, or if this task produced durable project-intrinsic knowledge, run \`$ENSURE_SCRIPT .\` in the worktree." \
+  "Record only project knowledge useful to almost every future session." \
+  "For anything the codebase already shows, prefer a pointer to the authoritative file, command, or doc over copying the detail." \
+  "If you touch a project \`AGENTS.md\` that lacks \`## Maintaining this file\`, add that short self-governance section from \`$ENSURE_SCRIPT\` in the same pass." \
+  "Keep it proportionate: skip \`AGENTS.md\` edits for trivial tasks that produced no durable project knowledge.")
+
+if [ -n "$PROJECT_ROOT" ] && [ -f "$PROJECT_ROOT/AGENTS.md" ]; then
+  agent_file_count=$(find "$PROJECT_ROOT" -type f -name AGENTS.md -print | wc -l | tr -d ' ')
+  if [ "$agent_file_count" -gt 1 ]; then
+    PROJECT_MEMORY_SECTION=$(printf '%s\n' \
+      "If \`AGENTS.md\` or \`CLAUDE.md\` already exists, or if this task produced durable project-intrinsic knowledge, identify the nearest directory containing the \`AGENTS.md\` that governs the code you changed and run \`$ENSURE_SCRIPT <that-directory>\` there." \
+      "For component-scoped work, write to that component-owned file, not the repository root \`AGENTS.md\`." \
+      "Use the repository-root \`AGENTS.md\` only for knowledge that genuinely spans the repository." \
+      "Record only project knowledge useful to almost every future session at the tier that serves its reader." \
+      "For anything the codebase already shows, prefer a pointer to the authoritative file, command, or doc over copying the detail." \
+      "If you touch the selected project \`AGENTS.md\` and it lacks \`## Maintaining this file\`, add that short self-governance section from \`$ENSURE_SCRIPT\` in the same pass." \
+      "Keep it proportionate: skip \`AGENTS.md\` edits for trivial tasks that produced no durable project knowledge.")
+  fi
+fi
+
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
 
@@ -464,11 +506,7 @@ $RULE1
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
 
 # Project memory
-If \`AGENTS.md\` or \`CLAUDE.md\` already exists, or if this task produced durable project-intrinsic knowledge, run \`$FM_ROOT/bin/fm-ensure-agents-md.sh .\` in the worktree.
-Record only project knowledge useful to almost every future session.
-For anything the codebase already shows, prefer a pointer to the authoritative file, command, or doc over copying the detail.
-If you touch a project \`AGENTS.md\` that lacks \`## Maintaining this file\`, add that short self-governance section from \`$FM_ROOT/bin/fm-ensure-agents-md.sh\` in the same pass.
-Keep it proportionate: skip \`AGENTS.md\` edits for trivial tasks that produced no durable project knowledge.
+$PROJECT_MEMORY_SECTION
 
 $DOD
 EOF
