@@ -88,6 +88,40 @@ run_cli() {  # <case-dir> <args...>
   "$CLI" "$@" 2>&1
 }
 
+make_rotation_tools() {  # <case-dir> <handoff-path>
+  local dir=$1 handoff=$2
+  cat > "$dir/bin/control" <<SH
+#!/usr/bin/env bash
+printf '%s\\n' "\$*" > "$dir/control-call"
+printf 'stopped prog-assistance\\n'
+SH
+  cat > "$dir/bin/send" <<SH
+#!/usr/bin/env bash
+if [[ "\$*" == *"Use /handoff now"* ]]; then
+  printf '%s\\n' 'Captain corrections: preserve durable sidecars as the source of truth.' > "$handoff"
+fi
+printf '%s\\t%s\\n' "\$1" "\${*:2}" >> "$dir/sent"
+SH
+  cat > "$dir/bin/spawn" <<SH
+#!/usr/bin/env bash
+printf '%s\\n' "\$*" >> "$dir/spawned"
+brief="$dir/home/data/prog-assistance/brief.md"
+grep -F 'with your first tool call' "\$brief" > "$dir/first-tool-call"
+printf 'window=new-endpoint\\nendpoint_task_id=prog-assistance\\nharness=pi\\nkind=supervisor\\n' > "$dir/home/state/prog-assistance.meta"
+SH
+  chmod +x "$dir/bin/control" "$dir/bin/send" "$dir/bin/spawn"
+}
+
+run_rotate() {  # <case-dir> <handoff-path>
+  local dir=$1 handoff=$2
+  FM_HOME="$dir/home" \
+  FM_ASSISTANCE_HISTORY_ROOT="$dir/history" \
+  FM_SPAWN="$dir/bin/spawn" \
+  FM_SEND="$dir/bin/send" \
+  FM_CONTROL="$dir/bin/control" \
+  "$CLI" rotate prog --handoff "$handoff" 2>&1
+}
+
 # --- 1. invocation and parent binding ---------------------------------------
 
 test_bind_resolves_parent_and_history() {
@@ -505,6 +539,62 @@ test_reload_carries_the_current_revision() {
 
 # --- 8. nonterminal parent pauses -------------------------------------------
 
+test_rotate_preserves_cursor_and_handoff_contract() {
+  local dir out handoff cursor_before cursor_after
+  dir=$(new_case rotate-ok); write_history "$dir"
+  run_cli "$dir" bind prog >/dev/null || fail "bind failed"
+  printf '7\n' > "$dir/home/state/prog-assistance.assistance-cursor"
+  cursor_before=$(sha256sum "$dir/home/state/prog-assistance.assistance-cursor")
+  handoff="$dir/handoff.md"
+  make_rotation_tools "$dir" "$handoff"
+  out=$(run_rotate "$dir" "$handoff") || fail "rotate failed: $out"
+  assert_present "$handoff" "rotation wrote no handoff"
+  assert_contains "$out" "rotation_handoff=$handoff" "rotation did not print the handoff path"
+  assert_contains "$out" "committed_cursor=7" "rotation did not print the committed cursor"
+  assert_contains "$out" "new_endpoint=new-endpoint" "rotation did not print the new endpoint"
+  assert_grep 'exit' "$dir/control-call" "rotation did not stop through the control plane"
+  assert_present "$dir/first-tool-call" "replacement launch did not read the handoff first"
+  cursor_after=$(sha256sum "$dir/home/state/prog-assistance.assistance-cursor")
+  [ "$cursor_before" = "$cursor_after" ] || fail "rotation changed the committed cursor"
+  pass "rotate: handoff exists, replacement points at it first, and cursor bytes survive"
+}
+
+test_rotate_refuses_unsettled_pending_batch() {
+  local dir out code
+  dir=$(new_case rotate-pending); write_history "$dir"
+  run_cli "$dir" bind prog >/dev/null || fail "bind failed"
+  printf 'prior_cursor=0\nnext_cursor=2\nturn=1\tuser\tu-001\ttime\texcerpt\n' > "$dir/home/state/prog-assistance.assistance-pending"
+  out=$(run_cli "$dir" rotate prog); code=$?
+  expect_code 1 "$code" "rotate accepted an unsettled pending batch"
+  assert_contains "$out" "pending observation batch is unsettled" "pending refusal did not name the boundary"
+  assert_contains "$out" "u-001" "pending refusal did not name the pending turn"
+  pass "rotate: refuses while a pending turn still lacks an outcome"
+}
+
+test_rotate_refuses_without_binding() {
+  local dir out code
+  dir=$(new_case rotate-unbound)
+  out=$(run_cli "$dir" rotate prog); code=$?
+  expect_code 1 "$code" "rotate accepted no binding"
+  assert_contains "$out" "no assistance binding" "unbound refusal did not name the missing binding"
+  pass "rotate: refuses without a binding"
+}
+
+test_rotate_refuses_when_handoff_times_out() {
+  local dir out code handoff
+  dir=$(new_case rotate-timeout); write_history "$dir"
+  run_cli "$dir" bind prog >/dev/null || fail "bind failed"
+  handoff="$dir/never-written.md"
+  # Override the bounded wait to zero so this proves the refusal without a real delay.
+  out=$(FM_ASSISTANCE_HANDOFF_WAIT=0 FM_HOME="$dir/home" FM_ASSISTANCE_HISTORY_ROOT="$dir/history" \
+    FM_SPAWN="$dir/bin/spawn" FM_SEND="$dir/bin/send" FM_CONTROL="$dir/bin/control" \
+    "$CLI" rotate prog --handoff "$handoff" 2>&1); code=$?
+  expect_code 1 "$code" "rotate accepted a missing handoff"
+  assert_contains "$out" "did not appear" "timeout refusal did not name the missing handoff"
+  assert_contains "$out" "within 0s" "timeout refusal did not name the bounded timeout"
+  pass "rotate: refuses a missing handoff with its bounded timeout"
+}
+
 test_lifecycle_treats_a_pause_as_live() {
   local dir out
   dir=$(new_case lifecycle); write_history "$dir"
@@ -549,4 +639,8 @@ test_remind_refuses_without_a_binding
 test_remind_suppresses_unchanged_repeat
 test_failed_delivery_stays_retryable
 test_reload_carries_the_current_revision
+test_rotate_preserves_cursor_and_handoff_contract
+test_rotate_refuses_unsettled_pending_batch
+test_rotate_refuses_without_binding
+test_rotate_refuses_when_handoff_times_out
 test_lifecycle_treats_a_pause_as_live

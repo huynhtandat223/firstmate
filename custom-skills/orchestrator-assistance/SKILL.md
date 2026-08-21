@@ -73,6 +73,8 @@ Select by this precedence, highest first:
 A programme that has already been corrected has tier-1 rules, and those are the mistakes it demonstrably repeats.
 A general contract invariant is tier 3: it is what you reach for when the programme's own corrections are exhausted, never instead of them.
 If you are holding a tier-3 item while an unselected tier-1 correction exists, the selection is wrong; redo it.
+One standing watch item is **a decision the parent has settled that has not reached a durable record** - the backlog item, `data/learnings.md`, or `data/captain.md`.
+This reminds the parent to write the decision down while it is still cheap; the companion never becomes firstmate's memory, and firstmate's continuity comes from its own durable records rather than a second source of truth in this session.
 
 Each item carries exactly these six fields:
 

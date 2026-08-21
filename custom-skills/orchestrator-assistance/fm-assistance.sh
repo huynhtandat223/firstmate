@@ -6,6 +6,7 @@
 #   fm-assistance.sh bind <programme-id> [--session <uuid> | --history <path>]
 #   fm-assistance.sh bind --primary [--session <uuid>]
 #   fm-assistance.sh open <programme-id> [--relaunch] [--session <uuid>]
+#   fm-assistance.sh rotate <programme-id> [--handoff <path>]
 #   fm-assistance.sh observe <programme-id> [--limit N] [--replay-until <uuid>]
 #   fm-assistance.sh remind <programme-id> [--turn <uuid>] --id <watch-id>
 #                    --action <action> --evidence <identity> <text...>
@@ -56,6 +57,13 @@
 # record, without touching live sidecars, so replaying history can never carry
 # a later correction back into the input that is supposed to precede it.
 #
+# ROTATION
+# `rotate` asks the live companion to write only its judgement to a temporary
+# handoff, waits for that file, stops it through fm-control.sh, points the
+# relaunch brief at the handoff, and opens a fresh session. Cursor, binding,
+# outcomes, and delivery records remain the durable sidecars; a pending batch
+# refuses rotation because its turns still need outcomes.
+#
 # DELIVERY
 # `remind` sends one line to the exact parent task, and only in one of the forms
 # in FM_ASSISTANCE_FORMS. It never passes --resolve-key, so assistance cannot
@@ -86,7 +94,10 @@ FM_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 FM_HOME="${FM_HOME:-$FM_ROOT}"
 FM_SEND="${FM_SEND:-$FM_ROOT/bin/fm-send.sh}"
 FM_SPAWN="${FM_SPAWN:-$FM_ROOT/bin/fm-spawn.sh}"
+FM_CONTROL="${FM_CONTROL:-$FM_ROOT/bin/fm-control.sh}"
 SKILL_PATH="$SCRIPT_DIR/SKILL.md"
+HANDOFF_WAIT="${FM_ASSISTANCE_HANDOFF_WAIT:-30}"
+HANDOFF_POLL="${FM_ASSISTANCE_HANDOFF_POLL:-0.2}"
 
 die() { printf 'fm-assistance: %s\n' "$1" >&2; exit 1; }
 
@@ -224,6 +235,106 @@ cmd_open() {
     "$aid" "$pid" "$FM_ASSISTANCE_HARNESS" "$FM_ASSISTANCE_MODEL" "$FM_ASSISTANCE_EFFORT"
 }
 
+# --- rotate -----------------------------------------------------------------
+
+handoff_path_for() {  # <programme-id> [requested-path]
+  local pid=$1 requested=${2:-}
+  if [ -n "$requested" ]; then
+    printf '%s\n' "$requested"
+  else
+    printf '%s/fm-assistance-%s-handoff-%s.md\n' "${TMPDIR:-/tmp}" "$pid" "$(date +%s).$$"
+  fi
+}
+
+prepare_handoff_brief() {  # <programme-id> <handoff-path>
+  local pid=$1 handoff=$2 aid brief marker tmp
+  aid=$(fm_assistance_task_id "$pid")
+  brief="$FM_HOME/data/$aid/brief.md"
+  marker='## Rotation handoff'
+  mkdir -p "$(dirname "$brief")"
+  tmp="$brief.tmp.$$"
+  if [ -f "$brief" ]; then
+    awk -v marker="$marker" '
+      $0 == marker { skip=1; next }
+      skip && /^## / { skip=0 }
+      !skip { print }
+    ' "$brief" > "$tmp"
+  else
+    : > "$tmp"
+  fi
+  {
+    printf '%s\n\n' "$marker"
+    printf "Before any other work, read the handoff at \`%s\` with your first tool call.\n" "$handoff"
+    printf 'The handoff carries judgement only; the durable assistance sidecars remain authoritative.\n\n'
+    cat "$tmp"
+  } > "$brief.new"
+  mv -f "$brief.new" "$brief"
+  rm -f "$tmp"
+}
+
+cmd_rotate() {
+  local pid binding aid pending turns requested handoff start cursor_file cursor_before
+  local meta endpoint cursor_after
+  pid="${1:-}"; need_programme "$pid"; shift || true
+  requested=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --handoff) requested="${2:?--handoff needs a path}"; shift ;;
+      *) die "unknown rotate option: $1" ;;
+    esac
+    shift
+  done
+
+  binding=$(require_binding "$pid")
+  aid=$(binding_get "$binding" assistance_task_id)
+  pending=$(fm_assistance_pending_path "$FM_HOME" "$pid")
+  if [ -f "$pending" ]; then
+    turns=$(awk -F '\t' '$1 ~ /^turn=/ {printf "%s%s", sep, $3; sep=", "}' "$pending")
+    die "cannot rotate $aid while the pending observation batch is unsettled; settle is the crash-recovery boundary, so settle pending turns: ${turns:-unknown}"
+  fi
+
+  handoff=$(handoff_path_for "$pid" "$requested")
+  [ ! -e "$handoff" ] || die "handoff path already exists: $handoff"
+  mkdir -p "$(dirname "$handoff")" || die "cannot create handoff directory: $(dirname "$handoff")"
+  FM_HOME="$FM_HOME" "$FM_SEND" "$aid" \
+    "Use /handoff now. Write the judgement-only handoff to $handoff. Include the enumerated captain corrections, active watch items with their sources, and reminders already delivered. Do not copy the observation cursor, binding, outcomes, or delivery records; those durable sidecars remain authoritative." \
+    || die "could not ask $aid for a handoff"
+
+  start=$SECONDS
+  while [ ! -f "$handoff" ]; do
+    if [ "$((SECONDS - start))" -ge "$HANDOFF_WAIT" ]; then
+      die "handoff for $aid did not appear at $handoff within ${HANDOFF_WAIT}s"
+    fi
+    sleep "$HANDOFF_POLL"
+  done
+
+  cursor_file=$(fm_assistance_cursor_path "$FM_HOME" "$pid")
+  if [ -f "$cursor_file" ]; then
+    cursor_before=$(sha256sum "$cursor_file")
+  else
+    cursor_before=absent
+  fi
+  FM_HOME="$FM_HOME" "$FM_CONTROL" "$aid" exit \
+    || die "could not stop $aid through the control plane; rotation did not relaunch it"
+  prepare_handoff_brief "$pid" "$handoff"
+  cmd_open "$pid" --relaunch
+
+  if [ -f "$cursor_file" ]; then
+    cursor_after=$(sha256sum "$cursor_file")
+    [ "$cursor_before" = "$cursor_after" ] \
+      || die "committed cursor changed during rotation; refusing to report a replacement"
+    cursor_after=$(cat "$cursor_file")
+  else
+    [ "$cursor_before" = absent ] || die "committed cursor disappeared during rotation"
+    cursor_after=absent
+  fi
+  meta=$(fm_assistance_meta_path "$FM_HOME" "$aid")
+  endpoint=$(binding_get "$meta" window)
+  [ -n "$endpoint" ] || endpoint=$(binding_get "$meta" endpoint)
+  [ -n "$endpoint" ] || endpoint=unknown
+  printf 'rotation_handoff=%s committed_cursor=%s new_endpoint=%s\n' "$handoff" "$cursor_after" "$endpoint"
+}
+
 # --- observe ----------------------------------------------------------------
 
 pending_emit() {  # <pending-file>
@@ -232,6 +343,13 @@ pending_emit() {  # <pending-file>
 
 pending_has_turn() {  # <pending-file> <turn-id>
   awk -F '\t' -v wanted="$2" '$1 ~ /^turn=/ && $3 == wanted {found=1} END {exit(found ? 0 : 1)}' "$1"
+}
+
+fields_ok() {  # <value>...
+  local value
+  for value in "$@"; do
+    fm_assistance_field_ok "$value" || return 1
+  done
 }
 
 outcome_has_turn() {  # <outcomes-file> <turn-id>
@@ -380,8 +498,7 @@ cmd_remind() {
   [ -n "$text" ] || die "the reminder text is empty"
   fm_assistance_form_ok "$text" \
     || die "a reminder must open with one of: $FM_ASSISTANCE_FORMS; assistance delivers awareness, never a decision, gate, or command"
-  fm_assistance_field_ok "$turn" && fm_assistance_field_ok "$wid" && fm_assistance_field_ok "$action" \
-    && fm_assistance_field_ok "$evidence" && fm_assistance_field_ok "$text" \
+  fields_ok "$turn" "$wid" "$action" "$evidence" "$text" \
     || die "reminder fields cannot contain tabs or newlines"
 
   binding=$(require_binding "$pid")
@@ -451,8 +568,7 @@ cmd_settle() {
   [ -n "$cue" ] || die "name the matched cue with --cue"
   [ -n "$evidence" ] || die "name the evidence identity with --evidence"
   [ -n "$reason" ] || die "name the settlement reason with --reason"
-  fm_assistance_field_ok "$turn" && fm_assistance_field_ok "$outcome" && fm_assistance_field_ok "$cue" \
-    && fm_assistance_field_ok "$evidence" && fm_assistance_field_ok "$reason" && fm_assistance_field_ok "$delivery" \
+  fields_ok "$turn" "$outcome" "$cue" "$evidence" "$reason" "$delivery" \
     || die "settlement fields cannot contain tabs or newlines"
 
   binding=$(require_binding "$pid")
@@ -520,6 +636,7 @@ cmd_reload() {
 case "${1:-}" in
   bind) shift; cmd_bind "$@" ;;
   open) shift; cmd_open "$@" ;;
+  rotate) shift; cmd_rotate "$@" ;;
   observe) shift; cmd_observe "$@" ;;
   remind) shift; cmd_remind "$@" ;;
   settle) shift; cmd_settle "$@" ;;
