@@ -133,7 +133,7 @@ cmd_bind() {
     [ -n "$pin" ] || die "primary bind requires --session <uuid>"
     worktree=$FM_HOME
     history=$(fm_assistance_primary_history_file "$worktree" "$pin") \
-      || die "no readable primary session history for session $pin under $(fm_assistance_primary_history_root)"
+      || die "no readable primary session history for session $pin on harness $(fm_assistance_primary_harness) under $(fm_assistance_primary_history_root)"
     rc=0
   else
     parent_meta=$(fm_assistance_meta_path "$FM_HOME" "$pid")

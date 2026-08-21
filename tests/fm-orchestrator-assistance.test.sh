@@ -196,6 +196,39 @@ test_primary_bind_requires_explicit_existing_session() {
   pass "primary bind: requires a named session that exists for this home"
 }
 
+test_primary_bind_resolves_the_running_harness_store() {
+  local dir home out code claude_dir
+  dir=$(new_case primary-bind-claude)
+  home="$dir/home"
+
+  # Claude files one session per project directory, named for the session id.
+  claude_dir="$dir/claude/$(printf '%s' "$home" | tr '/.' '--')"
+  mkdir -p "$claude_dir"
+  printf '{"type":"mode","sessionId":"s-live"}\n' > "$claude_dir/s-live.jsonl"
+  # The same session id under a different project must not satisfy this home.
+  mkdir -p "$dir/claude/--elsewhere--"
+  printf '{"type":"mode","sessionId":"s-live"}\n' > "$dir/claude/--elsewhere--/s-live.jsonl"
+
+  out=$(FM_ASSISTANCE_PRIMARY_HARNESS=claude FM_ASSISTANCE_PRIMARY_HISTORY_ROOT="$dir/claude" \
+    run_cli "$dir" bind --primary --session s-live) \
+    || fail "primary bind failed on a claude primary: $out"
+  assert_contains "$out" "$claude_dir/s-live.jsonl" "primary bind did not resolve this home's own claude transcript"
+
+  out=$(FM_ASSISTANCE_PRIMARY_HARNESS=claude FM_ASSISTANCE_PRIMARY_HISTORY_ROOT="$dir/claude" \
+    run_cli "$dir" bind --primary --session s-absent); code=$?
+  expect_code 1 "$code" "primary bind accepted a session claude never recorded"
+  pass "primary bind: resolves the store of the harness firstmate is actually running on"
+}
+
+test_primary_bind_names_an_unrecognised_harness() {
+  local dir out code
+  dir=$(new_case primary-bind-unknown)
+  out=$(FM_ASSISTANCE_PRIMARY_HARNESS=nosuchharness run_cli "$dir" bind --primary --session s-live); code=$?
+  expect_code 1 "$code" "primary bind accepted an unrecognised harness"
+  assert_contains "$out" "nosuchharness" "refusal did not name the harness whose store is unknown"
+  pass "primary bind: names the unrecognised harness instead of searching another harness's store"
+}
+
 # --- 2. same-parent resume without a duplicate session ----------------------
 
 test_open_is_idempotent_on_the_record() {
@@ -501,6 +534,8 @@ test_bind_pins_the_named_session
 test_bind_refuses_unknown_pin
 test_bind_refuses_when_history_absent
 test_primary_bind_requires_explicit_existing_session
+test_primary_bind_resolves_the_running_harness_store
+test_primary_bind_names_an_unrecognised_harness
 test_open_is_idempotent_on_the_record
 test_observe_records_pending_without_advancing_cursor
 test_suppressed_settlement_advances_once
