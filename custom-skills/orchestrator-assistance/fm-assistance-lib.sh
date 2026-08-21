@@ -83,6 +83,10 @@ fm_assistance_history_root() {
   printf '%s\n' "${FM_ASSISTANCE_HISTORY_ROOT:-$HOME/.claude/projects}"
 }
 
+fm_assistance_primary_history_root() {
+  printf '%s\n' "${FM_ASSISTANCE_PRIMARY_HISTORY_ROOT:-$HOME/.pi/agent/sessions}"
+}
+
 # Every session history recorded for one project worktree, one path per line.
 fm_assistance_history_candidates() {  # <worktree>
   local dir path
@@ -105,6 +109,29 @@ fm_assistance_history_candidates() {  # <worktree>
 #   0  one exact history, printed
 #   1  no store, no directory, or no session file at all
 #   2  several candidates and no pin - the caller must ask for one
+fm_assistance_primary_history_file() {  # <worktree> <session-uuid>
+  local worktree=$1 pin=$2 root candidate
+  [ -n "$pin" ] || return 1
+  root=$(fm_assistance_primary_history_root)
+  while IFS= read -r candidate; do
+    if python3 - "$candidate" "$pin" "$worktree" <<'PY2'
+import json
+import sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as stream:
+        record = json.loads(stream.readline())
+except (OSError, json.JSONDecodeError):
+    raise SystemExit(1)
+raise SystemExit(0 if record.get("type") == "session" and record.get("id") == sys.argv[2] and record.get("cwd") == sys.argv[3] else 1)
+PY2
+    then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done < <(find "$root" -type f -name "*_${pin}.jsonl" -print 2>/dev/null)
+  return 1
+}
+
 fm_assistance_history_file() {  # <worktree> [pin]
   local worktree=$1 pin=${2:-} candidates count match
   candidates=$(fm_assistance_history_candidates "$worktree") || return 1
