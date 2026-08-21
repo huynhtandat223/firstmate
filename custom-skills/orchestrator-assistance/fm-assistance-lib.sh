@@ -68,6 +68,45 @@ fm_assistance_meta_field() {  # <meta-file> <key>
   sed -n "s/^$2=//p" "$1" | tail -n 1
 }
 
+# Harness facts are owned by bin/fm-harness.sh. This library asks that owner for
+# the primary store, identity matcher, and context denominator instead of
+# inferring a file shape from a harness name.
+fm_assistance_harness_command() {  # <command> <harness> [arguments...]
+  local root
+  root=$(CDPATH='' cd -- "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+  "$root/bin/fm-harness.sh" "$@"
+}
+
+fm_assistance_primary_history_matcher() {
+  fm_assistance_harness_command primary-history-matcher "$1"
+}
+
+fm_assistance_primary_context_capacity() {
+  local harness=$1 history=$2 model
+  model=$(fm_assistance_primary_model "$history" 2>/dev/null || true)
+  [ -n "$model" ] || model=${FM_ASSISTANCE_PRIMARY_MODEL:-}
+  [ -n "$model" ] || return 3
+  fm_assistance_harness_command primary-context-capacity "$harness" "$model"
+}
+
+fm_assistance_primary_model() {
+  local history=${1:-} model
+  [ -n "$history" ] || return 1
+  model=$(python3 - "$history" <<'PY2'
+import json, sys
+for line in open(sys.argv[1], encoding='utf-8'):
+    try: record=json.loads(line)
+    except json.JSONDecodeError: continue
+    value=record.get('message', {}).get('model') or record.get('model')
+    if value:
+        print(value)
+        break
+PY2
+  )
+  [ -n "$model" ] || return 1
+  printf '%s\n' "$model"
+}
+
 # Claude stores one project's session history under a directory named after the
 # project path with every '/' and '.' replaced by '-'.
 fm_assistance_history_dir_name() {  # <worktree>
@@ -103,10 +142,7 @@ fm_assistance_primary_history_root() {
     printf '%s\n' "$FM_ASSISTANCE_PRIMARY_HISTORY_ROOT"
     return 0
   fi
-  case "$(fm_assistance_primary_harness)" in
-    claude) printf '%s\n' "$HOME/.claude/projects" ;;
-    pi|pi-signed) printf '%s\n' "$HOME/.pi/agent/sessions" ;;
-  esac
+  fm_assistance_harness_command primary-history-root "$(fm_assistance_primary_harness)"
 }
 
 # Every session history recorded for one project worktree, one path per line.
@@ -129,26 +165,23 @@ fm_assistance_history_candidates() {  # <worktree>
 #
 # Exit codes are the caller's whole vocabulary:
 #   0  one exact history, printed
-#   1  no store, no directory, or no session file at all
-#   2  several candidates and no pin - the caller must ask for one
-fm_assistance_primary_history_file() {  # <worktree> <session-uuid>
-  local worktree=$1 pin=$2 root candidate
-  [ -n "$pin" ] || return 1
+#   1  no store, directory, or session file
+#   2  several candidates and no pin, or several replacement candidates
+#   3  this harness's history shape is unmeasured
+fm_assistance_primary_history_candidates() {  # <worktree>
+  local worktree=$1 root matcher candidate
   root=$(fm_assistance_primary_history_root)
-  [ -n "$root" ] || return 1
-
-  # Claude names the file for the session id and files it under the mangled
-  # project directory, so the path itself carries both identities and no record
-  # inside the file has to be parsed to prove them.
-  if [ "$(fm_assistance_primary_harness)" = claude ]; then
-    candidate="$root/$(fm_assistance_history_dir_name "$worktree")/$pin.jsonl"
-    [ -f "$candidate" ] || return 1
-    printf '%s\n' "$candidate"
-    return 0
-  fi
-
-  while IFS= read -r candidate; do
-    if python3 - "$candidate" "$pin" "$worktree" <<'PY2'
+  matcher=$(fm_assistance_primary_history_matcher "$(fm_assistance_primary_harness)")
+  [ "$root" != unmeasured ] && [ "$matcher" != unmeasured ] || return 3
+  case "$matcher" in
+    claude-path)
+      for candidate in "$root/$(fm_assistance_history_dir_name "$worktree")"/*.jsonl; do
+        [ -f "$candidate" ] && printf '%s\n' "$candidate"
+      done
+      ;;
+    pi-header-cwd)
+      while IFS= read -r candidate; do
+        python3 - "$candidate" "$worktree" <<'PY2' && printf '%s\n' "$candidate"
 import json
 import sys
 try:
@@ -156,14 +189,100 @@ try:
         record = json.loads(stream.readline())
 except (OSError, json.JSONDecodeError):
     raise SystemExit(1)
-raise SystemExit(0 if record.get("type") == "session" and record.get("id") == sys.argv[2] and record.get("cwd") == sys.argv[3] else 1)
+raise SystemExit(0 if record.get("type") == "session" and record.get("cwd") == sys.argv[2] else 1)
 PY2
-    then
-      printf '%s\n' "$candidate"
-      return 0
-    fi
-  done < <(find "$root" -type f -name "*_${pin}.jsonl" -print 2>/dev/null)
+      done < <(find "$root" -type f -name '*.jsonl' -print 2>/dev/null)
+      ;;
+  esac
+}
+
+fm_assistance_primary_history_file() {  # <worktree> <session-uuid>
+  local worktree=$1 pin=$2 candidate matcher
+  [ -n "$pin" ] || return 1
+  matcher=$(fm_assistance_primary_history_matcher "$(fm_assistance_primary_harness)")
+  [ "$matcher" != unmeasured ] || return 3
+  while IFS= read -r candidate; do
+    case "$matcher" in
+      claude-path) [ "$(basename "$candidate" .jsonl)" = "$pin" ] || continue ;;
+      pi-header-cwd)
+        python3 - "$candidate" "$pin" <<'PY2' || continue
+import json
+import sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as stream:
+        record = json.loads(stream.readline())
+except (OSError, json.JSONDecodeError):
+    raise SystemExit(1)
+raise SystemExit(0 if record.get("id") == sys.argv[2] else 1)
+PY2
+        ;;
+    esac
+    printf '%s\n' "$candidate"
+    return 0
+  done < <(fm_assistance_primary_history_candidates "$worktree")
   return 1
+}
+
+fm_assistance_primary_session_id() {  # <history-path>
+  local matcher candidate
+  candidate=$1
+  matcher=$(fm_assistance_primary_history_matcher "$(fm_assistance_primary_harness)")
+  case "$matcher" in
+    claude-path) basename "$candidate" .jsonl ;;
+    pi-header-cwd) python3 - "$candidate" <<'PY2'
+import json, sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as stream:
+        record=json.loads(stream.readline())
+except (OSError, json.JSONDecodeError):
+    raise SystemExit(1)
+print(record.get("id", ""))
+PY2
+      ;;
+    *) return 3 ;;
+  esac
+}
+
+# Prints used<TAB>capacity<TAB>percent from the newest measured usage record.
+# The denominator is the harness-owned context capacity, never an inferred model
+# or a cross-harness default.
+fm_assistance_context_usage() {  # <history-path>
+  local history=$1 harness capacity matcher
+  harness=$(fm_assistance_primary_harness)
+  capacity=$(fm_assistance_primary_context_capacity "$harness" "$history")
+  matcher=$(fm_assistance_primary_history_matcher "$harness")
+  [ "$capacity" != unmeasured ] && [ "$matcher" != unmeasured ] || return 3
+  FM_A_USAGE_HISTORY="$history" FM_A_USAGE_CAPACITY="$capacity" python3 - <<'PY2'
+import json, os
+history=os.environ["FM_A_USAGE_HISTORY"]
+capacity=int(os.environ["FM_A_USAGE_CAPACITY"])
+latest=None
+with open(history, encoding="utf-8") as stream:
+    for line in stream:
+        try: record=json.loads(line)
+        except json.JSONDecodeError: continue
+        usage=record.get("usage") or record.get("message", {}).get("usage")
+        if usage: latest=usage
+if not latest: raise SystemExit(1)
+if "totalTokens" in latest:
+    used=int(latest["totalTokens"])
+else:
+    used=sum(int(latest.get(key, 0)) for key in ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "output_tokens"))
+percent=(used * 100) / capacity
+print(f"{used}\t{capacity}\t{percent:.2f}")
+PY2
+}
+
+fm_assistance_primary_history_replacement() {  # <worktree> <old-history>
+  local candidate newest=
+  while IFS= read -r candidate; do
+    [ "$candidate" = "$2" ] && continue
+    newest=$candidate
+  done < <(fm_assistance_primary_history_candidates "$1" | while IFS= read -r candidate; do
+    printf '%s\t%s\n' "$(stat -c '%Y' "$candidate" 2>/dev/null || printf 0)" "$candidate"
+  done | sort -nr | cut -f2-)
+  [ -n "$newest" ] || return 1
+  printf '%s\n' "$newest"
 }
 
 fm_assistance_history_file() {  # <worktree> [pin]

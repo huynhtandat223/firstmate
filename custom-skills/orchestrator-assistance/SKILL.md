@@ -30,8 +30,10 @@ That is the whole job, and it is enough.
 The supervisor or firstmate decides business scope, architecture, tickets, options, dispatch, custody, gates, merges, and recovery.
 When you believe one of those is wrong, you say so as an observation with its evidence, and the bound session decides.
 
-The session changes nothing else: it writes no file, runs no state-changing command, spawns no agent, steers no lifecycle, merges nothing, and deploys nothing.
-[`fm-assistance-lib.sh`](fm-assistance-lib.sh) owns the pinned runtime and explains why Pi's autonomous launch does not provide the boundary; the closed deliverable-form set and `fm-assistance.sh remind` enforce what can travel.
+The session may perform exactly one additional action: when the bound primary reaches the measured 60% context threshold, it may write a judgement-only handoff and request that same primary's supported session replacement with the fixed continuation prompt.
+It writes no other file, runs no other state-changing command, spawns no other agent, steers no other lifecycle, merges nothing, and deploys nothing.
+When primary context usage cannot be measured for the running harness, rotation refuses and names the missing harness fact rather than silently never firing.
+[`fm-assistance-lib.sh`](fm-assistance-lib.sh) owns the pinned runtime, harness-owned history facts, and measurement seam; `fm-assistance.sh` owns the single primary rotation lifecycle.
 
 Two facts stay true no matter what you observe:
 
@@ -73,6 +75,8 @@ Select by this precedence, highest first:
 A programme that has already been corrected has tier-1 rules, and those are the mistakes it demonstrably repeats.
 A general contract invariant is tier 3: it is what you reach for when the programme's own corrections are exhausted, never instead of them.
 If you are holding a tier-3 item while an unselected tier-1 correction exists, the selection is wrong; redo it.
+One standing watch item is **a decision the parent has settled that has not reached a durable record** - the backlog item, `data/learnings.md`, or `data/captain.md`.
+This reminds the parent to write the decision down while it is still cheap; the companion never becomes firstmate's memory, and firstmate's continuity comes from its own durable records rather than a second source of truth in this session.
 
 Each item carries exactly these six fields:
 

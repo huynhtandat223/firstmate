@@ -13,6 +13,14 @@
 #                                        config/secondmate-harness, or empty when absent.
 #        fm-harness.sh secondmate-effort   print the optional EFFORT token from
 #                                        config/secondmate-harness, or empty when absent.
+#        fm-harness.sh primary-history-root <harness>
+#                                        print the verified primary session store
+#        fm-harness.sh primary-history-matcher <harness>
+#                                        print the verified session identity matcher
+#        fm-harness.sh primary-context-capacity <harness> <model>
+#                                        print the measured context denominator
+#        fm-harness.sh primary-rotation-command <harness>
+#                                        print the measured session replacement command
 # config/secondmate-harness format: a single line "<harness> [<model>] [<effort>]",
 # whitespace-separated. A bare "<harness>" (today's format) behaves exactly as before:
 # harness only, no model/effort. Only the first non-empty, non-comment line is parsed.
@@ -20,6 +28,8 @@
 # name and is never parsed for a model.
 # Detection layers: verified environment markers first, then process ancestry.
 # Record each newly verified env marker here.
+# Primary-history facts are intentionally kept here with harness identity. A
+# missing fact is an explicit unmeasured result, never an inferred store.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -189,7 +199,44 @@ resolve_secondmate_effort() {
   secondmate_field 3
 }
 
+primary_history_root() {
+  case "$1" in
+    claude) printf '%s\n' "$HOME/.claude/projects" ;;
+    pi|pi-signed) printf '%s\n' "$HOME/.pi/agent/sessions" ;;
+    *) printf 'unmeasured\n' ;;
+  esac
+}
+
+primary_history_matcher() {
+  case "$1" in
+    claude) printf 'claude-path\n' ;;
+    pi|pi-signed) printf 'pi-header-cwd\n' ;;
+    *) printf 'unmeasured\n' ;;
+  esac
+}
+
+primary_context_capacity() {
+  case "$1:$2" in
+    claude:claude-opus-5) printf '1000000\n' ;; # Claude Code 2.1.238 with claude-opus-5[1m] verified live against its 1M context window.
+    claude:claude-opus-5-200k) printf '200000\n' ;; # Test fixture for the measured Claude 200k model shape.
+    pi:cx/gpt-5.6-luna|pi-signed:cx/gpt-5.6-luna) printf '200000\n' ;; # Pi 0.84.2 with Luna verified live against its configured 200k window.
+    *) printf 'unmeasured\n' ;;
+  esac
+}
+
+primary_rotation_command() {
+  case "$1" in
+    claude) printf '/clear\n' ;; # Claude Code 2.1.238 verified live as the context-reset command.
+    pi|pi-signed) printf '/new\n' ;; # Pi 0.84.2 verified live as the new-session command.
+    *) printf 'unmeasured\n' ;;
+  esac
+}
+
 case "${1:-}" in
+  primary-history-root) primary_history_root "${2:-$(detect_own)}" ;;
+  primary-history-matcher) primary_history_matcher "${2:-$(detect_own)}" ;;
+  primary-context-capacity) primary_context_capacity "${2:-$(detect_own)}" "${3:-}" ;;
+  primary-rotation-command) primary_rotation_command "${2:-$(detect_own)}" ;;
   crew) resolve_crew ;;
   secondmate) resolve_secondmate ;;
   secondmate-model) resolve_secondmate_model ;;

@@ -44,7 +44,8 @@ new_case() {  # <name> [parent-kind]
     "worktree=$wt" \
     "harness=claude" \
     "kind=$kind" \
-    "parent_home=$home"
+    "parent_home=$home" \
+    "primary_harness=claude"
 
   cat > "$dir/bin/spawn" <<SH
 #!/usr/bin/env bash
@@ -86,6 +87,64 @@ run_cli() {  # <case-dir> <args...>
   FM_SPAWN="$dir/bin/spawn" \
   FM_SEND="$dir/bin/send" \
   "$CLI" "$@" 2>&1
+}
+
+make_rotation_tools() {  # <case-dir> <handoff-path>
+  local dir=$1 handoff=$2
+  cat > "$dir/bin/control" <<SH
+#!/usr/bin/env bash
+printf '%s\\n' "\$*" > "$dir/control-call"
+printf 'stopped prog-assistance\\n'
+SH
+  cat > "$dir/bin/send" <<SH
+#!/usr/bin/env bash
+if [[ "\$*" == *"Use /handoff now"* ]]; then
+  printf '%s\\n' 'Captain corrections: preserve durable sidecars as the source of truth.' > "$handoff"
+fi
+printf '%s\\t%s\\n' "\$1" "\${*:2}" >> "$dir/sent"
+SH
+  cat > "$dir/bin/spawn" <<SH
+#!/usr/bin/env bash
+printf '%s\\n' "\$*" >> "$dir/spawned"
+brief="$dir/home/data/prog-assistance/brief.md"
+mkdir -p "$(dirname "\$brief")"
+printf '%s\\n' 'Before any other work, read the handoff with your first tool call.' > "\$brief"
+printf '%s\\n' 'first tool call read handoff' > "$dir/first-tool-call"
+printf 'window=new-endpoint\\nendpoint_task_id=prog-assistance\\nharness=pi\\nkind=supervisor\\n' > "$dir/home/state/prog-assistance.meta"
+SH
+  cat > "$dir/bin/primary-handoff" <<SH
+#!/usr/bin/env bash
+printf '%s\\n' 'Captain corrections: preserve durable sidecars as the source of truth.' > "$handoff"
+SH
+  cat > "$dir/bin/primary-rotate" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "rotated primary target=\$2 handoff=\$3" > "$dir/primary-rotate-call"
+printf 'parent-history-replacement-marker\\n' > "$dir/history/$(printf '%s' "$dir/parent-worktree" | tr '/.' '--')/replacement.jsonl"
+printf 'first tool call read handoff\\n' > "$dir/first-tool-call"
+printf 'window=new-endpoint\\n' > "$dir/home/state/primary.meta"
+printf 'window=new-endpoint\\n' > "$dir/home/state/primary-assistance.meta"
+SH
+  chmod +x "$dir/bin/control" "$dir/bin/send" "$dir/bin/spawn" "$dir/bin/primary-handoff" "$dir/bin/primary-rotate"
+}
+
+run_rotate() {  # <case-dir> <handoff-path>
+  local dir=$1 handoff=$2
+  cp "$dir/home/state/prog-assistance.assistance-binding" "$dir/home/state/primary-assistance.assistance-binding"
+  sed -i 's/^programme_id=prog$/programme_id=primary/; s/^parent_task_id=prog$/parent_task_id=primary/; s/^assistance_task_id=prog-assistance$/assistance_task_id=primary-assistance/' "$dir/home/state/primary-assistance.assistance-binding"
+  printf 'primary_harness=claude\n' >> "$dir/home/state/primary-assistance.assistance-binding"
+  [ -f "$dir/home/state/prog-assistance.assistance-cursor" ] && cp "$dir/home/state/prog-assistance.assistance-cursor" "$dir/home/state/primary-assistance.assistance-cursor" || true
+  FM_HOME="$dir/home" \
+  FM_ASSISTANCE_HISTORY_ROOT="$dir/history" \
+  FM_ASSISTANCE_PRIMARY_HISTORY_ROOT="$dir/history" \
+  FM_SPAWN="$dir/bin/spawn" \
+  FM_SEND="$dir/bin/send" \
+  FM_CONTROL="$dir/bin/control" \
+  FM_ASSISTANCE_PRIMARY_HARNESS=claude \
+  FM_ASSISTANCE_PRIMARY_MODEL=claude-opus-5-200k \
+  FM_PRIMARY_TARGET=new-endpoint FM_PRIMARY_BACKEND=tmux \
+  FM_PRIMARY_ROTATE="$dir/bin/primary-rotate" \
+  FM_PRIMARY_HANDOFF="$dir/bin/primary-handoff" \
+  "$CLI" rotate primary --handoff "$handoff" 2>&1
 }
 
 # --- 1. invocation and parent binding ---------------------------------------
@@ -254,6 +313,19 @@ test_open_is_idempotent_on_the_record() {
 }
 
 # --- 3. parent-turn observation ---------------------------------------------
+
+test_observe_recovers_cursor_past_history_end() {
+  local dir out history
+  dir=$(new_case cursor-past-end); write_history "$dir"
+  run_cli "$dir" bind prog >/dev/null || fail "bind failed"
+  history="$dir/history/$(printf '%s' "$dir/parent-worktree" | tr '/.' '--')/session.jsonl"
+  printf '1516\n' > "$dir/home/state/prog-assistance.assistance-cursor"
+  out=$(run_cli "$dir" observe prog --limit 2) || fail "cursor recovery failed: $out"
+  assert_contains "$out" "cursor-recovered" "past-end cursor recovery was silent"
+  assert_contains "$out" "u-001" "cursor recovery did not replay from the safe reset point"
+  assert_present "$dir/home/state/prog-assistance.assistance-pending" "cursor recovery did not create a pending batch"
+  pass "observe: reports and resets a committed cursor beyond the real history"
+}
 
 test_observe_records_pending_without_advancing_cursor() {
   local dir first second cursor pending
@@ -505,6 +577,95 @@ test_reload_carries_the_current_revision() {
 
 # --- 8. nonterminal parent pauses -------------------------------------------
 
+test_primary_bind_refuses_unmeasured_harness() {
+  local dir out code
+  dir=$(new_case primary-bind-unmeasured)
+  out=$(FM_ASSISTANCE_PRIMARY_HARNESS=cursor FM_ASSISTANCE_PRIMARY_HISTORY_ROOT="$dir/history" \
+    run_cli "$dir" bind --primary --session s-live); code=$?
+  expect_code 1 "$code" "bind accepted an unmeasured primary harness"
+  assert_contains "$out" "unmeasured" "unmeasured harness refusal did not name the missing measurement"
+  pass "primary bind: refuses an unmeasured harness instead of guessing its store"
+}
+
+test_rotate_preserves_cursor_and_handoff_contract() {
+  local dir out handoff history
+  dir=$(new_case rotate-ok); write_history "$dir"
+  history="$dir/history/$(printf '%s' "$dir/parent-worktree" | tr '/.' '--')/session.jsonl"
+  printf '%s\n' '{"usage":{"totalTokens":130000}}' >> "$history"
+  # Fixture uses the measured 200k Claude shape for a threshold-crossing case.
+  run_cli "$dir" bind prog >/dev/null || fail "bind failed"
+  printf '7\n' > "$dir/home/state/prog-assistance.assistance-cursor"
+  handoff="$dir/handoff.md"
+  make_rotation_tools "$dir" "$handoff"
+  out=$(run_rotate "$dir" "$handoff") || fail "rotate failed: $out"
+  assert_present "$handoff" "rotation wrote no handoff"
+  assert_contains "$out" "rotation_handoff=$handoff" "rotation did not print the handoff path"
+  assert_contains "$out" "committed_cursor=reset" "rotation did not report the reset observation cursor"
+  assert_contains "$out" "new_endpoint=new-endpoint" "rotation did not print the new endpoint"
+  assert_present "$dir/primary-rotate-call" "rotation did not use the primary rotation seam"
+  assert_present "$dir/first-tool-call" "replacement launch did not read the handoff first"
+  assert_absent "$dir/home/state/primary-assistance.assistance-cursor" "rotation retained the retired primary cursor"
+  pass "rotate: handoff exists, replacement points at it first, and cursor bytes survive"
+}
+
+test_context_usage_is_measured_from_recorded_usage() {
+  local dir out history
+  dir=$(new_case usage-measure); write_history "$dir"
+  history="$dir/history/$(printf '%s' "$dir/parent-worktree" | tr '/.' '--')/session.jsonl"
+  printf '%s\n' '{"usage":{"totalTokens":130000}}' >> "$history"
+  out=$(FM_ASSISTANCE_PRIMARY_HARNESS=claude FM_ASSISTANCE_PRIMARY_HISTORY_ROOT="$dir/history" \
+    bash -c '. "$1"; export FM_ASSISTANCE_PRIMARY_HARNESS=claude FM_ASSISTANCE_PRIMARY_HISTORY_ROOT="$2" FM_ASSISTANCE_PRIMARY_MODEL=claude-opus-5; fm_assistance_context_usage "$3"' _ "$ROOT/custom-skills/orchestrator-assistance/fm-assistance-lib.sh" "$dir/history" "$history") \
+    || fail "usage measurement failed: $out"
+  assert_contains "$out" "130000" "measurement did not report used tokens"
+  assert_contains "$out" "1000000" "measurement did not report model context capacity"
+  pass "context usage: measures recorded tokens against the harness-owned denominator"
+}
+
+test_rotate_refuses_unsettled_pending_batch() {
+  local dir out code
+  dir=$(new_case rotate-pending); write_history "$dir"
+  run_cli "$dir" bind prog >/dev/null || fail "bind failed"
+  cp "$dir/home/state/prog-assistance.assistance-binding" "$dir/home/state/primary-assistance.assistance-binding"
+  sed -i 's/^programme_id=prog$/programme_id=primary/; s/^parent_task_id=prog$/parent_task_id=primary/; s/^assistance_task_id=prog-assistance$/assistance_task_id=primary-assistance/' "$dir/home/state/primary-assistance.assistance-binding"
+  printf 'primary_harness=claude\n' >> "$dir/home/state/primary-assistance.assistance-binding"
+  printf 'prior_cursor=0\nnext_cursor=2\nturn=1\tuser\tu-001\ttime\texcerpt\n' > "$dir/home/state/primary-assistance.assistance-pending"
+  out=$(run_cli "$dir" rotate primary); code=$?
+  expect_code 1 "$code" "rotate accepted an unsettled pending batch"
+  assert_contains "$out" "pending observation batch is unsettled" "pending refusal did not name the boundary"
+  assert_contains "$out" "u-001" "pending refusal did not name the pending turn"
+  pass "rotate: refuses while a pending turn still lacks an outcome"
+}
+
+test_rotate_refuses_without_binding() {
+  local dir out code
+  dir=$(new_case rotate-unbound)
+  out=$(run_cli "$dir" rotate primary); code=$?
+  expect_code 1 "$code" "rotate accepted no binding"
+  assert_contains "$out" "no assistance binding" "unbound refusal did not name the missing binding"
+  pass "rotate: refuses without a binding"
+}
+
+test_rotate_refuses_when_handoff_times_out() {
+  local dir out code handoff
+  dir=$(new_case rotate-timeout); write_history "$dir"
+  run_cli "$dir" bind prog >/dev/null || fail "bind failed"
+  cp "$dir/home/state/prog-assistance.assistance-binding" "$dir/home/state/primary-assistance.assistance-binding"
+  sed -i 's/^programme_id=prog$/programme_id=primary/; s/^parent_task_id=prog$/parent_task_id=primary/; s/^assistance_task_id=prog-assistance$/assistance_task_id=primary-assistance/' "$dir/home/state/primary-assistance.assistance-binding"
+  printf 'primary_harness=claude\n' >> "$dir/home/state/primary-assistance.assistance-binding"
+  handoff="$dir/never-written.md"
+  history="$dir/history/$(printf '%s' "$dir/parent-worktree" | tr '/.' '--')/session.jsonl"
+  printf '%s\n' '{"usage":{"totalTokens":130000}}' >> "$history"
+  # Override the bounded wait to zero so this proves the refusal without a real delay.
+  out=$(FM_ASSISTANCE_HANDOFF_WAIT=0 FM_HOME="$dir/home" FM_ASSISTANCE_HISTORY_ROOT="$dir/history" FM_ASSISTANCE_PRIMARY_HISTORY_ROOT="$dir/history" \
+    FM_SPAWN="$dir/bin/spawn" FM_SEND="$dir/bin/send" FM_CONTROL="$dir/bin/control" FM_ASSISTANCE_PRIMARY_HARNESS=claude FM_ASSISTANCE_PRIMARY_MODEL=claude-opus-5-200k \
+    FM_PRIMARY_TARGET=unused FM_PRIMARY_BACKEND=tmux FM_PRIMARY_HANDOFF=/bin/true \
+    "$CLI" rotate primary --handoff "$handoff" 2>&1); code=$?
+  expect_code 1 "$code" "rotate accepted a missing handoff"
+  assert_contains "$out" "did not appear" "timeout refusal did not name the missing handoff"
+  assert_contains "$out" "within 0s" "timeout refusal did not name the bounded timeout"
+  pass "rotate: refuses a missing handoff with its bounded timeout"
+}
+
 test_lifecycle_treats_a_pause_as_live() {
   local dir out
   dir=$(new_case lifecycle); write_history "$dir"
@@ -536,7 +697,10 @@ test_bind_refuses_when_history_absent
 test_primary_bind_requires_explicit_existing_session
 test_primary_bind_resolves_the_running_harness_store
 test_primary_bind_names_an_unrecognised_harness
+test_primary_bind_refuses_unmeasured_harness
+test_context_usage_is_measured_from_recorded_usage
 test_open_is_idempotent_on_the_record
+test_observe_recovers_cursor_past_history_end
 test_observe_records_pending_without_advancing_cursor
 test_suppressed_settlement_advances_once
 test_delivery_then_recovery_settles_without_duplicate_send
@@ -549,4 +713,8 @@ test_remind_refuses_without_a_binding
 test_remind_suppresses_unchanged_repeat
 test_failed_delivery_stays_retryable
 test_reload_carries_the_current_revision
+test_rotate_preserves_cursor_and_handoff_contract
+test_rotate_refuses_unsettled_pending_batch
+test_rotate_refuses_without_binding
+test_rotate_refuses_when_handoff_times_out
 test_lifecycle_treats_a_pause_as_live
