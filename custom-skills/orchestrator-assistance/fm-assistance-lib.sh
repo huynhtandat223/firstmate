@@ -71,10 +71,10 @@ fm_assistance_meta_field() {  # <meta-file> <key>
 # Harness facts are owned by bin/fm-harness.sh. This library asks that owner for
 # the primary store, identity matcher, and context denominator instead of
 # inferring a file shape from a harness name.
-fm_assistance_harness_command() {  # <command> <harness>
+fm_assistance_harness_command() {  # <command> <harness> [arguments...]
   local root
   root=$(CDPATH='' cd -- "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
-  "$root/bin/fm-harness.sh" "$1" "$2"
+  "$root/bin/fm-harness.sh" "$@"
 }
 
 fm_assistance_primary_history_matcher() {
@@ -82,7 +82,28 @@ fm_assistance_primary_history_matcher() {
 }
 
 fm_assistance_primary_context_capacity() {
-  fm_assistance_harness_command primary-context-capacity "$1"
+  local harness=$1 history=$2 model
+  model=$(fm_assistance_primary_model "$history" 2>/dev/null || true)
+  [ -n "$model" ] || return 3
+  fm_assistance_harness_command primary-context-capacity "$harness" "$model"
+}
+
+fm_assistance_primary_model() {
+  local history=${1:-} model
+  [ -n "$history" ] || return 1
+  model=$(python3 - "$history" <<'PY2'
+import json, sys
+for line in open(sys.argv[1], encoding='utf-8'):
+    try: record=json.loads(line)
+    except json.JSONDecodeError: continue
+    value=record.get('message', {}).get('model') or record.get('model')
+    if value:
+        print(value)
+        break
+PY2
+  )
+  [ -n "$model" ] || return 1
+  printf '%s\n' "$model"
 }
 
 # Claude stores one project's session history under a directory named after the
@@ -227,7 +248,7 @@ PY2
 fm_assistance_context_usage() {  # <history-path>
   local history=$1 harness capacity matcher
   harness=$(fm_assistance_primary_harness)
-  capacity=$(fm_assistance_primary_context_capacity "$harness")
+  capacity=$(fm_assistance_primary_context_capacity "$harness" "$history")
   matcher=$(fm_assistance_primary_history_matcher "$harness")
   [ "$capacity" != unmeasured ] && [ "$matcher" != unmeasured ] || return 3
   FM_A_USAGE_HISTORY="$history" FM_A_USAGE_CAPACITY="$capacity" python3 - <<'PY2'

@@ -295,7 +295,11 @@ cmd_rotate() {
   [ -f "$binding" ] || die "no assistance binding for primary; run: fm-assistance.sh bind --primary --session <uuid>"
   [ "$(binding_get "$binding" programme_id)" = primary ] || die "rotate only targets the bound primary"
   primary_harness=$(binding_get "$binding" primary_harness)
-  [ -n "$primary_harness" ] || die "primary binding records no harness; rebind the primary before rotation"
+  if [ -z "$primary_harness" ]; then
+    primary_harness=$(fm_assistance_primary_harness)
+    [ -n "$primary_harness" ] || die "primary binding records no harness and the running harness is unknown"
+    printf 'primary_harness=%s\n' "$primary_harness" >> "$binding"
+  fi
   export FM_ASSISTANCE_PRIMARY_HARNESS="$primary_harness" FM_DAEMON_PRIMARY_HARNESS="$primary_harness"
   aid=$(binding_get "$binding" assistance_task_id)
   parent_history=$(binding_get "$binding" parent_history)

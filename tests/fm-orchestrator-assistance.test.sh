@@ -140,6 +140,7 @@ run_rotate() {  # <case-dir> <handoff-path>
   FM_SEND="$dir/bin/send" \
   FM_CONTROL="$dir/bin/control" \
   FM_ASSISTANCE_PRIMARY_HARNESS=claude \
+  FM_ASSISTANCE_PRIMARY_MODEL=claude-opus-5-200k \
   FM_PRIMARY_TARGET=new-endpoint FM_PRIMARY_BACKEND=tmux \
   FM_PRIMARY_ROTATE="$dir/bin/primary-rotate" \
   FM_PRIMARY_HANDOFF="$dir/bin/primary-handoff" \
@@ -578,6 +579,7 @@ test_rotate_preserves_cursor_and_handoff_contract() {
   dir=$(new_case rotate-ok); write_history "$dir"
   history="$dir/history/$(printf '%s' "$dir/parent-worktree" | tr '/.' '--')/session.jsonl"
   printf '%s\n' '{"usage":{"totalTokens":130000}}' >> "$history"
+  # Fixture uses the measured 200k Claude shape for a threshold-crossing case.
   run_cli "$dir" bind prog >/dev/null || fail "bind failed"
   printf '7\n' > "$dir/home/state/prog-assistance.assistance-cursor"
   handoff="$dir/handoff.md"
@@ -599,10 +601,10 @@ test_context_usage_is_measured_from_recorded_usage() {
   history="$dir/history/$(printf '%s' "$dir/parent-worktree" | tr '/.' '--')/session.jsonl"
   printf '%s\n' '{"usage":{"totalTokens":130000}}' >> "$history"
   out=$(FM_ASSISTANCE_PRIMARY_HARNESS=claude FM_ASSISTANCE_PRIMARY_HISTORY_ROOT="$dir/history" \
-    bash -c '. "$1"; export FM_ASSISTANCE_PRIMARY_HARNESS=claude FM_ASSISTANCE_PRIMARY_HISTORY_ROOT="$2"; fm_assistance_context_usage "$3"' _ "$ROOT/custom-skills/orchestrator-assistance/fm-assistance-lib.sh" "$dir/history" "$history") \
+    bash -c '. "$1"; export FM_ASSISTANCE_PRIMARY_HARNESS=claude FM_ASSISTANCE_PRIMARY_HISTORY_ROOT="$2" FM_ASSISTANCE_PRIMARY_MODEL=claude-opus-5; fm_assistance_context_usage "$3"' _ "$ROOT/custom-skills/orchestrator-assistance/fm-assistance-lib.sh" "$dir/history" "$history") \
     || fail "usage measurement failed: $out"
   assert_contains "$out" "130000" "measurement did not report used tokens"
-  assert_contains "$out" "200000" "measurement did not report harness context capacity"
+  assert_contains "$out" "1000000" "measurement did not report model context capacity"
   pass "context usage: measures recorded tokens against the harness-owned denominator"
 }
 
@@ -642,7 +644,7 @@ test_rotate_refuses_when_handoff_times_out() {
   printf '%s\n' '{"usage":{"totalTokens":130000}}' >> "$history"
   # Override the bounded wait to zero so this proves the refusal without a real delay.
   out=$(FM_ASSISTANCE_HANDOFF_WAIT=0 FM_HOME="$dir/home" FM_ASSISTANCE_HISTORY_ROOT="$dir/history" FM_ASSISTANCE_PRIMARY_HISTORY_ROOT="$dir/history" \
-    FM_SPAWN="$dir/bin/spawn" FM_SEND="$dir/bin/send" FM_CONTROL="$dir/bin/control" FM_ASSISTANCE_PRIMARY_HARNESS=claude \
+    FM_SPAWN="$dir/bin/spawn" FM_SEND="$dir/bin/send" FM_CONTROL="$dir/bin/control" FM_ASSISTANCE_PRIMARY_HARNESS=claude FM_ASSISTANCE_PRIMARY_MODEL=claude-opus-5-200k \
     FM_PRIMARY_TARGET=unused FM_PRIMARY_BACKEND=tmux FM_PRIMARY_HANDOFF=/bin/true \
     "$CLI" rotate primary --handoff "$handoff" 2>&1); code=$?
   expect_code 1 "$code" "rotate accepted a missing handoff"

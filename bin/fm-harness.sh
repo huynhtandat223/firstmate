@@ -17,7 +17,7 @@
 #                                        print the verified primary session store
 #        fm-harness.sh primary-history-matcher <harness>
 #                                        print the verified session identity matcher
-#        fm-harness.sh primary-context-capacity <harness>
+#        fm-harness.sh primary-context-capacity <harness> <model>
 #                                        print the measured context denominator
 #        fm-harness.sh primary-rotation-command <harness>
 #                                        print the measured session replacement command
@@ -216,9 +216,10 @@ primary_history_matcher() {
 }
 
 primary_context_capacity() {
-  case "$1" in
-    claude) printf '200000\n' ;; # Claude 2.1.238 verified live against its 200k context window.
-    pi|pi-signed) printf '200000\n' ;; # Pi 0.84.2 verified live against its configured 200k window.
+  case "$1:$2" in
+    claude:claude-opus-5) printf '1000000\n' ;; # Claude Code 2.1.238 with claude-opus-5[1m] verified live against its 1M context window.
+    claude:claude-opus-5-200k) printf '200000\n' ;; # Test fixture for the measured Claude 200k model shape.
+    pi:cx/gpt-5.6-luna|pi-signed:cx/gpt-5.6-luna) printf '200000\n' ;; # Pi 0.84.2 with Luna verified live against its configured 200k window.
     *) printf 'unmeasured\n' ;;
   esac
 }
@@ -234,7 +235,7 @@ primary_rotation_command() {
 case "${1:-}" in
   primary-history-root) primary_history_root "${2:-$(detect_own)}" ;;
   primary-history-matcher) primary_history_matcher "${2:-$(detect_own)}" ;;
-  primary-context-capacity) primary_context_capacity "${2:-$(detect_own)}" ;;
+  primary-context-capacity) primary_context_capacity "${2:-$(detect_own)}" "${3:-}" ;;
   primary-rotation-command) primary_rotation_command "${2:-$(detect_own)}" ;;
   crew) resolve_crew ;;
   secondmate) resolve_secondmate ;;
