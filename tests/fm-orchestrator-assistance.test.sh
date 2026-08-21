@@ -206,8 +206,9 @@ test_open_is_idempotent_on_the_record() {
   out=$(run_cli "$dir" open prog) || fail "first open failed: $out"
   assert_contains "$out" "opened prog-assistance" "first open did not launch the session"
   assert_grep "prog-assistance --supervisor" "$dir/spawned" "spawn did not name the assistance task as a supervisor"
-  assert_grep "gemini-3.7-flash-high" "$dir/spawned" "spawn did not pin the assistance model"
-  assert_grep "high" "$dir/spawned" "spawn did not pin the assistance effort"
+  assert_grep "--harness pi" "$dir/spawned" "spawn did not pin the assistance harness"
+  assert_grep "--model cx/gpt-5.6-luna" "$dir/spawned" "spawn did not pin the assistance model"
+  assert_grep "--effort high" "$dir/spawned" "spawn did not pin the assistance effort"
 
   # fm-spawn records the task; a second open must resume it.
   fm_write_meta "$dir/home/state/prog-assistance.meta" "harness=pi" "kind=supervisor"

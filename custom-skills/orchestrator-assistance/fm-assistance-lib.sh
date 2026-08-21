@@ -20,31 +20,28 @@
 # The assistance runtime is pinned, not routed. Assistance is one fixed reading
 # job against one parent, so per-task dispatch profiles do not apply to it.
 #
-# agy bakes the reasoning level into the model NAME and rejects a conflicting
-# --effort ("--model gemini-3.7-flash-high conflicts with --effort=low"), so the
-# suffix and the effort below must agree. agy's ceiling is `high`; it accepts
-# neither `xhigh` nor `max`.
+# Pi has no permission system: assistance crewmates are autonomous, so the
+# runtime enforces no read-only boundary here and this comment must not promise
+# a Pi equivalent of `--mode plan`.
 #
-# Read-only enforcement, measured on Antigravity CLI 1.1.13 (gemini-3.7-flash-high):
-#   --dangerously-skip-permissions alone     -> wrote the requested file
-#   --dangerously-skip-permissions + --mode plan -> refused a file write AND a
-#       `touch`, producing a plan instead, while still running a read-only `cat`
-#       and reporting its real output
-# So --mode plan blocks mutation independently of the permission layer, and
-# leaves the reading this job depends on intact. It is enforced by the agent's
-# own mode behavior rather than a kernel sandbox, so treat it as a strong
-# boundary, not a proof. NOTE: bin/fm-spawn.sh's agy launch template currently
-# hardcodes --dangerously-skip-permissions and passes no --mode plan, so a
-# session opened through `fm-assistance.sh open` does NOT yet get this boundary;
-# closing that needs a bin/fm-spawn.sh change, and a mutation-blocked session
-# also cannot run its own `remind`, which is why no plan-mode launch is pinned
-# here yet.
+# The boundary that actually holds is construction. FM_ASSISTANCE_FORMS is a
+# closed set of deliverable forms, so a business decision, a stop, a gate, or a
+# merge instruction has no form to travel in; fm-assistance.sh remind refuses
+# anything else before delivery.
+#
+# The former agy rationale already recorded that bin/fm-spawn.sh hardcoded
+# --dangerously-skip-permissions and passed no --mode plan, so the claimed agy
+# read-only runtime boundary was not active for an assistance launch. Switching
+# to Pi therefore does not remove a protection that was working; it changes the
+# autonomous runtime while preserving the forms boundary above.
+#
+# Pi's launch-profile axes and supported thinking levels are owned by the
+# harness-adapters skill; this file pins the assistance choice only.
 # shellcheck disable=SC2034 # Read by fm-assistance.sh, which sources this file.
-FM_ASSISTANCE_HARNESS="agy"
+FM_ASSISTANCE_HARNESS="pi"
 # shellcheck disable=SC2034 # Read by fm-assistance.sh, which sources this file.
-FM_ASSISTANCE_MODEL="gemini-3.7-flash-high"
+FM_ASSISTANCE_MODEL="cx/gpt-5.6-luna"
 # shellcheck disable=SC2034 # Read by fm-assistance.sh, which sources this file.
-# agy's reasoning ceiling is `high`; it does not accept `xhigh` or `max`.
 FM_ASSISTANCE_EFFORT="high"
 
 # The closed set of deliverable forms. A reminder that is not one of these is
