@@ -84,6 +84,7 @@ fm_assistance_primary_history_matcher() {
 fm_assistance_primary_context_capacity() {
   local harness=$1 history=$2 model
   model=$(fm_assistance_primary_model "$history" 2>/dev/null || true)
+  [ -n "$model" ] || model=${FM_ASSISTANCE_PRIMARY_MODEL:-}
   [ -n "$model" ] || return 3
   fm_assistance_harness_command primary-context-capacity "$harness" "$model"
 }
