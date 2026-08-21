@@ -123,7 +123,7 @@ require_binding() {  # <programme-id> -> echoes binding path
 # --- bind -------------------------------------------------------------------
 
 cmd_bind() {
-  local pid pin="" parent_meta kind worktree history binding digest rc primary=0
+  local pid pin="" parent_meta kind worktree history binding digest rc primary=0 primary_harness
   if [ "${1:-}" = --primary ]; then
     primary=1
     pid="primary"
@@ -142,10 +142,14 @@ cmd_bind() {
 
   if [ "$primary" -eq 1 ]; then
     [ -n "$pin" ] || die "primary bind requires --session <uuid>"
+    primary_harness=$(fm_assistance_primary_harness)
     worktree=$FM_HOME
-    history=$(fm_assistance_primary_history_file "$worktree" "$pin") \
-      || die "no readable primary session history for session $pin on harness $(fm_assistance_primary_harness) under $(fm_assistance_primary_history_root)"
-    rc=0
+    set +e
+    history=$(fm_assistance_primary_history_file "$worktree" "$pin")
+    rc=$?
+    set -e
+    [ "$rc" -ne 3 ] || die "primary history for harness $(fm_assistance_primary_harness) is unmeasured; record its verified store and matcher in bin/fm-harness.sh"
+    [ "$rc" -eq 0 ] || die "no readable primary session history for session $pin on harness $(fm_assistance_primary_harness) under $(fm_assistance_primary_history_root)"
   else
     parent_meta=$(fm_assistance_meta_path "$FM_HOME" "$pid")
     [ -f "$parent_meta" ] || die "no supervisor record for $pid at $parent_meta"
@@ -179,6 +183,7 @@ cmd_bind() {
     printf 'assistance_task_id=%s\n' "$(fm_assistance_task_id "$pid")"
     printf 'parent_worktree=%s\n' "$worktree"
     printf 'parent_history=%s\n' "$history"
+    [ "$primary" -eq 0 ] || printf 'primary_harness=%s\n' "$primary_harness"
     printf 'skill_path=%s\n' "$SKILL_PATH"
     printf 'skill_digest=%s\n' "$digest"
     printf 'bound_at=%s\n' "$(date -Iseconds)"
@@ -273,8 +278,8 @@ prepare_handoff_brief() {  # <programme-id> <handoff-path>
 }
 
 cmd_rotate() {
-  local pid binding aid pending turns requested handoff start cursor_file cursor_before
-  local meta endpoint cursor_after
+  local pid binding aid pending turns requested handoff start cursor_file
+  local parent_history parent_worktree usage used capacity percent target_info backend target new_history new_session primary_harness
   pid="${1:-}"; need_programme "$pid"; shift || true
   requested=""
   while [ $# -gt 0 ]; do
@@ -284,55 +289,53 @@ cmd_rotate() {
     esac
     shift
   done
-
-  binding=$(require_binding "$pid")
+  binding=$(fm_assistance_binding_path "$FM_HOME" primary)
+  [ -f "$binding" ] || die "no assistance binding for primary; run: fm-assistance.sh bind --primary --session <uuid>"
+  [ "$(binding_get "$binding" programme_id)" = primary ] || die "rotate only targets the bound primary"
+  primary_harness=$(binding_get "$binding" primary_harness)
+  [ -n "$primary_harness" ] || die "primary binding records no harness; rebind the primary before rotation"
+  export FM_ASSISTANCE_PRIMARY_HARNESS="$primary_harness" FM_DAEMON_PRIMARY_HARNESS="$primary_harness"
   aid=$(binding_get "$binding" assistance_task_id)
+  parent_history=$(binding_get "$binding" parent_history)
+  parent_worktree=$(binding_get "$binding" parent_worktree)
   pending=$(fm_assistance_pending_path "$FM_HOME" "$pid")
   if [ -f "$pending" ]; then
     turns=$(awk -F '\t' '$1 ~ /^turn=/ {printf "%s%s", sep, $3; sep=", "}' "$pending")
-    die "cannot rotate $aid while the pending observation batch is unsettled; settle is the crash-recovery boundary, so settle pending turns: ${turns:-unknown}"
+    die "cannot rotate while the pending observation batch is unsettled; settle is the crash-recovery boundary: ${turns:-unknown}"
   fi
-
+  usage=$(fm_assistance_context_usage "$parent_history") || die "cannot measure primary context usage from $parent_history; rotation refuses rather than silently never firing"
+  IFS=$'\t' read -r used capacity percent <<<"$usage"
+  [ "${percent%.*}" -ge 60 ] || { printf 'below rotation threshold: usage=%s/%s (%.2f%%), threshold=60%%\n' "$used" "$capacity" "$percent"; return 0; }
   handoff=$(handoff_path_for "$pid" "$requested")
   [ ! -e "$handoff" ] || die "handoff path already exists: $handoff"
-  mkdir -p "$(dirname "$handoff")" || die "cannot create handoff directory: $(dirname "$handoff")"
-  FM_HOME="$FM_HOME" "$FM_SEND" "$aid" \
-    "Use /handoff now. Write the judgement-only handoff to $handoff. Include the enumerated captain corrections, active watch items with their sources, and reminders already delivered. Do not copy the observation cursor, binding, outcomes, or delivery records; those durable sidecars remain authoritative." \
-    || die "could not ask $aid for a handoff"
-
+  mkdir -p "$(dirname "$handoff")"
+  cursor_file=$(fm_assistance_cursor_path "$FM_HOME" "$pid")
+  . "$FM_ROOT/bin/fm-primary-inject.sh"
+  target_info=$(fm_primary_target_from_home "$FM_HOME") || die "cannot resolve the bound primary endpoint"
+  IFS=$'\t' read -r backend target <<EOF
+$target_info
+EOF
+  fm_primary_inject assistance "$backend" "$target" \
+    "Use /handoff now. Write the judgement-only handoff for this primary to $handoff. Do not copy durable sidecars." \
+    || die "could not ask the bound primary for a handoff"
   start=$SECONDS
   while [ ! -f "$handoff" ]; do
-    if [ "$((SECONDS - start))" -ge "$HANDOFF_WAIT" ]; then
-      die "handoff for $aid did not appear at $handoff within ${HANDOFF_WAIT}s"
-    fi
+    [ "$((SECONDS - start))" -lt "$HANDOFF_WAIT" ] || die "handoff did not appear at $handoff within ${HANDOFF_WAIT}s"
     sleep "$HANDOFF_POLL"
   done
-
-  cursor_file=$(fm_assistance_cursor_path "$FM_HOME" "$pid")
-  if [ -f "$cursor_file" ]; then
-    cursor_before=$(sha256sum "$cursor_file")
-  else
-    cursor_before=absent
-  fi
-  FM_HOME="$FM_HOME" "$FM_CONTROL" "$aid" exit \
-    || die "could not stop $aid through the control plane; rotation did not relaunch it"
-  prepare_handoff_brief "$pid" "$handoff"
-  cmd_open "$pid" --relaunch
-
-  if [ -f "$cursor_file" ]; then
-    cursor_after=$(sha256sum "$cursor_file")
-    [ "$cursor_before" = "$cursor_after" ] \
-      || die "committed cursor changed during rotation; refusing to report a replacement"
-    cursor_after=$(cat "$cursor_file")
-  else
-    [ "$cursor_before" = absent ] || die "committed cursor disappeared during rotation"
-    cursor_after=absent
-  fi
-  meta=$(fm_assistance_meta_path "$FM_HOME" "$aid")
-  endpoint=$(binding_get "$meta" window)
-  [ -n "$endpoint" ] || endpoint=$(binding_get "$meta" endpoint)
-  [ -n "$endpoint" ] || endpoint=unknown
-  printf 'rotation_handoff=%s committed_cursor=%s new_endpoint=%s\n' "$handoff" "$cursor_after" "$endpoint"
+  fm_primary_rotate "$backend" "$target" "$handoff" || die "primary rotation was not confirmed"
+  start=$SECONDS
+  while [ "$((SECONDS - start))" -lt "$HANDOFF_WAIT" ]; do
+    new_history=$(fm_assistance_primary_history_replacement "$parent_worktree" "$parent_history" 2>/dev/null || true)
+    [ -n "$new_history" ] && break
+    sleep "$HANDOFF_POLL"
+  done
+  [ -n "$new_history" ] || new_history=$parent_history
+  new_session=$(fm_assistance_primary_session_id "$new_history")
+  sed -i "s|^parent_history=.*|parent_history=$new_history|" "$binding"
+  printf 'primary_session=%s\n' "$new_session" >> "$binding"
+  rm -f "$cursor_file"
+  printf 'rotation_handoff=%s usage_before=%s/%s (%.2f%%) committed_cursor=reset replacement_history=%s new_endpoint=%s\n' "$handoff" "$used" "$capacity" "$percent" "$new_history" "${target:-unknown}"
 }
 
 # --- observe ----------------------------------------------------------------
