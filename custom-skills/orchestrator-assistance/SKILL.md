@@ -31,8 +31,7 @@ The supervisor or firstmate decides business scope, architecture, tickets, optio
 When you believe one of those is wrong, you say so as an observation with its evidence, and the bound session decides.
 
 The session changes nothing else: it writes no file, runs no state-changing command, spawns no agent, steers no lifecycle, merges nothing, and deploys nothing.
-`--dangerously-skip-permissions` never appears on an assistance launch, because it auto-approves every tool request and is the one flag that would silently undo that.
-[`fm-assistance-lib.sh`](fm-assistance-lib.sh) owns the pinned runtime and the measured evidence for what the launch flags actually block.
+[`fm-assistance-lib.sh`](fm-assistance-lib.sh) owns the pinned runtime and explains why Pi's autonomous launch does not provide the boundary; the closed deliverable-form set and `fm-assistance.sh remind` enforce what can travel.
 
 Two facts stay true no matter what you observe:
 
