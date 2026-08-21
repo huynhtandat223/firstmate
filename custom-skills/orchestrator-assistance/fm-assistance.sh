@@ -148,7 +148,9 @@ cmd_bind() {
     history=$(fm_assistance_primary_history_file "$worktree" "$pin")
     rc=$?
     set -e
-    [ "$rc" -ne 3 ] || die "primary history for harness $(fm_assistance_primary_harness) is unmeasured; record its verified store and matcher in bin/fm-harness.sh"
+    if [ "$rc" -eq 3 ]; then
+      die "no readable primary session history for session $pin on harness $(fm_assistance_primary_harness); its history store and matcher are unmeasured, so record them in bin/fm-harness.sh"
+    fi
     [ "$rc" -eq 0 ] || die "no readable primary session history for session $pin on harness $(fm_assistance_primary_harness) under $(fm_assistance_primary_history_root)"
   else
     parent_meta=$(fm_assistance_meta_path "$FM_HOME" "$pid")
