@@ -4,6 +4,7 @@
 #
 # Usage:
 #   fm-assistance.sh bind <programme-id> [--session <uuid> | --history <path>]
+#   fm-assistance.sh bind --primary [--session <uuid>]
 #   fm-assistance.sh open <programme-id> [--relaunch] [--session <uuid>]
 #   fm-assistance.sh observe <programme-id> [--limit N] [--replay-until <uuid>]
 #   fm-assistance.sh remind <programme-id> [--turn <uuid>] --id <watch-id>
@@ -28,6 +29,9 @@
 # `bind` resolves the parent supervisor's own recorded metadata, refuses a task
 # that is not a supervisor, resolves that supervisor's observable Claude session
 # history from its recorded worktree, and writes state/<id>.assistance-binding.
+# `bind --primary` instead binds the assistance companion to this firstmate home.
+# Its Pi session identity is mandatory and is matched against the exact session
+# header and home path; no primary endpoint or transcript is selected by recency.
 # Everything after it reads that binding, so no later step re-guesses a parent.
 #
 # One worktree can hold several recorded sessions, and a supervisor's metadata
@@ -108,37 +112,51 @@ require_binding() {  # <programme-id> -> echoes binding path
 # --- bind -------------------------------------------------------------------
 
 cmd_bind() {
-  local pid pin="" parent_meta kind worktree history binding digest rc
-  pid="${1:-}"; need_programme "$pid"; shift || true
+  local pid pin="" parent_meta kind worktree history binding digest rc primary=0
+  if [ "${1:-}" = --primary ]; then
+    primary=1
+    pid="primary"
+    shift
+  else
+    pid="${1:-}"; need_programme "$pid"; shift || true
+  fi
   while [ $# -gt 0 ]; do
     case "$1" in
+      --primary) [ "$primary" -eq 0 ] || die "--primary was supplied twice"; primary=1; pid=primary ;;
       --session|--history) pin="${2:?$1 needs a session id or history path}"; shift ;;
       *) die "unknown bind option: $1" ;;
     esac
     shift
   done
 
-  parent_meta=$(fm_assistance_meta_path "$FM_HOME" "$pid")
-  [ -f "$parent_meta" ] || die "no supervisor record for $pid at $parent_meta"
-
-  kind=$(fm_assistance_meta_field "$parent_meta" kind)
-  [ "$kind" = "supervisor" ] || die "$pid is recorded as kind=${kind:-none}; assistance binds only to a programme supervisor"
-
-  worktree=$(fm_assistance_meta_field "$parent_meta" worktree)
-  [ -n "$worktree" ] || die "$pid records no worktree, so its session history cannot be resolved"
-
-  set +e
-  history=$(fm_assistance_history_file "$worktree" "$pin")
-  rc=$?
-  set -e
+  if [ "$primary" -eq 1 ]; then
+    [ -n "$pin" ] || die "primary bind requires --session <uuid>"
+    worktree=$FM_HOME
+    history=$(fm_assistance_primary_history_file "$worktree" "$pin") \
+      || die "no readable primary session history for session $pin under $(fm_assistance_primary_history_root)"
+    rc=0
+  else
+    parent_meta=$(fm_assistance_meta_path "$FM_HOME" "$pid")
+    [ -f "$parent_meta" ] || die "no supervisor record for $pid at $parent_meta"
+    kind=$(fm_assistance_meta_field "$parent_meta" kind)
+    [ "$kind" = "supervisor" ] || die "$pid is recorded as kind=${kind:-none}; assistance binds only to a programme supervisor"
+    worktree=$(fm_assistance_meta_field "$parent_meta" worktree)
+    [ -n "$worktree" ] || die "$pid records no worktree, so its session history cannot be resolved"
+    set +e
+    history=$(fm_assistance_history_file "$worktree" "$pin")
+    rc=$?
+    set -e
+  fi
   if [ "$rc" -eq 2 ]; then
     printf 'fm-assistance: %s has more than one recorded session history and no session identity to choose by.\n' "$pid" >&2
     printf 'Name the parent session with --session <uuid> or --history <path>. Candidates:\n' >&2
     fm_assistance_history_candidates "$worktree" >&2
     exit 1
   fi
-  [ "$rc" -eq 0 ] \
-    || die "no readable session history for $pid${pin:+ matching $pin} under $(fm_assistance_history_root)/$(fm_assistance_history_dir_name "$worktree"); assistance needs that observable source"
+  if [ "$primary" -eq 0 ]; then
+    [ "$rc" -eq 0 ] \
+      || die "no readable session history for $pid${pin:+ matching $pin} under $(fm_assistance_history_root)/$(fm_assistance_history_dir_name "$worktree"); assistance needs that observable source"
+  fi
 
   digest=$(fm_assistance_skill_digest "$SKILL_PATH") || die "assistance skill missing at $SKILL_PATH"
 
@@ -339,7 +357,7 @@ cmd_observe() {
 # --- remind -----------------------------------------------------------------
 
 cmd_remind() {
-  local pid wid="" action="" evidence="" text binding parent sent deliveries fp turn delivery_fp
+  local pid wid="" action="" evidence="" text binding parent sent deliveries fp turn delivery_fp target_info backend target
   pid="${1:-}"; need_programme "$pid"; shift || true
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -386,7 +404,20 @@ cmd_remind() {
     fi
   fi
 
-  FM_HOME="$FM_HOME" "$FM_SEND" "$parent" "$text" || die "delivery to $parent failed; fingerprint $fp stays unrecorded so the reminder can be retried"
+  if [ "$(binding_get "$binding" programme_id)" = primary ]; then
+    # shellcheck source=bin/fm-primary-inject.sh
+    . "$FM_ROOT/bin/fm-primary-inject.sh"
+    target_info=$(fm_primary_target_from_home "$FM_HOME") \
+      || die "cannot resolve the live primary endpoint for $FM_HOME"
+    IFS=$'\t' read -r backend target <<EOF
+$target_info
+EOF
+    fm_primary_inject assistance "$backend" "$target" "$text" \
+      || die "delivery to the primary session was deferred; fingerprint $fp stays unrecorded so the reminder can be retried"
+  else
+    FM_HOME="$FM_HOME" "$FM_SEND" "$parent" "$text" \
+      || die "delivery to $parent failed; fingerprint $fp stays unrecorded so the reminder can be retried"
+  fi
   mkdir -p "$(dirname "$sent")"
   printf '%s\n' "$fp" >> "$sent"
   if [ -n "$turn" ]; then

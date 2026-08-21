@@ -183,6 +183,19 @@ test_bind_refuses_when_history_absent() {
   pass "bind: reports the missing observable source instead of guessing a channel"
 }
 
+
+test_primary_bind_requires_explicit_existing_session() {
+  local dir out code
+  dir=$(new_case primary-bind)
+  out=$(run_cli "$dir" bind --primary); code=$?
+  expect_code 1 "$code" "primary bind accepted no session"
+  assert_contains "$out" "requires --session" "primary bind did not require a session"
+  out=$(run_cli "$dir" bind --primary --session no-such-session); code=$?
+  expect_code 1 "$code" "primary bind accepted an unknown session"
+  assert_contains "$out" "no readable primary session" "primary bind did not refuse the unknown session"
+  pass "primary bind: requires a named session that exists for this home"
+}
+
 # --- 2. same-parent resume without a duplicate session ----------------------
 
 test_open_is_idempotent_on_the_record() {
@@ -486,6 +499,7 @@ test_bind_refuses_ambiguous_history
 test_bind_pins_the_named_session
 test_bind_refuses_unknown_pin
 test_bind_refuses_when_history_absent
+test_primary_bind_requires_explicit_existing_session
 test_open_is_idempotent_on_the_record
 test_observe_records_pending_without_advancing_cursor
 test_suppressed_settlement_advances_once

@@ -180,6 +180,9 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 # shellcheck source=bin/fm-busy-lib.sh
 . "$FM_DAEMON_DIR/fm-busy-lib.sh"
 
+# shellcheck source=bin/fm-primary-inject.sh
+. "$FM_DAEMON_DIR/fm-primary-inject.sh"
+
 # --- tunables ---------------------------------------------------------------
 # Supervisor backends this daemon knows how to inject into today. zellij, orca,
 # and cmux are real backends elsewhere in firstmate (bin/fm-backend.sh) but this
@@ -208,8 +211,6 @@ WEDGE_ALARM_NOTIFIER_PID=
 # supervisor-pane busy guard live in bin/fm-tmux-lib.sh.
 # FM_BUSY_REGEX also overrides Grok's isolated task-state fallback.
 INJECT_FAIL_SLEEP_DEFAULT=30
-INJECT_CONFIRM_RETRIES_DEFAULT=3
-INJECT_CONFIRM_SLEEP_DEFAULT=0.5
 CRASH_THRESHOLD_DEFAULT=10
 CRASH_WINDOW_DEFAULT=60
 CRASH_BACKOFF_DEFAULT=60
@@ -1114,61 +1115,14 @@ window_for_task() {  # <task-key> [state]
 #     line, or a previous injection's unsent text), defer entirely - injecting
 #     would merge with the human's text.
 inject_msg() {  # <message> [state]
-  local msg=$1 state target backend retries sleep_s verdict composer encoded
+  local msg=$1 state target backend
   state="${2:-$(_state_root)}"
-  # (1) Presence-gate: inject ONLY when afk is active. When afk is off, the
-  # daemon self-handles and stays quiet; firstmate drives the normal always-on
-  # watcher triage. Escalations buffer and survive for the next catch-up flush.
+  # Presence is the daemon's policy gate. It intentionally stays outside the
+  # shared owner so primary assistance can deliver while away mode is off.
   afk_active "$state" || { log "inject deferred: afk inactive"; return 1; }
-  # (2) Single-line digest: collapse any embedded newlines so submission via
-  # send-keys + Enter is unambiguous regardless of how the TUI composer treats
-  # them. Then use the canonical typed envelope so downstream consumers retain
-  # the exact away-supervisor kind without interpreting this payload's prose.
-  msg=$(_collapse_newlines "$msg")
-  fm_operational_input_encode away-supervisor "$msg" encoded || return 1
-  msg=$encoded
   target="${FM_SUPERVISOR_TARGET:-$FM_SUPERVISOR_TARGET_DEFAULT}"
-  # BACKEND-AWARE (previously a raw `tmux display-message` pane-exists probe):
-  # dispatches through bin/fm-backend.sh so a herdr supervisor pane is checked
-  # via the herdr adapter instead of always assuming tmux. Falls back to tmux
-  # when unset (sourced/test contexts that never ran fm_super_main's startup
-  # discovery), matching this function's pre-existing default assumption.
   backend="${FM_SUPERVISOR_BACKEND:-tmux}"
-  fm_backend_target_exists "$backend" "$target" || return 1
-  # (3) Busy-guard: never inject into an in-use supervisor pane.
-  if pane_is_busy "$target" "$backend"; then
-    log "inject deferred: supervisor pane busy (agent mid-turn)"
-    return 1
-  fi
-  #   b) Composer-guard: inject ONLY into a confirmed-empty GENUINE agent
-  #      composer. The shared classifier (fm_backend_composer_state ->
-  #      fm_composer_classify_content, bin/fm-composer-lib.sh) reports 'pending'
-  #      for real unsubmitted text (a human's half-typed line, or a swallowed
-  #      prior injection) and 'unknown' for a bare dead-shell prompt (the agent
-  #      exited to its login shell) or an unreadable pane. Neither is a safe
-  #      target - typing the escalation into a shell could execute it - so defer
-  #      on anything that is not affirmatively 'empty'. A deferred escalation
-  #      stays buffered for the next cycle or the catch-up flush.
-  composer=$(fm_backend_composer_state "$backend" "$target" 2>/dev/null)
-  if [ "$composer" != empty ]; then
-    log "inject deferred: supervisor composer not confirmed-empty (state=${composer:-unknown}: pending input, dead-shell prompt, or unreadable pane)"
-    return 1
-  fi
-  # (4) Type the digest ONCE, then submit with Enter (retry Enter only, never
-  # retype) via the shared submit primitive. Success = the backend confirms
-  # submit. An unconfirmed/unknown pane does NOT count as delivered, so the
-  # buffer is preserved (strict) rather than cleared.
-  # Dispatches through fm_backend_send_text_submit (bin/fm-backend.sh): for
-  # backend=tmux this calls fm_backend_tmux_send_text_submit, a verbatim
-  # re-export of fm_tmux_submit_core - byte-identical to calling it directly.
-  retries=${FM_INJECT_CONFIRM_RETRIES:-$INJECT_CONFIRM_RETRIES_DEFAULT}
-  sleep_s=${FM_INJECT_CONFIRM_SLEEP:-$INJECT_CONFIRM_SLEEP_DEFAULT}
-  verdict=$(fm_backend_send_text_submit "$backend" "$target" "$msg" "$retries" "$sleep_s" "$sleep_s")
-  if [ "$verdict" = empty ]; then
-    return 0  # Backend confirmed the submit.
-  fi
-  log "inject failed: submit unconfirmed after $retries retries (verdict=$verdict, text may be in composer)"
-  return 1
+  fm_primary_inject away-supervisor "$backend" "$target" "$msg"
 }
 
 # --- INJECT_SKIP prefix match (literal prefixes, no regex) ------------------
