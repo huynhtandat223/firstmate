@@ -314,6 +314,19 @@ test_open_is_idempotent_on_the_record() {
 
 # --- 3. parent-turn observation ---------------------------------------------
 
+test_observe_recovers_cursor_past_history_end() {
+  local dir out history
+  dir=$(new_case cursor-past-end); write_history "$dir"
+  run_cli "$dir" bind prog >/dev/null || fail "bind failed"
+  history="$dir/history/$(printf '%s' "$dir/parent-worktree" | tr '/.' '--')/session.jsonl"
+  printf '1516\n' > "$dir/home/state/prog-assistance.assistance-cursor"
+  out=$(run_cli "$dir" observe prog --limit 2) || fail "cursor recovery failed: $out"
+  assert_contains "$out" "cursor-recovered" "past-end cursor recovery was silent"
+  assert_contains "$out" "u-001" "cursor recovery did not replay from the safe reset point"
+  assert_present "$dir/home/state/prog-assistance.assistance-pending" "cursor recovery did not create a pending batch"
+  pass "observe: reports and resets a committed cursor beyond the real history"
+}
+
 test_observe_records_pending_without_advancing_cursor() {
   local dir first second cursor pending
   dir=$(new_case observe); write_history "$dir"
@@ -687,6 +700,7 @@ test_primary_bind_names_an_unrecognised_harness
 test_primary_bind_refuses_unmeasured_harness
 test_context_usage_is_measured_from_recorded_usage
 test_open_is_idempotent_on_the_record
+test_observe_recovers_cursor_past_history_end
 test_observe_records_pending_without_advancing_cursor
 test_suppressed_settlement_advances_once
 test_delivery_then_recovery_settles_without_duplicate_send

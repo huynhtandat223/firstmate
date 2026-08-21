@@ -426,7 +426,7 @@ reconcile_cursor() {  # <programme-id> <pending-file> <cursor-file> <outcomes-fi
 }
 
 cmd_observe() {
-  local pid limit=20 until="" binding history cursor_file cursor pending out next records
+  local pid limit=20 until="" binding history cursor_file cursor pending out next records history_lines
   pid="${1:-}"; need_programme "$pid"; shift || true
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -446,6 +446,15 @@ cmd_observe() {
   cursor=0
   if [ -z "$until" ] && [ -f "$cursor_file" ]; then
     cursor=$(cat "$cursor_file")
+    case "$cursor" in
+      ''|*[!0-9]*) die "committed cursor is invalid for $history: $cursor; reset it to the current history head before observing" ;;
+    esac
+    history_lines=$(wc -l < "$history")
+    if [ "$cursor" -gt "$history_lines" ]; then
+      printf 'cursor-recovered history=%s cursor=%s history_lines=%s reset=0\n' "$history" "$cursor" "$history_lines"
+      cursor=0
+      printf '0\n' > "$cursor_file"
+    fi
   fi
 
   # Recovery is deliberately ahead of the history read. A process that died
