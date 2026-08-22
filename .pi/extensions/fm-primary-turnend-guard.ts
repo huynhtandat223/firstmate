@@ -66,6 +66,8 @@ const sessionstartDeliveryBytes = 512 * 1024;
 type SessionStartContext = {
   sessionManager?: {
     getHeader?: () => { timestamp?: unknown } | null | undefined;
+    getSessionId?: () => string;
+    getSessionFile?: () => string | undefined;
   };
 };
 
@@ -152,6 +154,18 @@ async function injectSessionstart(pi: ExtensionAPI, source: string): Promise<voi
   }
 }
 
+function publishAssistanceSession(ctx: SessionStartContext): void {
+  const sessionID = ctx.sessionManager?.getSessionId?.();
+  const sessionFile = ctx.sessionManager?.getSessionFile?.();
+  if (!sessionID || !sessionFile) return;
+  const child = spawn(`${root}/bin/fm-assistance-primary-session.sh`, [
+    process.env.FM_PI_HARNESS || "pi",
+    sessionID,
+    sessionFile,
+  ], { stdio: "ignore" });
+  child.on("error", () => {});
+}
+
 function runGuard(): Promise<{ code: number; stderr: string }> {
   return new Promise((resolveResult) => {
     const child = spawn(`${root}/bin/fm-turnend-guard.sh`, {
@@ -199,6 +213,7 @@ function runCdCheck(command: string): Promise<{ code: number; stderr: string }> 
 export default function (pi: ExtensionAPI) {
   pi.on?.("session_start", async (event, ctx) => {
     const reason = String((event as { reason?: unknown }).reason ?? "");
+    publishAssistanceSession(ctx);
     const source = reason === "startup"
       ? startupRebuildSource(ctx) ?? "startup"
       : { new: "clear", resume: "resume", fork: "fork" }[reason];

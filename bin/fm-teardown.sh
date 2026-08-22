@@ -2390,6 +2390,21 @@ if [ "$BACKEND" = orca ] && [ "$KIND" != scout ] && [ "$OWN_HOME" -eq 0 ] && [ "
   ORCA_PATH_MATCH_VERIFIED=1
 fi
 
+# An assistance companion owns a parent-home process-event source in addition to
+# its own supervisor-home sources. Retire it after every cleanup refusal above
+# has passed and before destructive runtime cleanup begins, so a successful
+# teardown never leaves the transcript reader behind.
+case "$ID" in
+  *-assistance)
+    assistance_programme=${ID%-assistance}
+    if [ -x "$SCRIPT_DIR/fm-procevent-assistance.sh" ]; then
+      FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
+        "$SCRIPT_DIR/fm-procevent-assistance.sh" retire "$assistance_programme" >/dev/null \
+        || { echo "REFUSED: assistance source for $assistance_programme could not be retired." >&2; exit 1; }
+    fi
+    ;;
+esac
+
 if [ -d "$WT" ] && [ "$FORCE" != "--force" ]; then
   if validate_worktree_teardown_safety; then
     :

@@ -4,10 +4,12 @@
 #
 # Usage:
 #   fm-assistance.sh bind <programme-id> [--session <uuid> | --history <path>]
-#   fm-assistance.sh bind --primary [--session <uuid>]
+#   fm-assistance.sh bind primary|--primary [--session <uuid>]
 #   fm-assistance.sh open <programme-id> [--relaunch] [--session <uuid>]
+#   fm-assistance.sh arm <programme-id>
 #   fm-assistance.sh rotate <programme-id> [--handoff <path>]
 #   fm-assistance.sh observe <programme-id> [--limit N] [--replay-until <uuid>]
+#   fm-assistance.sh status <programme-id>
 #   fm-assistance.sh remind <programme-id> [--turn <uuid>] --id <watch-id>
 #                    --action <action> --evidence <identity> <text...>
 #   fm-assistance.sh settle <programme-id> --turn <uuid>
@@ -30,10 +32,11 @@
 # `bind` resolves the parent supervisor's own recorded metadata, refuses a task
 # that is not a supervisor, resolves that supervisor's observable Claude session
 # history from its recorded worktree, and writes state/<id>.assistance-binding.
-# `bind --primary` instead binds the assistance companion to this firstmate home.
-# Its Pi session identity is mandatory and is matched against the exact session
-# header and home path; no primary endpoint or transcript is selected by recency.
-# Everything after it reads that binding, so no later step re-guesses a parent.
+# `bind primary` and `bind --primary` instead bind the assistance companion to
+# this firstmate home. The primary hook record supplies the running session by
+# default; an explicit --session remains available for recovery. No primary
+# endpoint or transcript is selected by recency. Everything after it reads that
+# binding, so no later step re-guesses a parent.
 #
 # One worktree can hold several recorded sessions, and a supervisor's metadata
 # carries no session identity, so bind never picks by recency: "newest" is not
@@ -47,7 +50,15 @@
 # `open` is idempotent on the record: a programme whose assistance task is
 # already recorded resumes it and reloads the current skill revision instead of
 # spawning a second one. `--relaunch` is the explicit path for a recorded
-# session whose process is gone; it returns to the same recorded home.
+# session whose process is gone; it returns to the same recorded home. A
+# successful open arms the transcript-growth process-event source.
+#
+# AUTOMATIC OBSERVATION
+# `arm` registers a filesystem-notified process-event source for the bound
+# transcript. Transcript growth delivers one typed observation turn directly to
+# the companion, which processes until `status` reports caught-up. A primary
+# session clear or harness switch changes the hook-owned current-session record,
+# so the source reports the binding stale instead of silently watching nothing.
 #
 # OBSERVATION
 # `observe` is two-phase. It records a pending batch and does not advance the
@@ -123,8 +134,8 @@ require_binding() {  # <programme-id> -> echoes binding path
 # --- bind -------------------------------------------------------------------
 
 cmd_bind() {
-  local pid pin="" parent_meta kind worktree history binding digest rc primary=0 primary_harness
-  if [ "${1:-}" = --primary ]; then
+  local pid pin="" parent_meta kind worktree history binding digest rc primary=0 primary_harness current
+  if [ "${1:-}" = --primary ] || [ "${1:-}" = primary ]; then
     primary=1
     pid="primary"
     shift
@@ -141,17 +152,28 @@ cmd_bind() {
   done
 
   if [ "$primary" -eq 1 ]; then
-    [ -n "$pin" ] || die "primary bind requires --session <uuid>"
-    primary_harness=$(fm_assistance_primary_harness)
-    worktree=$FM_HOME
-    set +e
-    history=$(fm_assistance_primary_history_file "$worktree" "$pin")
-    rc=$?
-    set -e
-    if [ "$rc" -eq 3 ]; then
-      die "no readable primary session history for session $pin on harness $(fm_assistance_primary_harness); its history store and matcher are unmeasured, so record them in bin/fm-harness.sh"
+    current=$(fm_assistance_current_path "$FM_HOME" primary)
+    if [ -z "$pin" ] && [ -f "$current" ] && [ ! -L "$current" ]; then
+      pin=$(fm_assistance_meta_field "$current" primary_session)
+      primary_harness=$(fm_assistance_meta_field "$current" primary_harness)
+      history=$(fm_assistance_meta_field "$current" parent_history)
+      [ -n "$pin" ] && [ -n "$primary_harness" ] && [ -f "$history" ] \
+        || die "running primary session record is incomplete; rerun this harness's session-start hook or supply --session <uuid>"
+      worktree=$FM_HOME
+      rc=0
+    else
+      [ -n "$pin" ] || die "primary bind requires a running primary session record or --session <uuid>"
+      primary_harness=$(fm_assistance_primary_harness)
+      worktree=$FM_HOME
+      set +e
+      history=$(fm_assistance_primary_history_file "$worktree" "$pin")
+      rc=$?
+      set -e
+      if [ "$rc" -eq 3 ]; then
+        die "no readable primary session history for session $pin on harness $(fm_assistance_primary_harness); its history store and matcher are unmeasured, so record them in bin/fm-harness.sh"
+      fi
+      [ "$rc" -eq 0 ] || die "no readable primary session history for session $pin on harness $(fm_assistance_primary_harness) under $(fm_assistance_primary_history_root)"
     fi
-    [ "$rc" -eq 0 ] || die "no readable primary session history for session $pin on harness $(fm_assistance_primary_harness) under $(fm_assistance_primary_history_root)"
   else
     parent_meta=$(fm_assistance_meta_path "$FM_HOME" "$pid")
     [ -f "$parent_meta" ] || die "no supervisor record for $pid at $parent_meta"
@@ -185,7 +207,10 @@ cmd_bind() {
     printf 'assistance_task_id=%s\n' "$(fm_assistance_task_id "$pid")"
     printf 'parent_worktree=%s\n' "$worktree"
     printf 'parent_history=%s\n' "$history"
-    [ "$primary" -eq 0 ] || printf 'primary_harness=%s\n' "$primary_harness"
+    if [ "$primary" -eq 1 ]; then
+      printf 'primary_harness=%s\n' "$primary_harness"
+      printf 'primary_session=%s\n' "$pin"
+    fi
     printf 'skill_path=%s\n' "$SKILL_PATH"
     printf 'skill_digest=%s\n' "$digest"
     printf 'bound_at=%s\n' "$(date -Iseconds)"
@@ -223,6 +248,7 @@ cmd_open() {
 
   if [ -f "$meta" ] && [ "$relaunch" -eq 0 ]; then
     cmd_reload "$pid"
+    cmd_arm "$pid" >/dev/null
     printf 'resumed %s parent=%s\n' "$aid" "$pid"
     return 0
   fi
@@ -231,6 +257,7 @@ cmd_open() {
     FM_HOME="$FM_HOME" "$FM_SPAWN" "$aid" --relaunch \
       --harness "$FM_ASSISTANCE_HARNESS" --model "$FM_ASSISTANCE_MODEL" --effort "$FM_ASSISTANCE_EFFORT" \
       || die "relaunch of $aid failed; the recorded session was preserved"
+    cmd_arm "$pid" >/dev/null
     printf 'relaunched %s parent=%s\n' "$aid" "$pid"
     return 0
   fi
@@ -238,8 +265,18 @@ cmd_open() {
   FM_HOME="$FM_HOME" "$FM_SPAWN" "$aid" --supervisor \
     --harness "$FM_ASSISTANCE_HARNESS" --model "$FM_ASSISTANCE_MODEL" --effort "$FM_ASSISTANCE_EFFORT" \
     || die "spawn of $aid failed"
+  cmd_arm "$pid" >/dev/null
   printf 'opened %s parent=%s harness=%s model=%s effort=%s\n' \
     "$aid" "$pid" "$FM_ASSISTANCE_HARNESS" "$FM_ASSISTANCE_MODEL" "$FM_ASSISTANCE_EFFORT"
+}
+
+# --- automatic observation --------------------------------------------------
+
+cmd_arm() {
+  local pid
+  pid="${1:-}"; need_programme "$pid"
+  FM_HOME="$FM_HOME" "$FM_ROOT/bin/fm-procevent-assistance.sh" retire "$pid" >/dev/null 2>&1 || true
+  FM_HOME="$FM_HOME" "$FM_ROOT/bin/fm-procevent-assistance.sh" arm "$pid"
 }
 
 # --- rotate -----------------------------------------------------------------
@@ -490,6 +527,40 @@ cmd_observe() {
   fi
 }
 
+# --- visibility -------------------------------------------------------------
+
+cmd_status() {
+  local pid binding history cursor pending current history_lines lag state active_harness active_history
+  pid="${1:-}"; need_programme "$pid"
+  binding=$(require_binding "$pid")
+  history=$(binding_get "$binding" parent_history)
+  cursor=0
+  [ ! -f "$(fm_assistance_cursor_path "$FM_HOME" "$pid")" ] \
+    || cursor=$(cat "$(fm_assistance_cursor_path "$FM_HOME" "$pid")")
+  history_lines=0
+  [ ! -f "$history" ] || history_lines=$(wc -l < "$history")
+  pending=$(fm_assistance_pending_path "$FM_HOME" "$pid")
+  state=caught-up
+  if [ "$pid" = primary ]; then
+    current=$(fm_assistance_current_path "$FM_HOME" "$pid")
+    active_harness=$(fm_assistance_meta_field "$current" primary_harness)
+    active_history=$(fm_assistance_meta_field "$current" parent_history)
+    if [ -z "$active_harness" ] || [ "$active_harness" != "$(binding_get "$binding" primary_harness)" ] \
+      || [ -z "$active_history" ] || [ "$active_history" != "$history" ]; then
+      state=stale-binding
+    fi
+  fi
+  case "$cursor$history_lines" in *[!0-9]*) state=invalid ;; esac
+  if [ "$state" = caught-up ] && { [ "$cursor" -lt "$history_lines" ] || [ -f "$pending" ]; }; then
+    state=behind
+  fi
+  lag=$(( history_lines - cursor ))
+  [ "$lag" -ge 0 ] || lag=0
+  printf '%s programme=%s cursor=%s history=%s lag=%s pending=%s binding=%s\n' \
+    "$state" "$pid" "$cursor" "$history_lines" "$lag" "$([ -f "$pending" ] && printf yes || printf no)" "$history"
+  case "$state" in caught-up|behind) return 0 ;; *) return 1 ;; esac
+}
+
 # --- remind -----------------------------------------------------------------
 
 cmd_remind() {
@@ -654,8 +725,10 @@ cmd_reload() {
 case "${1:-}" in
   bind) shift; cmd_bind "$@" ;;
   open) shift; cmd_open "$@" ;;
+  arm) shift; cmd_arm "$@" ;;
   rotate) shift; cmd_rotate "$@" ;;
   observe) shift; cmd_observe "$@" ;;
+  status) shift; cmd_status "$@" ;;
   remind) shift; cmd_remind "$@" ;;
   settle) shift; cmd_settle "$@" ;;
   lifecycle) shift; cmd_lifecycle "$@" ;;

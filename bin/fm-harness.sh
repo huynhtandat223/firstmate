@@ -18,7 +18,9 @@
 #        fm-harness.sh primary-history-matcher <harness>
 #                                        print the verified session identity matcher
 #        fm-harness.sh primary-context-capacity <harness> <model>
-#                                        print the measured context denominator
+#                                        print the measured nominal model capacity
+#        fm-harness.sh primary-effective-window <harness> <model>
+#                                        print the running primary's effective window
 #        fm-harness.sh primary-rotation-command <harness>
 #                                        print the measured session replacement command
 # config/secondmate-harness format: a single line "<harness> [<model>] [<effort>]",
@@ -224,6 +226,36 @@ primary_context_capacity() {
   esac
 }
 
+primary_effective_window() {
+  local harness=$1 model=$2 lock_pid env_file line configured=
+  case "$harness" in
+    claude)
+      lock_pid=$(cat "$FM_HOME/state/.lock" 2>/dev/null || true)
+      case "$lock_pid" in
+        ''|*[!0-9]*) ;;
+        *)
+          env_file="/proc/$lock_pid/environ"
+          if [ -r "$env_file" ]; then
+            while IFS= read -r -d '' line; do
+              case "$line" in
+                CLAUDE_CODE_AUTO_COMPACT_WINDOW=*)
+                  configured=${line#CLAUDE_CODE_AUTO_COMPACT_WINDOW=}
+                  ;;
+              esac
+            done < "$env_file"
+          fi
+          ;;
+      esac
+      [ -n "$configured" ] || configured=${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-}
+      case "$configured" in
+        ''|*[!0-9]*|0) primary_context_capacity "$harness" "$model" ;;
+        *) printf '%s\n' "$configured" ;;
+      esac
+      ;;
+    *) primary_context_capacity "$harness" "$model" ;;
+  esac
+}
+
 primary_rotation_command() {
   case "$1" in
     claude) printf '/clear\n' ;; # Claude Code 2.1.238 verified live as the context-reset command.
@@ -236,6 +268,7 @@ case "${1:-}" in
   primary-history-root) primary_history_root "${2:-$(detect_own)}" ;;
   primary-history-matcher) primary_history_matcher "${2:-$(detect_own)}" ;;
   primary-context-capacity) primary_context_capacity "${2:-$(detect_own)}" "${3:-}" ;;
+  primary-effective-window) primary_effective_window "${2:-$(detect_own)}" "${3:-}" ;;
   primary-rotation-command) primary_rotation_command "${2:-$(detect_own)}" ;;
   crew) resolve_crew ;;
   secondmate) resolve_secondmate ;;

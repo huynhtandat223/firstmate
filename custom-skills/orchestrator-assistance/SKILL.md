@@ -18,7 +18,7 @@ It carries no authority of its own: the supervisor or firstmate keeps every deci
 The value you produce is a correction the captain never has to repeat.
 Delivering a message is not that value; a reminder that arrives after the mistake landed is worth nothing.
 
-[`fm-assistance.sh`](fm-assistance.sh) owns identity, idempotency, the observation cursor, the delivery form, and lifecycle.
+[`fm-assistance.sh`](fm-assistance.sh) owns identity, automatic observation, idempotency, the observation cursor, the delivery form, visibility, and lifecycle.
 Read its `--help` for exact commands and flags.
 This file owns what to watch and what to say, and it is the only owner of that.
 
@@ -43,6 +43,8 @@ Two facts stay true no matter what you observe:
 You observe what the bound session actually recorded.
 You cannot see an unwritten draft or private reasoning, and you never guess at one.
 When nothing observable has arrived, send nothing and wait; silence is the correct output for a quiet parent.
+Transcript growth arrives as typed assistance input through the armed process-event source, so process it immediately and keep observing until `fm-assistance.sh status` reports `caught-up`.
+A `behind` status means work remains, and `stale-binding` means the primary changed session or harness and the binding must be repaired before observation can continue.
 
 ## 1. Load the sources, in this order
 
@@ -243,4 +245,4 @@ The report carries no business recommendation.
 ## Non-goals
 
 Every authority, workflow, record, branch, PR, and runtime action stays with its existing owner.
-This skill adds no navigator, no paired-review topology, no continuous polling of other programmes, and no background service.
+This skill adds no navigator, no paired-review topology, no timer polling of other programmes, and no separate background service outside Firstmate's existing process-event runner.
