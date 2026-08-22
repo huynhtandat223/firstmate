@@ -69,8 +69,8 @@ fm_assistance_meta_field() {  # <meta-file> <key>
 }
 
 # Harness facts are owned by bin/fm-harness.sh. This library asks that owner for
-# the primary store, identity matcher, and context denominator instead of
-# inferring a file shape from a harness name.
+# the primary store, identity matcher, and effective context denominator instead
+# of inferring a file shape from a harness name.
 fm_assistance_harness_command() {  # <command> <harness> [arguments...]
   local root
   root=$(CDPATH='' cd -- "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
@@ -86,7 +86,7 @@ fm_assistance_primary_context_capacity() {
   model=$(fm_assistance_primary_model "$history" 2>/dev/null || true)
   [ -n "$model" ] || model=${FM_ASSISTANCE_PRIMARY_MODEL:-}
   [ -n "$model" ] || return 3
-  fm_assistance_harness_command primary-context-capacity "$harness" "$model"
+  fm_assistance_harness_command primary-effective-window "$harness" "$model"
 }
 
 fm_assistance_primary_model() {
@@ -337,6 +337,14 @@ fm_assistance_outcomes_path() {  # <fm-home> <programme-id>
 # must point at one of these exact-parent records.
 fm_assistance_deliveries_path() {  # <fm-home> <programme-id>
   printf '%s/state/%s.assistance-deliveries\n' "$1" "$(fm_assistance_task_id "$2")"
+}
+
+# The primary hook integrations publish the exact active session here on every
+# session start. The binding remains the long-lived companion identity; this
+# record is the current-session fact that makes a clear or harness switch
+# detectable without transcript recency guesses.
+fm_assistance_current_path() {  # <fm-home> <programme-id>
+  printf '%s/state/%s.assistance-current\n' "$1" "$(fm_assistance_task_id "$2")"
 }
 
 # Stable short identity for one reminder. The inputs are the watch item, the

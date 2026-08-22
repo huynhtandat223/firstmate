@@ -52,6 +52,7 @@ COMPLETION_FILE="$STATE/.session-start-complete"
 . "$SCRIPT_DIR/fm-hook-host-lib.sh"
 
 SOURCE=
+PAYLOAD=
 while [ $# -gt 0 ]; do
   case "$1" in
     --source)
@@ -107,6 +108,30 @@ if [ -z "$SOURCE" ] && [ ! -t 0 ]; then
     seen == 1 { seen = 0 }
     $0 == "source" { seen = 1 }
   ')
+fi
+
+# Claude supplies the exact running session id in every SessionStart payload.
+# Publish that identity for an already-enabled primary assistance companion so a
+# context clear becomes an exact binding change instead of silent transcript
+# abandonment. Other harnesses publish through their own session-start adapter.
+if [ -f "$STATE/primary-assistance.assistance-binding" ] && [ ! -L "$STATE/primary-assistance.assistance-binding" ] \
+  && [ -n "$PAYLOAD" ] && [ "$("$SCRIPT_DIR/fm-harness.sh" 2>/dev/null || true)" = claude ]; then
+  PRIMARY_SESSION_ID=$(printf '%s' "$PAYLOAD" | awk '
+    BEGIN { RS = "\"" }
+    seen == 2 { print; exit }
+    seen == 1 && $0 ~ /^[[:space:]]*:[[:space:]]*$/ { seen = 2; next }
+    seen == 1 { seen = 0 }
+    $0 == "session_id" { seen = 1 }
+  ')
+  if [ -n "$PRIMARY_SESSION_ID" ]; then
+    PRIMARY_HISTORY_ROOT=$("$SCRIPT_DIR/fm-harness.sh" primary-history-root claude)
+    PRIMARY_HISTORY_DIR=$(printf '%s\n' "$FM_HOME" | tr '/.' '--')
+    PRIMARY_HISTORY="$PRIMARY_HISTORY_ROOT/$PRIMARY_HISTORY_DIR/$PRIMARY_SESSION_ID.jsonl"
+    if [ -f "$PRIMARY_HISTORY" ]; then
+      "$SCRIPT_DIR/fm-assistance-primary-session.sh" claude "$PRIMARY_SESSION_ID" "$PRIMARY_HISTORY" \
+        >/dev/null 2>&1 || true
+    fi
+  fi
 fi
 
 case "$SOURCE" in

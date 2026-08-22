@@ -34,7 +34,7 @@ new_case() {  # <name> [parent-kind]
   dir="$TMP_ROOT/$name"
   home="$dir/home"
   wt="$dir/parent-worktree"
-  mkdir -p "$home/state" "$wt" "$dir/bin"
+  mkdir -p "$home/state" "$wt" "$dir/bin" "$dir/claims"
   hist="$dir/history/$(printf '%s' "$wt" | tr '/.' '--')"
   mkdir -p "$hist"
 
@@ -50,6 +50,7 @@ new_case() {  # <name> [parent-kind]
   cat > "$dir/bin/spawn" <<SH
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "$dir/spawned"
+printf 'window=fake\nendpoint_task_id=%s\nharness=pi\nkind=supervisor\n' "\$1" > "$home/state/\$1.meta"
 echo "spawned \$1"
 SH
   cat > "$dir/bin/send" <<SH
@@ -84,6 +85,7 @@ run_cli() {  # <case-dir> <args...>
   shift
   FM_HOME="$dir/home" \
   FM_ASSISTANCE_HISTORY_ROOT="$dir/history" \
+  FM_PROCEVENT_CLAIM_ROOT="$dir/claims" \
   FM_SPAWN="$dir/bin/spawn" \
   FM_SEND="$dir/bin/send" \
   "$CLI" "$@" 2>&1
@@ -248,7 +250,8 @@ test_primary_bind_requires_explicit_existing_session() {
   dir=$(new_case primary-bind)
   out=$(run_cli "$dir" bind --primary); code=$?
   expect_code 1 "$code" "primary bind accepted no session"
-  assert_contains "$out" "requires --session" "primary bind did not require a session"
+  assert_contains "$out" "requires a running primary session record or --session" \
+    "primary bind did not name either supported session-identity source"
   out=$(run_cli "$dir" bind --primary --session no-such-session); code=$?
   expect_code 1 "$code" "primary bind accepted an unknown session"
   assert_contains "$out" "no readable primary session" "primary bind did not refuse the unknown session"
@@ -288,6 +291,24 @@ test_primary_bind_names_an_unrecognised_harness() {
   pass "primary bind: names the unrecognised harness instead of searching another harness's store"
 }
 
+test_primary_bind_alias_uses_the_recorded_running_session() {
+  local dir home history out
+  dir=$(new_case primary-bind-alias)
+  home="$dir/home"
+  history="$dir/pi/current.jsonl"
+  mkdir -p "$(dirname "$history")"
+  printf '{"type":"session","id":"s-current","cwd":"%s"}\n' "$home" > "$history"
+  printf 'primary_harness=pi\nprimary_session=s-current\nparent_history=%s\n' "$history" \
+    > "$home/state/primary-assistance.assistance-current"
+
+  out=$(FM_ASSISTANCE_PRIMARY_HARNESS=pi FM_ASSISTANCE_PRIMARY_HISTORY_ROOT="$dir/pi" \
+    run_cli "$dir" bind primary) || fail "primary bind alias failed: $out"
+  assert_contains "$out" "bound primary-assistance" "bind primary did not select the primary path"
+  assert_grep "parent_history=$history" "$home/state/primary-assistance.assistance-binding" \
+    "bind primary ignored the session recorded by the running primary"
+  pass "primary bind: the ordinary primary spelling uses the exact running-session record"
+}
+
 # --- 2. same-parent resume without a duplicate session ----------------------
 
 test_open_is_idempotent_on_the_record() {
@@ -325,6 +346,115 @@ test_observe_recovers_cursor_past_history_end() {
   assert_contains "$out" "u-001" "cursor recovery did not replay from the safe reset point"
   assert_present "$dir/home/state/prog-assistance.assistance-pending" "cursor recovery did not create a pending batch"
   pass "observe: reports and resets a committed cursor beyond the real history"
+}
+
+test_assistance_status_makes_lag_visible() {
+  local dir out
+  dir=$(new_case status-lag); write_history "$dir"
+  run_cli "$dir" bind prog >/dev/null || fail "bind failed"
+  printf '1\n' > "$dir/home/state/prog-assistance.assistance-cursor"
+
+  out=$(run_cli "$dir" status prog) || fail "status failed: $out"
+  assert_contains "$out" "behind" "a lagging companion still reported like a healthy companion"
+  assert_contains "$out" "cursor=1" "lag status did not expose the committed observation cursor"
+  assert_contains "$out" "history=5" "lag status did not expose the transcript head"
+  pass "status: a companion behind its transcript is visibly behind"
+}
+
+test_primary_binding_switch_is_visible_and_not_delivered_as_healthy() {
+  local dir home history old_history out code
+  dir=$(new_case stale-primary-binding)
+  home="$dir/home"
+  old_history="$dir/pi/old.jsonl"
+  history="$dir/pi/current.jsonl"
+  mkdir -p "$dir/pi"
+  printf '{"type":"session","id":"s-old","cwd":"%s"}\n' "$home" > "$old_history"
+  printf '{"type":"session","id":"s-current","cwd":"%s"}\n' "$home" > "$history"
+  printf 'programme_id=primary\nparent_task_id=primary\nassistance_task_id=primary-assistance\nparent_worktree=%s\nparent_history=%s\nprimary_harness=claude\nprimary_session=s-old\n' \
+    "$home" "$old_history" > "$home/state/primary-assistance.assistance-binding"
+  printf 'primary_harness=pi\nprimary_session=s-current\nparent_history=%s\n' "$history" \
+    > "$home/state/primary-assistance.assistance-current"
+
+  out=$(run_cli "$dir" status primary 2>&1); code=$?
+  expect_code 1 "$code" "stale primary binding reported healthy"
+  assert_contains "$out" "stale-binding" "harness and session switch was not visible"
+  pass "status: a primary context clear or harness switch is visibly stale"
+}
+
+test_process_event_advances_the_companion_without_an_operator_nudge() {
+  local dir history before after source
+  dir=$(new_case event-progress); write_history "$dir"
+  run_cli "$dir" bind prog >/dev/null || fail "bind failed"
+
+  # Establish a caught-up cursor through the real public observe/settle boundary.
+  while IFS=$'\t' read -r _ _ turn _ _; do
+    [ -n "$turn" ] || continue
+    run_cli "$dir" settle prog --turn "$turn" --outcome suppressed --cue "scope note" \
+      --evidence "fixture:$turn" --reason "fixture baseline" >/dev/null \
+      || fail "could not settle baseline turn $turn"
+  done < <(run_cli "$dir" observe prog --limit 20 | grep -v '^#')
+  before=$(cat "$dir/home/state/prog-assistance.assistance-cursor")
+  history="$dir/history/$(printf '%s' "$dir/parent-worktree" | tr '/.' '--')/session.jsonl"
+
+  # The fake endpoint performs exactly the work the delivered assistance input
+  # requests. The process-event source and runner are real; only the outward TUI
+  # submit is replaced through FM_SEND, the suite's documented seam.
+  cat > "$dir/bin/send" <<SH
+#!/usr/bin/env bash
+printf '%s\t%s\n' "\$1" "\${*:2}" >> "$dir/sent"
+out=\$(FM_HOME="$dir/home" FM_ASSISTANCE_HISTORY_ROOT="$dir/history" \
+  "$CLI" observe prog --limit 20)
+while IFS=\$'\t' read -r _ _ turn _ _; do
+  [ -n "\$turn" ] || continue
+  FM_HOME="$dir/home" FM_ASSISTANCE_HISTORY_ROOT="$dir/history" \
+    "$CLI" settle prog --turn "\$turn" --outcome suppressed --cue "scope note" \
+      --evidence "event:\$turn" --reason "processed after automatic notification" >/dev/null
+done <<EOF
+\$(printf '%s\n' "\$out" | grep -v '^#')
+EOF
+SH
+  chmod +x "$dir/bin/send"
+  fm_write_meta "$dir/home/state/prog-assistance.meta" "window=fake" "harness=pi" "kind=supervisor"
+  printf 'programme_id=prog\nparent_task_id=prog\nassistance_task_id=prog-assistance\nparent_worktree=%s\nparent_history=%s\nskill_path=%s\nskill_digest=test\n' \
+    "$dir/parent-worktree" "$history" "$ROOT/custom-skills/orchestrator-assistance/SKILL.md" \
+    > "$dir/home/state/prog-assistance.assistance-binding"
+
+  FM_HOME="$dir/home" FM_ASSISTANCE_HISTORY_ROOT="$dir/history" \
+    FM_PROCEVENT_CLAIM_ROOT="$dir/claims" FM_SEND="$dir/bin/send" \
+    "$CLI" arm prog >/dev/null || fail "automatic observation source did not arm"
+  source="$dir/home/state/procevent/assistance-prog.source"
+  assert_present "$source" "arm wrote no process-event source"
+  FM_HOME="$dir/home" FM_PROCEVENT_CLAIM_ROOT="$dir/claims" FM_SEND="$dir/bin/send" \
+    "$ROOT/bin/fm-procevent.sh" reconcile >/dev/null \
+    || fail "process-event source did not start"
+  for _ in $(seq 1 40); do
+    [ -f "$dir/claims/assistance-prog.claim" ] && break
+    sleep 0.05
+  done
+  assert_present "$dir/claims/assistance-prog.claim" \
+    "process-event runner never claimed the transcript source"
+  # Claim publication precedes exec of the blocking source. Give that exec one
+  # bounded beat so the appended line is observed as growth, not baseline.
+  sleep 0.5
+  printf '%s\n' '{"type":"user","uuid":"u-006","timestamp":"2026-08-16T01:01:00Z","message":{"role":"user","content":"a later scope note"}}' >> "$history"
+
+  after=$before
+  for _ in $(seq 1 120); do
+    after=$(cat "$dir/home/state/prog-assistance.assistance-cursor" 2>/dev/null || printf 0)
+    [ "$after" -gt "$before" ] && break
+    FM_HOME="$dir/home" FM_PROCEVENT_CLAIM_ROOT="$dir/claims" FM_SEND="$dir/bin/send" \
+      "$ROOT/bin/fm-procevent.sh" reconcile >/dev/null 2>&1 || true
+    sleep 0.1
+  done
+  [ "$after" -gt "$before" ] \
+    || { printf 'event-progress diagnostics:\n' >&2; cat "$dir/sent" >&2 2>/dev/null || true; \
+         find "$dir/home/state" "$dir/claims" -maxdepth 3 -type f -print -exec sh -c 'echo --- "$1"; cat "$1"' _ {} \; >&2 2>/dev/null || true; \
+         fail "automatic observation made no progress (cursor $before -> $after)"; }
+  FM_HOME="$dir/home" FM_PROCEVENT_CLAIM_ROOT="$dir/claims" \
+    "$ROOT/bin/fm-procevent-assistance.sh" retire prog >/dev/null 2>&1 || true
+  assert_grep "FIRSTMATE_OP: v1 assistance:" "$dir/sent" \
+    "the transcript event did not deliver a typed assistance input"
+  pass "process event: transcript growth advances the companion without an operator nudge (cursor $before -> $after)"
 }
 
 test_observe_records_pending_without_advancing_cursor() {
@@ -597,7 +727,8 @@ test_rotate_preserves_cursor_and_handoff_contract() {
   printf '7\n' > "$dir/home/state/prog-assistance.assistance-cursor"
   handoff="$dir/handoff.md"
   make_rotation_tools "$dir" "$handoff"
-  out=$(run_rotate "$dir" "$handoff") || fail "rotate failed: $out"
+  out=$(CLAUDE_CODE_AUTO_COMPACT_WINDOW=200000 run_rotate "$dir" "$handoff") \
+    || fail "rotate failed: $out"
   assert_present "$handoff" "rotation wrote no handoff"
   assert_contains "$out" "rotation_handoff=$handoff" "rotation did not print the handoff path"
   assert_contains "$out" "committed_cursor=reset" "rotation did not report the reset observation cursor"
@@ -613,12 +744,32 @@ test_context_usage_is_measured_from_recorded_usage() {
   dir=$(new_case usage-measure); write_history "$dir"
   history="$dir/history/$(printf '%s' "$dir/parent-worktree" | tr '/.' '--')/session.jsonl"
   printf '%s\n' '{"usage":{"totalTokens":130000}}' >> "$history"
-  out=$(FM_ASSISTANCE_PRIMARY_HARNESS=claude FM_ASSISTANCE_PRIMARY_HISTORY_ROOT="$dir/history" \
+  out=$(CLAUDE_CODE_AUTO_COMPACT_WINDOW=262144 FM_HOME="$dir/home" \
+    FM_ASSISTANCE_PRIMARY_HARNESS=claude FM_ASSISTANCE_PRIMARY_HISTORY_ROOT="$dir/history" \
     bash -c '. "$1"; export FM_ASSISTANCE_PRIMARY_HARNESS=claude FM_ASSISTANCE_PRIMARY_HISTORY_ROOT="$2" FM_ASSISTANCE_PRIMARY_MODEL=claude-opus-5; fm_assistance_context_usage "$3"' _ "$ROOT/custom-skills/orchestrator-assistance/fm-assistance-lib.sh" "$dir/history" "$history") \
     || fail "usage measurement failed: $out"
   assert_contains "$out" "130000" "measurement did not report used tokens"
-  assert_contains "$out" "1000000" "measurement did not report model context capacity"
-  pass "context usage: measures recorded tokens against the harness-owned denominator"
+  assert_contains "$out" "262144" "measurement ignored the primary's effective auto-compact window"
+  assert_contains "$out" "49.59" "measurement did not use the effective window as its denominator"
+  pass "context usage: measures recorded tokens against the harness-owned effective window"
+}
+
+test_rotate_uses_the_effective_window_before_nominal_capacity() {
+  local dir out handoff history
+  dir=$(new_case rotate-effective-window); write_history "$dir"
+  history="$dir/history/$(printf '%s' "$dir/parent-worktree" | tr '/.' '--')/session.jsonl"
+  printf '%s\n' '{"message":{"model":"claude-opus-5"},"usage":{"totalTokens":160000}}' >> "$history"
+  run_cli "$dir" bind prog >/dev/null || fail "bind failed"
+  handoff="$dir/effective-window-handoff.md"
+  make_rotation_tools "$dir" "$handoff"
+  out=$(CLAUDE_CODE_AUTO_COMPACT_WINDOW=262144 \
+    FM_ASSISTANCE_PRIMARY_MODEL=claude-opus-5 run_rotate "$dir" "$handoff") \
+    || fail "effective-window rotation failed: $out"
+  assert_contains "$out" "usage_before=160000/262144" \
+    "rotation still compared usage with the nominal 1M capacity"
+  assert_present "$dir/primary-rotate-call" \
+    "rotation did not fire before the effective 262144-token window truncated"
+  pass "rotate: the 60 percent gate uses the effective window, not nominal model capacity"
 }
 
 test_rotate_refuses_unsettled_pending_batch() {
@@ -656,7 +807,7 @@ test_rotate_refuses_when_handoff_times_out() {
   history="$dir/history/$(printf '%s' "$dir/parent-worktree" | tr '/.' '--')/session.jsonl"
   printf '%s\n' '{"usage":{"totalTokens":130000}}' >> "$history"
   # Override the bounded wait to zero so this proves the refusal without a real delay.
-  out=$(FM_ASSISTANCE_HANDOFF_WAIT=0 FM_HOME="$dir/home" FM_ASSISTANCE_HISTORY_ROOT="$dir/history" FM_ASSISTANCE_PRIMARY_HISTORY_ROOT="$dir/history" \
+  out=$(CLAUDE_CODE_AUTO_COMPACT_WINDOW=200000 FM_ASSISTANCE_HANDOFF_WAIT=0 FM_HOME="$dir/home" FM_ASSISTANCE_HISTORY_ROOT="$dir/history" FM_ASSISTANCE_PRIMARY_HISTORY_ROOT="$dir/history" \
     FM_SPAWN="$dir/bin/spawn" FM_SEND="$dir/bin/send" FM_CONTROL="$dir/bin/control" FM_ASSISTANCE_PRIMARY_HARNESS=claude FM_ASSISTANCE_PRIMARY_MODEL=claude-opus-5-200k \
     FM_PRIMARY_TARGET=unused FM_PRIMARY_BACKEND=tmux FM_PRIMARY_HANDOFF=/bin/true \
     "$CLI" rotate primary --handoff "$handoff" 2>&1); code=$?
@@ -697,10 +848,15 @@ test_bind_refuses_when_history_absent
 test_primary_bind_requires_explicit_existing_session
 test_primary_bind_resolves_the_running_harness_store
 test_primary_bind_names_an_unrecognised_harness
+test_primary_bind_alias_uses_the_recorded_running_session
 test_primary_bind_refuses_unmeasured_harness
 test_context_usage_is_measured_from_recorded_usage
+test_rotate_uses_the_effective_window_before_nominal_capacity
 test_open_is_idempotent_on_the_record
 test_observe_recovers_cursor_past_history_end
+test_assistance_status_makes_lag_visible
+test_primary_binding_switch_is_visible_and_not_delivered_as_healthy
+test_process_event_advances_the_companion_without_an_operator_nudge
 test_observe_records_pending_without_advancing_cursor
 test_suppressed_settlement_advances_once
 test_delivery_then_recovery_settles_without_duplicate_send
