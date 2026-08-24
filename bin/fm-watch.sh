@@ -25,7 +25,14 @@
 #                          terminal (captain-relevant) or non-terminal (no verb),
 #                          both surfaced at once. A provably-working stale past the
 #                          wedge threshold also surfaces, with an "escalation N"
-#                          count in the reason; at FM_WEDGE_DEMAND_INSPECT_COUNT
+#                          count in the reason - unless the task's recorded
+#                          worktree carries kernel-level evidence of work in
+#                          progress (a live process rooted there, or a changed
+#                          file touched within FM_WORK_EVIDENCE_FILE_SECS), which
+#                          restarts the timer instead, for at most
+#                          FM_WORK_EVIDENCE_MAX_SECS per stale episode. Past that
+#                          bound, or with no such evidence, it escalates as
+#                          before; at FM_WEDGE_DEMAND_INSPECT_COUNT
 #                          consecutive escalations on the SAME pane, the reason
 #                          also carries a "demand-deep-inspection" marker so the
 #                          wake payload itself, not just repetition, forces a
@@ -150,7 +157,7 @@ SIGNAL_GRACE=${FM_SIGNAL_GRACE:-30}   # seconds to linger after a signal so trai
 # (fm-classify-lib.sh) backs the away-mode daemon; while state/.afk exists the
 # daemon owns triage, so this watcher reverts to one-shot (enqueue + exit on every
 # wake) and never double-triages - and never runs the costly provably-working read.
-STALE_ESCALATE_SECS=${FM_STALE_ESCALATE_SECS:-240}  # idle secs before a provably-working stale escalates as a possible wedge
+STALE_ESCALATE_SECS=${FM_STALE_ESCALATE_SECS:-240}  # idle secs before a provably-working stale escalates WITHOUT work evidence
 # A busy pane is unconditional proof of liveness with no built-in duration bound,
 # so a hung foreground call can remain hidden even while its rendered busy
 # footer changes every poll. BUSY_TURN_MAX_SECS bounds how long any busy pane
@@ -164,6 +171,21 @@ STALE_ESCALATE_SECS=${FM_STALE_ESCALATE_SECS:-240}  # idle secs before a provabl
 # turn-ended and resets the age. Set generously above any legitimate interval
 # between completed turns, including long tool calls, builds, or test runs.
 BUSY_TURN_MAX_SECS=${FM_BUSY_TURN_MAX_SECS:-3600}
+# A fixed idle timer alone escalated work that was genuinely under way: a gate
+# measured at 311s crosses 240s before it can finish, so the same worker
+# false-alarmed on every cycle of it. When that timer is about to fire, the
+# stale path asks crew_work_evidence (bin/fm-classify-lib.sh) whether the task's
+# recorded worktree= is being worked in - a live process rooted there, or a
+# changed file touched within FM_WORK_EVIDENCE_FILE_SECS - and RESTARTS the timer
+# instead of escalating. That extension is bounded twice over: only a positive
+# kernel answer buys it (an unrecorded worktree, an unreadable path, or a host
+# where neither source can answer keeps today's escalation), and one stale
+# episode may spend at most WORK_EVIDENCE_MAX_SECS on it, measured from the
+# first extension and recorded in state/.work-evidence-<key>. Past that bound
+# the episode escalates on the plain STALE_ESCALATE_SECS cadence with its
+# escalation count and demand-deep-inspection marker intact, so a hung process
+# that never exits is still caught - it just costs one bounded window first.
+WORK_EVIDENCE_MAX_SECS=${FM_WORK_EVIDENCE_MAX_SECS:-$BUSY_TURN_MAX_SECS}
 # A crew that declared a pause is idling on a known external wait, so its stale
 # pane is absorbed rather than wedge-escalated.
 # A captain-held or paused crew whose agent has confidently exited uses the same
@@ -280,16 +302,61 @@ recorded_windows() {
 # below).
 FM_WEDGE_DEMAND_INSPECT_COUNT=${FM_WEDGE_DEMAND_INSPECT_COUNT:-3}
 
+# stale_work_evidence_defers: 0 iff <window>'s task is provably being worked in
+# at the kernel level AND this stale episode still has room inside
+# WORK_EVIDENCE_MAX_SECS. Called ONLY from the escalation branch below, so it
+# runs at most once per STALE_ESCALATE_SECS per stale window and adds nothing to
+# the per-wake path. Every unanswerable case returns 1, which leaves the
+# escalation exactly as it is today: no recorded worktree, a worktree that is
+# gone, or a host where neither evidence source can answer.
+# The anchor records "<episode> <epoch>", where <episode> is the stale hash this
+# window was absorbed on (empty on the busy-turn path, which carries no stale
+# hash). Binding the spent window to that episode is what keeps a leftover
+# anchor from silently disabling the extension for the NEXT episode: a recorded
+# episode that no longer matches is not this episode's window and is ignored.
+stale_work_evidence_defers() {  # <window> <anchor-file> <episode>
+  local win=$1 anchor=$2 episode=$3 task meta wt recorded started verdict
+  task=$(window_to_task "$win" "$STATE")
+  [ -n "$task" ] || return 1
+  meta="$STATE/$task.meta"
+  [ -f "$meta" ] || return 1
+  wt=$(grep '^worktree=' "$meta" 2>/dev/null | tail -1 | cut -d= -f2- || true)
+  [ -n "$wt" ] || return 1
+  recorded=$(cat "$anchor" 2>/dev/null || true)
+  started=""
+  if [ "${recorded%% *}" = "$episode" ]; then
+    started=${recorded#* }
+    case "$started" in
+      ''|*[!0-9]*) started="" ;;
+      *)
+        if [ $(( $(date +%s) - started )) -ge "$WORK_EVIDENCE_MAX_SECS" ]; then
+          triage_log "work evidence window spent (${WORK_EVIDENCE_MAX_SECS}s), escalating: $win"
+          return 1
+        fi
+        ;;
+    esac
+  fi
+  verdict=$(crew_work_evidence "$wt")
+  case "$verdict" in
+    process|files) ;;
+    *) return 1 ;;
+  esac
+  [ -n "$started" ] || printf '%s %s\n' "$episode" "$(date +%s)" > "$anchor"
+  triage_log "wedge escalation deferred on work evidence ($verdict in $wt): $win"
+  return 0
+}
+
 # Repeat-poll wedge-timer bookkeeping for an already-classified stale hash
 # absorbed as provably-working - repairs a missing/corrupt timer (self-heals a
 # watcher restart between recording the hash and recording the timer), or
-# escalates once STALE_ESCALATE_SECS have elapsed. Never re-reads the crew
-# state (the costly check already ran once, at classification time). Shared by
-# both places a hash can be absorbed this way: the plain non-terminal path,
-# and the stale_is_terminal-overridden path (a captain-relevant status-log
-# line that an active run/busy pane outranked).
+# escalates once STALE_ESCALATE_SECS have elapsed with no work evidence to
+# extend the window. Never re-reads the crew state (the costly check already ran
+# once, at classification time). Shared by both places a hash can be absorbed
+# this way: the plain non-terminal path, and the stale_is_terminal-overridden
+# path (a captain-relevant status-log line that an active run/busy pane
+# outranked).
 wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-file>
-  local win=$1 since_file=$2 label=$3 escalation_file=$4 since age n reason
+  local win=$1 since_file=$2 label=$3 escalation_file=$4 since age n reason key
   since=$(cat "$since_file" 2>/dev/null || true)
   case "$since" in
     ''|*[!0-9]*)
@@ -299,6 +366,12 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
     *)
       age=$(( $(date +%s) - since ))
       if [ "$age" -ge "$STALE_ESCALATE_SECS" ]; then
+        key=$(printf '%s' "$win" | tr ':/.' '___')
+        if stale_work_evidence_defers "$win" "$STATE/.work-evidence-$key" \
+             "$(cat "$STATE/.stale-$key" 2>/dev/null || true)"; then
+          date +%s > "$since_file"
+          return 0
+        fi
         n=$(( $(cat "$escalation_file" 2>/dev/null || echo 0) + 1 ))
         echo "$n" > "$escalation_file"
         reason="stale: $win (idle ${age}s, possible wedge, escalation $n)"
@@ -1146,7 +1219,7 @@ EOF
         if [ "$busy_now" -eq 0 ] && busy_turn_over_age "$task"; then
           wedge_timer_check "$w" "$ssf" "busy (no completed turn)" "$ewf"
         else
-          rm -f "$ssf" "$ewf"
+          rm -f "$ssf" "$ewf" "$STATE/.work-evidence-$key"
         fi
         if [ -e "$pf" ] && { [ "$n" -ge 2 ] || ! status_is_paused_or_captain_held "$(last_status_line "$STATE/$(window_to_task "$w" "$STATE").status")"; }; then
           clear_pause_tracking "$w"
@@ -1158,7 +1231,7 @@ EOF
       if [ "$busy_now" -eq 0 ] && busy_turn_over_age "$task"; then
         wedge_timer_check "$w" "$ssf" "busy (no completed turn)" "$ewf"
       else
-        rm -f "$ssf" "$ewf"
+        rm -f "$ssf" "$ewf" "$STATE/.work-evidence-$key"
       fi
       task=$(window_to_task "$w" "$STATE")
       if ! afk_present && status_is_paused_or_captain_held "$(last_status_line "$STATE/$task.status")" && [ "$busy_now" -ne 0 ]; then

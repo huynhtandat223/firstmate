@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Shared wake classifier: the common source of truth for captain-relevant status
-# tests, declared-external-wait vocabulary, and the working/paused absorb
-# classification that makes no-verb signal and stale-pane wakes safe to absorb.
+# tests, declared-external-wait vocabulary, the working/paused absorb
+# classification that makes no-verb signal and stale-pane wakes safe to absorb,
+# and the kernel-level work evidence that holds a stale pane's escalation clock
+# open while its worktree is provably being worked in.
 # Sourced by BOTH the always-on watcher
 # (bin/fm-watch.sh) and the away-mode daemon (bin/fm-supervise-daemon.sh) so the
 # overlapping triage policy lives in one place instead of two copies that can
@@ -13,13 +15,17 @@
 # daemon keeps its escalation-digest seen-markers; the watcher keeps its .seen-*
 # signatures).
 #
-# There are two documented exceptions. The absorb classification
+# There are three documented exceptions. The absorb classification
 # (crew_absorb_class and its working/paused wrappers) is NOT a pure status-file
 # read: it reuses bin/fm-crew-state.sh, which may make a bounded no-mistakes call,
 # to decide whether a crew that just stopped its turn or went stale is working,
 # deliberately paused, or neither. Callers run it ONLY on no-verb signal handling
 # and first sighting of a stale hash, never on every wake, so the per-wake triage
-# stays cheap. status_open_decisions_incremental (see "incremental (cursor-backed)
+# stays cheap. crew_work_evidence (see "kernel-level work evidence" below) reads
+# the kernel and the task worktree rather than a status file, for the same
+# reason and under the same call discipline: only the stale path calls it, and
+# only when an escalation is otherwise about to fire.
+# status_open_decisions_incremental (see "incremental (cursor-backed)
 # open-decisions fold" below) also writes: it persists a per-status-file byte
 # cursor and folded open-set as a side effect, so a per-drain fleet-wide scan
 # stays bounded by new appends instead of re-reading each task's whole lifetime
@@ -1131,6 +1137,132 @@ crew_is_provably_working() {  # <id>
 # escalating a possible wedge.
 crew_is_paused() {  # <id>
   [ "$(crew_absorb_class "$1")" = paused ]
+}
+
+# --- kernel-level work evidence ---------------------------------------------
+#
+# crew_absorb_class above already answers "is this crew working" correctly, and
+# it is not what produced the false wedge alarms: the watcher's escalation clock
+# did, by expiring at FM_STALE_ESCALATE_SECS while a legitimately long gate was
+# still running (a 311s frontend test run, measured 2026-08-24, repeatedly
+# escalated a worker that was provably working the whole time). crew_work_evidence
+# is the second, structural source the stale path uses to hold that clock open.
+# It asks the KERNEL whether the task's own worktree is being worked in right
+# now, so nothing in it reads rendered output, a spinner, a keybind glyph, or a
+# process name a vendor could rename. bin/fm-watch.sh owns what the answer buys
+# (one bounded extension per stale episode) and the outer bound on it.
+#
+# Freshness window for the changed-file signal: a change newer than one
+# escalation window is current work, so the default tracks FM_STALE_ESCALATE_SECS
+# and a home that widens one widens both.
+FM_WORK_EVIDENCE_FILE_SECS="${FM_WORK_EVIDENCE_FILE_SECS:-${FM_STALE_ESCALATE_SECS:-240}}"
+
+# Platform mtime reader, resolved on first use so merely sourcing this library
+# (every fm-send, fm-teardown, fm-brief run) never pays for a probe it does not
+# make. The `stat -f ... || stat -c ...` fallback form is deliberately NOT used:
+# on Linux `stat -f` is filesystem stat and writes a partial dump to stdout
+# before failing (see bin/fm-watch.sh's stat_mtime).
+_fm_work_evidence_stat_kind=""
+_fm_work_evidence_mtime() {  # <path>
+  if [ -z "$_fm_work_evidence_stat_kind" ]; then
+    if [ "$(uname 2>/dev/null)" = Darwin ]; then
+      _fm_work_evidence_stat_kind=bsd
+    else
+      _fm_work_evidence_stat_kind=gnu
+    fi
+  fi
+  case "$_fm_work_evidence_stat_kind" in
+    bsd) stat -f %m "$1" 2>/dev/null ;;
+    *)   stat -c %Y "$1" 2>/dev/null ;;
+  esac
+}
+
+# 0 iff some live process's working directory is <worktree> or below it; 1 iff
+# provably none; 2 iff this source cannot answer on this host.
+# /proc/<pid>/cwd is the kernel's own record, it cannot hang, and one `ls -l`
+# covers every process at once. An entry belonging to another user is unreadable
+# and is skipped rather than guessed at, which can only lose evidence, never
+# invent it. Hosts without procfs (macOS) get a 2 here and fall through to the
+# changed-file signal instead; no `lsof` sweep is attempted, because a blocking
+# lsof inside the watcher's poll loop would trade a false alarm for a stall.
+_fm_work_evidence_process() {  # <worktree>
+  local wt=$1
+  [ -d /proc/1 ] || return 2
+  # ls is the one-fork reader for a directory of symlinks whose targets are the
+  # data; no filename parsing is involved, so SC2012's find advice does not apply.
+  # shellcheck disable=SC2012
+  ls -l /proc/[0-9]*/cwd 2>/dev/null | awk -v wt="$wt" '
+    {
+      i = index($0, " -> ")
+      if (i == 0) next
+      p = substr($0, i + 4)
+      if (p == wt || substr(p, 1, length(wt) + 1) == wt "/") { found = 1; exit }
+    }
+    END { exit found ? 0 : 1 }
+  '
+}
+
+# 0 iff a file git reports as changed in <worktree> was modified within
+# <fresh-secs>; 1 iff none was; 2 iff git cannot answer (no git, not a
+# repository). --no-optional-locks keeps this a read: git will not refresh
+# (write) the worker's index, so firstmate never mutates the worktree it is
+# inspecting. A status that fails midway yields no records and therefore 1,
+# which is the safe direction - it escalates exactly as today.
+_fm_work_evidence_files() {  # <worktree> <fresh-secs>
+  local wt=$1 fresh=$2 cutoff rec path expect_source=0 m
+  command -v git >/dev/null 2>&1 || return 2
+  git --no-optional-locks -C "$wt" rev-parse --git-dir >/dev/null 2>&1 || return 2
+  cutoff=$(( $(date +%s) - fresh ))
+  while IFS= read -r -d '' rec; do
+    # A rename or copy emits two records: one XY-prefixed and one bare companion
+    # path. Both are candidates - which of the two is the destination differs by
+    # git version - so the companion is read whole rather than prefix-stripped,
+    # and a path that no longer exists simply fails to stat.
+    if [ "$expect_source" -eq 1 ]; then
+      expect_source=0
+      path=$rec
+    else
+      case "${rec:0:2}" in
+        *R*|*C*) expect_source=1 ;;
+      esac
+      path=${rec:3}
+    fi
+    [ -n "$path" ] || continue
+    m=$(_fm_work_evidence_mtime "$wt/$path")
+    case "$m" in ''|*[!0-9]*) continue ;; esac
+    [ "$m" -ge "$cutoff" ] && return 0
+  done < <(git --no-optional-locks -C "$wt" status --porcelain -z 2>/dev/null)
+  return 1
+}
+
+# Print exactly one token for <worktree>:
+#   process - a live process is working inside it;
+#   files   - a file git reports as changed there was modified within
+#             <fresh-secs> (default FM_WORK_EVIDENCE_FILE_SECS);
+#   none    - at least one source answered and none found evidence;
+#   unknown - no source could answer (no worktree recorded, an unreadable path,
+#             no procfs and no git).
+# Only `process` and `files` are positive evidence. `none` and `unknown` are
+# both non-evidence, so an unanswerable probe can never suppress an escalation:
+# the caller keeps today's behavior for either.
+crew_work_evidence() {  # <worktree> [<fresh-secs>]
+  local wt=$1 fresh=${2:-$FM_WORK_EVIDENCE_FILE_SECS} rc answered=1
+  [ -n "$wt" ] || { printf 'unknown'; return 0; }
+  # The kernel reports a physical cwd, while a recorded worktree= may carry a
+  # symlinked prefix; compare like with like or a working process reads as absent.
+  wt=$(cd "$wt" 2>/dev/null && pwd -P) || wt=""
+  [ -n "$wt" ] || { printf 'unknown'; return 0; }
+  case "$fresh" in ''|*[!0-9]*) fresh=$FM_WORK_EVIDENCE_FILE_SECS ;; esac
+  _fm_work_evidence_process "$wt"
+  rc=$?
+  [ "$rc" -eq 0 ] && { printf 'process'; return 0; }
+  [ "$rc" -eq 1 ] && answered=0
+  _fm_work_evidence_files "$wt" "$fresh"
+  rc=$?
+  [ "$rc" -eq 0 ] && { printf 'files'; return 0; }
+  [ "$rc" -eq 1 ] && answered=0
+  if [ "$answered" -eq 0 ]; then printf 'none'; else printf 'unknown'; fi
+  return 0
 }
 
 # 0 (benign/absorb) if EVERY task referenced by a no-verb "signal:" wake is provably
