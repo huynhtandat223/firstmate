@@ -2,8 +2,8 @@
 # Spawn a direct report: a crewmate in a treehouse or Orca worktree, a temporary
 # supervisor in its own leased firstmate home, or a secondmate in its isolated
 # firstmate home.
-# Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>]
-#        fm-spawn.sh <task-id> <project-dir> --scout [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>]
+# Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] [--agent-path <path>]
+#        fm-spawn.sh <task-id> <project-dir> --scout [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] [--agent-path <path>]
 #        fm-spawn.sh <task-id> --supervisor [--harness <name>] [--model <name>] [--effort <level>] [--backend <name>]
 #        fm-spawn.sh <task-id> [<firstmate-home>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] --secondmate
 #   --mode and --yolo are this task's delivery contract, REQUIRED for every ship
@@ -60,6 +60,32 @@
 #   A backend spawn refusal (missing dependency, version gate, unauthenticated
 #   socket, or unsupported secondmate mode) is terminal for that selected backend;
 #   callers must surface it instead of silently retrying another backend.
+#   --agent-path <path> narrows where the agent STARTS: the worker is launched in
+#   that directory instead of the task worktree root, so a brief scoped to one
+#   module puts the agent in that module rather than only asking it to stay
+#   there. The value is resolved against the task worktree (a relative path is
+#   worktree-relative; an absolute path must already be inside it) and recorded
+#   in state/<id>.meta as an absolute agent_path=. Omitting the flag writes no
+#   agent_path= line and leaves every launch byte-identical to a spawn that
+#   never knew about it.
+#   Only two universal facts are validated: the resolved path exists as a
+#   directory, and it resolves inside the task's own worktree. NOTHING about the
+#   directory's contents is inspected - firstmate serves every kind of
+#   repository, so no build file, manifest, or project shape is ever required. A
+#   path that escapes the worktree or does not exist refuses the spawn rather
+#   than dropping a worker somewhere meaningless or outside its isolation.
+#   It applies to ship and scout spawns only: a secondmate's and a temporary
+#   supervisor's worktree IS a firstmate home, which the agent must be sitting in.
+#   Per-task turn-end and busy-state wiring still lives at the WORKTREE ROOT.
+#   Claude and OpenCode were verified to load it from there while running in a
+#   subdirectory, and Codex, Pi, pi-signed, and cursor do not read it from the
+#   working directory at all; grok, kimi, and muse resolve their pointer or
+#   session binding against a workspace root the harness itself reports and are
+#   unverified (docs/verification/runtime-backends.md "Starting directory and
+#   worktree-root wiring").
+#   A relaunch reuses the task's recorded agent_path exactly like every other
+#   identity axis, so a replacement worker cannot silently widen its scope back
+#   to the worktree root; --agent-path is refused alongside --relaunch.
 #   A herdr crewmate or scout is placed in the exact workspace of the firstmate
 #   or secondmate process launching it, resolved from that process's own herdr
 #   pane rather than from a workspace label (herdr enforces no label uniqueness,
@@ -162,8 +188,10 @@
 #     fm-spawn.sh fix-a-k3=projects/foo add-b-q7=projects/bar [--scout]
 #   Each pair re-execs this script in single-task mode, so the single path stays the only
 #   source of truth; shared --scout/--harness/--model/--effort/--backend/--mode/--yolo
-#   applies to every pair. A ship batch therefore carries one delivery contract, and each
-#   pair still checks it against its own brief; a batch spanning modes is two invocations.
+#   applies to every pair, while --agent-path is refused because a starting
+#   directory belongs to one task's own worktree. A ship batch therefore carries
+#   one delivery contract, and each pair still checks it against its own brief;
+#   a batch spanning modes is two invocations.
 #   If config/crew-dispatch.json exists, shared --harness is required for crewmate
 #   and scout batches. The loop lives here, in bash, so callers never hand-write a
 #   multi-task shell loop (the tool shell is zsh, which does not word-split unquoted
@@ -179,7 +207,8 @@
 #     __PITURNEND__ absolute path to .pi/extensions/fm-primary-turnend-guard.ts in a pi secondmate home
 #     __PIWATCH__   absolute path to .pi/extensions/fm-primary-pi-watch.ts in a pi secondmate home
 #     __OPINPUT__   absolute path to the canonical operational-input encoder
-#     __WORKTREE__  absolute path to the task worktree
+#     __WORKTREE__  absolute path the agent starts in: the task worktree, or the
+#                  --agent-path directory inside it when one was given
 #     __CURSORBIN__ resolved, cursor-verified executable for a cursor launch
 # Verified per-harness turn-end hooks are installed automatically where enabled; some live outside the worktree.
 # Kimi uses one surgically installed Firstmate region in $HOME/.kimi-code/config.toml,
@@ -196,7 +225,7 @@
 # resolver because `cursor` is not the CLI name. A cursor SECONDMATE instead runs
 # the tracked project-scope .cursor/hooks.json in its own home, whose stop-hook
 # park owns that home's supervision (docs/supervision-protocols/cursor.md).
-# On success prints: spawned <id> harness=<name> kind=<ship|scout|supervisor|secondmate> [mode=<mode> yolo=<on|off>] window=<backend-target> worktree=<path>
+# On success prints: spawned <id> harness=<name> kind=<ship|scout|supervisor|secondmate> [mode=<mode> yolo=<on|off>] window=<backend-target> worktree=<path> [agent-path=<path>]
 # A ship task records the explicit mode/yolo it was passed; a secondmate spawn records
 # mode=secondmate, yolo=off, home=, and projects=; a supervisor records home= and
 # parent_home= and no delivery posture; a scout records neither, and both the
@@ -300,6 +329,7 @@ BACKEND_ARG=
 MODE=
 YOLO=
 TRACEPARENT_ARG=
+AGENT_PATH_ARG=
 HARNESS_SET=0
 MODEL_SET=0
 EFFORT_SET=0
@@ -307,6 +337,7 @@ BACKEND_SET=0
 MODE_SET=0
 YOLO_SET=0
 TRACEPARENT_SET=0
+AGENT_PATH_SET=0
 RELAUNCH=0
 POS=()
 want_value=
@@ -323,6 +354,7 @@ for a in "$@"; do
       mode) MODE=$a; MODE_SET=1 ;;
       yolo) YOLO=$a; YOLO_SET=1 ;;
       traceparent) TRACEPARENT_ARG=$a; TRACEPARENT_SET=1 ;;
+      agent-path) AGENT_PATH_ARG=$a; AGENT_PATH_SET=1 ;;
       *) echo "error: internal parser state for --$want_value" >&2; exit 1 ;;
     esac
     want_value=
@@ -347,6 +379,8 @@ for a in "$@"; do
     --yolo=*) YOLO=${a#--yolo=}; YOLO_SET=1 ;;
     --traceparent) want_value=traceparent ;;
     --traceparent=*) TRACEPARENT_ARG=${a#--traceparent=}; TRACEPARENT_SET=1 ;;
+    --agent-path) want_value=agent-path ;;
+    --agent-path=*) AGENT_PATH_ARG=${a#--agent-path=}; AGENT_PATH_SET=1 ;;
     *) POS+=("$a") ;;
   esac
 done
@@ -358,6 +392,7 @@ done
 [ "$MODE_SET" -eq 0 ] || [ -n "$MODE" ] || { echo "error: --mode requires a non-empty value" >&2; exit 1; }
 [ "$YOLO_SET" -eq 0 ] || [ -n "$YOLO" ] || { echo "error: --yolo requires a non-empty value" >&2; exit 1; }
 [ "$TRACEPARENT_SET" -eq 0 ] || [ -n "$TRACEPARENT_ARG" ] || { echo "error: --traceparent requires a non-empty value" >&2; exit 1; }
+[ "$AGENT_PATH_SET" -eq 0 ] || [ -n "$AGENT_PATH_ARG" ] || { echo "error: --agent-path requires a non-empty value" >&2; exit 1; }
 # A parent-delivered carrier replaces this home's own resolution, so it is
 # refused unless it is a secondmate spawn carrying a strictly valid W3C value.
 # Nothing else may reach the pane's TRACEPARENT export.
@@ -375,6 +410,13 @@ case "$EFFORT" in
   ''|low|medium|high|xhigh|max) ;;
   *) echo "error: --effort must be one of low, medium, high, xhigh, max" >&2; exit 1 ;;
 esac
+# A secondmate's and a temporary supervisor's worktree IS its firstmate home, and
+# every home-relative path that agent reads resolves from where it sits, so the
+# starting directory is not a free axis for them.
+if [ "$AGENT_PATH_SET" -eq 1 ] && { [ "$KIND" = secondmate ] || [ "$KIND" = supervisor ]; }; then
+  echo "error: --agent-path applies to ship and scout spawns only; a secondmate and a temporary supervisor must start in their own firstmate home" >&2
+  exit 1
+fi
 
 # --relaunch reuses an existing task's endpoint, worktree, project, and kind,
 # so every axis this block resolves for a fresh spawn instead comes from that
@@ -385,6 +427,7 @@ if [ "$RELAUNCH" -eq 1 ]; then
   [ "$KIND_SET" -eq 0 ] || { echo "error: --relaunch reuses the task's recorded kind; --scout/--supervisor/--secondmate cannot override it" >&2; exit 1; }
   [ "$MODE_SET" -eq 0 ] || { echo "error: --relaunch reuses the task's recorded delivery mode; --mode cannot override it" >&2; exit 1; }
   [ "$YOLO_SET" -eq 0 ] || { echo "error: --relaunch reuses the task's recorded yolo posture; --yolo cannot override it" >&2; exit 1; }
+  [ "$AGENT_PATH_SET" -eq 0 ] || { echo "error: --relaunch reuses the task's recorded starting directory; --agent-path cannot override it" >&2; exit 1; }
 else
   # Delivery contract (AGENTS.md section 7). A ship task's mode and yolo are
   # firstmate's per-task decision, so they are required and closed-set validated
@@ -896,6 +939,13 @@ if [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart" ] && case "$idpart" in *
     echo "error: config/crew-dispatch.json is active - pass an explicit harness resolved from the dispatch rules (the consultation backstop, so the rules are never silently skipped)." >&2
     exit 1
   fi
+  # A starting directory belongs to one task's own worktree, so it is never a
+  # shared batch axis: the same relative path in two unrelated repositories is
+  # two different places, and often only one of them exists.
+  [ "$AGENT_PATH_SET" -eq 0 ] || {
+    echo "error: --agent-path is a per-task starting directory, not a shared batch axis; spawn each task that needs one explicitly" >&2
+    exit 1
+  }
   rc=0
   shared_args=()
   [ -z "$HARNESS_ARG" ] || shared_args+=(--harness "$HARNESS_ARG")
@@ -2275,12 +2325,48 @@ kimi_spawn_fail() {  # <detail>
   echo "error: $1; inspect window $T" >&2
 }
 
+# Resolve --agent-path (or a relaunch's recorded agent_path) against the task's
+# own worktree and set AGENT_DIR to the absolute directory the agent starts in.
+# Only two universal facts are checked - the path exists as a directory, and it
+# stays inside this task's worktree. Nothing about what the directory CONTAINS is
+# inspected: firstmate serves every kind of repository, so requiring any project
+# shape here would bake one project's layout into the tool.
+resolve_agent_dir() {  # <source> <raw-path>
+  local source=$1 raw=$2 candidate resolved wt_real
+  AGENT_DIR=
+  [ -n "$raw" ] || return 0
+  case "$raw" in
+    /*) candidate=$raw ;;
+    *)  candidate="$WT/$raw" ;;
+  esac
+  if ! wt_real=$(cd "$WT" 2>/dev/null && pwd -P); then
+    echo "error: $source cannot be resolved: task worktree '$WT' is unreadable" >&2
+    exit 1
+  fi
+  if ! resolved=$(cd "$candidate" 2>/dev/null && pwd -P); then
+    echo "error: $source '$raw' is not an existing directory inside the task worktree '$WT'; refusing to start the agent somewhere that does not exist" >&2
+    exit 1
+  fi
+  if [ "$resolved" != "$wt_real" ] && ! path_is_ancestor_of "$wt_real" "$resolved"; then
+    echo "error: $source '$raw' resolves to '$resolved', outside the task worktree '$WT'; refusing to start the agent outside its isolated copy" >&2
+    exit 1
+  fi
+  AGENT_DIR=$resolved
+}
+AGENT_DIR=
+
 if [ "$RELAUNCH" -eq 1 ]; then
+  # The recorded starting directory is an identity axis like every other: a
+  # replacement that silently fell back to the worktree root would widen the
+  # worker's scope with nothing to show for it. It is re-validated against the
+  # recorded worktree rather than trusted, so a record that has since drifted
+  # outside that copy refuses here exactly as a fresh spawn would.
+  resolve_agent_dir "the recorded starting directory" "$(fm_meta_get "$RELAUNCH_META" agent_path)"
   # No worktree is acquired: the recorded one is reused as-is. What must be
-  # proven instead is that the adopted endpoint's shell is actually sitting in
-  # that worktree, so the replacement agent starts where the work is rather
-  # than wherever the pane happened to drift.
-  relaunch_wt_real=$(real_path_or_raw "$WT")
+  # proven instead is that the adopted endpoint's shell is actually sitting
+  # where this task's agent runs, so the replacement agent starts where the work
+  # is rather than wherever the pane happened to drift.
+  relaunch_wt_real=$(real_path_or_raw "${AGENT_DIR:-$WT}")
   relaunch_seen=
   for _ in $(seq 1 10); do
     relaunch_seen=$(spawn_current_path "$WT_TARGET" || true)
@@ -2288,7 +2374,11 @@ if [ "$RELAUNCH" -eq 1 ]; then
     sleep 0.5
   done
   if [ -z "$relaunch_seen" ] || [ "$(real_path_or_raw "$relaunch_seen")" != "$relaunch_wt_real" ]; then
-    echo "error: task $ID's endpoint is in '${relaunch_seen:-unknown}', not its recorded worktree '$WT'; refusing to relaunch an agent outside the copy holding its work" >&2
+    if [ -n "$AGENT_DIR" ]; then
+      echo "error: task $ID's endpoint is in '${relaunch_seen:-unknown}', not its recorded starting directory '$AGENT_DIR'; refusing to relaunch an agent outside the copy holding its work" >&2
+    else
+      echo "error: task $ID's endpoint is in '${relaunch_seen:-unknown}', not its recorded worktree '$WT'; refusing to relaunch an agent outside the copy holding its work" >&2
+    fi
     exit 1
   fi
   [ "$OWN_HOME" -eq 1 ] || validate_spawn_worktree "relaunch" "$T"
@@ -2343,6 +2433,9 @@ elif [ "$OWN_HOME" -eq 0 ] && [ "$BACKEND" != orca ]; then
 fi
 if [ "$RELAUNCH" -eq 0 ] && [ "$OWN_HOME" -eq 0 ]; then
   freshen_spawn_worktree_base "$WT" || exit 1
+fi
+if [ "$RELAUNCH" -eq 0 ]; then
+  resolve_agent_dir "--agent-path" "$AGENT_PATH_ARG"
 fi
 
 # Per-task temp root: /tmp/fm-<id>/ with Go's build temp nested at gotmp/. Go won't
@@ -2605,12 +2698,12 @@ EOF
       rm -f "$STATE/$ID.muse-session-current"
       {
         printf 'sessions_root=%s\n' "$MUSE_SESSIONS_ROOT"
-        printf 'workspace_root=%s\n' "$WT"
+        printf 'workspace_root=%s\n' "${AGENT_DIR:-$WT}"
         printf 'binding_id=%s\n' "$MUSE_BINDING_ID"
         while IFS= read -r MUSE_PRIOR_LOG; do
           [ -n "$MUSE_PRIOR_LOG" ] && printf 'prior_log=%s\n' "$MUSE_PRIOR_LOG"
         done <<EOF
-$(fm_busy_muse_matching_logs "$MUSE_SESSIONS_ROOT" "$WT" || true)
+$(fm_busy_muse_matching_logs "$MUSE_SESSIONS_ROOT" "${AGENT_DIR:-$WT}" || true)
 EOF
       } > "$STATE/$ID.muse-session"
       ;;
@@ -2628,8 +2721,8 @@ EOF
       CURSOR_PROJECTS_ROOT="${CURSOR_PROJECTS_ROOT_OVERRIDE:-$HOME/.cursor/projects}"
       {
         printf 'projects_root=%s\n' "$CURSOR_PROJECTS_ROOT"
-        printf 'workspace_root=%s\n' "$WT"
-        if CURSOR_PRIOR_PROJECT=$(fm_busy_cursor_project_dir "$CURSOR_PROJECTS_ROOT" "$WT" 2>/dev/null); then
+        printf 'workspace_root=%s\n' "${AGENT_DIR:-$WT}"
+        if CURSOR_PRIOR_PROJECT=$(fm_busy_cursor_project_dir "$CURSOR_PROJECTS_ROOT" "${AGENT_DIR:-$WT}" 2>/dev/null); then
           for CURSOR_PRIOR_DIR in "$CURSOR_PRIOR_PROJECT"/agent-transcripts/*/; do
             [ -d "$CURSOR_PRIOR_DIR" ] || continue
             printf 'prior_conversation=%s\n' "$(basename -- "${CURSOR_PRIOR_DIR%/}")"
@@ -2713,7 +2806,7 @@ fi
 preserve_relaunch_meta() {
   awk -F= '
     BEGIN {
-      split("window endpoint_task_id worktree project harness kind mode yolo tasktmp model effort busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
+      split("window endpoint_task_id worktree agent_path project harness kind mode yolo tasktmp model effort busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
       for (i in keys) owned[keys[i]] = 1
     }
     !($1 in owned)
@@ -2723,6 +2816,9 @@ preserve_relaunch_meta() {
   echo "window=$META_WINDOW"
   echo "endpoint_task_id=$ID"
   echo "worktree=$WT"
+  # Absent agent_path= means the worktree root, so a spawn that was never given
+  # --agent-path writes exactly the record it always did.
+  [ -z "$AGENT_DIR" ] || echo "agent_path=$AGENT_DIR"
   echo "project=$PROJ_ABS"
   echo "harness=$HARNESS"
   echo "kind=$KIND"
@@ -2799,7 +2895,10 @@ sq_piext=$(shell_quote "$STATE/$ID.pi-ext.ts")
 sq_piturnend=$(shell_quote "$PROJ_ABS/.pi/extensions/fm-primary-turnend-guard.ts")
 sq_piwatch=$(shell_quote "$PROJ_ABS/.pi/extensions/fm-primary-pi-watch.ts")
 sq_opinput=$(shell_quote "$FM_ROOT/bin/fm-operational-input.sh")
-sq_worktree=$(shell_quote "$WT")
+# __WORKTREE__ is cursor's --workspace, the one adapter that does not simply
+# inherit the pane's directory, so it takes the same starting directory every
+# other harness is launched in.
+sq_worktree=$(shell_quote "${AGENT_DIR:-$WT}")
 MODELFLAG=$(model_flag_for_harness "$HARNESS" "$MODEL")
 EFFORTFLAG=$(effort_flag_for_harness "$HARNESS" "$EFFORT")
 LAUNCH=${LAUNCH//__MODELFLAG__/$MODELFLAG}
@@ -2851,6 +2950,16 @@ if [ "$OWN_HOME" -eq 1 ]; then
 fi
 if [ -z "$SPAWN_TRACEPARENT" ] && [ "$RELAUNCH" -eq 1 ]; then
   LAUNCH="unset TRACEPARENT; $LAUNCH"
+fi
+# --agent-path placement. Every harness except cursor simply starts in the
+# pane's directory, so moving the pane is what moves the agent; cursor's
+# --workspace above carries the same directory. The cd is prepended LAST, after
+# every environment prefix, and the launch is grouped behind && so a directory
+# that vanished between validation and launch stops the worker rather than
+# silently starting it at the worktree root. Empty AGENT_DIR leaves the launch
+# command byte-identical.
+if [ -n "$AGENT_DIR" ]; then
+  LAUNCH="cd $(shell_quote "$AGENT_DIR") && { $LAUNCH ; }"
 fi
 
 spawn_record_traceparent() {
@@ -2937,4 +3046,6 @@ fi
 
 SPAWN_DELIVERY=
 [ -z "$MODE" ] || SPAWN_DELIVERY=" mode=$MODE yolo=$YOLO"
-echo "spawned $ID harness=$HARNESS kind=$KIND$SPAWN_DELIVERY window=$META_WINDOW worktree=$WT"
+SPAWN_AGENT_PATH=
+[ -z "$AGENT_DIR" ] || SPAWN_AGENT_PATH=" agent-path=$AGENT_DIR"
+echo "spawned $ID harness=$HARNESS kind=$KIND$SPAWN_DELIVERY window=$META_WINDOW worktree=$WT$SPAWN_AGENT_PATH"

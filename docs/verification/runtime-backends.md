@@ -191,6 +191,44 @@ Valid cleanup removed only the exact task-bound target and left the control wind
 The metadata-only validation covers tmux, Herdr, Zellij, Orca, and cmux before backend dispatch.
 Claude, Codex, OpenCode, Pi, pi-signed, Grok, Kimi, Muse, and Antigravity share that backend cleanup boundary; their harness-specific hook files, tokens, and session-log sidecars are cleaned only after it, so no harness needs a separate endpoint parser.
 
+### Starting directory and worktree-root wiring
+
+`fm-spawn.sh --agent-path` starts a worker in a directory inside its task worktree while its per-task turn-end and busy-state wiring stays written at the worktree root.
+That only holds for harnesses whose project configuration is discovered from an ancestor of the working directory rather than the working directory alone, so the two adapters whose wiring is a worktree-root config file were probed directly on 2026-08-24 on Linux 6.18 (WSL2).
+
+Claude Code 2.1.241, with `.claude/settings.local.json` at the git root and the agent launched one directory below it:
+
+```sh
+git init -q .; mkdir -p .claude sub
+printf '{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"touch %s/HOOK-FIRED"}]}]}}\n' "$PWD" > .claude/settings.local.json
+(cd sub && claude --dangerously-skip-permissions --model haiku -p "reply with the single word ok")
+ls HOOK-FIRED
+```
+
+```text
+ok
+HOOK-FIRED
+```
+
+OpenCode 1.18.21, with a plugin at `.opencode/plugins/` in the git root and the agent launched one directory below it:
+
+```sh
+git init -q .; mkdir -p .opencode/plugins sub
+# plugin body touches $PWD/PLUGIN-LOADED on load
+(cd sub && OPENCODE_CONFIG_CONTENT='{"permission":{"*":"allow"}}' opencode run "reply with the single word ok")
+ls PLUGIN-LOADED
+```
+
+```text
+PLUGIN-LOADED
+```
+
+Both adapters loaded their firstmate-written project wiring from the git root while running in a subdirectory, so a narrowed starting directory does not cost them their turn-end or busy-state signal.
+Codex and Pi carry their wiring on the launch command itself (`-c notify=[...]`, `-e <absolute extension path>`), so neither depends on the working directory at all.
+Cursor takes the directory as `--workspace` rather than inheriting it, and `fm-spawn.sh` passes the same starting directory there.
+Grok, Kimi, and Muse were not installed on this host and remain unverified: Grok's and Kimi's turn-end hooks resolve a `.fm-grok-turnend` / `.fm-kimi-turnend` pointer against a workspace root the harness itself reports, and Muse's session-log binding uses the workspace root Muse records, so whether a narrowed starting directory keeps those signals depends on how each harness derives that root.
+Refresh this record for those three from a host where they are installed before relying on `--agent-path` with them.
+
 ## Herdr
 
 The compatibility floor is protocol 14.
