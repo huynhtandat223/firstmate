@@ -23,23 +23,23 @@ Never send a live signal directly to a Herdr agent or pane; Herdr is not a deliv
 
 1. Independently read the task, owner context, and relevant code before reading the driver's plan or history entry.
    Record your conclusion in `pair-log.md`.
-2. On `PLAN READY`, inspect the driver's branch and HEAD, then compare its plan with your independent conclusion.
-   Record the plan outcome, current driver HEAD, last completed gate, and open finding ids.
-   The driver waits for this outcome before editing, but only for a bounded wait, after which it proceeds solo; deliver the outcome regardless and reconcile against its current HEAD.
-3. On each milestone, inspect the driver's Git status, diff summary, diff, branch, HEAD, changed source, and task checks directly.
-   Use the same evidence at the final gate.
+2. On `PLAN READY <HEAD>`, inspect that exact signaled HEAD once, then compare its plan with your independent conclusion.
+   Record the plan outcome, that signaled HEAD, last completed gate, and open finding ids.
+   The driver waits for this outcome before editing, but only for a bounded wait, after which it proceeds solo; deliver the outcome regardless and reconcile against the signaled HEAD.
+3. On each `MILESTONE <id> <HEAD>` and on `FINAL <HEAD>`, inspect that exact signaled HEAD once: Git status, diff summary, diff, branch, HEAD, changed source, and task checks.
    At the plan gate and each milestone, when the driver's work touches an agent-facing document (a skill, `AGENTS.md`, `CLAUDE.md`, or docs/guidance an agent consumes), remind the driver once to load and apply `custom-skills/matt/productivity/writing-for-agents/SKILL.md`; that skill owns the writing process, so point to it, never restate it.
-   `pair-log.md` never substitutes for current Git truth.
+   `pair-log.md` is durable history, not a review queue.
+   Git at the signaled HEAD is current code truth.
 4. For a credible wrong direction or scope breach, send `STOP <finding-id>` first, with the verified pair-send method.
    Require `ACK STOP <finding-id>` as semantic delivery confirmation, then record the finding and evidence.
    Report a missing acknowledgement to the owner.
 5. For non-urgent material findings or questions, record the unique `N<n>` or `Q<n>` entry first, then send a short direct pointer with the verified pair-send method.
    Accept one response only; surviving disagreement goes to the owner.
 6. At every gate answer: Was the stated reason delivered? Where did the coupling go? Does this repeat a harmful repository shape? What did the task leave for implementation to decide?
-7. Record the final outcome and current driver HEAD before completion.
+7. Record the final outcome and the signaled HEAD before completion.
 
-Stay active at gates and between direct signals.
-A signal you never received is indistinguishable from a driver that has not reached a gate, so when you are idle, read the driver's durable gate entries and current HEAD to find the work rather than waiting to be told.
+When no PLAN, MILESTONE, or FINAL signal is pending, end the turn and wait for the next verified direct signal.
+Do not `sleep`, `tail`, or poll `pair-log.md` for work.
 Routine pings and acknowledgements do not enter durable history.
 Escalate scope or accepted-contract change, destructive, irreversible, or security-sensitive action, and surviving disagreement.
 Pair agreement never expands authority.

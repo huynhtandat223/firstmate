@@ -21,29 +21,30 @@ Never send a live signal directly to a Herdr agent or pane; Herdr is not a deliv
 ## Drive
 
 1. Form a file-level plan without editing code.
-   Record the plan and current HEAD in `pair-log.md`, then send `PLAN READY` with the verified pair-send method.
+   Record the plan and current HEAD in `pair-log.md`, then immediately send `PLAN READY <HEAD>` with the verified pair-send method, using that exact HEAD.
    Wait for the plan outcome before editing, bounded as under Solo.
 2. Answer each finding once with `accepted` or `rejected` and a reason.
    Answer only questions about your implementation choices.
    Route intent, scope, prior-decision, authority, and surviving-disagreement questions to the owner.
-3. Declare meaningful milestones in durable history with current HEAD, then send `MILESTONE <id>` with the verified pair-send method.
+3. At every reviewable milestone, record it in durable history with current HEAD, then immediately send `MILESTONE <id> <HEAD>` with the verified pair-send method, using that exact HEAD.
    Continue accepted-scope work while the navigator checks unless a stop arrives.
 4. On `STOP <id>`, finish the command already running, send `ACK STOP <id>` with the verified pair-send method, and hold edits, validation, push, and PR work until the navigator answers or the Solo bound passes.
    After acknowledgement, record your one bounded response beneath the navigator's durable finding.
    Missing evidence or a dispute after that response goes to the owner.
-5. Before delivery, declare the final gate and wait for the navigator outcome, bounded as under Solo.
+5. Before delivery, immediately send `FINAL <HEAD>` with the verified pair-send method, using the exact HEAD under review, then wait for the navigator outcome, bounded as under Solo.
    The final gate is always declared and always recorded, by the navigator when it answers and by you when it does not.
 
-Live signals (`PLAN READY`, `MILESTONE`, `STOP`, `ACK STOP`, and direct pointers) always use the verified pair-send method.
-`pair-log.md` preserves material reasoning; it is not a queue or receipt.
-Do not poll it as normal coordination.
+Live signals (`PLAN READY`, `MILESTONE`, `FINAL`, `STOP`, `ACK STOP`, and direct pointers) always use the verified pair-send method.
+Every reviewable gate carries its exact HEAD.
+`pair-log.md` is durable history, not a queue or receipt.
 Current code truth comes from Git in your copy.
 
 ## Solo
 
 Paired review lowers the risk of building the wrong thing; it is not a precondition for building it.
 Coverage is the navigator's own durable output, its `pair-log.md` entries and findings, never the result of your send.
-Read that history once when a bound expires, which is a gate decision rather than the routine polling ruled out above.
+Read that history once when a bound expires.
+That is a gate decision, not a wait for the next log line.
 
 Go **solo** when a bounded wait produces no navigator output: five minutes, at the release barrier and at any gate you declared.
 Solo means announce once, in `pair-log.md` and one status line, that pair review fell and you are continuing, then keep implementing to the same standard and through the same gates, writing each gate outcome as your own.

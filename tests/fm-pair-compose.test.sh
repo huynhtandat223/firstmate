@@ -297,13 +297,13 @@ jq -e --arg dp "$(role_field pair-driver pane_id)" --arg np "$(role_field pair-n
   '(.topology_generations | last) | .driver_pane == $dp and .navigator_pane == $np' "$EVIDENCE" >/dev/null \
   || fail "topology generation does not match the live role panes"
 
-FM_PAIR_SEND="$FAKEBIN/fm-send" FM_SEND_LOG="$TMP_ROOT/send.log" "$HELPER" send "$EVIDENCE" navigator 'MILESTONE M2' >/dev/null
+FM_PAIR_SEND="$FAKEBIN/fm-send" FM_SEND_LOG="$TMP_ROOT/send.log" "$HELPER" send "$EVIDENCE" navigator 'MILESTONE M2 abcdef1234567' >/dev/null
 FM_PAIR_SEND="$FAKEBIN/fm-send" FM_SEND_LOG="$TMP_ROOT/send.log" "$HELPER" send "$EVIDENCE" driver 'STOP N3' >/dev/null
 FM_PAIR_SEND="$FAKEBIN/fm-send" FM_SEND_LOG="$TMP_ROOT/send.log" "$HELPER" send "$EVIDENCE" navigator 'ACK STOP N3' >/dev/null
-assert_grep "$HOME_DIR|pair-nav MILESTONE M2" "$TMP_ROOT/send.log" "milestone signal not submitted via fm-send to the navigator task id"
+assert_grep "$HOME_DIR|pair-nav MILESTONE M2 abcdef1234567" "$TMP_ROOT/send.log" "milestone signal with exact HEAD not submitted via fm-send to the navigator task id"
 assert_grep "$HOME_DIR|pair STOP N3" "$TMP_ROOT/send.log" "stop signal not submitted via fm-send to the driver task id"
 assert_grep "$HOME_DIR|pair-nav ACK STOP N3" "$TMP_ROOT/send.log" "stop acknowledgement not submitted via fm-send to the navigator task id"
-assert_no_grep 'agent send pair-navigator MILESTONE M2' "$FM_HERDR_LOG" "milestone injected via Herdr instead of fm-send"
+assert_no_grep 'agent send pair-navigator MILESTONE M2 abcdef1234567' "$FM_HERDR_LOG" "milestone injected via Herdr instead of fm-send"
 assert_no_grep 'agent send pair-driver STOP N3' "$FM_HERDR_LOG" "stop injected via Herdr instead of fm-send"
 assert_no_grep 'agent send pair-navigator ACK STOP N3' "$FM_HERDR_LOG" "stop acknowledgement injected via Herdr instead of fm-send"
 
