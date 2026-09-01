@@ -63,3 +63,11 @@ The driver never stops implementing for want of a navigator: paired review lower
 Each gate carries a bounded wait, after which the driver goes solo, announces in durable history and its PR body that pair review fell, and records the gate outcome itself; open findings and every authority, scope, or destructive decision still come to you.
 A solo PR arrives without independent review, so review it yourself or route it to one.
 A recovered navigator reconciles current driver Git truth and durable history before another outcome.
+
+## Parent owner contract
+
+One completed clean navigator verdict on the exact current PR head satisfies the independent three-capability PR-review requirement. The three capabilities are: (1) Spec axis review via code-review/SKILL.md, (2) Standards axis review via code-review/SKILL.md, (3) Classical-testing verification across every changed actor trigger.
+
+Firstmate commissions a replacement independent reviewer when paired coverage is incomplete, solo, stale-head, or recovered without a completed exact-head final verdict. Any code change after the verdict invalidates it.
+
+Navigator independence, immediate STOP authority, event-driven idle behavior, driver/navigator authority boundaries, and all existing recovery behavior are preserved. Each contract is kept in one owner: phase execution resides in navigator, acceptance/replacement ownership resides in parent. Use only a concise pointer elsewhere if required.
