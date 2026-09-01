@@ -66,7 +66,7 @@ A recovered navigator reconciles current driver Git truth and durable history be
 
 ## Parent owner contract
 
-One completed clean navigator verdict on the exact current PR head satisfies the independent three-capability PR-review requirement. The three capabilities are: (1) Spec axis review via code-review/SKILL.md, (2) Standards axis review via code-review/SKILL.md, (3) Classical-testing verification across every changed actor trigger.
+One completed clean navigator verdict on the exact current PR head satisfies the independent three-capability PR-review requirement. The three capabilities are: (1) code-review — Standards and Spec axes applied in parallel sub-agents; (2) writing-for-agents — loaded and applied by the navigator on every changed agent-facing document (skill, AGENTS.md, CLAUDE.md, docs/guidance an agent consumes); (3) classical-testing — proof sensitivity and strongest-authorized-real-path checks across every changed actor trigger.
 
 Firstmate commissions a replacement independent reviewer when paired coverage is incomplete, solo, stale-head, or recovered without a completed exact-head final verdict. Any code change after the verdict invalidates it.
 

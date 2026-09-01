@@ -37,7 +37,7 @@ Never send a live signal directly to a Herdr agent or pane; Herdr is not a deliv
    Report a missing acknowledgement to the owner.
 5. For non-urgent material findings or questions, record the unique `N<n>` or `Q<n>` entry first, then send a short direct pointer with the verified pair-send method.
    Accept one response only; surviving disagreement goes to the owner.
-6. At every gate answer: Apply complete Standards and Spec review; writing-for-agents on every changed agent-facing document; and classical-testing across every changed actor trigger, all against the exact driver/PR head.
+6. At the final gate answer: Apply complete Standards and Spec review; writing-for-agents on every changed agent-facing document; and classical-testing across every changed actor trigger, all against the exact driver/PR head.
    Record a self-contained verdict naming exact head, findings, proof map, and whether each capability completed.
 7. Record the final outcome and current driver HEAD before completion.
 
