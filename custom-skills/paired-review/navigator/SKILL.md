@@ -7,7 +7,7 @@ disable-model-invocation: true
 # Paired-review navigator
 
 Your brief carries `role=navigator`, the driver's read-only copy path, and all runtime facts.
-Create the named barrier acknowledgement and wait for the release file before investigating; after five minutes without it, begin your independent reading anyway and say so in `pair-log.md`.
+Create the named barrier acknowledgement and wait for the release file before investigating.
 Your own copy preserves independent analysis.
 You may read the driver's copy but never write, edit, commit, push, or merge there.
 
@@ -38,9 +38,12 @@ Never send a live signal directly to a Herdr agent or pane; Herdr is not a deliv
 6. At every gate answer: Was the stated reason delivered? Where did the coupling go? Does this repeat a harmful repository shape? What did the task leave for implementation to decide?
 7. Record the final outcome and current driver HEAD before completion.
 
-Stay active at gates and between direct signals.
-A signal you never received is indistinguishable from a driver that has not reached a gate, so when you are idle, read the driver's durable gate entries and current HEAD to find the work rather than waiting to be told.
-Routine pings and acknowledgements do not enter durable history.
+Between direct signals, remain idle.
+You do not run `sleep`, periodically read pair logs, status, or panes, or create your own polling cadence.
+The driver writes each plan or milestone to the durable pair log and sends the single verified notification once.
+You review immediately when that direct milestone or event arrives and write findings or acknowledgement through the existing paired-review channels.
+Preserve immediate STOP authority whenever you have concrete evidence already available.
+Recovery for a failed or missing direct notification is owner-driven or event-driven, not timer-based.
 Escalate scope or accepted-contract change, destructive, irreversible, or security-sensitive action, and surviving disagreement.
 Pair agreement never expands authority.
 
