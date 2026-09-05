@@ -30,7 +30,7 @@ Never send a live signal directly to a Herdr agent or pane; Herdr is not a deliv
 3. On each milestone, inspect the driver's Git status, diff summary, diff, branch, HEAD, changed source, and task checks directly.
    Apply the Standards axis; scope/coupling checks; proof sensitivity; and strongest-authorized-real-path checks.
    Use the same evidence at the final gate.
-   When the driver's work touches an agent-facing document (a skill, `AGENTS.md`, `CLAUDE.md`, or docs/guidance an agent consumes), the navigator itself loads and applies `../../matt/productivity/writing-for-agents/SKILL.md`; it does not merely remind the driver.
+   When the driver's work touches an agent-facing document (a skill, `AGENTS.md`, `CLAUDE.md`, or docs/guidance an agent consumes), the navigator itself loads and applies `custom-skills/matt/productivity/writing-for-agents/SKILL.md`; it does not merely remind the driver.
    `pair-log.md` never substitutes for current Git truth.
 4. For a credible wrong direction or scope breach, send `STOP <finding-id>` first, with the verified pair-send method.
    Require `ACK STOP <finding-id>` as semantic delivery confirmation, then record the finding and evidence.

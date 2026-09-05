@@ -302,6 +302,35 @@ EOF
 HERDR_SECTION=${HERDR_SECTION%$'\n'}
 fi
 
+REQUIRED_SKILLS_SECTION=$(printf '%s\n' \
+  '# Required skills and instructions' \
+  "Load $FM_ROOT/custom-skills/policy/SKILL.md once, then follow its trigger routing for this role." \
+  "For implementation work, load $FM_ROOT/custom-skills/matt/engineering/implement/SKILL.md." \
+  "Before verifying behavior or claiming completion, load $FM_ROOT/custom-skills/classical-testing/SKILL.md.")
+if [ -f "$HOME/.agents/skills/writing-for-agents/SKILL.md" ]; then
+  REQUIRED_SKILLS_SECTION=$(printf '%s\n%s' "$REQUIRED_SKILLS_SECTION" \
+    "Before changing an agent-facing document, load $HOME/.agents/skills/writing-for-agents/SKILL.md.")
+fi
+if [ -f "$HOME/.pi/agent/git/github.com/DietrichGebert/ponytail/skills/ponytail/SKILL.md" ]; then
+  REQUIRED_SKILLS_SECTION=$(printf '%s\n%s' "$REQUIRED_SKILLS_SECTION" \
+    "Use $HOME/.pi/agent/git/github.com/DietrichGebert/ponytail/skills/ponytail/SKILL.md with Ponytail full for minimal implementation.")
+fi
+REQUIRED_SKILLS_SECTION=$(printf '%s\n' "$REQUIRED_SKILLS_SECTION" \
+  'Use Claude Superpowers TDD and verification-before-completion where the selected harness provides them.' \
+  "For review work, load $FM_ROOT/custom-skills/matt/engineering/code-review/SKILL.md." \
+  "A worker may use code-review's parallel review subagents when that review trigger is active; those subagents must use only Haiku or Pi cx/gpt-5.6-luna, never Fable or cx/gpt-5.6-sol." \
+  'For paired roles, the paired-review runtime section below names the role-specific instructions.')
+
+RULE7_SHIP=
+if [ "$MODE" = no-mistakes ]; then
+  # shellcheck disable=SC2016 # Literal brief prose intentionally contains no expansions.
+  RULE7_SHIP=$(printf '%s\n' \
+    '7. Never stop, restart, or update the shared `no-mistakes` daemon - it is one instance serving' \
+    "   every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes" \
+    '   daemon error, append `blocked: {the daemon error}` and stop; only firstmate manages the daemon.')
+fi
+RULE7_SCOUT=
+
 if [ "$KIND" = scout ]; then
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
@@ -311,6 +340,8 @@ You are a crewmate: an autonomous worker agent managed by firstmate. Work on you
 
 # Scope and seams
 {SCOPE}
+
+$REQUIRED_SKILLS_SECTION
 
 $HERDR_SECTION
 
@@ -339,9 +370,7 @@ The report is the only thing that survives, so anything worth keeping must be in
    append \`needs-decision: {summary of options}\` and stop. Firstmate will reply with the decision.
    A decision or blocker you opened stays open until a \`resolved\` line carrying its exact key lands; a later \`done:\` or \`working:\` line never closes it, even when the answer is what started that work.
    Firstmate's reply normally writes that closing line at answer time; when a blocker or wait clears WITHOUT a firstmate reply, append \`resolved: {how it cleared}\` yourself (same \`[key=<slug>]\` if you opened it with one) as you resume.
-7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
-   every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
-   daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
+$RULE7_SCOUT
 
 # Definition of done
 Write your findings to \`$DATA/$ID/report.md\`.
@@ -366,10 +395,10 @@ case "$MODE" in
     IFS= read -r -d '' DOD <<EOF || true
 # Definition of done
 Delivery contract: mode=direct-PR
-This task ships **direct-PR**: you raise the PR yourself, without the no-mistakes pipeline.
+This task ships **direct-PR**: you raise the PR yourself.
 The task is complete only when committed on your branch.
 When it is implemented and committed, push your branch and open a PR with \`gh-axi\`, then append \`done: PR {url}\` to the status file and stop.
-Do NOT run /no-mistakes. The configured merge authority decides whether to merge the PR; firstmate relays the outcome.
+The configured merge authority decides whether to merge the PR; firstmate relays the outcome.
 EOF
     ;;
   local-only)
@@ -468,6 +497,8 @@ You are a crewmate: an autonomous worker agent managed by firstmate. Work on you
 # Scope and seams
 {SCOPE}
 
+$REQUIRED_SKILLS_SECTION
+
 $HERDR_SECTION
 
 # Setup
@@ -501,9 +532,7 @@ $RULE1
    append \`needs-decision: {summary of options}\` and stop. Firstmate will apply the configured authority and reply with the decision.
    A decision or blocker you opened stays open until a \`resolved\` line carrying its exact key lands; a later \`done:\` or \`working:\` line never closes it, even when the answer is what started that work.
    Firstmate's reply normally writes that closing line at answer time; when a blocker or wait clears WITHOUT a firstmate reply, append \`resolved: {how it cleared}\` yourself (same \`[key=<slug>]\` if you opened it with one) as you resume.
-7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
-   every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
-   daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
+$RULE7_SHIP
 
 # Project memory
 $PROJECT_MEMORY_SECTION

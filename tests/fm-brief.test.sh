@@ -738,6 +738,45 @@ test_scout_and_secondmate_load_decision_hold_policy() {
 }
 
 # Scout and secondmate paths still scaffold well-formed briefs.
+test_required_skills_and_mode_specific_prose() {
+  local home empty_home fake_home brief id mode
+  home="$TMP_ROOT/required-skills-home"
+  mkdir -p "$home/data"
+  empty_home="$TMP_ROOT/empty-home"
+  mkdir -p "$empty_home"
+  for id_mode in "direct:direct-PR" "local:local-only"; do
+    id=${id_mode%%:*}
+    mode=${id_mode##*:}
+    HOME="$empty_home" FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" repo --mode "$mode" >/dev/null 2>&1 \
+      || fail "$mode brief scaffold failed"
+    brief="$home/data/$id/brief.md"
+    assert_no_grep "no-mistakes" "$brief" "$mode brief must not contain no-mistakes prose"
+    assert_grep "# Required skills and instructions" "$brief" "$mode brief missing required skills"
+  done
+  HOME="$empty_home" FM_HOME="$home" "$ROOT/bin/fm-brief.sh" scout repo --scout >/dev/null 2>&1 \
+    || fail "scout brief scaffold failed"
+  brief="$home/data/scout/brief.md"
+  assert_no_grep "no-mistakes" "$brief" "scout brief must not contain no-mistakes prose"
+  assert_grep "# Required skills and instructions" "$brief" "scout brief missing required skills"
+  HOME="$empty_home" FM_HOME="$home" "$ROOT/bin/fm-brief.sh" nomistakes repo --mode no-mistakes >/dev/null 2>&1 \
+    || fail "no-mistakes brief scaffold failed"
+  brief="$home/data/nomistakes/brief.md"
+  assert_grep "shared \`no-mistakes\` daemon" "$brief" "no-mistakes brief lost rule 7"
+  assert_grep "Firstmate will then instruct you to run /no-mistakes" "$brief" "no-mistakes brief lost its DoD"
+  for path in policy/SKILL.md matt/engineering/implement/SKILL.md classical-testing/SKILL.md matt/engineering/code-review/SKILL.md; do
+    assert_present "$ROOT/custom-skills/$path" "required skill path does not exist: $path"
+  done
+  fake_home="$TMP_ROOT/fake-home"
+  mkdir -p "$fake_home/.agents/skills/writing-for-agents"
+  : > "$fake_home/.agents/skills/writing-for-agents/SKILL.md"
+  HOME="$fake_home" FM_HOME="$home" "$ROOT/bin/fm-brief.sh" optional repo --mode direct-PR >/dev/null 2>&1 \
+    || fail "optional skill brief scaffold failed"
+  brief="$home/data/optional/brief.md"
+  assert_no_grep "ponytail/skills/ponytail/SKILL.md" "$brief" "missing ponytail file should omit its line"
+  assert_grep "writing-for-agents/SKILL.md" "$brief" "present writing-for-agents file should add its line"
+  pass "fm-brief.sh: required skills and mode-specific prose are rendered correctly"
+}
+
 test_scout_and_secondmate_scaffold() {
   local brief
   FM_HOME="$BRIEF_HOME" "$ROOT/bin/fm-brief.sh" brief-scout-q6 alpha --scout >/dev/null 2>&1 \
@@ -809,3 +848,4 @@ test_secondmate_directory_paths_are_absolute_and_output_is_stable
 test_pause_verb_override_renders_all_brief_scaffolds
 test_scout_and_secondmate_load_decision_hold_policy
 test_scout_and_secondmate_scaffold
+test_required_skills_and_mode_specific_prose
