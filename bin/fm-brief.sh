@@ -35,9 +35,10 @@
 # resolves it per task at intake (AGENTS.md section 7); data/projects.md holds the
 # captain's standing posture as context, and this script never reads it:
 #   no-mistakes  implement -> /no-mistakes pipeline -> PR -> configured merge authority
-#   direct-PR    implement -> push + open PR via gh-axi (no pipeline) -> configured merge authority
-#   local-only   implement on branch, stop and report "ready in branch" (no push/PR);
-#                the configured merge authority approves, firstmate merges to local main
+#   direct-PR    implement -> push + open PR via gh-axi (no pipeline) -> worker self-review
+#                in parallel with CI (evidence, not merge authority) -> configured merge authority
+#   local-only   implement on branch, worker self-review, stop and report "ready in branch"
+#                (no push/PR); the configured merge authority approves, firstmate merges to local main
 # no-mistakes-prod-only is a registry policy, not a task mode; resolve it to one of
 # the three concrete modes at intake before calling this script.
 # The generated ship brief records the chosen mode as a fixed machine-readable
@@ -316,12 +317,23 @@ if [ -f "$HOME/.pi/agent/git/github.com/DietrichGebert/ponytail/skills/ponytail/
     "Use $HOME/.pi/agent/git/github.com/DietrichGebert/ponytail/skills/ponytail/SKILL.md with Ponytail full for minimal implementation.")
 fi
 if [ -f "$HOME/.agents/skills/review-rulesets/SKILL.md" ]; then
-  REQUIRED_SKILLS_SECTION=$(printf '%s\n%s' "$REQUIRED_SKILLS_SECTION" \
-    "For review work, load $HOME/.agents/skills/review-rulesets/SKILL.md.")
+  REVIEW_SKILL="$HOME/.agents/skills/review-rulesets/SKILL.md"
 else
-  REQUIRED_SKILLS_SECTION=$(printf '%s\n%s' "$REQUIRED_SKILLS_SECTION" \
-    "For review work, load $FM_ROOT/custom-skills/matt/engineering/code-review/SKILL.md.")
+  REVIEW_SKILL="$FM_ROOT/custom-skills/matt/engineering/code-review/SKILL.md"
 fi
+# Faster-path ship briefs require a self-review, so the load line names that step.
+# Scout and no-mistakes keep the review-work pointer: they have no self-review step,
+# and a second review on no-mistakes would stack on the pipeline that already owns it.
+case "$KIND:$MODE" in
+  ship:direct-PR|ship:local-only)
+    REQUIRED_SKILLS_SECTION=$(printf '%s\n%s' "$REQUIRED_SKILLS_SECTION" \
+      "Before the Definition of done self-review, load $REVIEW_SKILL.")
+    ;;
+  *)
+    REQUIRED_SKILLS_SECTION=$(printf '%s\n%s' "$REQUIRED_SKILLS_SECTION" \
+      "For review work, load $REVIEW_SKILL.")
+    ;;
+esac
 REQUIRED_SKILLS_SECTION=$(printf '%s\n' "$REQUIRED_SKILLS_SECTION" \
   'Use Claude Superpowers TDD and verification-before-completion where the selected harness provides them.' \
   'For paired roles, the paired-review runtime section below names the role-specific instructions.')
@@ -393,6 +405,22 @@ fi
 # delivery mode, validated above. The generated DOD opens with the fixed
 # "Delivery contract: mode=<mode>" line that bin/fm-spawn.sh checks against its own
 # explicit --mode before launching.
+# direct-PR and local-only finish by handing work back, so they emit a worker
+# self-review. no-mistakes does not: that pipeline already owns review.
+# The two CI sentences belong only on direct-PR: local-only never pushes, so it
+# has no CI run to run in parallel with and no CI result to gate the merge.
+IFS= read -r -d '' SELF_REVIEW_AXES <<'EOF' || true
+Keep Standards and Spec as separate axes, apply `classical-testing` to whether the proof is real, and apply `writing-for-agents` to every changed agent-facing document.
+A clean self-review is what hands the work back to firstmate.
+EOF
+SELF_REVIEW_AXES=${SELF_REVIEW_AXES%$'\n'}
+IFS= read -r -d '' SELF_REVIEW_CLOSE <<'EOF' || true
+Fix what falls inside this brief's already-accepted scope, and report the rest as findings beside the `done:` line.
+Never widen scope to satisfy your own finding, and a finding never blocks reporting.
+This self-review is evidence handed to firstmate, never a substitute for firstmate's own review and never authority to merge.
+A worker that misread this brief self-reviews against the same misreading, so the step catches sloppiness rather than blind spots.
+EOF
+SELF_REVIEW_CLOSE=${SELF_REVIEW_CLOSE%$'\n'}
 case "$MODE" in
   direct-PR)
     SETUP2=""
@@ -402,7 +430,12 @@ case "$MODE" in
 Delivery contract: mode=direct-PR
 This task ships **direct-PR**: you raise the PR yourself.
 The task is complete only when committed on your branch.
-When it is implemented and committed, push your branch and open a PR with \`gh-axi\`, then append \`done: PR {url}\` to the status file and stop.
+When it is implemented and committed, push your branch and open a PR with \`gh-axi\`.
+Before you append \`done:\`, run \`review-rulesets\` on your own exact head as part of finishing the work, in parallel with CI and never gated on it - the review reads the diff, not the run.
+$SELF_REVIEW_AXES
+Green CI gates the merge, not the review.
+$SELF_REVIEW_CLOSE
+Then append \`done: PR {url}\` to the status file and stop.
 The configured merge authority decides whether to merge the PR; firstmate relays the outcome.
 EOF
     ;;
@@ -415,7 +448,11 @@ Delivery contract: mode=local-only
 This task ships **local-only**: no remote, no PR, no pipeline.
 The task is complete only when committed on your branch \`fm/$ID\`. Do NOT push, do NOT open a PR, do NOT merge.
 Keep your branch a clean fast-forward onto the current default branch - if \`main\` has advanced, rebase onto it so the eventual merge stays a fast-forward.
-When it is implemented and committed, append \`done: ready in branch fm/$ID\` to the status file and stop.
+When it is implemented and committed, run \`review-rulesets\` on your own exact head as part of finishing the work.
+$SELF_REVIEW_AXES
+The configured merge authority's approval of the ready branch gates the merge, not the review.
+$SELF_REVIEW_CLOSE
+Then append \`done: ready in branch fm/$ID\` to the status file and stop.
 The configured merge authority approves the ready branch, then firstmate merges it into local \`main\` through the guarded fast-forward path.
 EOF
     ;;

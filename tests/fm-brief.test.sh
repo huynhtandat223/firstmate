@@ -290,6 +290,88 @@ ROWS
   pass "fm-brief.sh: --yolo and scout/secondmate --mode are refused, never silently dropped"
 }
 
+test_faster_paths_emit_worker_self_review() {
+  local home brief
+  home="$TMP_ROOT/self-review-home"
+  mkdir -p "$home/data"
+
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-self-review-direct repo --mode direct-PR >/dev/null 2>&1 \
+    || fail "direct-PR brief scaffold failed"
+  brief="$home/data/brief-self-review-direct/brief.md"
+  grep -qx "Delivery contract: mode=direct-PR" "$brief" \
+    || fail "direct-PR self-review case did not emit a direct-PR brief"
+  assert_grep "in parallel with CI" "$brief" \
+    "direct-PR brief missing the self-review step that runs in parallel with CI"
+  assert_grep "Green CI gates the merge, not the review." "$brief" \
+    "direct-PR brief lost the fact that green CI gates the merge, not the review"
+  assert_grep "never authority to merge" "$brief" \
+    "direct-PR brief lost the fact that self-review is not authority to merge"
+  assert_grep "Before the Definition of done self-review, load" "$brief" \
+    "direct-PR brief must load review-rulesets for the self-review step, not as optional review work"
+  assert_no_grep "For review work, load" "$brief" \
+    "direct-PR brief left a second review-work sentence to reconcile with the self-review step"
+
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-self-review-local repo --mode local-only >/dev/null 2>&1 \
+    || fail "local-only brief scaffold failed"
+  brief="$home/data/brief-self-review-local/brief.md"
+  grep -qx "Delivery contract: mode=local-only" "$brief" \
+    || fail "local-only self-review case did not emit a local-only brief"
+  assert_grep "as part of finishing the work" "$brief" \
+    "local-only brief missing the self-review step as part of finishing the work"
+  assert_no_grep "in parallel with CI" "$brief" \
+    "local-only brief must not claim its self-review runs in parallel with CI"
+  assert_no_grep "Green CI gates the merge" "$brief" \
+    "local-only brief must not claim green CI gates its merge"
+  assert_grep "approval of the ready branch gates the merge, not the review." "$brief" \
+    "local-only brief lost the fact that ready-branch approval gates the merge, not the review"
+  assert_grep "never authority to merge" "$brief" \
+    "local-only brief lost the fact that self-review is not authority to merge"
+  assert_grep "Before the Definition of done self-review, load" "$brief" \
+    "local-only brief must load review-rulesets for the self-review step, not as optional review work"
+  assert_no_grep "For review work, load" "$brief" \
+    "local-only brief left a second review-work sentence to reconcile with the self-review step"
+
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-self-review-nomistakes repo --mode no-mistakes >/dev/null 2>&1 \
+    || fail "no-mistakes brief scaffold failed"
+  brief="$home/data/brief-self-review-nomistakes/brief.md"
+  grep -qx "Delivery contract: mode=no-mistakes" "$brief" \
+    || fail "no-mistakes negative case did not emit a no-mistakes brief"
+  assert_grep "Firstmate will then instruct you to run /no-mistakes" "$brief" \
+    "no-mistakes negative case lost the pipeline definition of done"
+  assert_no_grep "in parallel with CI" "$brief" \
+    "no-mistakes brief must not emit the worker self-review step"
+  assert_no_grep "never authority to merge" "$brief" \
+    "no-mistakes brief must not emit the worker self-review step"
+  assert_grep "For review work, load" "$brief" \
+    "no-mistakes brief lost the review-work skill pointer that is not a self-review step"
+
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-self-review-scout repo --scout >/dev/null 2>&1 \
+    || fail "scout brief scaffold failed"
+  brief="$home/data/brief-self-review-scout/brief.md"
+  assert_grep "SCOUT task" "$brief" \
+    "scout negative case did not emit a scout brief"
+  assert_grep "report.md" "$brief" \
+    "scout negative case lost the report deliverable"
+  assert_no_grep "in parallel with CI" "$brief" \
+    "scout brief must not emit the worker self-review step"
+  assert_no_grep "never authority to merge" "$brief" \
+    "scout brief must not emit the worker self-review step"
+  assert_grep "For review work, load" "$brief" \
+    "scout brief lost the review-work skill pointer that is not a self-review step"
+
+  FM_SECONDMATE_CHARTER='Supervise the alpha domain.' \
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-self-review-sm --secondmate alpha >/dev/null 2>&1 \
+    || fail "secondmate charter scaffold failed"
+  brief="$home/data/brief-self-review-sm/brief.md"
+  assert_grep "persistent second mate" "$brief" \
+    "secondmate negative case did not emit a charter"
+  assert_no_grep "in parallel with CI" "$brief" \
+    "secondmate charter must not emit the worker self-review step"
+  assert_no_grep "never authority to merge" "$brief" \
+    "secondmate charter must not emit the worker self-review step"
+  pass "fm-brief.sh: worker self-review is a faster-path DoD step, not a pipeline, scout, or charter step"
+}
+
 test_faster_paths_use_configured_authority_without_stacked_review() {
   local home id brief
   home="$TMP_ROOT/configured-authority-home"
@@ -833,6 +915,7 @@ test_scope_and_seams_is_a_default_section
 test_ship_mode_is_required_and_closed_set
 test_ship_mode_is_explicit_not_registry
 test_delivery_flags_are_refused_where_they_do_not_apply
+test_faster_paths_emit_worker_self_review
 test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
 test_ship_project_memory_wording
