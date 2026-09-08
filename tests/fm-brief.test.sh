@@ -302,6 +302,8 @@ test_faster_paths_emit_worker_self_review() {
     || fail "direct-PR self-review case did not emit a direct-PR brief"
   assert_grep "in parallel with CI" "$brief" \
     "direct-PR brief missing the self-review step that runs in parallel with CI"
+  assert_grep "Green CI gates the merge, not the review." "$brief" \
+    "direct-PR brief lost the fact that green CI gates the merge, not the review"
   assert_grep "never authority to merge" "$brief" \
     "direct-PR brief lost the fact that self-review is not authority to merge"
   assert_grep "Before the Definition of done self-review, load" "$brief" \
@@ -314,8 +316,14 @@ test_faster_paths_emit_worker_self_review() {
   brief="$home/data/brief-self-review-local/brief.md"
   grep -qx "Delivery contract: mode=local-only" "$brief" \
     || fail "local-only self-review case did not emit a local-only brief"
-  assert_grep "in parallel with CI" "$brief" \
-    "local-only brief missing the self-review step that runs in parallel with CI"
+  assert_grep "as part of finishing the work" "$brief" \
+    "local-only brief missing the self-review step as part of finishing the work"
+  assert_no_grep "in parallel with CI" "$brief" \
+    "local-only brief must not claim its self-review runs in parallel with CI"
+  assert_no_grep "Green CI gates the merge" "$brief" \
+    "local-only brief must not claim green CI gates its merge"
+  assert_grep "approval of the ready branch gates the merge, not the review." "$brief" \
+    "local-only brief lost the fact that ready-branch approval gates the merge, not the review"
   assert_grep "never authority to merge" "$brief" \
     "local-only brief lost the fact that self-review is not authority to merge"
   assert_grep "Before the Definition of done self-review, load" "$brief" \

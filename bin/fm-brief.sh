@@ -407,17 +407,20 @@ fi
 # explicit --mode before launching.
 # direct-PR and local-only finish by handing work back, so they emit a worker
 # self-review. no-mistakes does not: that pipeline already owns review.
-IFS= read -r -d '' SELF_REVIEW_DOD <<'EOF' || true
-Before you append `done:`, run `review-rulesets` on your own exact head as part of finishing the work, in parallel with CI and never gated on it - the review reads the diff, not the run.
+# The two CI sentences belong only on direct-PR: local-only never pushes, so it
+# has no CI run to run in parallel with and no CI result to gate the merge.
+IFS= read -r -d '' SELF_REVIEW_AXES <<'EOF' || true
 Keep Standards and Spec as separate axes, apply `classical-testing` to whether the proof is real, and apply `writing-for-agents` to every changed agent-facing document.
 A clean self-review is what hands the work back to firstmate.
-Green CI gates the merge, not the review.
+EOF
+SELF_REVIEW_AXES=${SELF_REVIEW_AXES%$'\n'}
+IFS= read -r -d '' SELF_REVIEW_CLOSE <<'EOF' || true
 Fix what falls inside this brief's already-accepted scope, and report the rest as findings beside the `done:` line.
 Never widen scope to satisfy your own finding, and a finding never blocks reporting.
 This self-review is evidence handed to firstmate, never a substitute for firstmate's own review and never authority to merge.
 A worker that misread this brief self-reviews against the same misreading, so the step catches sloppiness rather than blind spots.
 EOF
-SELF_REVIEW_DOD=${SELF_REVIEW_DOD%$'\n'}
+SELF_REVIEW_CLOSE=${SELF_REVIEW_CLOSE%$'\n'}
 case "$MODE" in
   direct-PR)
     SETUP2=""
@@ -428,7 +431,10 @@ Delivery contract: mode=direct-PR
 This task ships **direct-PR**: you raise the PR yourself.
 The task is complete only when committed on your branch.
 When it is implemented and committed, push your branch and open a PR with \`gh-axi\`.
-$SELF_REVIEW_DOD
+Before you append \`done:\`, run \`review-rulesets\` on your own exact head as part of finishing the work, in parallel with CI and never gated on it - the review reads the diff, not the run.
+$SELF_REVIEW_AXES
+Green CI gates the merge, not the review.
+$SELF_REVIEW_CLOSE
 Then append \`done: PR {url}\` to the status file and stop.
 The configured merge authority decides whether to merge the PR; firstmate relays the outcome.
 EOF
@@ -442,8 +448,10 @@ Delivery contract: mode=local-only
 This task ships **local-only**: no remote, no PR, no pipeline.
 The task is complete only when committed on your branch \`fm/$ID\`. Do NOT push, do NOT open a PR, do NOT merge.
 Keep your branch a clean fast-forward onto the current default branch - if \`main\` has advanced, rebase onto it so the eventual merge stays a fast-forward.
-When it is implemented and committed:
-$SELF_REVIEW_DOD
+When it is implemented and committed, run \`review-rulesets\` on your own exact head as part of finishing the work.
+$SELF_REVIEW_AXES
+The configured merge authority's approval of the ready branch gates the merge, not the review.
+$SELF_REVIEW_CLOSE
 Then append \`done: ready in branch fm/$ID\` to the status file and stop.
 The configured merge authority approves the ready branch, then firstmate merges it into local \`main\` through the guarded fast-forward path.
 EOF
