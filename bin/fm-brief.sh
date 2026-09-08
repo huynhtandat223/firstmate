@@ -318,7 +318,6 @@ fi
 REQUIRED_SKILLS_SECTION=$(printf '%s\n' "$REQUIRED_SKILLS_SECTION" \
   'Use Claude Superpowers TDD and verification-before-completion where the selected harness provides them.' \
   "For review work, load $FM_ROOT/custom-skills/matt/engineering/code-review/SKILL.md." \
-  "A worker may use code-review's parallel review subagents when that review trigger is active; those subagents must use only Haiku or Pi cx/gpt-5.6-luna, never Fable or cx/gpt-5.6-sol." \
   'For paired roles, the paired-review runtime section below names the role-specific instructions.')
 
 RULE7_SHIP=
