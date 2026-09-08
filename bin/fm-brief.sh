@@ -315,9 +315,15 @@ if [ -f "$HOME/.pi/agent/git/github.com/DietrichGebert/ponytail/skills/ponytail/
   REQUIRED_SKILLS_SECTION=$(printf '%s\n%s' "$REQUIRED_SKILLS_SECTION" \
     "Use $HOME/.pi/agent/git/github.com/DietrichGebert/ponytail/skills/ponytail/SKILL.md with Ponytail full for minimal implementation.")
 fi
+if [ -f "$HOME/.agents/skills/review-rulesets/SKILL.md" ]; then
+  REQUIRED_SKILLS_SECTION=$(printf '%s\n%s' "$REQUIRED_SKILLS_SECTION" \
+    "For review work, load $HOME/.agents/skills/review-rulesets/SKILL.md.")
+else
+  REQUIRED_SKILLS_SECTION=$(printf '%s\n%s' "$REQUIRED_SKILLS_SECTION" \
+    "For review work, load $FM_ROOT/custom-skills/matt/engineering/code-review/SKILL.md.")
+fi
 REQUIRED_SKILLS_SECTION=$(printf '%s\n' "$REQUIRED_SKILLS_SECTION" \
   'Use Claude Superpowers TDD and verification-before-completion where the selected harness provides them.' \
-  "For review work, load $FM_ROOT/custom-skills/matt/engineering/code-review/SKILL.md." \
   'For paired roles, the paired-review runtime section below names the role-specific instructions.')
 
 RULE7_SHIP=
