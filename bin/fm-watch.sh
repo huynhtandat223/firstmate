@@ -400,6 +400,22 @@ busy_turn_over_age() {  # <task>
   [ "$(age_of "$f")" -ge "$BUSY_TURN_MAX_SECS" ]
 }
 
+# The annotated reason both paused surfaces use: the onset wake in
+# surface_nonterminal_stale and the long-cadence recheck below. The annotation is
+# what tells firstmate this is a declared wait on its own cadence rather than a
+# bare "gone quiet" pane, so the two must never drift apart.
+paused_stale_reason() {  # <window> <pause-age-secs>
+  printf 'stale: %s (paused %ss, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)' "$1" "$2"
+}
+
+# Seconds since <task> declared its pause, from the status file mtime.
+paused_age() {  # <task>
+  local mtime
+  mtime=$(stat_mtime "$STATE/$1.status")
+  case "$mtime" in ''|*[!0-9]*) mtime=$(date +%s) ;; esac
+  echo $(( $(date +%s) - mtime ))
+}
+
 # Absorb a stale pane under a declared external-wait pause (paused:) or a
 # dead-agent captain-held transfer, and re-surface it once every
 # PAUSE_RESURFACE_SECS for a recheck so it cannot rot invisibly. Called on any
@@ -411,19 +427,16 @@ busy_turn_over_age() {  # <task>
 # re-surface epoch so, once past the window, it fires once per window rather than
 # every poll. Advances the stale suppressor to <hash> and flags the key paused.
 handle_paused_stale() {  # <window> <task> <hash>
-  local win=$1 task=$2 h=$3 key statusf mtime age rf rf_age reason
+  local win=$1 task=$2 h=$3 key age rf rf_age reason
   key=$(printf '%s' "$win" | tr ':/.' '___')
   printf '%s' "$h" > "$STATE/.stale-$key"
   : > "$STATE/.paused-$key"
   rm -f "$STATE/.stale-since-$key" "$STATE/.wedge-escalations-$key"
-  statusf="$STATE/$task.status"
-  mtime=$(stat_mtime "$statusf")
-  case "$mtime" in ''|*[!0-9]*) mtime=$(date +%s) ;; esac
-  age=$(( $(date +%s) - mtime ))
+  age=$(paused_age "$task")
   rf="$STATE/.paused-resurfaced-$key"
   rf_age=$(age_of "$rf")   # 999999 when no prior re-surface
   if [ "$age" -ge "$PAUSE_RESURFACE_SECS" ] && [ "$rf_age" -ge "$PAUSE_RESURFACE_SECS" ]; then
-    reason="stale: $win (paused ${age}s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)"
+    reason=$(paused_stale_reason "$win" "$age")
     fm_wake_append stale "$win" "$reason" || exit 1
     date +%s > "$rf"
     wake "$reason"
@@ -449,8 +462,19 @@ clear_pause_tracking() {  # <window>
 }
 
 # Reconcile a declared pause or captain-held status with authoritative crew state.
-# Only a confidently dead ordinary crew may recover paused classification after
-# fm-crew-state has fallen back to stopped or unknown.
+# The dead-agent gate below does two jobs, and both are bounded by whether a
+# pause episode is already established for this key (the .paused-<key> flag):
+#   - no episode yet: it RESCUES a fallen-back classification (only a confidently
+#     dead ordinary crew recovers paused after fm-crew-state fell back to stopped
+#     or unknown) and, for a LIVE ordinary crew, still returns none so the onset
+#     of the pause surfaces once - see surface_nonterminal_stale;
+#   - episode established: it must NOT run at all, because overriding an
+#     authoritative paused with none is what re-surfaced a live paused crew on
+#     every idle-pane hash change, as a bare "stale: <window>" with none of the
+#     annotation that tells firstmate this is a declared wait.
+# After the onset wake, handle_paused_stale owns every further surface on the
+# PAUSE_RESURFACE_SECS cadence, so a pause that rots is still caught while a
+# churny idle pane is silent.
 pause_state_class() {  # <window> <task>
   local win=$1 task=$2 key last recheck_file class agent_alive
   key=${win//:/_}
@@ -464,14 +488,6 @@ pause_state_class() {  # <window> <task>
     return
   fi
   if [ -e "$STATE/.paused-$key" ] && [ "$(age_of "$recheck_file")" -lt "$STALE_ESCALATE_SECS" ]; then
-    if ! fm_supervisor_kind_self_supervising "$(window_kind "$win")"; then
-      agent_alive=$(fm_backend_agent_alive "$(window_backend "$win")" "$win" 2>/dev/null) || agent_alive=unknown
-      if [ "$agent_alive" != dead ]; then
-        rm -f "$recheck_file"
-        printf 'none'
-        return
-      fi
-    fi
     printf 'paused'
     return
   fi
@@ -481,7 +497,8 @@ pause_state_class() {  # <window> <task>
     printf 'working'
     return
   fi
-  if ! fm_supervisor_kind_self_supervising "$(window_kind "$win")"; then
+  if { [ "$class" != paused ] || [ ! -e "$STATE/.paused-$key" ]; } \
+    && ! fm_supervisor_kind_self_supervising "$(window_kind "$win")"; then
     agent_alive=$(fm_backend_agent_alive "$(window_backend "$win")" "$win" 2>/dev/null) || agent_alive=unknown
     if [ "$agent_alive" != dead ]; then
       rm -f "$recheck_file"
@@ -497,22 +514,34 @@ pause_state_class() {  # <window> <task>
   printf '%s' "$class"
 }
 
+# Surface a stale pane firstmate must look at. A crew that has DECLARED a pause
+# reaches here only at the onset of its pause episode (pause_state_class hands
+# every later poll to handle_paused_stale), so that one wake carries the same
+# annotation the long-cadence recheck uses: firstmate learns the crew paused
+# without being told a bare "gone quiet" that reads like a possible wedge. The
+# markers written here open the episode, which is what makes it exactly one.
 surface_nonterminal_stale() {  # <window> <hash>
-  local win=$1 h=$2 key task last
+  local win=$1 h=$2 key task last reason paused=1
   key=$(printf '%s' "$win" | tr ':/.' '___')
-  fm_wake_append stale "$win" "stale: $win" || exit 1
-  printf '%s' "$h" > "$STATE/.stale-$key"
-  rm -f "$STATE/.stale-since-$key"
   task=$(window_to_task "$win" "$STATE")
   last=$(last_status_line "$STATE/$task.status")
-  if status_is_paused_or_captain_held "$last"; then
+  status_is_paused_or_captain_held "$last" && paused=0
+  if [ "$paused" -eq 0 ]; then
+    reason=$(paused_stale_reason "$win" "$(paused_age "$task")")
+  else
+    reason="stale: $win"
+  fi
+  fm_wake_append stale "$win" "$reason" || exit 1
+  printf '%s' "$h" > "$STATE/.stale-$key"
+  rm -f "$STATE/.stale-since-$key"
+  if [ "$paused" -eq 0 ]; then
     : > "$STATE/.paused-$key"
     date +%s > "$STATE/.paused-rechecked-$key"
     date +%s > "$STATE/.paused-resurfaced-$key"
   else
     rm -f "$STATE/.paused-$key" "$STATE/.paused-rechecked-$key" "$STATE/.paused-resurfaced-$key"
   fi
-  wake "stale: $win"
+  wake "$reason"
 }
 
 # Check and heartbeat cadence must survive actionable exits and restarts: the
