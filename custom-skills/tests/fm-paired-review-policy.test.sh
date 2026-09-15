@@ -19,12 +19,11 @@ assert_grep 'A paired brief carries `role=navigator`' "$POLICY" "paired-navigato
 assert_grep 'custom-skills/paired-review/driver/SKILL.md' "$POLICY" "driver route misses driver skill"
 assert_grep 'custom-skills/paired-review/navigator/SKILL.md' "$POLICY" "navigator route misses navigator skill"
 assert_no_grep 'custom-skills/paired-review/SKILL.md`, then' "$POLICY" "a worker route still reads the parent"
+assert_no_grep 'matt/engineering/implement' "$POLICY" "policy still routes workers to implement"
+assert_no_grep 'matt/engineering/tdd' "$POLICY" "policy still routes workers to tdd"
 
-DRIVER_ROW=$(grep -n -F 'A paired brief carries `role=driver`' "$POLICY" | head -1 | cut -d: -f1)
-IMPLEMENT_ROW=$(grep -n -F 'An implementation worker is asked to implement' "$POLICY" | head -1 | cut -d: -f1)
 NAV_ROW=$(grep -n -F 'A paired brief carries `role=navigator`' "$POLICY" | head -1 | cut -d: -f1)
 REVIEW_ROW=$(grep -n -F 'A review or navigator task is opened' "$POLICY" | head -1 | cut -d: -f1)
-[ "$DRIVER_ROW" -lt "$IMPLEMENT_ROW" ] || fail "paired-driver route follows generic implementation"
 [ "$NAV_ROW" -lt "$REVIEW_ROW" ] || fail "paired-navigator route follows generic review"
 
 assert_grep 'fm-pair-compose.sh send' "$PARENT" "parent does not own the verified live-signal method"

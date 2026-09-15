@@ -306,7 +306,6 @@ fi
 REQUIRED_SKILLS_SECTION=$(printf '%s\n' \
   '# Required skills and instructions' \
   "Load $FM_ROOT/custom-skills/policy/SKILL.md once, then follow its trigger routing for this role." \
-  "For implementation work, load $FM_ROOT/custom-skills/matt/engineering/implement/SKILL.md." \
   "Before verifying behavior or claiming completion, load $FM_ROOT/custom-skills/classical-testing/SKILL.md.")
 if [ -f "$HOME/.agents/skills/writing-for-agents/SKILL.md" ]; then
   REQUIRED_SKILLS_SECTION=$(printf '%s\n%s' "$REQUIRED_SKILLS_SECTION" \

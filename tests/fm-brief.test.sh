@@ -834,18 +834,30 @@ test_required_skills_and_mode_specific_prose() {
     brief="$home/data/$id/brief.md"
     assert_no_grep "no-mistakes" "$brief" "$mode brief must not contain no-mistakes prose"
     assert_grep "# Required skills and instructions" "$brief" "$mode brief missing required skills"
+    assert_grep "custom-skills/policy/SKILL.md" "$brief" "$mode brief lost the policy skill"
+    assert_grep "custom-skills/classical-testing/SKILL.md" "$brief" "$mode brief lost classical-testing"
+    assert_no_grep "matt/engineering/implement" "$brief" "$mode brief must not hand workers the implement skill"
+    assert_no_grep "matt/engineering/tdd" "$brief" "$mode brief must not hand workers the tdd skill"
   done
   HOME="$empty_home" FM_HOME="$home" "$ROOT/bin/fm-brief.sh" scout repo --scout >/dev/null 2>&1 \
     || fail "scout brief scaffold failed"
   brief="$home/data/scout/brief.md"
   assert_no_grep "no-mistakes" "$brief" "scout brief must not contain no-mistakes prose"
   assert_grep "# Required skills and instructions" "$brief" "scout brief missing required skills"
+  assert_grep "custom-skills/policy/SKILL.md" "$brief" "scout brief lost the policy skill"
+  assert_grep "custom-skills/classical-testing/SKILL.md" "$brief" "scout brief lost classical-testing"
+  assert_no_grep "matt/engineering/implement" "$brief" "scout brief must not hand workers the implement skill"
+  assert_no_grep "matt/engineering/tdd" "$brief" "scout brief must not hand workers the tdd skill"
   HOME="$empty_home" FM_HOME="$home" "$ROOT/bin/fm-brief.sh" nomistakes repo --mode no-mistakes >/dev/null 2>&1 \
     || fail "no-mistakes brief scaffold failed"
   brief="$home/data/nomistakes/brief.md"
   assert_grep "shared \`no-mistakes\` daemon" "$brief" "no-mistakes brief lost rule 7"
   assert_grep "Firstmate will then instruct you to run /no-mistakes" "$brief" "no-mistakes brief lost its DoD"
-  for path in policy/SKILL.md matt/engineering/implement/SKILL.md classical-testing/SKILL.md matt/engineering/code-review/SKILL.md; do
+  assert_grep "custom-skills/policy/SKILL.md" "$brief" "no-mistakes brief lost the policy skill"
+  assert_grep "custom-skills/classical-testing/SKILL.md" "$brief" "no-mistakes brief lost classical-testing"
+  assert_no_grep "matt/engineering/implement" "$brief" "no-mistakes brief must not hand workers the implement skill"
+  assert_no_grep "matt/engineering/tdd" "$brief" "no-mistakes brief must not hand workers the tdd skill"
+  for path in policy/SKILL.md classical-testing/SKILL.md matt/engineering/code-review/SKILL.md; do
     assert_present "$ROOT/custom-skills/$path" "required skill path does not exist: $path"
   done
   fake_home="$TMP_ROOT/fake-home"
