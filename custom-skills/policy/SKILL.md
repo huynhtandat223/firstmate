@@ -40,13 +40,11 @@ Load only the exact file named by the first matching trigger, when the trigger o
 | The planner needs an interview, design decision, or frontier round | `/home/dathuynh/codes/firstmate/custom-skills/matt/productivity/grilling/SKILL.md` |
 | The captain explicitly chooses the plain interview form | `/home/dathuynh/codes/firstmate/custom-skills/matt/productivity/grill-me/SKILL.md` |
 | The captain asks to capture glossary or ADR decisions during grilling | `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/grill-with-docs/SKILL.md`, then its exact domain-modeling companion |
-| Planning shapes acceptance seams or a test contract | `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/tdd/SKILL.md` |
 | The captain explicitly asks to crystallize a spec | `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/to-spec/SKILL.md` |
 | The captain explicitly asks to crystallize dependency-aware tickets | `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/to-tickets/SKILL.md` |
-| A paired brief carries `role=driver` | `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/implement/SKILL.md`, then `/home/dathuynh/codes/firstmate/custom-skills/paired-review/driver/SKILL.md` |
+| A paired brief carries `role=driver` | `/home/dathuynh/codes/firstmate/custom-skills/paired-review/driver/SKILL.md` |
 | A paired brief carries `role=navigator` | `/home/dathuynh/codes/firstmate/custom-skills/paired-review/navigator/SKILL.md`, then `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/code-review/SKILL.md` |
-| An implementation worker in `cfw-modules` builds or changes a business page, a component definition, a primitive or a design token | `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/implement/SKILL.md`, then `.agents/skills/cfw-frontend-development/SKILL.md` in that checkout |
-| An implementation worker is asked to implement | `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/implement/SKILL.md` |
+| An implementation worker in `cfw-modules` builds or changes a business page, a component definition, a primitive or a design token | `.agents/skills/cfw-frontend-development/SKILL.md` in that checkout |
 | Verification of a task's expected behavior begins, or a completion claim is about to be made | `/home/dathuynh/codes/firstmate/custom-skills/classical-testing/SKILL.md` |
 | A review or navigator task is opened | `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/code-review/SKILL.md` |
 | A diagnosis task is opened | `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/diagnosing-bugs/SKILL.md` |
