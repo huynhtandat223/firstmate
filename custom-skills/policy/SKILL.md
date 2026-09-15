@@ -45,6 +45,7 @@ Load only the exact file named by the first matching trigger, when the trigger o
 | The captain explicitly asks to crystallize dependency-aware tickets | `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/to-tickets/SKILL.md` |
 | A paired brief carries `role=driver` | `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/implement/SKILL.md`, then `/home/dathuynh/codes/firstmate/custom-skills/paired-review/driver/SKILL.md` |
 | A paired brief carries `role=navigator` | `/home/dathuynh/codes/firstmate/custom-skills/paired-review/navigator/SKILL.md`, then `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/code-review/SKILL.md` |
+| An implementation worker in `cfw-modules` builds or changes a business page, a component definition, a primitive or a design token | `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/implement/SKILL.md`, then `.agents/skills/cfw-frontend-development/SKILL.md` in that checkout |
 | An implementation worker is asked to implement | `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/implement/SKILL.md` |
 | Verification of a task's expected behavior begins, or a completion claim is about to be made | `/home/dathuynh/codes/firstmate/custom-skills/classical-testing/SKILL.md` |
 | A review or navigator task is opened | `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/code-review/SKILL.md` |
