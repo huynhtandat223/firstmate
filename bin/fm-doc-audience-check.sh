@@ -97,12 +97,7 @@ def resolve_local_target(root: Path, source: Path, raw: str) -> Path | None:
 
 
 def strip_fenced_code(text: str) -> str:
-    """Blank out fenced code blocks so sample links inside them are not link targets.
-
-    A fenced block is illustration, not navigation: a vendored skill's example
-    CONTEXT-MAP listing points at paths that deliberately do not exist here.
-    Lines are replaced rather than removed so any later error keeps its line count.
-    """
+    """Blank fenced examples so their illustrative paths are not validated as navigation."""
     out: list[str] = []
     fence: str | None = None
     for line in text.splitlines():

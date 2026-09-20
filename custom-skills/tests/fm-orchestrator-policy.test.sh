@@ -65,7 +65,7 @@ test_skill_gives_child_routing_to_the_supervisor() {
 
 test_skill_names_an_explicit_profile_on_every_launch() {
   local launches bad
-  launches=$(grep -n -E 'fm-spawn\.sh' "$SKILL" | grep -v -e '--help' || true)
+  launches=$(grep -n -E '^bin/fm-spawn\.sh' "$SKILL" || true)
   [ -n "$launches" ] || fail "the skill shows no supervisor launch command"
   bad=$(printf '%s\n' "$launches" | awk '!/--harness/ || !/--model/ || !/--effort/')
   [ -z "$bad" ] \

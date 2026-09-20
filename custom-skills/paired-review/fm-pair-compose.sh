@@ -340,8 +340,8 @@ PY
   } >> "$FM_HOME/data/$id/brief.md"
 }
 
-render_brief "$DRIVER_ID" driver "$NAV_ID" "/home/dathuynh/codes/firstmate/custom-skills/paired-review/driver/SKILL.md" navigator "$DRIVER_ACK" "$NAV_ACK"
-render_brief "$NAV_ID" navigator "$DRIVER_ID" "/home/dathuynh/codes/firstmate/custom-skills/paired-review/navigator/SKILL.md" driver "$NAV_ACK" "$DRIVER_ACK"
+render_brief "$DRIVER_ID" driver "$NAV_ID" "$ROOT/custom-skills/paired-review/driver/SKILL.md" navigator "$DRIVER_ACK" "$NAV_ACK"
+render_brief "$NAV_ID" navigator "$DRIVER_ID" "$ROOT/custom-skills/paired-review/navigator/SKILL.md" driver "$NAV_ACK" "$DRIVER_ACK"
 
 spawn_role() {
   local id=$1 harness=$2 model=$3 effort=$4

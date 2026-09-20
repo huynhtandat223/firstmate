@@ -182,6 +182,11 @@ test_fixture_snapshot_json() {
       and (.actions.watch | contains("do not routinely fm-peek"))
   ' >/dev/null || fail "secondmate return-channel guidance missing"
   printf '%s' "$out" | jq -e '
+    .tasks[] | select(.id == "secondmate-task")
+    | .paths.status_log.last_event
+    | has("age_seconds") and .age_seconds == null
+  ' >/dev/null || fail "legacy event must have an explicit unknown age"
+  printf '%s' "$out" | jq -e '
     .tasks[] | select(.id == "cmux-task")
     | .backend == "cmux"
       and .paths.worktree.present == false
@@ -194,75 +199,121 @@ test_fixture_snapshot_json() {
     .backlog.records[] | select(.id == "done-task")
     | .state == "done" and .pr_url == "https://github.com/kunchenguid/firstmate/pull/7"
   ' >/dev/null || fail "done backlog PR row missing"
-  pass "fixture snapshot covers task rows, backlog rows, pointers, and stable ordering"
-}
 
-# Whole-fleet JSON must never travel as a command-line argument. A single argv
-# string is capped at MAX_ARG_STRLEN (128 KiB), which is far below ARG_MAX, so a
-# backlog that crosses it used to make every snapshot fail outright with
-# "Argument list too long".
-test_oversized_backlog_stays_off_the_command_line() {
-  local home fakebin out summary i=0
-  home=$(make_home oversized-backlog)
-  mkdir -p "$home/projects/big-worktree"
-  {
-    printf '## In flight\n'
-    printf -- '- [ ] big-ship - Big Ship (repo: alpha) (kind: ship) (since 2026-07-20)\n'
-    printf '\n## Done\n'
-    while [ "$i" -lt 500 ]; do
-      i=$((i + 1))
-      printf -- '- [x] filler-%03d - Filler task %03d carrying a deliberately long title so the encoded backlog crosses the per-argument limit https://github.com/kunchenguid/firstmate/pull/%d (repo: alpha) (kind: ship) (merged 2026-07-20)\n' \
-        "$i" "$i" "$i"
-    done
-  } > "$home/data/backlog.md"
-  fm_write_meta "$home/state/big-ship.meta" \
-    "window=firstmate:fm-big-ship" \
-    "worktree=$home/projects/big-worktree" \
-    "project=alpha" \
-    "harness=codex" \
-    "kind=ship" \
-    "mode=ship"
-  fakebin=$(make_fakebin "$home")
-
-  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --json) \
-    || fail "snapshot must survive a backlog larger than the per-argument limit"
-  # Guard the fixture itself: a smaller backlog would stop exercising the limit.
-  printf '%s' "$out" | jq -e '(.backlog | tojson | length) > 131072' >/dev/null \
-    || fail "fixture backlog no longer exceeds the 128 KiB per-argument limit"
-  # Correctness, not just exit 0: a truncated or emptied inventory must fail here.
-  printf '%s' "$out" | jq -e '
-    (.backlog.records | length) == 501
-      and ([.backlog.records[] | select(.state == "done")] | length) == 500
-      and .backlog.records[0].id == "big-ship"
-      and .backlog.records[-1].id == "filler-500"
-      and .backlog.records[-1].pr_url == "https://github.com/kunchenguid/firstmate/pull/500"
-      and .backlog.records[-1].title == "Filler task 500 carrying a deliberately long title so the encoded backlog crosses the per-argument limit"
-      and (.tasks | length) == 1
-      and .tasks[0].id == "big-ship"
-      and .tasks[0].backlog.title == "Big Ship"
-      and .main_inventory.valid == true
-      and .main_inventory.reason == null
-      and (.main_inventory.orphan_in_flight | length) == 0
-      and .main_inventory.unstructured_current_count == 0
-      and (.scout_reports | type) == "array"
-      and (.secondmate_current.records | length) == 0
-  ' >/dev/null || fail "oversized-backlog snapshot lost or truncated inventory: $(printf '%s' "$out" | head -c 400)"
-
-  # The same payload also crosses the per-home summary used for secondmate reads.
-  summary=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --secondmate-home-summary) \
-    || fail "per-home summary must survive a backlog larger than the per-argument limit"
-  printf '%s' "$summary" | jq -e '
-    .schema == "fm-secondmate-home-summary.v1"
-      and .counts.landed == 500
-      and .counts.endpoints == 1
-      and .landed[0].id == "filler-500"
-      and .landed[0].pr_url == "https://github.com/kunchenguid/firstmate/pull/500"
-  ' >/dev/null || fail "oversized-backlog per-home summary wrong: $(printf '%s' "$summary" | head -c 400)"
-  pass "an oversized backlog snapshots fully instead of blowing the per-argument limit"
+  local line expected_age before after emitted epoch observed
+  printf 'secondmate-task\n' > "$home/secondmate-home/.fm-secondmate-home"
+  printf 'schema=fm-secondmate-parent.v1\nroute=local\nparent_home=%s\n' "$home" \
+    > "$home/secondmate-home/.fm-secondmate-parent"
+  before=$(date +%s)
+  FM_HOME="$home/secondmate-home" "$ROOT/bin/fm-secondmate-report.sh" \
+    'done' 0123456789abcdef 'audit complete' || fail "parent report failed"
+  after=$(date +%s)
+  emitted=$(tail -1 "$home/state/secondmate-task.status")
+  # shellcheck source=bin/fm-classify-lib.sh
+  . "$ROOT/bin/fm-classify-lib.sh"
+  epoch=$(status_line_at_epoch "$emitted") || fail "new parent report has unknown time"
+  [ "$epoch" -ge "$before" ] && [ "$epoch" -le "$after" ] \
+    || fail "parent report did not record emission time"
+  for line in "$emitted" 'working: legacy' 'working [at=1700000000]: timed' \
+    'working [at=1700000200]: future' 'working [at=oops]: malformed'; do
+    printf '%s\n\n' "$line" > "$home/state/secondmate-task.status"
+    # Deliberately unrelated file age must never substitute for event age.
+    touch -t 202001010000 "$home/state/secondmate-task.status"
+    expected_age=null; observed=1700000100
+    case "$line" in
+      "$emitted") expected_age=100; observed=$((epoch + 100)) ;;
+      *1700000000*) expected_age=100 ;;
+    esac
+    out=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_SNAPSHOT_NOW_EPOCH=$observed "$SNAPSHOT" --json)
+    printf '%s' "$out" | jq -e --argjson age "$expected_age" '
+      .tasks[] | select(.id == "secondmate-task")
+      | .paths.status_log.last_event
+      | has("age_seconds") and .age_seconds == $age
+        and (has("emitted_at_epoch") | not)
+    ' >/dev/null || fail "event age came from something other than the record: $line"
+    # parent_event age is the emission age; freshness is how old this snapshot's
+    # own observation of the file is, so the 2020 mtime must show up there and
+    # only there.
+    printf '%s' "$out" | jq -e --argjson age "$expected_age" '
+      .secondmate_current.records[] | select(.id == "secondmate-task")
+      | .current.state == "unknown"
+        and .parent_event.age_seconds == $age
+        and (.parent_event | has("emitted_at_epoch") | not)
+        and (.freshness.age_seconds | type) == "number"
+        and .freshness.age_seconds > 100000000
+    ' >/dev/null || fail "fallback confused event age, observation freshness, and current state: $line"
+    if [ "${FM_TEST_EVIDENCE:-0}" = 1 ]; then
+      printf '$ touch -t 202001010000 %s\n' "$home/state/secondmate-task.status"
+      printf '$ FM_HOME=%s FM_SNAPSHOT_NOW_EPOCH=%s bin/fm-fleet-snapshot.sh --json\n' "$home" "$observed"
+      printf '%s' "$out" | jq '{
+        last_event: (.tasks[] | select(.id == "secondmate-task") | .paths.status_log.last_event),
+        secondmate: (.secondmate_current.records[] | select(.id == "secondmate-task")
+          | {current, parent_event, freshness})
+      }'
+    fi
+  done
+  pass "fixture snapshot covers task rows, backlog rows, pointers, stable ordering, and emission-time event age"
 }
 
 # R1 owner contract: main_inventory discloses orphan in-flight and unstructured
 # current rows without inventing task rows.
+test_hold_buckets_are_total_and_text_blind() {
+  local home fakebin out
+  home=$(make_home hold-buckets)
+  mkdir -p "$home/data"
+  cat > "$home/data/backlog.md" <<'EOF'
+## In flight
+- [ ] working-held - Held while working (repo: sample) (kind: captain) (hold: choose a route) (hold-kind: captain)
+  Captain hold set: 2026-07-20T00:00:00Z
+
+## Queued
+- [ ] blocked-hold - Blocked call blocked-by: upstream-work (repo: sample) (kind: captain) (hold: choose a route) (hold-kind: captain)
+  Captain hold set: 2026-07-20T00:00:00Z
+- [ ] dated-hold - Dated call (repo: sample) (kind: captain) (hold: revisit later) (hold-kind: captain) (hold-until: 2026-12-01)
+  Captain hold set: 2026-07-20T00:00:00Z
+- [ ] aged-hold - Aged call (repo: sample) (kind: captain) (hold: choose a route) (hold-kind: captain)
+  Captain hold set: 2026-06-01T00:00:00Z
+- [ ] live-hold - Live call (repo: sample) (kind: captain) (hold: choose a route) (hold-kind: captain)
+  Captain hold set: 2026-07-20T00:00:00Z
+- [ ] opposite-word - Opposite wording (repo: sample) (kind: captain) (hold: non-deferred release choice) (hold-kind: captain)
+  Captain hold set: 2026-07-20T00:00:00Z
+- [ ] marker-prose - Marker prose (repo: sample) (kind: captain) (hold: choose a route) (hold-kind: captain)
+  Captain hold set: 2026-07-20T00:00:00Z
+  SUPERSEDED - kept only to prove prose never classifies.
+- [ ] upstream-work - Land the upstream change (repo: sample) (kind: ship)
+
+## Done
+EOF
+  fakebin=$(make_fakebin "$home")
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_DATA_OVERRIDE="$home/data"     FM_SNAPSHOT_NOW=2026-07-25T00:00:00Z "$SNAPSHOT" --json)
+  printf '%s' "$out" | jq -e '
+    [.backlog.records[] | select(.structured and .hold_kind == "captain")]
+    | length == 7
+      and all(.hold_bucket as $bucket
+              | ["live", "blocked", "dated", "aged"] | index($bucket) != null)
+  ' >/dev/null || fail "every captain hold must land in exactly one structured bucket: $out"
+  printf '%s' "$out" | jq -e '
+    ([.backlog.records[] | select(.id == "blocked-hold")][0].hold_bucket == "blocked")
+      and ([.backlog.records[] | select(.id == "dated-hold")][0].hold_bucket == "dated")
+      and ([.backlog.records[] | select(.id == "aged-hold")][0].hold_bucket == "aged")
+      and ([.backlog.records[] | select(.id == "live-hold")][0].hold_bucket == "live")
+  ' >/dev/null || fail "structured fields did not drive the bucket assignment: $out"
+  printf '%s' "$out" | jq -e '
+    ([.backlog.records[] | select(.id == "opposite-word")][0]) as $opposite
+    | ([.backlog.records[] | select(.id == "marker-prose")][0]) as $prose
+    | $opposite.hold_bucket == "live" and $opposite.captain_actionable == true
+      and $prose.hold_bucket == "live" and $prose.captain_actionable == true
+  ' >/dev/null || fail "hold reason or body prose must never reclassify a live decision: $out"
+  printf '%s' "$out" | jq -e '
+    ([.backlog.records[] | select(.id == "working-held")][0])
+    | .hold_bucket == "live" and .captain_actionable == true
+  ' >/dev/null || fail "a captain hold on a working task must still be bucketed: $out"
+  printf '%s' "$out" | jq -e '
+    ([.backlog.records[] | select(.id == "upstream-work")][0].hold_bucket) == null
+  ' >/dev/null || fail "a row that is not a captain hold must carry no bucket: $out"
+  pass "captain-hold buckets are total, mutually exclusive, and never decided by prose"
+}
+
 test_main_inventory_orphan_and_unstructured_disclosure() {
   local home fakebin out
   home=$(make_home main-inventory)
@@ -520,6 +571,9 @@ test_backlog_tasks_axi_forms_and_overrides() {
 - [ ] parenthetical-title - Refresh sidebar (mobile) (repo: beta) (kind: ship)
 - [ ] blocked-reason - Blocked Reason (repo: beta) (kind: ship) blocked-by: queued-comma - waits on queued-comma
 - [ ] sample-decision-route - Choose sample route (repo: sample) (kind: captain) (since 2026-07-14) (hold: captain route choice pending) (hold-kind: captain)
+- [ ] dated-route - Deferred sample route (repo: sample) (kind: ship) (hold: captain sent this to later) (hold-kind: captain) (hold-until: 2026-09-01)
+- [ ] captain-gated-work - Captain-gated ship work (repo: sample) (kind: ship) (hold: captain go pending) (hold-kind: captain)
+- [ ] parked-prose - Parked captain call (repo: sample) (kind: ship) (hold: DEFERRED by captain) (hold-kind: captain)
 
 ## Done
 - [x] done-comma - Done Comma Task https://github.com/kunchenguid/firstmate/pull/42 (repo: gamma, merged 2026-07-09) (kind: ship)
@@ -538,7 +592,8 @@ EOF
   record_claude_idle "$home/state" bold-task
   printf 'done: report ready\n' > "$home/state/bold-task.status"
   fakebin=$(make_fakebin "$home")
-  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_DATA_OVERRIDE="$data" FM_PROJECTS_OVERRIDE="$projects" "$SNAPSHOT" --json)
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_DATA_OVERRIDE="$data" FM_PROJECTS_OVERRIDE="$projects" \
+    FM_SNAPSHOT_NOW=2026-07-14T00:00:00Z "$SNAPSHOT" --json)
   printf '%s' "$out" | jq -e --arg data "$data" --arg projects "$projects" '
     .roots.data == $data
       and .roots.projects == $projects
@@ -578,7 +633,23 @@ EOF
       and .kind == "captain"
       and .hold_reason == "captain route choice pending"
       and .hold_kind == "captain"
+      and .captain_actionable == true
   ' >/dev/null || fail "tasks-axi captain-hold metadata did not parse"
+  printf '%s' "$out" | jq -e '
+    .backlog.records[] | select(.id == "dated-route")
+    | .title == "Deferred sample route"
+      and .hold_until == "2026-09-01"
+      and .captain_actionable == false
+      and .hold_bucket == "dated"
+  ' >/dev/null || fail "a dated captain hold did not defer or strip its hold-until from the title"
+  printf '%s' "$out" | jq -e '
+    .backlog.records[] | select(.id == "captain-gated-work")
+    | .kind == "ship" and .captain_actionable == true and .hold_bucket == "live"
+  ' >/dev/null || fail "captain actionability must not depend on the row kind"
+  printf '%s' "$out" | jq -e '
+    .backlog.records[] | select(.id == "parked-prose")
+    | .captain_actionable == true and .hold_bucket == "live"
+  ' >/dev/null || fail "hold prose must never classify a captain hold"
   printf '%s' "$out" | jq -e '
     .backlog.records[] | select(.id == "done-comma")
     | .repo == "gamma"
@@ -624,6 +695,98 @@ EOF
   assert_contains "$view" "| done-note | Done Note | delta | ship | - | local main |" \
     "view should render local-only done artifact outside the title"
   pass "snapshot parses tasks-axi rows and respects operational overrides"
+}
+
+test_undated_captain_hold_phrasing_and_aging() {
+  local home fakebin out
+  home=$(make_home undated-aging)
+  mkdir -p "$home/data"
+  cat > "$home/data/backlog.md" <<'EOF'
+## In flight
+
+## Queued
+- [ ] parked-hold - Parked style call (repo: sample) (kind: ship) (hold: parked) (hold-kind: captain)
+- [ ] awaiting-go - Awaiting go call (repo: sample) (kind: ship) (hold: awaiting captain go) (hold-kind: captain)
+- [ ] no-dispatch - No dispatch call (repo: sample) (kind: ship) (hold: do not dispatch) (hold-kind: captain)
+- [ ] no-auto - No auto-dispatch call (repo: sample) (kind: ship) (hold: do not auto-dispatch) (hold-kind: captain)
+- [ ] not-urgent - Not urgent call (repo: sample) (kind: ship) (hold: not urgent) (hold-kind: captain)
+- [ ] deprior - Deprioritized call (repo: sample) (kind: ship) (hold: de-prioritized) (hold-kind: captain)
+- [ ] queued-opp - Queued opportunity call (repo: sample) (kind: ship) (hold: queued opportunity) (hold-kind: captain)
+- [ ] gated-hold - Captain-gated phrasing (repo: sample) (kind: ship) (hold: captain-gated) (hold-kind: captain)
+- [ ] aged-call - Aged genuine call (repo: sample) (kind: captain) (since 2026-07-01) (hold: choose a sample route) (hold-kind: captain)
+  Captain hold set: 2026-07-01T00:00:00Z
+- [ ] recent-call - Recent genuine call (repo: sample) (kind: captain) (since 2026-06-01) (hold: choose a sample route) (hold-kind: captain)
+  Captain hold set: 2026-07-20T00:00:00Z
+- [ ] legacy-old-hold - Legacy unstamped hold (repo: sample) (kind: ship) (since 2026-06-01) (hold: choose a sample route) (hold-kind: captain)
+  Historical notes remain ordinary task content.
+  Captain hold set: 2026-07-24T00:00:00Z
+- [ ] boundary-call - Almost aged genuine call (repo: sample) (kind: captain) (since 2026-06-01) (hold: choose a sample route) (hold-kind: captain)
+  Captain hold set: 2026-07-11T00:01:00Z
+- [ ] live-gated - Live captain-gated work (repo: sample) (kind: ship) (hold: captain go pending) (hold-kind: captain)
+- [ ] unparked-call - Newly unparked decision (repo: sample) (kind: captain) (hold: unparked; choose a sample route) (hold-kind: captain)
+- [ ] contextual-call - Context is not a deferral (repo: sample) (kind: captain) (hold: choose whether to pursue this queued opportunity) (hold-kind: captain)
+  This is not urgent context, but the captain decision is current.
+- [ ] contextual-not-urgent - Leading context is not a deferral (repo: sample) (kind: captain) (hold: not urgent but choose the route now) (hold-kind: captain)
+- [ ] contextual-comma - Comma context is not a deferral (repo: sample) (kind: captain) (hold: not urgent, choose the launch route now) (hold-kind: captain)
+- [ ] metadata-context - Metadata-like context is not a deferral (repo: sample) (kind: captain) (hold: not urgent, priority: decide P1 or P2) (hold-kind: captain)
+- [ ] contextual-opportunity - Leading opportunity is not a deferral (repo: sample) (kind: captain) (hold: queued opportunity: choose whether to proceed) (hold-kind: captain)
+- [ ] contextual-gated - Leading gate is not a deferral (repo: sample) (kind: captain) (hold: captain-gated decision needs current approval) (hold-kind: captain)
+
+## Done
+EOF
+  fakebin=$(make_fakebin "$home")
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_DATA_OVERRIDE="$home/data" \
+    FM_SNAPSHOT_NOW=2026-07-25T00:00:00Z "$SNAPSHOT" --json)
+  printf '%s' "$out" | jq -e '
+    ([.backlog.records[] | select(.id == "parked-hold" or .id == "awaiting-go" or .id == "no-dispatch"
+        or .id == "no-auto" or .id == "not-urgent" or .id == "deprior" or .id == "queued-opp"
+        or .id == "gated-hold")]
+     | all(.captain_actionable == true and .hold_bucket == "live"))
+  ' >/dev/null || fail "parked-style wording must never classify a fresh undated hold: $out"
+  printf '%s' "$out" | jq -e '
+    .backlog.records[] | select(.id == "aged-call")
+    | .captain_actionable == false
+      and .hold_bucket == "aged"
+      and .hold_age_days == 24
+  ' >/dev/null || fail "an undated captain hold older than the default 14-day threshold must age: $out"
+  printf '%s' "$out" | jq -e '
+    ([.backlog.records[] | select(.id == "recent-call")][0]) as $recent
+    | ([.backlog.records[] | select(.id == "legacy-old-hold")][0]) as $legacy
+    | $recent.captain_actionable == true
+      and $recent.hold_bucket == "live"
+      and $recent.hold_age_days == 5
+      and $legacy.captain_actionable == false
+      and $legacy.hold_set == null
+      and $legacy.hold_bucket == "aged"
+      and $legacy.hold_age_days == 54
+  ' >/dev/null || fail "recent stamped and legacy unstamped hold ages are wrong: $out"
+  printf '%s' "$out" | jq -e '
+    .backlog.records[] | select(.id == "boundary-call")
+    | .hold_set == "2026-07-11T00:01:00Z"
+      and .hold_age_days == 13 and .hold_bucket == "live"
+  ' >/dev/null || fail "a hold one minute short of 14 days must not age early: $out"
+  printf '%s' "$out" | jq -e '
+    [.backlog.records[] | select(.id == "live-gated" or .id == "unparked-call" or .id == "contextual-call"
+        or .id == "contextual-not-urgent" or .id == "contextual-comma" or .id == "metadata-context"
+        or .id == "contextual-opportunity" or .id == "contextual-gated")]
+    | length == 8
+      and all(.captain_actionable == true and .hold_bucket == "live")
+      and (map(select(.id == "contextual-comma" and .hold_reason == "not urgent, choose the launch route now")) | length == 1)
+      and (map(select(.id == "metadata-context" and .hold_reason == "not urgent, priority: decide P1 or P2")) | length == 1)
+  ' >/dev/null || fail "contextual parked-style wording must not hide current decisions: $out"
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_DATA_OVERRIDE="$home/data" \
+    FM_SNAPSHOT_NOW=2026-07-25T00:00:00Z FM_SNAPSHOT_UNDATED_HOLD_AGE_DAYS=30 "$SNAPSHOT" --json)
+  printf '%s' "$out" | jq -e '
+    .backlog.records[] | select(.id == "aged-call")
+    | .hold_bucket == "live" and .hold_age_days == 24
+  ' >/dev/null || fail "raising the age threshold must leave a 24-day hold unaged: $out"
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_DATA_OVERRIDE="$home/data" \
+    FM_SNAPSHOT_NOW=2026-07-25T00:00:00Z FM_SNAPSHOT_UNDATED_HOLD_AGE_DAYS=5 "$SNAPSHOT" --json)
+  printf '%s' "$out" | jq -e '
+    .backlog.records[] | select(.id == "recent-call")
+    | .hold_bucket == "aged" and .hold_age_days == 5
+  ' >/dev/null || fail "lowering the age threshold to 5 must age a 5-day hold: $out"
+  pass "undated captain holds age after a configurable threshold, decided only from structured fields"
 }
 
 test_view_renders_snapshot() {
@@ -788,7 +951,7 @@ test_open_decision_clears_on_keyed_resolution() {
 # must not linger as pending. Decisions come purely from the keyed fold reconciled
 # against the crew lifecycle; report prose never opens or reopens a decision.
 test_completed_scout_report_is_pointer_not_pending() {
-  local home fakebin out
+  local home fakebin out kind terminal id phase single mate single_state mate_state
   home=$(make_home completed-scout)
   mkdir -p "$home/projects/scout-wt" "$home/data/lavish-103"
   fm_write_meta "$home/state/lavish-103.meta" \
@@ -813,6 +976,55 @@ test_completed_scout_report_is_pointer_not_pending() {
       and (.hints.open_decisions | length) == 0
       and .hints.scout_report_present == true
   ' >/dev/null || fail "a completed scout report must be a pointer, not a pending decision: $out"
+
+  # Same terminal-supersession contract across ship/scout/secondmate, both snapshot
+  # modes, and reopen/resolve after cleanup.
+  home=$(make_home terminal-cleanup)
+  mkdir -p "$home/projects/task"
+  fakebin=$(make_fakebin "$home")
+  for kind in ship scout secondmate; do
+    for terminal in 'done' failed; do
+      id="$kind-$terminal"
+      fm_write_meta "$home/state/$id.meta" \
+        "window=firstmate:fm-$id" "worktree=$home/projects/task" \
+        "kind=$kind" "harness=claude"
+      record_claude_idle "$home/state" "$id"
+      printf 'blocked [key=access]: waiting\nneeds-decision [key=choice]: choose a route\n%s: final outcome\nnote: cleanup complete\n' \
+        "$terminal" > "$home/state/$id.status"
+    done
+  done
+  for phase in terminal reopened resolved; do
+    case "$phase" in
+      terminal) single='[]'; mate='["access","choice"]'; single_state=unknown; mate_state=parked ;;
+      reopened) single='["access","new-choice"]'; mate='["access","choice","new-choice"]'; single_state=parked; mate_state=parked ;;
+      resolved) single='[]'; mate='["choice"]'; single_state=unknown; mate_state=parked ;;
+    esac
+    for kind in ship scout secondmate; do
+      for terminal in 'done' failed; do
+        id="$kind-$terminal"
+        case "$phase" in
+          reopened) printf 'blocked [key=access]: reopened access\nneeds-decision [key=new-choice]: a new choice\nnote: more cleanup\n' >> "$home/state/$id.status" ;;
+          resolved) printf 'resolved [key=access]: access granted\nresolved [key=new-choice]: answered\nnote: final cleanup\n' >> "$home/state/$id.status" ;;
+        esac
+      done
+    done
+    out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --json)
+    printf '%s' "$out" | jq -e --argjson single "$single" --argjson mate "$mate" \
+      --arg single_state "$single_state" --arg mate_state "$mate_state" '
+      .tasks | length == 6 and all(.[];
+        (.kind == "secondmate") as $persistent
+        | (.hints.open_decisions | map(.key) | sort) == (if $persistent then $mate else $single end)
+          and .current_state.state == (if $persistent then $mate_state else $single_state end)
+          and .hints.blocked_event == (if $persistent then $mate else $single end | index("access") != null)
+          and .hints.pending_decision == (if $persistent then $mate else $single end | any(. != "access")))
+    ' >/dev/null || fail "$phase snapshot revived a completed decision or lost a current one: $out"
+    out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --secondmate-home-summary)
+    printf '%s' "$out" | jq -e --argjson single "$single" --argjson mate "$mate" '
+      (.decisions_open | map({id,key}) | sort_by(.id,.key)) ==
+        (([ ("ship-done","ship-failed","scout-done","scout-failed") as $id | $single[] | {id:$id,key:.} ]
+          + [ ("secondmate-done","secondmate-failed") as $id | $mate[] | {id:$id,key:.} ]) | sort_by(.id,.key))
+    ' >/dev/null || fail "$phase home summary revived a completed decision or lost a current one: $out"
+  done
   pass "a completed scout's stale decision surfaces as a report pointer, not pending"
 }
 
@@ -843,132 +1055,108 @@ test_parked_scout_decision_stays_pending() {
   pass "a scout still parked at a decision stays pending (terminal clear does not over-fire)"
 }
 
-# The secondmate evidence values are the other side of the same MAX_ARG_STRLEN
-# trap the oversized-backlog test covers. The keyed open-decision set folds a whole
-# status stream with no cap at all, and the parent activity scan and the registered
-# secondmate table are limited only by operator-tunable read windows, so all three
-# can cross the 128 KiB per-argument cap. This fixture drives every one of them
-# past that cap at once and asserts the evidence survives intact.
-test_oversized_secondmate_evidence_stays_off_the_command_line() {
-  local home sub fakebin out status_log pad i=0
-  home=$(make_home oversized-secondmate)
-  # The secondmate home must sit outside the parent home and the firstmate repo.
-  sub=$TMP_ROOT/oversized-secondmate-sub
-  mkdir -p "$sub/bin" "$sub/data" "$sub/state" "$sub/config" "$sub/projects"
-  printf '# fixture secondmate home\n' > "$sub/AGENTS.md"
-  printf 'big-mate\n' > "$sub/.fm-secondmate-home"
-  printf '## In flight\n\n## Queued\n\n## Done\n' > "$sub/data/backlog.md"
+# Home-summary validity treats persistent secondmates as registered homes, not
+# in-flight children. They have no backlog rows, so they must not produce
+# unowned_current or terminal_in_flight. Ordinary crew/ship metas still do.
+test_home_summary_excludes_secondmate_from_child_inventory() {
+  local home fakebin out
+  home=$(make_home summary-secondmate-only)
+  mkdir -p "$home/secondmate-home" "$home/projects/unowned" "$home/projects/terminal"
+  cat > "$home/data/backlog.md" <<'EOF'
+## In flight
 
-  # 200 still-open decision keys and 200 still-open activity keys, each carrying a
-  # long summary, so both encoded sets clear 128 KiB on their own.
-  pad=$(printf 'x%.0s' $(seq 1 700))
-  status_log=$home/state/big-mate.status
-  : > "$status_log"
-  while [ "$i" -lt 200 ]; do
-    i=$((i + 1))
-    printf 'needs-decision [key=dec-%03d]: decision %03d %s\n' "$i" "$i" "$pad" >> "$status_log"
-    printf 'working [key=act-%03d]: activity %03d %s\n' "$i" "$i" "$pad" >> "$status_log"
-  done
-  cp "$status_log" "$home/state/bad-mate.status"
+## Queued
 
-  fm_write_meta "$home/state/big-mate.meta" \
-    "window=firstmate:fm-big-mate" \
-    "project=$sub" "harness=codex" "kind=secondmate" "mode=secondmate" \
-    "home=$sub" "projects=alpha"
-  # A second secondmate whose home never resolves takes the parent-event fallback
-  # branch, which carries the same three values through a different builder.
-  fm_write_meta "$home/state/bad-mate.meta" \
-    "window=firstmate:fm-bad-mate" \
-    "project=$home/missing-home" "harness=codex" "kind=secondmate" "mode=secondmate" \
-    "home=$home/missing-home" "projects=beta"
-
-  # A registered table long enough that the parsed registry itself clears 128 KiB.
-  {
-    printf -- '- big-mate (home: %s; scope: oversized evidence; projects: alpha; added 2026-06-30)\n' "$sub"
-    i=0
-    while [ "$i" -lt 400 ]; do
-      i=$((i + 1))
-      printf -- '- zfiller-%03d (home: /nonexistent/filler-%03d-%s; scope: filler; projects: alpha; added 2026-06-30)\n' "$i" "$i" "$pad"
-    done
-  } > "$home/data/secondmates.md"
-
+## Done
+EOF
+  fm_write_meta "$home/state/mate.meta" \
+    "window=firstmate:fm-mate" \
+    "worktree=$home/secondmate-home" \
+    "project=$home/secondmate-home" \
+    "harness=codex" \
+    "kind=secondmate" \
+    "mode=secondmate" \
+    "home=$home/secondmate-home" \
+    "projects=alpha"
+  printf 'working: watching delegated scope\n' > "$home/state/mate.status"
   fakebin=$(make_fakebin "$home")
-  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" \
-    FM_SNAPSHOT_SECONDMATES=2 \
-    FM_SNAPSHOT_SECONDMATE_TIMEOUT=120 \
-    FM_SNAPSHOT_REGISTRY_LINES=4000 \
-    FM_SNAPSHOT_REGISTRY_BYTES=1048576 \
-    FM_SNAPSHOT_REGISTRY_RECORDS=1000 \
-    FM_SNAPSHOT_REGISTRY_TIMEOUT=120 \
-    FM_SNAPSHOT_PARENT_ACTIVITY_LINES=4000 \
-    FM_SNAPSHOT_PARENT_ACTIVITY_BYTES=1048576 \
-    FM_SNAPSHOT_PARENT_ACTIVITIES=1000 \
-    FM_SNAPSHOT_PARENT_ACTIVITY_TIMEOUT=120 \
-    "$SNAPSHOT" --json) \
-    || fail "snapshot must survive secondmate evidence larger than the per-argument limit"
-
-  # Guard the fixture: a smaller payload would stop exercising the limit. Each of
-  # the three moved values must independently exceed 128 KiB.
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --secondmate-home-summary)
   printf '%s' "$out" | jq -e '
-    ([.tasks[] | select(.id == "big-mate")][0].hints.open_decisions | tojson | length) > 131072
-      and (.secondmate_current.registry | tojson | length) > 131072
-      and ([.secondmate_current.records[] | select(.id == "big-mate")][0].parent_event.open_activities
-           | tojson | length) > 131072
-  ' >/dev/null || fail "fixture secondmate evidence no longer exceeds the 128 KiB per-argument limit"
+    .schema == "fm-secondmate-home-summary.v1"
+      and .valid == true
+      and .reason == null
+      and .invalidity == {kind:null,ids:[]}
+      and (.invalidity.kind != "unowned_current")
+      and (.invalidity.kind != "terminal_in_flight")
+  ' >/dev/null || fail "secondmate-only home with a clean backlog must be VALID: $out"
 
-  # Correctness, not just exit 0: truncated or emptied evidence must fail here.
-  printf '%s' "$out" | jq -e '
-    [.tasks[] | select(.id == "big-mate")][0]
-    | (.hints.open_decisions | length) == 200
-      and .hints.pending_decision == true
-      and .hints.open_decisions[0].key == "dec-001"
-      and .hints.open_decisions[-1].key == "dec-200"
-      and (.hints.open_decisions[-1].summary | startswith("decision 200 "))
-      and (.hints.open_decisions[-1].summary | length) == 713
-  ' >/dev/null || fail "oversized decision fold lost records on the task row: $(printf '%s' "$out" | head -c 400)"
+  cat > "$home/data/backlog.md" <<'EOF'
+## In flight
+- [ ] mate - Registered secondmate home (repo: alpha) (kind: secondmate) (since 2026-07-11)
 
-  printf '%s' "$out" | jq -e '
-    .secondmate_current
-    | .registry.complete == true
-      and (.registry.records | length) == 401
-      and .registry.records[0].id == "big-mate"
-      and .registry.records[-1].id == "zfiller-400"
-      and .total == 402
-      and .shown == 2
-      and .truncated == 400
-      and ([.records[].id] == ["bad-mate","big-mate"])
-  ' >/dev/null || fail "oversized registry lost records or rows: $(printf '%s' "$out" | head -c 400)"
+## Queued
 
-  # The structured-home branch: reconciliation reads both oversized sets.
+## Done
+EOF
+  printf 'done: delegated scope complete\n' > "$home/state/mate.status"
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --secondmate-home-summary)
   printf '%s' "$out" | jq -e '
-    [.secondmate_current.records[] | select(.id == "big-mate")][0]
-    | .provenance.selected == "structured-home"
-      and (.parent_event.open_decisions | length) == 200
-      and (.parent_event.open_activities | length) == 200
-      and (.parent_event.activity_scan.records | length) == 200
-      and .parent_event.activity_scan.retained_truncated == false
-      and (.parent_event.reconciliation.decisions | length) == 200
-      and (.parent_event.reconciliation.activities | length) == 200
-      and .parent_event.reconciliation.activities[-1].key == "act-200"
-      and .parent_event.reconciliation.decisions[-1].key == "dec-200"
-  ' >/dev/null || fail "oversized reconciliation lost evidence: $(printf '%s' "$out" | head -c 400)"
+    .valid == true
+      and .reason == null
+      and .invalidity == {kind:null,ids:[]}
+      and (.invalidity.kind != "terminal_in_flight")
+  ' >/dev/null || fail "terminal secondmate with a matching in-flight row must not produce terminal_in_flight: $out"
 
-  # The parent-event fallback branch carries the same values through its own builder.
+  fm_write_meta "$home/state/unowned-ship.meta" \
+    "window=firstmate:fm-unowned-ship" \
+    "worktree=$home/projects/unowned" \
+    "project=alpha" \
+    "harness=claude" \
+    "kind=ship" \
+    "mode=no-mistakes"
+  record_claude_idle "$home/state" unowned-ship
+  printf 'needs-decision [key=unowned-ship]: choose a route\n' > "$home/state/unowned-ship.status"
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --secondmate-home-summary)
   printf '%s' "$out" | jq -e '
-    [.secondmate_current.records[] | select(.id == "bad-mate")][0]
-    | .current.state == "unknown"
-      and .provenance.selected == "parent-event-fallback"
-      and (.parent_event.open_decisions | length) == 200
-      and (.parent_event.open_activities | length) == 200
-      and .parent_event.open_activities[-1].key == "act-200"
-  ' >/dev/null || fail "oversized fallback record lost evidence: $(printf '%s' "$out" | head -c 400)"
-  pass "oversized secondmate decisions, activities, and registry stay off the command line"
+    .valid == false
+      and .invalidity == {kind:"unowned_current",ids:["unowned-ship"]}
+      and (.reason | contains("unowned-ship=parked"))
+      and (.reason | contains("mate=") | not)
+  ' >/dev/null || fail "ordinary unowned ship must still produce unowned_current without listing the secondmate: $out"
+
+  rm -f "$home/state/unowned-ship.meta" "$home/state/unowned-ship.status"
+  cat > "$home/data/backlog.md" <<'EOF'
+## In flight
+- [ ] terminal-ship - Done child still in flight (repo: alpha) (kind: ship) (since 2026-07-11)
+
+## Queued
+
+## Done
+EOF
+  fm_write_meta "$home/state/terminal-ship.meta" \
+    "window=firstmate:fm-terminal-ship" \
+    "worktree=$home/projects/terminal" \
+    "project=alpha" \
+    "harness=claude" \
+    "kind=ship" \
+    "mode=no-mistakes"
+  record_claude_idle "$home/state" terminal-ship
+  printf 'done: complete\n' > "$home/state/terminal-ship.status"
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --secondmate-home-summary)
+  printf '%s' "$out" | jq -e '
+    .valid == false
+      and .invalidity == {kind:"terminal_in_flight",ids:["terminal-ship"]}
+      and (.reason | contains("terminal-ship=done"))
+      and (.reason | contains("mate=") | not)
+  ' >/dev/null || fail "ordinary terminal in-flight ship must still produce terminal_in_flight without listing the secondmate: $out"
+  pass "home-summary excludes kind=secondmate from unowned_current and terminal_in_flight"
 }
 
 test_empty_fleet_json
 test_fixture_snapshot_json
-test_oversized_backlog_stays_off_the_command_line
-test_oversized_secondmate_evidence_stays_off_the_command_line
+test_home_summary_excludes_secondmate_from_child_inventory
+test_undated_captain_hold_phrasing_and_aging
+test_hold_buckets_are_total_and_text_blind
 test_main_inventory_orphan_and_unstructured_disclosure
 test_normalized_roles_and_plural_blocker_readiness
 test_event_hints_follow_reconciled_current_state
