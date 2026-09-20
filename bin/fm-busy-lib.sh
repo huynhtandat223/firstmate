@@ -29,19 +29,20 @@
 # task's recorded harness classifies unknown, so one adapter's writer can
 # never classify another adapter):
 #   pi-ext           Pi/pi-signed per-task extension (agent_start/agent_settled)
+#   omp-ext          omp (Oh My Pi) per-task extension (agent_start/agent_end without willContinue)
 #   opencode-plugin  OpenCode per-task plugin (session.status)
 #   claude-hook      Claude lifecycle hooks (UserPromptSubmit/Stop/StopFailure/SessionEnd)
+#   gemini-hook      Gemini agent hooks (BeforeAgent opens; AfterAgent and
+#                    SessionEnd close)
 #   codex-hook, codex-appserver  reserved: Codex, gated by
 #                    fm_busy_codex_semantic_source
 #   kimi-wire, kimi-hook  reserved: standalone Kimi, gated by fm_busy_kimi_verified
-#   agy-regex        Antigravity's verified active-turn footer fallback;
-#                    scoped to harness=agy and never a semantic task source
 # Firstmate-owned sources accepted for every converted adapter:
 #   fm-spawn         the launch-brief turn seeded at spawn
 #   fm-interrupt     the legacy Claude fm-send --key Escape idle event
 #   fm-recovery      a documented recovery reset after relaunch
 # Classifier-only sources (never written into a record):
-#   endpoint-gone, herdr-native, grok-regex, agy-regex, muse-session-log,
+#   endpoint-gone, herdr-native, grok-regex, rovo-regex, agy-regex, muse-session-log,
 #   cursor-transcript, missing, malformed, gen-mismatch, source-mismatch,
 #   kimi-unverified, codex-unverified, capture-failed, no-target
 #
@@ -52,18 +53,19 @@
 #   3. a valid, gen-matching, source-trusted record -> its state and source
 #   4. no record at all: herdr's native busy verdict is trusted as busy
 #      (generation state is sufficient for busy, not for idle), then the
-#      muse session-log pull source, then the Grok or agy temporary regex
-#      fallback classifies its own task from its rendered tail, then unknown
-#      missing
+#      muse session-log and cursor transcript pull sources, then the
+#      Grok/Rovo/AGY temporary regex fallbacks classify a grok, rovo, or agy
+#      task from its rendered tail, then unknown missing
 #   5. malformed, stale, or untrusted records -> unknown, never a fallback
-# The Grok and agy arms are the only rendered-text classifications that survive
-# the redesign. Neither harness has a verified firstmate lifecycle writer, so
-# each arm is scoped to its own harness and can never classify another adapter.
-# They are delivery-grade fallbacks, not semantic event sources, and therefore
-# remain explicitly named in every verdict. The delivery guards in
-# bin/fm-tmux-lib.sh also match rendered footers for submit acknowledgement and
-# away-mode supervisor injection; neither guard is a recorded worker state
-# source.
+# Grok, Rovo, and AGY are the ONLY rendered-text classifications that survive the
+# redesign, because none of their structured lifecycles was credited-live-verified
+# in the approved audit (Rovo's clean ACP stopReason lives outside the TUI
+# path firstmate drives, see references/harness/rovo.md; agy 1.2.0 exposes no
+# hook surface at all, see references/harness/agy.md); each is scoped to
+# its own harness= and can never classify another adapter. The delivery
+# guards in bin/fm-composer-lib.sh match rendered footers for submit
+# acknowledgement and away-mode supervisor injection only; neither is a
+# recorded worker state source.
 #
 # The muse pull source is semantic, not rendered: it folds muse's own durable
 # session event log. It has no writer, no arm, and no gen, because
@@ -111,11 +113,6 @@ FM_BUSY_LIB_VERSION=v1
 # docs/verification/supervision.md, add the verified version string(s) here,
 # and land the wiring in fm-spawn behind this same gate in the same change.
 FM_BUSY_KIMI_VERIFIED_VERSIONS=""
-
-# Antigravity has no verified lifecycle writer. Keep its observed footer in the
-# busy-library data table so the task-state fallback and the delivery table in
-# fm-tmux-lib.sh cannot silently drift from the same verified row.
-FM_BUSY_AGY_REGEX_DEFAULT='esc to cancel'
 
 fm_busy_kimi_verified() {
   [ -n "$FM_BUSY_KIMI_VERIFIED_VERSIONS" ]
@@ -200,7 +197,9 @@ fm_busy_sources_for_harness() {  # <harness>
       adapter='codex-hook codex-appserver'
       ;;
     opencode*) adapter=opencode-plugin ;;
+    gemini*) adapter=gemini-hook ;;
     pi|pi-signed) adapter=pi-ext ;;
+    omp) adapter=omp-ext ;;
     kimi*)
       fm_busy_kimi_verified || { printf ''; return 0; }
       adapter='kimi-wire kimi-hook'
@@ -837,16 +836,43 @@ fm_busy_cursor_turn_state() {  # <transcript>
 # historical operator escape hatch.
 fm_busy_grok_tail_busy() {
   grep -v '^[[:space:]]*$' | tail -12 \
-    | grep -qiE "${FM_BUSY_REGEX:-${FM_TMUX_GROK_BUSY_REGEX_DEFAULT:-Ctrl\\+c:cancel}}"
+    | grep -qiE "${FM_BUSY_REGEX:-${FM_DELIVERY_GROK_BUSY_REGEX_DEFAULT:-Ctrl\\+c:cancel}}"
+}
+
+# fm_busy_rovo_tail_busy: the Rovo-only temporary rendered-tail fallback.
+# Consumes the tail on stdin; 0 when Rovo's verified animated busy line
+# matches (the "Rovo is thinking..." text rendered while a turn is running,
+# verified live on rovo 202609.1.2; both observed glyph variants share this
+# literal text). rovo has no turn-end hook - its eventHooks fire at tool
+# granularity only - so this fallback, like Grok's, is the only source; it is
+# never armed as a semantic writer (fm_busy_sources_for_harness trusts
+# nothing for rovo). FM_BUSY_ROVO_REGEX overrides the signature.
+fm_busy_rovo_tail_busy() {
+  grep -v '^[[:space:]]*$' | tail -12 \
+    | grep -qiE "${FM_BUSY_ROVO_REGEX:-Rovo is thinking}"
+}
+
+# fm_busy_agy_tail_busy: the AGY-only temporary rendered-tail fallback.
+# Consumes the tail on stdin; 0 when AGY's verified busy signature matches:
+# the `esc to cancel` token in the status row the TUI pins to the bottom of
+# the pane while a turn runs (verified live on agy 1.2.0; the idle status row
+# shows `? for shortcuts` instead). The `Generating...` spinner word that
+# renders beside it is deliberately NOT matched: it is a free-floating output
+# line, so ordinary worker output echoing the word would classify an idle
+# worker as busy. agy exposes no hook surface, so this fallback is the only
+# pane-side source; it is never armed as a semantic writer
+# (fm_busy_sources_for_harness trusts nothing for agy).
+fm_busy_agy_tail_busy() {
+  grep -v '^[[:space:]]*$' | tail -12 \
+    | grep -qiE 'esc[[:space:]]+to[[:space:]]+cancel'
 }
 
 # fm_busy_classify: semantic classification for a task whose endpoint the
 # caller has already established as present. Prints "<verdict> <source>":
 # busy|idle|unknown plus the producing source (see header). Never probes
 # process state. <tail40> is optional pre-captured plain output used only by
-# the Grok arm; when absent the Grok arm captures through fm_backend_capture
-# if available, else reports unknown capture-failed. The agy arm uses the same
-# bounded capture path and its own verified footer row.
+# the grok, rovo, and agy arms; when absent each captures through
+# fm_backend_capture if available, else reports unknown capture-failed.
 fm_busy_classify() {  # <backend> <target> <harness> <id> <state-dir> [tail40]
   local backend=$1 target=$2 harness=$3 id=$4 state=$5 tail40=${6-}
   local out rc r_state r_source native log
@@ -864,7 +890,12 @@ fm_busy_classify() {  # <backend> <target> <harness> <id> <state-dir> [tail40]
       fi
       ;;
     cursor*)
-      # Cursor's transcript is the only trusted turn-lifecycle source.
+      # Semantic, on demand: fold this task's bound conversation transcript. A
+      # turn open past its last close is positive proof of a turn in flight and
+      # a trailing turn_ended is a finished turn. Every other outcome - no
+      # sidecar, no resolvable transcript, an unreadable or record-free file -
+      # is unknown, never idle. The rendered `ctrl+c to stop` footer is
+      # deliberately NOT consulted here; see the source note above.
       if ! log=$(fm_busy_cursor_transcript "$state" "$id"); then
         printf 'unknown cursor-transcript'
         return 0
@@ -942,11 +973,7 @@ fm_busy_classify() {  # <backend> <target> <harness> <id> <state-dir> [tail40]
       fi
       return 0
       ;;
-    agy*)
-      # Antigravity 1.1.14 exposes no verified lifecycle hook or API event to
-      # a firstmate-launched pane. Its active footer is the only observed
-      # positive signal: `esc to cancel`; the idle footer is `? for shortcuts`.
-      # This fallback is deliberately isolated to agy and reports its source.
+    rovo*)
       if [ -z "$tail40" ]; then
         if command -v fm_backend_capture >/dev/null 2>&1; then
           tail40=$(fm_backend_capture "$backend" "$target" 40 2>/dev/null) || {
@@ -958,11 +985,34 @@ fm_busy_classify() {  # <backend> <target> <harness> <id> <state-dir> [tail40]
           return 0
         fi
       fi
-      if printf '%s' "$tail40" | grep -v '^[[:space:]]*$' | tail -12 \
-        | grep -qiE "${FM_BUSY_REGEX:-$FM_BUSY_AGY_REGEX_DEFAULT}"; then
+      # This fallback is best-effort: a long turn can scroll the busy marker
+      # out of the captured tail, so its absence means "can't tell," never
+      # definitive idle - matching the muse and cursor arms above.
+      if printf '%s' "$tail40" | fm_busy_rovo_tail_busy; then
+        printf 'busy rovo-regex'
+      else
+        printf 'unknown rovo-regex'
+      fi
+      return 0
+      ;;
+    agy)
+      if [ -z "$tail40" ]; then
+        if command -v fm_backend_capture >/dev/null 2>&1; then
+          tail40=$(fm_backend_capture "$backend" "$target" 40 2>/dev/null) || {
+            printf 'unknown capture-failed'
+            return 0
+          }
+        else
+          printf 'unknown capture-failed'
+          return 0
+        fi
+      fi
+      # Best-effort like rovo: a long turn can scroll the busy marker out of
+      # the captured tail, so its absence means "can't tell," never idle.
+      if printf '%s' "$tail40" | fm_busy_agy_tail_busy; then
         printf 'busy agy-regex'
       else
-        printf 'idle agy-regex'
+        printf 'unknown agy-regex'
       fi
       return 0
       ;;

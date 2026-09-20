@@ -121,7 +121,13 @@ SH
   cat > "$dir/bin/primary-rotate" <<SH
 #!/usr/bin/env bash
 printf '%s\n' "rotated primary target=\$2 handoff=\$3" > "$dir/primary-rotate-call"
+printf 'older-replacement-marker\\n' > "$dir/history/$(printf '%s' "$dir/parent-worktree" | tr '/.' '--')/older-replacement.jsonl"
+touch -t 202001010000 "$dir/history/$(printf '%s' "$dir/parent-worktree" | tr '/.' '--')/older-replacement.jsonl"
 printf 'parent-history-replacement-marker\\n' > "$dir/history/$(printf '%s' "$dir/parent-worktree" | tr '/.' '--')/replacement.jsonl"
+touch -t 202501010000 "$dir/history/$(printf '%s' "$dir/parent-worktree" | tr '/.' '--')/replacement.jsonl"
+printf 'primary_harness=claude\\nprimary_session=replacement\\nparent_history=%s\\n' \
+  "$dir/history/$(printf '%s' "$dir/parent-worktree" | tr '/.' '--')/replacement.jsonl" \
+  > "$dir/home/state/primary-assistance.assistance-current"
 printf 'first tool call read handoff\\n' > "$dir/first-tool-call"
 printf 'window=new-endpoint\\n' > "$dir/home/state/primary.meta"
 printf 'window=new-endpoint\\n' > "$dir/home/state/primary-assistance.meta"
@@ -138,6 +144,7 @@ run_rotate() {  # <case-dir> <handoff-path>
   FM_HOME="$dir/home" \
   FM_ASSISTANCE_HISTORY_ROOT="$dir/history" \
   FM_ASSISTANCE_PRIMARY_HISTORY_ROOT="$dir/history" \
+  FM_PROCEVENT_CLAIM_ROOT="$dir/claims" \
   FM_SPAWN="$dir/bin/spawn" \
   FM_SEND="$dir/bin/send" \
   FM_CONTROL="$dir/bin/control" \
@@ -718,7 +725,7 @@ test_primary_bind_refuses_unmeasured_harness() {
 }
 
 test_rotate_preserves_cursor_and_handoff_contract() {
-  local dir out handoff history
+  local dir out handoff history new_history source sent_before sent_after
   dir=$(new_case rotate-ok); write_history "$dir"
   history="$dir/history/$(printf '%s' "$dir/parent-worktree" | tr '/.' '--')/session.jsonl"
   printf '%s\n' '{"usage":{"totalTokens":130000}}' >> "$history"
@@ -733,10 +740,45 @@ test_rotate_preserves_cursor_and_handoff_contract() {
   assert_contains "$out" "rotation_handoff=$handoff" "rotation did not print the handoff path"
   assert_contains "$out" "committed_cursor=reset" "rotation did not report the reset observation cursor"
   assert_contains "$out" "new_endpoint=new-endpoint" "rotation did not print the new endpoint"
+  assert_contains "$out" "replacement_history=$dir/history/$(printf '%s' "$dir/parent-worktree" | tr '/.' '--')/replacement.jsonl" \
+    "rotation selected an older replacement instead of the newest non-current history"
   assert_present "$dir/primary-rotate-call" "rotation did not use the primary rotation seam"
   assert_present "$dir/first-tool-call" "replacement launch did not read the handoff first"
   assert_absent "$dir/home/state/primary-assistance.assistance-cursor" "rotation retained the retired primary cursor"
-  pass "rotate: handoff exists, replacement points at it first, and cursor bytes survive"
+  assert_grep 'primary_session=replacement' "$dir/home/state/primary-assistance.assistance-binding" \
+    "rotation did not bind the hook-confirmed replacement session"
+
+  source="$dir/home/state/procevent/assistance-primary.source"
+  assert_present "$source" "rotation did not re-arm automatic observation"
+  FM_HOME="$dir/home" FM_PROCEVENT_CLAIM_ROOT="$dir/claims" FM_SEND="$dir/bin/send" \
+    "$ROOT/bin/fm-procevent.sh" reconcile >/dev/null \
+    || fail "replacement assistance source did not start"
+  for _ in $(seq 1 40); do
+    [ -f "$dir/claims/assistance-primary.claim" ] && break
+    sleep 0.05
+  done
+  assert_present "$dir/claims/assistance-primary.claim" \
+    "replacement assistance source was never claimed"
+  sleep 0.5
+  sent_before=$(grep -c 'FIRSTMATE_OP: v1 assistance:' "$dir/sent" 2>/dev/null || true)
+  printf '%s\n' '{"type":"user","uuid":"old-only","message":{"role":"user","content":"retired history"}}' >> "$history"
+  sleep 0.3
+  sent_after=$(grep -c 'FIRSTMATE_OP: v1 assistance:' "$dir/sent" 2>/dev/null || true)
+  [ "$sent_after" -eq "$sent_before" ] || fail "retired primary history remained authoritative after rotation"
+
+  new_history="$dir/history/$(printf '%s' "$dir/parent-worktree" | tr '/.' '--')/replacement.jsonl"
+  printf '%s\n' '{"type":"user","uuid":"new-only","message":{"role":"user","content":"replacement history"}}' >> "$new_history"
+  for _ in $(seq 1 80); do
+    grep -q 'FIRSTMATE_OP: v1 assistance:' "$dir/sent" 2>/dev/null && break
+    FM_HOME="$dir/home" FM_PROCEVENT_CLAIM_ROOT="$dir/claims" FM_SEND="$dir/bin/send" \
+      "$ROOT/bin/fm-procevent.sh" reconcile >/dev/null 2>&1 || true
+    sleep 0.1
+  done
+  FM_HOME="$dir/home" FM_PROCEVENT_CLAIM_ROOT="$dir/claims" \
+    "$ROOT/bin/fm-procevent-assistance.sh" retire primary >/dev/null 2>&1 || true
+  assert_grep 'FIRSTMATE_OP: v1 assistance:' "$dir/sent" \
+    "replacement history growth did not deliver typed automatic observation"
+  pass "rotate: hook-confirmed replacement re-arms observation and retires the old history"
 }
 
 test_context_usage_is_measured_from_recorded_usage() {
@@ -770,6 +812,18 @@ test_rotate_uses_the_effective_window_before_nominal_capacity() {
   assert_present "$dir/primary-rotate-call" \
     "rotation did not fire before the effective 262144-token window truncated"
   pass "rotate: the 60 percent gate uses the effective window, not nominal model capacity"
+}
+
+test_rotate_refuses_non_primary_before_reading_sidecars() {
+  local dir out code
+  dir=$(new_case rotate-non-primary)
+  out=$(run_cli "$dir" rotate prog); code=$?
+  expect_code 1 "$code" "rotate accepted a non-primary target"
+  assert_contains "$out" "rotate only accepts primary" \
+    "rotate read the primary binding before rejecting the caller-supplied target"
+  assert_absent "$dir/home/state/primary-assistance.assistance-binding" \
+    "non-primary rotation created or changed a primary binding"
+  pass "rotate: rejects non-primary targets before reading any rotation sidecar"
 }
 
 test_rotate_refuses_unsettled_pending_batch() {
@@ -870,6 +924,7 @@ test_remind_suppresses_unchanged_repeat
 test_failed_delivery_stays_retryable
 test_reload_carries_the_current_revision
 test_rotate_preserves_cursor_and_handoff_contract
+test_rotate_refuses_non_primary_before_reading_sidecars
 test_rotate_refuses_unsettled_pending_batch
 test_rotate_refuses_without_binding
 test_rotate_refuses_when_handoff_times_out

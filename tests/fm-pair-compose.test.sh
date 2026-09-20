@@ -275,9 +275,14 @@ jq -e '.roles.driver.copy and .roles.navigator.copy' "$EVIDENCE" >/dev/null || f
 jq -e '.roles.driver.skill_source_revision and .roles.navigator.skill_source_revision' "$EVIDENCE" >/dev/null || fail "skill revision evidence missing"
 assert_present "$HOME_DIR/data/pair/ready" "barrier was not released"
 assert_grep 'role=driver' "$HOME_DIR/data/pair/brief.md" "driver role fact missing"
-assert_grep 'paired-review/driver/SKILL.md' "$HOME_DIR/data/pair/brief.md" "driver skill pointer missing"
+assert_grep "$ROOT/custom-skills/paired-review/driver/SKILL.md" "$HOME_DIR/data/pair/brief.md" \
+  "driver skill pointer is not rooted in the running Firstmate checkout"
+assert_no_grep '/home/dathuynh/codes/firstmate/custom-skills/paired-review/' "$HOME_DIR/data/pair/brief.md" \
+  "driver brief is tied to one developer's filesystem"
 assert_no_grep 'paired-review/SKILL.md' "$HOME_DIR/data/pair/brief.md" "driver reads parent skill"
 assert_grep 'role=navigator' "$HOME_DIR/data/pair-nav/brief.md" "navigator role fact missing"
+assert_grep "$ROOT/custom-skills/paired-review/navigator/SKILL.md" "$HOME_DIR/data/pair-nav/brief.md" \
+  "navigator skill pointer is not rooted in the running Firstmate checkout"
 assert_grep 'Driver copy and branch' "$HOME_DIR/data/pair-nav/brief.md" "navigator lacks driver copy fact"
 assert_grep 'current task remains implementation scope' "$HOME_DIR/data/pair-nav/brief.md" "epic scope boundary missing"
 assert_grep "$HOME_DIR|pair PAIR READY pair;" "$TMP_ROOT/send.log" "driver readiness release not submitted via fm-send"

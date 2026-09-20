@@ -317,9 +317,11 @@ prepare_handoff_brief() {  # <programme-id> <handoff-path>
 }
 
 cmd_rotate() {
-  local pid binding aid pending turns requested handoff start cursor_file
+  local pid binding aid pending turns requested handoff start cursor_file current
   local parent_history parent_worktree usage used capacity percent target_info backend target new_history new_session primary_harness
-  pid="${1:-}"; need_programme "$pid"; shift || true
+  pid="${1:-}"; need_programme "$pid"
+  [ "$pid" = primary ] || die "rotate only accepts primary"
+  shift || true
   requested=""
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -373,11 +375,29 @@ EOF
     [ -n "$new_history" ] && break
     sleep "$HANDOFF_POLL"
   done
-  [ -n "$new_history" ] || new_history=$parent_history
+  [ -n "$new_history" ] || die "replacement primary history did not appear within ${HANDOFF_WAIT}s"
   new_session=$(fm_assistance_primary_session_id "$new_history")
+  current=$(fm_assistance_current_path "$FM_HOME" primary)
+  start=$SECONDS
+  while [ "$((SECONDS - start))" -lt "$HANDOFF_WAIT" ]; do
+    [ "$(fm_assistance_meta_field "$current" primary_harness)" = "$primary_harness" ] \
+      && [ "$(fm_assistance_meta_field "$current" primary_session)" = "$new_session" ] \
+      && [ "$(fm_assistance_meta_field "$current" parent_history)" = "$new_history" ] \
+      && break
+    sleep "$HANDOFF_POLL"
+  done
+  [ "$(fm_assistance_meta_field "$current" primary_harness)" = "$primary_harness" ] \
+    && [ "$(fm_assistance_meta_field "$current" primary_session)" = "$new_session" ] \
+    && [ "$(fm_assistance_meta_field "$current" parent_history)" = "$new_history" ] \
+    || die "replacement primary session was not confirmed within ${HANDOFF_WAIT}s"
   sed -i "s|^parent_history=.*|parent_history=$new_history|" "$binding"
-  printf 'primary_session=%s\n' "$new_session" >> "$binding"
+  if grep -q '^primary_session=' "$binding"; then
+    sed -i "s|^primary_session=.*|primary_session=$new_session|" "$binding"
+  else
+    printf 'primary_session=%s\n' "$new_session" >> "$binding"
+  fi
   rm -f "$cursor_file"
+  cmd_arm "$pid" >/dev/null || die "replacement primary assistance source could not be armed"
   printf 'rotation_handoff=%s usage_before=%s/%s (%.2f%%) committed_cursor=reset replacement_history=%s new_endpoint=%s\n' "$handoff" "$used" "$capacity" "$percent" "$new_history" "${target:-unknown}"
 }
 

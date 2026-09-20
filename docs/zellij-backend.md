@@ -74,7 +74,8 @@ This active probe is scoped to spawn-time worktree discovery and is not advertis
 The adapter records the previously active tab and immediately restores it with `go-to-tab-by-id`.
 There is a narrow visible race between those calls that no current Zellij flag can remove.
 
-Literal send uses bracketed paste followed by a separate explicit Enter.
+An ordinary metadata-routed `fm-send.sh` text steer becomes a durable steering-inbox record, and only its best-effort constant doorbell passes through Zellij's submit machinery.
+On the typed plane, literal send uses bracketed paste followed by a separate explicit Enter.
 Before sending Enter, the adapter proves that the selected composer's normalized content changed by exactly the pasted text; an unreadable composer, a paste that lands elsewhere, or unrelated pane output fails without submitting.
 The adapter supports `Enter`, `Esc`, and the one-argument key expression `Ctrl c` through the shared key vocabulary.
 Zellij exposes no cursor-row or native agent-state signal, but `dump-screen --ansi` (verified at 0.44.0) preserves styling, so the composer is read through the same fleet-wide classifier as tmux and herdr (`bin/fm-composer-lib.sh`), with ghost and placeholder text stripped before the verdict.
@@ -94,7 +95,8 @@ Real test cleanup uses only an isolated non-`firstmate` session and the guard in
 
 - Zellij is experimental and explicit-only.
 - All homes share one session and tab bar; scoped titles prevent cross-home identity collisions but do not create per-home visual containers.
-- There is no native busy or push-event signal, so supervision uses capture/hash polling for screen changes and the busy-state contract in [architecture](architecture.md#busy-state-is-semantic-per-adapter) for harness-specific lifecycle and fallback classification.
+- There is no native busy or push-event signal, so supervision uses capture/hash polling for screen changes and each harness adapter's semantic lifecycle for worker state.
+  Grok alone retains its isolated rendered-tail fallback.
 - There is no verified agent-process liveness signal, so a dead Zellij secondmate is reported inconclusive rather than auto-respawned.
 - New-tab focus restoration has a narrow visible race.
 - CLI exit status is not meaningful; a target can still disappear after structural readiness checks.

@@ -233,7 +233,7 @@ SH
   cat > "$fakebin/no-mistakes" <<'SH'
 #!/usr/bin/env bash
 if [ "${1:-}" = --version ]; then
-  printf '%s\n' 'no-mistakes version v1.31.2 (fake)'
+  printf '%s\n' 'no-mistakes version v1.46.0 (fake)'
   exit 0
 fi
 exit 0
@@ -252,7 +252,7 @@ SH
   cat > "$fakebin/quota-axi" <<'SH'
 #!/usr/bin/env bash
 if [ "${1:-}" = --version ]; then
-  printf '%s\n' '0.1.25'
+  printf '%s\n' '0.1.29'
   exit 0
 fi
 exit 0
@@ -405,22 +405,6 @@ test_sweep_respawns_authoritatively_missing_pi_secondmate() {
   pass "sweep: an authoritatively missing Pi secondmate window is relaunched"
 }
 
-test_sweep_respawns_authoritatively_missing_cursor_secondmate() {
-  local w fb tmuxfb log out
-  w=$(new_world sweep-missing-cursor)
-  add_sm_home "$w" sm1 firstmate:fm-sm1 cursor
-  fb=$(make_toolchain "$w"); tmuxfb=$(make_liveness_tmux "$w")
-  log="$w/calls.log"; : > "$log"
-
-  out=$(run_bootstrap "$tmuxfb:$fb" "$w/home" missing "$log")
-
-  assert_not_contains "$out" "unverified for recovery" \
-    "a recorded cursor secondmate should be verified for recovery"
-  assert_contains "$(cat "$log")" "new-window" \
-    "an authoritatively missing cursor secondmate should be relaunched"
-  pass "sweep: an authoritatively missing cursor secondmate window is relaunched"
-}
-
 test_sweep_respawns_authoritatively_missing_pi_signed_secondmate() {
   local w fb tmuxfb log out
   w=$(new_world sweep-missing-pi-signed)
@@ -563,7 +547,6 @@ test_agent_state_dispatcher_and_compatibility
 test_sweep_respawns_confirmed_dead_secondmate
 test_sweep_leaves_alive_secondmate_untouched
 test_sweep_respawns_authoritatively_missing_pi_secondmate
-test_sweep_respawns_authoritatively_missing_cursor_secondmate
 test_sweep_respawns_authoritatively_missing_pi_signed_secondmate
 test_sweep_never_acts_on_ambiguous_existing_process
 test_sweep_never_acts_on_transient_unreadability

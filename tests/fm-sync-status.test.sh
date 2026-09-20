@@ -15,7 +15,8 @@ git -C "$repo" add file && git -C "$repo" commit -qm initial
 base=$(git -C "$repo" rev-parse HEAD)
 git -C "$repo" branch -f origin/main "$base"
 git -C "$repo" branch -f upstream/main "$base"
-git -C "$repo" commit -q --allow-empty -m 'Sync fork with upstream main (#1)'
+subject='Sync fork with upstream main "quoted" \ path (#1)'
+git -C "$repo" commit -q --allow-empty -m "$subject"
 out=$($STATUS "$repo")
 assert_contains "$out" 'local main matches origin/main' 'default output reports fork equality'
 assert_contains "$out" 'upstream/main:' 'default output reports upstream hash'
@@ -25,6 +26,9 @@ json=$($STATUS --json "$repo")
 assert_contains "$json" '"schema":"fm-sync-status.v1"' 'JSON output has stable schema'
 assert_contains "$json" '"local_matches_origin":true' 'JSON output carries equality'
 assert_contains "$json" '"source_ref":"upstream/main"' 'JSON output carries receipt source'
+jq -e . >/dev/null <<<"$json" || fail 'JSON output is not valid JSON'
+assert_equals "$subject" "$(jq -r '.latest_sync_receipt.subject' <<<"$json")" \
+  'JSON output did not escape and round-trip the Git-controlled receipt subject'
 # The command must not alter refs or the worktree.
 test "$(git -C "$repo" rev-parse main)" = "$(git -C "$repo" rev-parse HEAD)" || fail 'status changed refs'
 pass 'sync status reports content and ancestry through its public interface'

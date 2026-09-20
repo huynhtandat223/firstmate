@@ -38,8 +38,18 @@ if [ -n "$local_hash" ] && [ -n "$upstream_hash" ]; then
   read -r ahead behind < <("${git_cmd[@]}" rev-list --left-right --count "$local_hash...$upstream_hash")
 else ahead=null; behind=null; fi
 if [ "$json" -eq 1 ]; then
-  printf '{"schema":"fm-sync-status.v1","repository":"%s","local_main":"%s","origin_main":"%s","local_matches_origin":%s,"upstream_main":"%s","latest_sync_receipt":{"commit":"%s","subject":"%s","source_ref":"%s"},"ancestry":{"local_vs_upstream":{"ahead":%s,"behind":%s},"interpretation":"ancestry counts are not a content-sync verdict after squash-style sync; compare commit trees"}}\n' \
-    "$root" "$local_hash" "$origin_hash" "$content_match" "$upstream_hash" "$receipt_hash" "$receipt_subject" "$receipt_source" "$ahead" "$behind"
+  jq -cn \
+    --arg repository "$root" \
+    --arg local_main "$local_hash" \
+    --arg origin_main "$origin_hash" \
+    --argjson local_matches_origin "$content_match" \
+    --arg upstream_main "$upstream_hash" \
+    --arg receipt_commit "$receipt_hash" \
+    --arg receipt_subject "$receipt_subject" \
+    --arg receipt_source "$receipt_source" \
+    --argjson ahead "$ahead" \
+    --argjson behind "$behind" \
+    '{schema:"fm-sync-status.v1",repository:$repository,local_main:$local_main,origin_main:$origin_main,local_matches_origin:$local_matches_origin,upstream_main:$upstream_main,latest_sync_receipt:{commit:$receipt_commit,subject:$receipt_subject,source_ref:$receipt_source},ancestry:{local_vs_upstream:{ahead:$ahead,behind:$behind},interpretation:"ancestry counts are not a content-sync verdict after squash-style sync; compare commit trees"}}'
   exit 0
 fi
 printf 'fork content: '; if [ "$content_match" = true ]; then printf 'local main matches origin/main\n'; else printf 'local main does not match origin/main\n'; fi

@@ -278,6 +278,7 @@ fm_assistance_primary_history_replacement() {  # <worktree> <old-history>
   while IFS= read -r candidate; do
     [ "$candidate" = "$2" ] && continue
     newest=$candidate
+    break
   done < <(fm_assistance_primary_history_candidates "$1" | while IFS= read -r candidate; do
     printf '%s\t%s\n' "$(stat -c '%Y' "$candidate" 2>/dev/null || printf 0)" "$candidate"
   done | sort -nr | cut -f2-)
