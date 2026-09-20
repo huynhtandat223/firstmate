@@ -1985,25 +1985,31 @@ contribution_tasks_json() {
   done | jq -s .
 }
 
+# Staged on disk before any consumer runs: a real home's backlog JSON is far larger than a command
+# line can carry, so every jq below reads it with --slurpfile rather than --argjson.
+JSON_TRANSPORT_DIR=$(mktemp -d "${TMPDIR:-/tmp}/fm-fleet-snapshot.XXXXXX") \
+  || { echo "fm-fleet-snapshot: temporary transport directory creation failed" >&2; exit 1; }
+BACKLOG_JSON_FILE="$JSON_TRANSPORT_DIR/backlog.json"
+printf '%s\n' "$BACKLOG_JSON" > "$BACKLOG_JSON_FILE" \
+  || { echo "fm-fleet-snapshot: temporary backlog file write failed" >&2; exit 1; }
+
 if [ "$OUTPUT_MODE" = contribution-input ]; then
   # Reuse the canonical backlog parser, without observing workers or other homes.
   contribution_tasks=$(contribution_tasks_json) || { echo "fm-fleet-snapshot: contribution task read failed" >&2; exit 1; }
-  jq -n --argjson backlog "$BACKLOG_JSON" --argjson tasks "$contribution_tasks" '{backlog:$backlog,tasks:$tasks}'
+  printf '%s\n' "$contribution_tasks" > "$JSON_TRANSPORT_DIR/contribution-tasks.json" \
+    || { echo "fm-fleet-snapshot: contribution task staging failed" >&2; exit 1; }
+  jq -n --slurpfile backlog "$BACKLOG_JSON_FILE" --slurpfile tasks "$JSON_TRANSPORT_DIR/contribution-tasks.json" \
+    '{backlog:$backlog[0],tasks:$tasks[0]}'
   exit 0
 fi
 prefetch_task_current_states || { echo "fm-fleet-snapshot: task observation failed" >&2; exit 1; }
 TASKS_JSON=$(task_json_lines) || { echo "fm-fleet-snapshot: task snapshot failed" >&2; exit 1; }
 
-JSON_TRANSPORT_DIR=$(mktemp -d "${TMPDIR:-/tmp}/fm-fleet-snapshot.XXXXXX") \
-  || { echo "fm-fleet-snapshot: temporary transport directory creation failed" >&2; exit 1; }
-BACKLOG_JSON_FILE="$JSON_TRANSPORT_DIR/backlog.json"
 TASKS_JSON_FILE="$JSON_TRANSPORT_DIR/tasks.json"
 MAIN_INVENTORY_JSON_FILE="$JSON_TRANSPORT_DIR/main-inventory.json"
 SCOUT_REPORTS_JSON_FILE="$JSON_TRANSPORT_DIR/scout-reports.json"
 SECONDMATE_CURRENT_JSON_FILE="$JSON_TRANSPORT_DIR/secondmate-current.json"
 SECONDMATE_LANDED_JSON_FILE="$JSON_TRANSPORT_DIR/secondmate-landed.json"
-printf '%s\n' "$BACKLOG_JSON" > "$BACKLOG_JSON_FILE" \
-  || { echo "fm-fleet-snapshot: temporary backlog file write failed" >&2; exit 1; }
 printf '%s\n' "$TASKS_JSON" > "$TASKS_JSON_FILE" \
   || { echo "fm-fleet-snapshot: temporary task file write failed" >&2; exit 1; }
 
