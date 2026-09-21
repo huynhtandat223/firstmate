@@ -113,6 +113,19 @@ fm_task_id_creation_valid() {
   [ "${#id}" -le 64 ]
 }
 
+# The chrome-devtools-axi session owned by a task: the task id itself, which
+# already satisfies that tool's name charset and length. The default session
+# (firstmate's own interactive browser) and the gpt session (the ChatGPT
+# reader) are reserved and keep a prefixed name, so stopping a task's session
+# can never take down either of them. bin/fm-spawn.sh exports this into every
+# worker launch and bin/fm-teardown.sh stops it.
+fm_axi_session_name() {
+  case "${1-}" in
+  default | gpt) printf 'fm-%s\n' "$1" ;;
+  *) printf '%s\n' "$1" ;;
+  esac
+}
+
 # GitLab serves self-hosted instances, so the host is part of the identity
 # rather than a constant. It is accepted only as a lowercase DNS name with no
 # userinfo, port, or trailing dot, which keeps one canonical spelling per MR.

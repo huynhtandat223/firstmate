@@ -260,6 +260,11 @@
 #     root still exists, so the account's healthy LaunchAgent worker and every
 #     live remote secondmate worker are out of scope. Best effort: a sweep
 #     failure never blocks this teardown.
+#   Fix 4 - stop the task's own browser session. bin/fm-spawn.sh gives every
+#   worker its own chrome-devtools-axi session named after the task, so the
+#   bridge that session started is stopped here by name. Scoped to that one
+#   session only: never the default session, never another task's, never a
+#   process-list kill. Best effort: a never-started session is a silent no-op.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -3399,6 +3404,20 @@ fi
 # Fix 3 (see script header): sweep remote job workers abandoned by an already
 # pruned code root. Best effort - a sweep failure never blocks this teardown.
 "$SCRIPT_DIR/fm-remote-job-reap-orphans.sh" >&2 || true
+
+# Fix 4 (see script header): stop this task's own browser session, and nothing
+# else. Best effort - never blocks this teardown and never warns.
+teardown_axi_session() {  # <task-id>
+  local session
+  # Never touch the default session: an empty or path-unsafe id stops here,
+  # and fm_axi_session_name keeps the reserved default/gpt names off
+  # firstmate's own and the ChatGPT reader's sessions.
+  fm_task_id_path_safe "$1" || return 0
+  session=$(fm_axi_session_name "$1") || return 0
+  command -v chrome-devtools-axi >/dev/null 2>&1 || return 0
+  CHROME_DEVTOOLS_AXI_SESSION=$session chrome-devtools-axi stop >/dev/null 2>&1 || true
+}
+teardown_axi_session "$ID" || true
 
 # Best-effort: drop the local task branch so the shared repo does not accumulate refs.
 if [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then
