@@ -215,6 +215,11 @@
 #   behavior suite from the repository primary checkout while that marker is
 #   set (its header owns the refusal). A secondmate runs in its own home and is
 #   not marked.
+#   Every worker also gets its own chrome-devtools-axi browser session named
+#   after the task (bin/fm-pr-lib.sh's fm_axi_session_name owns the name),
+#   exported into the pane and pinned on the launch command below, so no two
+#   agents share one bridge.pid file. bin/fm-teardown.sh stops that session.
+#   A relaunch reuses the same task id and therefore the same session.
 #   Only after this isolation check, every fresh ship or scout requires a clean
 #   task worktree. When an origin configuration is detected, spawn fetches it,
 #   resolves the current remote default branch, and resets to its tip. When none
@@ -4662,6 +4667,14 @@ fi
 # so under an enabled allowlist the switch is established before the wrapping
 # `/bin/sh` starts rather than only inside the command that shell runs.
 LAUNCH="export COMPACT_ADVISER_DISABLE=1; $LAUNCH"
+# Per-task browser session: one chrome-devtools-axi session per worker, so no
+# two agents share a bridge.pid file and each browser dies with its task.
+# Pinned on the launch command like the kill switch above, so it holds under
+# the launch-env allowlist too; the pane export beside FM_TASK_ID below covers
+# later commands in that shell. Every harness, backend, and kind rides this
+# same path, including relaunches of the same task id.
+AXI_SESSION=$(fm_axi_session_name "$ID") || exit 1
+LAUNCH="export CHROME_DEVTOOLS_AXI_SESSION=$AXI_SESSION; $LAUNCH"
 if [ -z "$SPAWN_TRACEPARENT" ] && [ "$RELAUNCH" -eq 1 ]; then
   LAUNCH="unset TRACEPARENT; $LAUNCH"
 fi
@@ -4708,6 +4721,9 @@ spawn_send_text_line "$T" "export COMPACT_ADVISER_DISABLE=1"
 if [ "$KIND" = ship ] || [ "$KIND" = scout ]; then
   spawn_send_text_line "$T" "export FM_TASK_ID=$ID"
 fi
+# Every kind gets a browser session (ship, scout, and secondmate alike), on the
+# same pre-launch channel as GOTMPDIR above.
+spawn_send_text_line "$T" "export CHROME_DEVTOOLS_AXI_SESSION=$AXI_SESSION"
 # Send through the exact channel that already ships GOTMPDIR, so every backend
 # and harness - ship, scout, and secondmate - gets it before launch. Skipped
 # entirely when trace context is off.
