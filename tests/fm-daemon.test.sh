@@ -117,8 +117,8 @@ test_classify_signal_skips_turn_end_markers() {
   printf '#!/usr/bin/env bash\nexit 1\n' > "$reader"; chmod +x "$reader"
   turn="$state/task.turn-ended"; : > "$turn"
   out=$(FM_STATUS_IDENTITY_READER="$reader" classify_signal "$turn" "$state")
-  case "$out" in self\|routine\ signal:*) ;;
-    *) fail "an empty turn-end marker was not routine under unavailable identity: $out" ;;
+  case "$out" in escalate\|*"task.turn-ended: turn ended idle with no status"*) ;;
+    *) fail "an empty turn-end marker without busy evidence did not escalate: $out" ;;
   esac
   status="$state/task.status"
   printf 'blocked: release approval required\nworking: preparing notes\n' > "$status"
@@ -127,6 +127,30 @@ test_classify_signal_skips_turn_end_markers() {
     *) fail "a mixed turn-end and actionable status batch did not name the status event: $out" ;;
   esac
   pass "turn-end markers stay routine while mixed actionable status batches escalate"
+}
+
+test_classify_signal_classifies_bare_turn_end_by_busy_evidence() {
+  local dir state fakebin out
+  dir=$(make_case signal-turn-end-busy); state="$dir/state"; fakebin="$dir/fakebin"
+  : > "$state/idle-task.turn-ended"
+  out=$(FM_HOME="$dir/home" FM_STATE_OVERRIDE="$state" \
+    FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    classify_signal "$state/idle-task.turn-ended" "$state")
+  case "$out" in
+    escalate\|*"idle-task.turn-ended: turn ended idle with no status"*) ;;
+    *) fail "an idle bare turn-end was not escalated: $out" ;;
+  esac
+
+  : > "$state/busy-task.turn-ended"
+  out=$(FM_HOME="$dir/home" FM_STATE_OVERRIDE="$state" \
+    FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_FAKE_CREW_STATE='state: working · source: pane · active' \
+    classify_signal "$state/busy-task.turn-ended" "$state")
+  case "$out" in
+    self\|routine\ signal:*) ;;
+    *) fail "a provably busy bare turn-end did not self-handle: $out" ;;
+  esac
+  pass "bare turn-ends escalate without positive busy evidence and self-handle when busy"
 }
 
 test_classify_signal_survives_a_later_routine_append() {
@@ -2843,6 +2867,7 @@ test_tmux_composer_state_requires_matching_box_borders
 test_pane_input_pending_preserves_bright_placeholder_like_draft
 test_classify_signal_dedup_against_scan
 test_classify_signal_skips_turn_end_markers
+test_classify_signal_classifies_bare_turn_end_by_busy_evidence
 test_classify_signal_survives_a_later_routine_append
 test_classification_commits_its_captured_endpoint
 test_stale_masked_event_escalates_at_captured_endpoint

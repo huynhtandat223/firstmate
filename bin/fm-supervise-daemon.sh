@@ -177,6 +177,9 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 # classification predicates have exactly one definition.
 # shellcheck source=bin/fm-classify-lib.sh
 . "$FM_DAEMON_DIR/fm-classify-lib.sh"
+# Reuse the watcher's bounded churn proof for the opted-in bare turn-end case.
+# shellcheck source=bin/fm-watch.sh
+. "$FM_DAEMON_DIR/fm-watch.sh"
 # The away-posture record owner: while state/.afk-contract exists an item held
 # for the captain is never rechecked (the watcher applies the same rule).
 # shellcheck source=bin/fm-afk-contract.sh
@@ -353,8 +356,15 @@ _collapse_newlines() {  # <text>
 
 classify_signal() {  # <reason-after-colon> <state>
   local reason=$1 state=$2 f last event record rest endpoint ident rc distilled="" rel="" seen_rel="" task sig marker
+  local turnend_churn_absorb=0
+  [ -e "${FM_HOME%/}/config/turnend-churn-absorb" ] && turnend_churn_absorb=1
+  local -a turn_ends=()
   for f in $reason; do
-    case "$f" in *.status) ;; *) continue ;; esac
+    case "$f" in
+      *.status) ;;
+      *.turn-ended) turn_ends+=("$f"); continue ;;
+      *) continue ;;
+    esac
     [ -e "$f" ] || [ -L "$f" ] || continue
     task=$(basename "$f"); task="${task%.status}"
     record=$(status_span_first_actionable_record "$f" \
@@ -389,6 +399,19 @@ classify_signal() {  # <reason-after-colon> <state>
     # of something already escalated, not a routine one; position is the whole
     # dedupe, so no separate seen-marker comparison is needed.
     status_is_captain_relevant "$last" && seen_rel=1
+  done
+  for f in "${turn_ends[@]}"; do
+    [ -e "$f" ] || [ -L "$f" ] || continue
+    task=$(basename "$f"); task=${task%.turn-ended}
+    if crew_is_provably_working "$task"; then
+      continue
+    fi
+    if [ "$turnend_churn_absorb" -eq 1 ] \
+      && signal_turnend_panes_churned "$f"; then
+      continue
+    fi
+    distilled="${distilled}$(basename "$f"): turn ended idle with no status | "
+    rel=1
   done
   # strip a trailing " | " separator so the distilled line is clean
   distilled="${distilled% | }"
