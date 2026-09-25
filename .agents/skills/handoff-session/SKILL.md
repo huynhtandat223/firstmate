@@ -28,10 +28,9 @@ Done when the status line exists, `data/<task-id>/handoff.md` exists, and every 
 ## 2. Relaunch on the same adapter
 
 Run `bin/fm-control.sh <task-id> relaunch --note "<note>"` with no `--harness`, `--model` or `--effort`, so a ship or scout keeps the adapter already recorded in `state/<task-id>.meta`.
-When an earlier relaunch moved the task off its original adapter, pass that original harness and model explicitly to return it.
 The note tells the replacement to read `data/<task-id>/handoff.md` first, names the pushed heads, lists what is left, and says to keep working until the next deliverable or a real blocker.
 
-Done when `fm-control` reports the relaunch and the recorded harness and model are the task's original ones.
+Done when `fm-control` reports the relaunch and the recorded harness, model and effort equal those recorded before the handoff.
 
 ## 3. Restore monitoring
 
