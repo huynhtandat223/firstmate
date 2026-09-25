@@ -289,6 +289,10 @@
       "audience": "agent-runtime"
     },
     {
+      "path": "custom-skills/handoff-session/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": "custom-skills/matt/PROVENANCE.md",
       "audience": "agent-runtime"
     },

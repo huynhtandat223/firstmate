@@ -46,6 +46,7 @@ Load only the exact file named by the first matching trigger, when the trigger o
 | A paired brief carries `role=navigator` | `/home/dathuynh/codes/firstmate/custom-skills/paired-review/navigator/SKILL.md`, then `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/code-review/SKILL.md` |
 | An implementation worker in `cfw-modules` builds or changes a business page, a component definition, a primitive or a design token | `.agents/skills/cfw-frontend-development/SKILL.md` in that checkout |
 | Verification of a task's expected behavior begins, or a completion claim is about to be made | `/home/dathuynh/codes/firstmate/custom-skills/classical-testing/SKILL.md` |
+| Firstmate sees a worker's context meter at the handoff threshold with work left, or the captain asks for a handoff | `/home/dathuynh/codes/firstmate/custom-skills/handoff-session/SKILL.md` |
 | A review or navigator task is opened | `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/code-review/SKILL.md` |
 | A diagnosis task is opened | `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/diagnosing-bugs/SKILL.md` |
 | The captain invokes `/orchestrator`, asks to run an authorized programme, or a programme supervisor has stopped | `/home/dathuynh/codes/firstmate/custom-skills/orchestrator/SKILL.md` |
