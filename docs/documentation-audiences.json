@@ -289,7 +289,7 @@
       "audience": "agent-runtime"
     },
     {
-      "path": "custom-skills/handoff-session/SKILL.md",
+      "path": ".agents/skills/handoff-session/SKILL.md",
       "audience": "agent-runtime"
     },
     {

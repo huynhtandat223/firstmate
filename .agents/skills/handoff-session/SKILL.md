@@ -1,7 +1,7 @@
 ---
 name: handoff-session
 description: >-
-  Firstmate procedure for moving a live worker's task onto a fresh session of the same harness and model.
+  Agent-only Firstmate procedure for moving a live worker's task onto a fresh session of the same harness and model.
   Use when a peek shows a worker's context meter at the home's handoff threshold with real work left, or when the captain asks for a handoff.
 user-invocable: false
 metadata:
@@ -20,7 +20,7 @@ Steer the worker through `bin/fm-send.sh` with one message that asks it to:
 
 - stop at the next safe point;
 - commit and push everything that builds, on every branch the task owns, and name anything left uncommitted;
-- write the handoff with `custom-skills/matt/productivity/handoff/SKILL.md`, saved to `data/<task-id>/handoff.md` in the firstmate home rather than a temporary directory;
+- write the handoff with Matt's handoff skill (`custom-skills/matt/productivity/handoff/SKILL.md` in the firstmate home), saved to `data/<task-id>/handoff.md` in the firstmate home rather than a temporary directory;
 - cover the captain's current asks in his own words, every branch with its pushed head, every PR, live host and lab state, evidence so far, what is left, and open questions;
 - append a `handoff written` status line and end its turn.
 
