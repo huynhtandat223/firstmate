@@ -5,7 +5,9 @@ set -u
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-TMP_ROOT=$(fm_test_tmproot fm-calm-pi-extension)
+# Snap Chromium cannot read the host /tmp namespace. Keep browser fixtures in
+# the test-owned home namespace, which both native and confined Chrome can read.
+TMP_ROOT=$(TMPDIR="$HOME" fm_test_tmproot fm-calm-pi-extension)
 EXT="$ROOT/.pi/extensions/fm-calm.ts"
 ASSISTANT_LAYOUT="$ROOT/.pi/extensions/lib/fm-calm-assistant-layout.ts"
 PRESERVATION="$ROOT/.pi/extensions/lib/fm-calm-preservation.ts"
@@ -1308,8 +1310,13 @@ for (const { name, actual } of rows) {
 }
 async function assertStockHtmlRendering(command, submitData) {
   editorText = command;
+  if (!getKeybindings().matches(submitData, "tui.input.submit")) {
+    throw new Error(`fixture submit key does not match current binding for ${command}`);
+  }
   terminalInputHandler(submitData);
   const htmlRenderer = createToolHtmlRenderer({
+    // Pi 1.0.1 renamed the renderer lookup; retain 1.0.0 compatibility.
+    getToolRenderers: (name) => tools.find((tool) => tool.name === name),
     getToolDefinition: (name) => tools.find((tool) => tool.name === name),
     theme,
     cwd: process.cwd(),
@@ -1336,11 +1343,15 @@ async function assertStockHtmlRendering(command, submitData) {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
+// Other InteractiveMode instances in this fixture load the user's bindings.
+// Pin the binding this fixture drives instead of inheriting the runner's config.
+getKeybindings().setUserBindings({ "tui.input.submit": "enter" });
 await assertStockHtmlRendering("/export calm.html", "\r");
 getKeybindings().setUserBindings({ "tui.input.submit": "alt+s" });
 editorText = "/export remapped.html";
 terminalInputHandler("\r");
 const unmatchedRenderer = createToolHtmlRenderer({
+  getToolRenderers: (name) => tools.find((tool) => tool.name === name),
   getToolDefinition: (name) => tools.find((tool) => tool.name === name),
   theme,
   cwd: process.cwd(),
