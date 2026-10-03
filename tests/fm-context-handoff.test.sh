@@ -44,6 +44,11 @@ grep -q 'context 40% (80000/200000)' "$tmp/claude.status" || fail 'Claude cache 
 printf '%s\n' '{"message":{"model":"claude-haiku-4-5","content":[{"type":"tool_use","id":"toolu_test","name":"Read","input":{}}],"usage":{"input_tokens":10000,"cache_read_input_tokens":60000,"cache_creation_input_tokens":10000}}}' > "$tmp/transcript"
 printf '{"transcript_path":"%s","last_assistant_message":"not flushed yet"}' "$tmp/transcript" | node "$ROOT/bin/fm-context-handoff.mjs" "$tmp/tool-use.status" g 40 claude default
 grep -q 'handoff-needed .*context 40% (80000/200000)' "$tmp/tool-use.status" || fail 'Claude newest tool-use usage fallback'
+printf '%s\n' '{"message":{"model":"claude-haiku-4-5","usage":{"input_tokens":10000}}}' > "$tmp/transcript"
+(sleep 0.5; printf '%s\n' '{"message":{"model":"claude-haiku-4-5","content":[{"type":"tool_use","id":"toolu_late","name":"Read","input":{}}],"usage":{"input_tokens":80000}}}' >> "$tmp/transcript") &
+printf '{"transcript_path":"%s","last_assistant_message":"not flushed yet"}' "$tmp/transcript" | node "$ROOT/bin/fm-context-handoff.mjs" "$tmp/late-tool-use.status" h 40 claude default
+wait
+grep -q 'handoff-needed .*context 40% (80000/200000)' "$tmp/late-tool-use.status" || fail 'Claude retries use newly flushed usage entry'
 printf '%s\n' '{"message":{"model":"claude-haiku-4-5","usage":{"input_tokens":10000,"cache_read_input_tokens":60000,"cache_creation_input_tokens":10000}}}' > "$tmp/transcript"
 printf '{"transcript_path":"%s"}' "$tmp/transcript" | node "$ROOT/bin/fm-context-handoff.mjs" "$tmp/one-million.status" f 8 claude 'haiku[1m]'
 grep -q 'context 8% (80000/1000000)' "$tmp/one-million.status" || fail '[1m] window'

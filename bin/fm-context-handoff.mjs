@@ -16,17 +16,19 @@ if (mode === 'claude') {
   // Claude's Stop event can precede its asynchronous transcript flush.
   for (let attempt = 0; attempt < 20; attempt++) {
     const entries = fs.readFileSync(hook.transcript_path, 'utf8').trim().split('\n');
+    let attemptNewestUsage;
     for (const line of entries.reverse()) {
       try {
         const entry = JSON.parse(line);
         if (entry.message?.usage) {
-          newestUsage ??= entry.message;
+          attemptNewestUsage ??= entry.message;
           const text = entry.message.content?.filter(part => part.type === 'text').map(part => part.text).join('') || '';
           if (hook.last_assistant_message && text !== hook.last_assistant_message) continue;
           message = entry.message; break;
         }
       } catch { /* A partial transcript line is not a measurement. */ }
     }
+    newestUsage = attemptNewestUsage || newestUsage;
     if (message) break;
     await new Promise(resolve => setTimeout(resolve, 100));
   }
