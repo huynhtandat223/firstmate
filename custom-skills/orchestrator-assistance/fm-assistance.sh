@@ -105,12 +105,47 @@ FM_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 FM_HOME="${FM_HOME:-$FM_ROOT}"
 FM_SEND="${FM_SEND:-$FM_ROOT/bin/fm-send.sh}"
 FM_SPAWN="${FM_SPAWN:-$FM_ROOT/bin/fm-spawn.sh}"
+FM_TASKS="${FM_TASKS:-$FM_ROOT/bin/fm-tasks-axi.sh}"
 FM_CONTROL="${FM_CONTROL:-$FM_ROOT/bin/fm-control.sh}"
 SKILL_PATH="$SCRIPT_DIR/SKILL.md"
 HANDOFF_WAIT="${FM_ASSISTANCE_HANDOFF_WAIT:-30}"
 HANDOFF_POLL="${FM_ASSISTANCE_HANDOFF_POLL:-0.2}"
 
 die() { printf 'fm-assistance: %s\n' "$1" >&2; exit 1; }
+
+# A fresh companion launches as an ordinary read-only scout, and fm-spawn refuses
+# a scout with no brief or no backlog item, so open writes each one the home lacks.
+ensure_companion_record() {  # <programme-id> <assistance-id>
+  local pid=$1 aid=$2 brief
+  brief="$FM_HOME/data/$aid/brief.md"
+  if [ ! -f "$brief" ]; then
+    mkdir -p "$FM_HOME/data/$aid" || die "cannot create $FM_HOME/data/$aid"
+    cat > "$brief" <<EOF || die "cannot write $brief"
+You are the assistance companion for parent \`$pid\` in the firstmate home \`$FM_HOME\`: its assistant/QA for the parent's own decisions and for the work its workers deliver.
+
+# Task
+
+Read and follow \`$SCRIPT_DIR/SKILL.md\`; it owns what you watch, what you check, and what you say.
+The programme id is \`$pid\`.
+Run every assistance command as \`FM_HOME=$FM_HOME $SCRIPT_DIR/fm-assistance.sh <command> $pid ...\`.
+
+# Sources
+
+- Firstmate: \`$FM_HOME/AGENTS.md\`, \`$FM_HOME/data/captain.md\`, \`$FM_HOME/data/captain-shared.md\`, \`$FM_HOME/data/learnings.md\`.
+- Projects: the clones under \`$FM_HOME/projects/\`, each with its root and leaf \`AGENTS.md\` and its \`$FM_HOME/data/project-rules/<project>.md\` when present; \`$FM_HOME/data/projects.md\` lists them.
+- Work under way: each \`$FM_HOME/state/<task>.meta\` names the task's \`project=\`, \`worktree=\` and \`pr=\`.
+
+# Reporting
+
+Your only channel is \`fm-assistance.sh remind\`; the parent is its only recipient.
+Append sparse lifecycle lines (\`working\`, \`paused\`, \`blocked\`, \`done\`) to \`$FM_HOME/state/$aid.status\`.
+On the captain's explicit close, write the skill's assistance report to \`$FM_HOME/data/$aid/report.md\`.
+EOF
+  fi
+  FM_HOME="$FM_HOME" "$FM_TASKS" show "$aid" >/dev/null 2>&1 \
+    || FM_HOME="$FM_HOME" "$FM_TASKS" add "$aid" "Assistance companion for $pid" --kind scout --repo firstmate >/dev/null \
+    || die "cannot file backlog item $aid"
+}
 
 usage() {
   sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
@@ -262,7 +297,9 @@ cmd_open() {
     return 0
   fi
 
-  FM_HOME="$FM_HOME" "$FM_SPAWN" "$aid" --supervisor \
+  ensure_companion_record "$pid" "$aid"
+  # A read-only scout in a scratch copy of this repository; it reads the home by absolute path.
+  FM_HOME="$FM_HOME" "$FM_SPAWN" "$aid" "$FM_ROOT" --scout \
     --harness "$FM_ASSISTANCE_HARNESS" --model "$FM_ASSISTANCE_MODEL" --effort "$FM_ASSISTANCE_EFFORT" \
     || die "spawn of $aid failed"
   cmd_arm "$pid" >/dev/null

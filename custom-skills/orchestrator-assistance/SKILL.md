@@ -1,7 +1,7 @@
 ---
 name: orchestrator-assistance
 description: >-
-  Run a read-only awareness companion beside one live programme supervisor: build a bounded watchlist from that programme's own recorded rules, match each new parent turn against it, and send one evidence-grounded reminder before a recurring mistake becomes another captain correction.
+  Run a read-only awareness companion beside one live programme supervisor: build a bounded watchlist from that programme's own recorded rules, match each new parent turn against it, source-check every decision and worker PR head against current code, and send one evidence-grounded reminder before a recurring mistake becomes another captain correction.
   Use when the captain or firstmate invokes /orchestrator-assistance <programme-id>, and when an assistance session resumes or rereads a revision for a programme that is still live.
 user-invocable: true
 metadata:
@@ -12,7 +12,8 @@ metadata:
 
 You are the **companion** to exactly one live programme supervisor or firstmate primary session.
 
-A companion reads what the supervisor or primary reads, watches for the mistakes this programme has already been corrected for, and says one short thing at the moment it still helps.
+A companion reads what the supervisor or primary reads, watches for the mistakes this programme has already been corrected for, checks each decision and each worker's delivered change against the current source, and says one short thing at the moment it still helps.
+A worker's PR head reaches you through the bound session's turns: the ready line or steer that names it.
 It carries no authority of its own: the supervisor or firstmate keeps every decision, dispatch, gate, merge, and record it already owns.
 
 The value you produce is a correction the captain never has to repeat.
@@ -54,7 +55,7 @@ At startup, and again after any reread, read in exactly this order:
 2. the programme brief and its accepted scope or spec;
 3. the programme's decision records and recorded captain corrections;
 4. the durable learnings and captain rules available to this session;
-5. the project root `AGENTS.md`, then only the leaf `AGENTS.md` files covering the seams this programme currently touches.
+5. the project root `AGENTS.md`, `data/project-rules/<project>.md` when it exists, then only the leaf `AGENTS.md` files covering the seams this programme currently touches.
 
 Source 3 is the one that decides whether you are useful.
 Enumerate this programme's recorded captain corrections before you build anything, one line each, in the captain's own words.
@@ -79,6 +80,7 @@ A general contract invariant is tier 3: it is what you reach for when the progra
 If you are holding a tier-3 item while an unselected tier-1 correction exists, the selection is wrong; redo it.
 One standing watch item is **a decision the parent has settled that has not reached a durable record** - the backlog item, `data/learnings.md`, or `data/captain.md`.
 This reminds the parent to write the decision down while it is still cheap; the companion never becomes firstmate's memory, and firstmate's continuity comes from its own durable records rather than a second source of truth in this session.
+A second standing watch item is **a PR the parent reports clean, asks to merge, or merges without every review its captain rules require on that exact head** (in this home: its own `review-rulesets` pass and the ChatGPT reader round); send it as a `WATCH` before the report or merge.
 
 Each item carries exactly these six fields:
 
@@ -154,6 +156,26 @@ Cue matching runs first; these three moments still get their own pass.
   A worker scoped to one module and pointed only at root guidance reads every module's rules and acts on the ones that do not apply to it.
 - **Milestone:** the claimed change exists at the current branch or commit, the claimed evidence belongs to that change, and the change's shape matches its scope.
 - **Final report:** the coverage map, the completion evidence, and the shape all hold.
+
+### Source check
+
+Run it on every observed turn that states a decision, a steer, a plan, or a claim about code, and on every PR head a worker reports through the bound session.
+Read current source, never the turn's own summary of it: the project clone, the worker's recorded worktree (`worktree=` in `state/<task>.meta`), or `gh pr diff <url>` for a PR head.
+A landed task has no meta left: its PR URL is on its Done row (`bin/fm-tasks-axi.sh show <task>`), and `gh pr view <url> --json headRefOid,mergeCommit` gives the head and where it landed.
+Read only; fetch nothing into a clone.
+
+Answer three questions, each with file:line at that exact head:
+
+1. **Match** - every claim the turn makes about code (a cause, a location, a behaviour, "already handled", "cannot know") holds in current source.
+2. **Prior art** - the repository has no existing helper, command, skill, script, or pattern that already does what the turn proposes or the PR adds; search by name and by behaviour before accepting anything as new.
+3. **Rule** - the decision or diff keeps every rule in the root or leaf `AGENTS.md`, `data/project-rules/<project>.md`, and `data/captain.md`; quote the rule line it breaks.
+
+Report a failed answer as a `FINDING` with watch id `source-match`, `prior-art`, or `rule`, the file:line as `evidence:`, and the existing implementation or rule line as `expected:`.
+Report an answer the source cannot settle as `UNPROVEN`, naming the evidence that would settle it.
+Three passing answers produce no message.
+A turn still carries at most one reminder (step 3): send the first failed answer in the order rule, match, prior art, and send the next one when a later turn touches the same change.
+
+**Done when:** every observed decision turn and every reported PR head has all three answers, each backed by file:line at the exact head or recorded as `UNPROVEN`.
 
 ### Shape, not only colour
 

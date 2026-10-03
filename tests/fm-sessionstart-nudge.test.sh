@@ -228,6 +228,16 @@ run_hook() {  # <root> [args...]
     FM_GATE_REFUSE_BYPASS=0 FM_ROOT_OVERRIDE="$root" FM_HOME="$root" PATH="$RUN_PATH" "$RUN" "$@"
 }
 
+run_hook_claude() {  # <root> <home> [args...]: a Claude primary, proven by a nearer claude ancestor
+  local root=$1 home=$2
+  shift 2
+  [ -e "$TMP_ROOT/claude-ancestor/claude" ] || { mkdir -p "$TMP_ROOT/claude-ancestor" && ln -s /bin/bash "$TMP_ROOT/claude-ancestor/claude"; }
+  # shellcheck disable=SC2016 # Expand in the fixture shell, not this parent.
+  env -u PI_CODING_AGENT -u FM_PI_HARNESS -u GROK_AGENT CLAUDECODE=1 HOME="$home" \
+    FM_GATE_REFUSE_BYPASS=0 FM_ROOT_OVERRIDE="$root" FM_HOME="$root" PATH="$RUN_PATH" \
+    "$TMP_ROOT/claude-ancestor/claude" -c '"$@"; rc=$?; :; exit "$rc"' _ "$RUN" "$@"
+}
+
 run_hook_pi() {  # <root> [args...]
   local root=$1
   shift
@@ -998,6 +1008,26 @@ test_run_reads_source_from_the_hook_payload() {
   pass "run wrapper: the hook payload's source field drives routing with no explicit argument"
 }
 
+test_run_publishes_the_claude_primary_session_for_assistance() {
+  local root="$TMP_ROOT/run-assist" home="$TMP_ROOT/run-assist-home" history record status=0
+  make_run_primary "$root"
+  history="$home/.claude/projects/$(printf '%s\n' "$root" | tr '/.' '--')/s-assist.jsonl"
+  mkdir -p "$(dirname "$history")"
+  echo '{}' > "$history"
+  record="$root/state/primary-assistance.assistance-current"
+  printf '{"session_id":"s-assist","source":"resume"}' | run_hook_claude "$root" "$home" >/dev/null || status=$?
+  expect_code 0 "$status" "run wrapper without an assistance binding"
+  assert_absent "$record" "a home with no primary assistance published a session record"
+
+  : > "$root/state/primary-assistance.assistance-binding"
+  status=0
+  printf '{"session_id":"s-assist","source":"resume"}' | run_hook_claude "$root" "$home" >/dev/null || status=$?
+  expect_code 0 "$status" "run wrapper with an assistance binding"
+  assert_grep "primary_session=s-assist" "$record" "the running Claude session was not published"
+  assert_grep "parent_history=$history" "$record" "the published history is not the session's own transcript"
+  pass "run wrapper: a Claude SessionStart publishes the running session to an enabled primary companion"
+}
+
 test_run_unknown_source_takes_the_helm() {
   local root="$TMP_ROOT/run-unknown" out status=0
   make_run_primary "$root"
@@ -1065,6 +1095,7 @@ test_run_clear_without_completion_finishes_startup
 test_run_clear_rejects_previous_owner_completion
 test_run_resume_delegates_to_the_nudge
 test_run_reads_source_from_the_hook_payload
+test_run_publishes_the_claude_primary_session_for_assistance
 test_run_unknown_source_takes_the_helm
 test_run_gate_and_scope_are_silent
 test_run_reports_a_failed_session_start_as_digest_text
