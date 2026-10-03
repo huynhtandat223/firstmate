@@ -4183,6 +4183,7 @@ EOF
 // tool calls) and stays a wake NOTIFICATION touch for the watcher, never
 // current-state truth.
 import { execFile } from "node:child_process";
+import { contextTurnEnd } from "$FM_ROOT/bin/fm-context-turn-end.mjs";
 const busyEvent = (state: string, event: string) =>
   new Promise<void>((resolve) => {
     execFile("$FM_ROOT/bin/fm-busy-event.sh", [
@@ -4199,11 +4200,12 @@ export default function (pi: any) {
   pi.on("turn_end", async (_event: any, ctx: any) => {
     const usage = ctx.getContextUsage();
     if ("$KIND" !== "secondmate" && usage?.tokens != null) {
-      const notification = await new Promise<string>((resolve, reject) => execFile("node", [
-        "$FM_ROOT/bin/fm-context-handoff.mjs", "$STATE_REAL/$ID.status", "$BUSY_GEN",
-        "${FM_HANDOFF_PCT:-40}", String(usage.tokens), String(usage.contextWindow),
-      ], (error, stdout) => error ? reject(error) : resolve(stdout)));
-      if (notification) ctx.abort();
+      await contextTurnEnd("$FM_ROOT/bin/fm-context-handoff.mjs", [
+        "$STATE_REAL/$ID.status", "$BUSY_GEN", "${FM_HANDOFF_PCT:-40}",
+        String(usage.tokens), String(usage.contextWindow),
+      ], "$TURNEND");
+      ctx.abort();
+      return;
     }
     execFile("touch", ["$TURNEND"]);
   });

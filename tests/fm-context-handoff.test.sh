@@ -24,4 +24,12 @@ printf '{"transcript_path":"%s"}' "$tmp/transcript" | node "$ROOT/bin/fm-context
 grep -q 'context 40% (80000/200000)' "$tmp/claude.status" || fail 'Claude cache measurement'
 printf '{"transcript_path":"%s"}' "$tmp/transcript" | node "$ROOT/bin/fm-context-handoff.mjs" "$tmp/one-million.status" f 8 claude 'haiku[1m]'
 grep -q 'context 8% (80000/1000000)' "$tmp/one-million.status" || fail '[1m] window'
-echo 'PASS: threshold, once per session, fourth-trigger limit, actionable status, Claude usage/window'
+node --input-type=module - "$ROOT" "$tmp" <<'JS'
+import { pathToFileURL } from 'node:url';
+import fs from 'node:fs';
+const [root, tmp] = process.argv.slice(2);
+const { contextTurnEnd } = await import(pathToFileURL(`${root}/bin/fm-context-turn-end.mjs`));
+await contextTurnEnd(`${tmp}/missing-helper.mjs`, [], `${tmp}/turn-ended`);
+if (!fs.existsSync(`${tmp}/turn-ended`)) throw Error('failed helper lost turn-end notification');
+JS
+echo 'PASS: threshold, once per session, fourth-trigger limit, actionable status, Claude usage/window, failing helper preserves turn end'
