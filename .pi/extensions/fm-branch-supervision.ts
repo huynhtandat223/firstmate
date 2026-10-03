@@ -2166,11 +2166,16 @@ ${context.command}
       recent: Type.Optional(Type.Number({ description: "How many most-recent outcomes to read (default 20)" })),
     }),
     renderShell: "self",
-    renderCall: (_args, theme, context) => {
+    renderCall: (args, theme, context) => {
       if (calmPresentation.stockExportRendering) throw new Error("Use Pi stock export rendering");
       if (calmHides("assistant-tool-call")) return new Container();
       const shellState = context.state as OutcomesToolShellState;
-      shellState.call = new Text(theme.fg("toolTitle", theme.bold("fm_branch_outcomes")), 0, 0);
+      const stock = new ToolExecutionComponent("fm_branch_outcomes", context.toolCallId, args,
+        { showImages: false }, undefined, { requestRender() {} } as any, root);
+      stock.setExpanded?.(context.expanded);
+      shellState.call = typeof (stock as any).createCallFallback === "function"
+        ? (stock as unknown as { createCallFallback(): Text }).createCallFallback()
+        : new Text(theme.fg("toolTitle", theme.bold("fm_branch_outcomes")), 0, 0);
       return refreshOutcomesToolShell(shellState, theme, context);
     },
     renderResult: (result, options, theme, context) => {
