@@ -7,6 +7,25 @@ set -eu
 . "$ROOT/bin/fm-classify-lib.sh"
 tmp=$(fm_test_tmproot fm-context-handoff)
 trap 'rm -rf "$tmp"' EXIT
+cat > "$tmp/handoff-thresholds" <<'CONFIG'
+# Auto-compacting and large-window models
+openai-codex/gpt-6-astra off
+cx/gpt-6-astra 25
+*/gpt-6.1-sol off
+* 40
+CONFIG
+for pair in 'openai-codex/gpt-6-astra off' 'cx/gpt-6-astra 25' 'cx/gpt-6.1-sol off' 'other/model 40'; do
+  read -r model expected <<< "$pair"
+  actual=$("$ROOT/bin/fm-handoff-threshold.sh" "$tmp/handoff-thresholds" "$model")
+  [ "$actual" = "$expected" ] || fail "$model: expected $expected, got $actual"
+done
+[ "$("$ROOT/bin/fm-handoff-threshold.sh" "$tmp/absent" any)" = 40 ] || fail 'absent default'
+[ "$("$ROOT/bin/fm-handoff-threshold.sh" "$tmp/handoff-thresholds" any off)" = off ] || fail 'relaunch preserves off'
+[ "$("$ROOT/bin/fm-handoff-threshold.sh" "$tmp/handoff-thresholds" any 25)" = 25 ] || fail 'relaunch preserves numbered threshold'
+node "$ROOT/bin/fm-context-handoff.mjs" "$tmp/quarter.status" quarter 25 24999 100000
+[ ! -e "$tmp/quarter.status" ] || fail '25 threshold fired early'
+node "$ROOT/bin/fm-context-handoff.mjs" "$tmp/quarter.status" quarter 25 25000 100000
+grep -q 'context 25% (25000/100000)' "$tmp/quarter.status" || fail '25 threshold'
 status="$tmp/task.status"
 node "$ROOT/bin/fm-context-handoff.mjs" "$status" a 40 39999 100000
 [ ! -e "$status" ] || fail 'below threshold emitted'

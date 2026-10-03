@@ -3984,6 +3984,11 @@ mkdir -p "$TASK_TMP/gotmp"
 mkdir -p "$STATE"
 STATE_REAL=$(cd "$STATE" && pwd -P)
 TURNEND="$STATE_REAL/$ID.turn-ended"
+RECORDED_HANDOFF_PCT=
+if [ "$RELAUNCH" -eq 1 ]; then
+  RECORDED_HANDOFF_PCT=$(fm_meta_get "$RELAUNCH_META" handoff_pct)
+fi
+HANDOFF_PCT=$("$SCRIPT_DIR/fm-handoff-threshold.sh" "$CONFIG/handoff-thresholds" "${MODEL:-default}" "$RECORDED_HANDOFF_PCT") || exit 1
 exclude_path() {
   local rel=$1 EXCL
   EXCL=$(git -C "$WT" rev-parse --git-path info/exclude 2>/dev/null || true)
@@ -4069,8 +4074,8 @@ if [ "$KIND" != secondmate ]; then
     busy_suffix="--gen $(shell_quote "$BUSY_GEN") --source claude-hook"
     j_submit=$(json_escape "$busy_cmd_prefix busy $busy_suffix --event user-prompt-submit 2>/dev/null || true")
     context_cmd=''
-    if [ "$KIND" != secondmate ]; then
-      context_cmd="$(shell_quote "$(command -v node)") $(shell_quote "$FM_ROOT/bin/fm-context-handoff.mjs") $(shell_quote "$STATE_REAL/$ID.status") $(shell_quote "$BUSY_GEN") $(shell_quote "${FM_HANDOFF_PCT:-40}") claude $(shell_quote "${MODEL:-default}"); "
+    if [ "$KIND" != secondmate ] && [ "$HANDOFF_PCT" != off ]; then
+      context_cmd="$(shell_quote "$(command -v node)") $(shell_quote "$FM_ROOT/bin/fm-context-handoff.mjs") $(shell_quote "$STATE_REAL/$ID.status") $(shell_quote "$BUSY_GEN") $(shell_quote "$HANDOFF_PCT") claude $(shell_quote "${MODEL:-default}"); "
     fi
     j_stop=$(json_escape "${context_cmd}touch $(shell_quote "$TURNEND"); $busy_cmd_prefix idle $busy_suffix --event stop 2>/dev/null || true")
     j_stopfail=$(json_escape "$busy_cmd_prefix idle $busy_suffix --event stop-failure 2>/dev/null || true")
@@ -4171,6 +4176,21 @@ EOF
     # Written OUTSIDE the worktree: pi's project-trust gate fires on any extension
     # loaded from inside the project (verified live), but an explicit -e path
     # elsewhere loads without a dialog. Lives in state/, cleaned by teardown.
+    PI_CONTEXT_IMPORT=
+    PI_CONTEXT_CALL=
+    if [ "$KIND" != secondmate ] && [ "$HANDOFF_PCT" != off ]; then
+      PI_CONTEXT_IMPORT="import { contextTurnEnd } from \"$FM_ROOT/bin/fm-context-turn-end.mjs\";"
+      IFS= read -r -d '' PI_CONTEXT_CALL <<EOF || true
+    const usage = ctx?.getContextUsage?.();
+    if (usage?.tokens != null) {
+      await contextTurnEnd("$FM_ROOT/bin/fm-context-handoff.mjs", [
+        "$STATE_REAL/$ID.status", "$BUSY_GEN", "$HANDOFF_PCT",
+        String(usage.tokens), String(usage.contextWindow),
+      ], "$TURNEND");
+      return;
+    }
+EOF
+    fi
     cat >"$STATE/$ID.pi-ext.ts" <<EOF
 // Firstmate semantic busy-state events + turn-end notification; written by
 // fm-spawn under the contract owned by bin/fm-busy-lib.sh.
@@ -4183,7 +4203,7 @@ EOF
 // tool calls) and stays a wake NOTIFICATION touch for the watcher, never
 // current-state truth.
 import { execFile } from "node:child_process";
-import { contextTurnEnd } from "$FM_ROOT/bin/fm-context-turn-end.mjs";
+$PI_CONTEXT_IMPORT
 const busyEvent = (state: string, event: string) =>
   new Promise<void>((resolve) => {
     execFile("$FM_ROOT/bin/fm-busy-event.sh", [
@@ -4198,14 +4218,7 @@ export default function (pi: any) {
     return busyEvent("idle", "agent-settled");
   });
   pi.on("turn_end", async (_event: any, ctx: any) => {
-    const usage = ctx?.getContextUsage?.();
-    if ("$KIND" !== "secondmate" && usage?.tokens != null) {
-      await contextTurnEnd("$FM_ROOT/bin/fm-context-handoff.mjs", [
-        "$STATE_REAL/$ID.status", "$BUSY_GEN", "${FM_HANDOFF_PCT:-40}",
-        String(usage.tokens), String(usage.contextWindow),
-      ], "$TURNEND");
-      return;
-    }
+$PI_CONTEXT_CALL
     execFile("touch", ["$TURNEND"]);
   });
   // A native harness can make progress inside one Pi turn. This separate
@@ -4450,7 +4463,7 @@ SPAWN_META_PATH=$SPAWN_META_TMP
 preserve_relaunch_meta() {
   awk -F= '
     BEGIN {
-      split("window endpoint_task_id worktree project harness kind mode yolo tasktmp model effort busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
+      split("window endpoint_task_id worktree project harness kind mode yolo tasktmp model effort handoff_pct busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
       for (i in keys) owned[keys[i]] = 1
     }
     !($1 in owned)
@@ -4468,6 +4481,7 @@ preserve_relaunch_meta() {
   echo "tasktmp=$TASK_TMP"
   echo "model=${MODEL:-default}"
   echo "effort=${EFFORT:-default}"
+  echo "handoff_pct=$HANDOFF_PCT"
   [ -z "${BUSY_GEN:-}" ] || echo "busy_gen=$BUSY_GEN"
   echo "spawn_gen=$SPAWN_GEN"
   # Default-off writes no traceparent= line.

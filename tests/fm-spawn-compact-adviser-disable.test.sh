@@ -284,7 +284,9 @@ test_relaunch_rebuilds_the_switch() {
       echo "tasktmp=$dir/tasktmp"
       echo "model=default"
       echo "effort=default"
+      if [ "$setting" = present ]; then echo 'handoff_pct=off'; else echo 'handoff_pct=25'; fi
     } > "$home/state/$id.meta"
+    printf '* 90\n' > "$home/config/handoff-thresholds"
 
     mkdir -p "$dir/user-home"
     out=$(env PATH="$dir/fakebin:$PATH" FM_HOME="$home" FM_FAKE_DIR="$dir/fake" \
@@ -293,6 +295,9 @@ test_relaunch_rebuilds_the_switch() {
       "$CONTROL" "$id" relaunch --note 'replacement continues the same task' 2>&1)
     status=$?
     expect_code 0 "$status" "relaunch with allowlist=$setting should succeed: $out"
+    if [ "$setting" = present ]; then expected_threshold=off; else expected_threshold=25; fi
+    grep -qx "handoff_pct=$expected_threshold" "$home/state/$id.meta" \
+      || fail 'fm-control relaunch changed the recorded handoff threshold'
 
     grep -qx 'export COMPACT_ADVISER_DISABLE=1' "$dir/fake/keys" \
       || fail "relaunch with allowlist=$setting did not re-export the compact-adviser switch into the pane"
