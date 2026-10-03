@@ -600,7 +600,7 @@ cmd_status() {
   [ ! -f "$(fm_assistance_cursor_path "$FM_HOME" "$pid")" ] \
     || cursor=$(cat "$(fm_assistance_cursor_path "$FM_HOME" "$pid")")
   [ -f "$history" ] && [ ! -L "$history" ] || {
-    printf 'waiting programme=%s for history=%s binding=%s\n' "$pid" "$history" "$history"
+    printf 'waiting programme=%s for history=%s binding=%s\n' "$pid" "$history" "$binding"
     return 0
   }
   history_lines=$(wc -l < "$history")

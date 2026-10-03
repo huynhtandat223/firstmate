@@ -1050,13 +1050,11 @@ test_run_publishes_the_claude_primary_session_for_assistance() {
     || fail "status did not treat the not-yet-created transcript as waiting: $out"
   assert_contains "$out" "waiting" "status did not identify the named history as waiting"
   printf '{"type":"user","uuid":"u-new","message":{"role":"user","content":"new clear session"}}\n' > "$history"
-  out=$(FM_HOME="$root" "$ROOT/custom-skills/orchestrator-assistance/fm-assistance.sh" bind --primary 2>&1) \
-    || fail "bind did not accept the published session after history appeared: $out"
   assert_grep "primary_session=s-assist" "$root/state/primary-assistance.assistance-current" \
     "the hook current-session record lost the new identity"
   assert_grep "parent_history=$history" "$record" "the published history is not the session's own transcript"
   assert_grep "parent_history=$history" "$root/state/primary-assistance.assistance-binding" \
-    "the companion binding did not follow the newly published session"
+    "the hook did not bind the newly published session"
   assert_present "$root/state/procevent/assistance-primary.source" \
     "the new session did not re-arm transcript observation"
   out=$(FM_HOME="$root" "$ROOT/custom-skills/orchestrator-assistance/fm-assistance.sh" status primary 2>&1) \

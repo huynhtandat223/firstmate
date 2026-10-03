@@ -378,6 +378,18 @@ test_assistance_status_makes_lag_visible() {
   pass "status: a companion behind its transcript is visibly behind"
 }
 
+test_status_waiting_reports_binding_path() {
+  local dir out history binding
+  dir=$(new_case status-waiting)
+  history="$dir/pi/not-yet-created.jsonl"
+  binding="$dir/home/state/primary-assistance.assistance-binding"
+  printf 'programme_id=primary\nparent_task_id=primary\nassistance_task_id=primary-assistance\nparent_worktree=%s\nparent_history=%s\nprimary_harness=claude\nprimary_session=s-new\n' \
+    "$dir/home" "$history" > "$binding"
+  out=$(run_cli "$dir" status primary) || fail "waiting status failed: $out"
+  assert_contains "$out" "binding=$binding" "waiting status repeated the history path instead of the binding path"
+  pass "status: waiting output identifies both the missing history and its binding"
+}
+
 test_primary_bind_resets_cursor_when_history_changes() {
   local dir home old_history new_history out
   dir=$(new_case primary-bind-reset)
@@ -945,6 +957,7 @@ test_rotate_uses_the_effective_window_before_nominal_capacity
 test_open_is_idempotent_on_the_record
 test_observe_recovers_cursor_past_history_end
 test_assistance_status_makes_lag_visible
+test_status_waiting_reports_binding_path
 test_primary_binding_switch_is_visible_and_not_delivered_as_healthy
 test_process_event_advances_the_companion_without_an_operator_nudge
 test_observe_records_pending_without_advancing_cursor

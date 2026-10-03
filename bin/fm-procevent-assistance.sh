@@ -103,11 +103,15 @@ cmd_source() {
     printf 'event=stale-binding\nprogramme=%s\n' "$programme"
     exit 0
   }
-  while [ ! -f "$history" ]; do
+  if [ ! -f "$history" ]; then
+    while [ ! -f "$history" ]; do
+      [ ! -L "$history" ] || { printf 'event=stale-binding\nprogramme=%s\n' "$programme"; exit 0; }
+      sleep 0.2
+    done
     [ ! -L "$history" ] || { printf 'event=stale-binding\nprogramme=%s\n' "$programme"; exit 0; }
-    sleep 0.2
-  done
-  [ ! -L "$history" ] || { printf 'event=stale-binding\nprogramme=%s\n' "$programme"; exit 0; }
+    printf 'event=history-grew\nprogramme=%s\n' "$programme"
+    exit 0
+  fi
   tail -n 0 -F -- "$history" 2>/dev/null | {
     IFS= read -r _ || exit 1
     printf 'event=history-grew\nprogramme=%s\n' "$programme"
