@@ -80,7 +80,7 @@ cmd_arm() {
   binding=$(binding_path "$programme")
   [ -f "$binding" ] && [ ! -L "$binding" ] || die "no assistance binding for $programme"
   history=$(binding_field "$programme" parent_history)
-  [ -f "$history" ] && [ ! -L "$history" ] || die "bound history is unavailable for $programme"
+  [ ! -L "$history" ] || die "bound history is a symlink for $programme"
   aid=$(binding_field "$programme" assistance_task_id)
   [ -f "$STATE/$aid.meta" ] && [ ! -L "$STATE/$aid.meta" ] \
     || die "assistance session is not recorded for $programme"
@@ -99,10 +99,19 @@ cmd_source() {
     exit 0
   fi
   history=$(binding_field "$programme" parent_history)
-  [ -f "$history" ] && [ ! -L "$history" ] || {
+  [ ! -L "$history" ] || {
     printf 'event=stale-binding\nprogramme=%s\n' "$programme"
     exit 0
   }
+  if [ ! -f "$history" ]; then
+    while [ ! -f "$history" ]; do
+      [ ! -L "$history" ] || { printf 'event=stale-binding\nprogramme=%s\n' "$programme"; exit 0; }
+      sleep 0.2
+    done
+    [ ! -L "$history" ] || { printf 'event=stale-binding\nprogramme=%s\n' "$programme"; exit 0; }
+    printf 'event=history-grew\nprogramme=%s\n' "$programme"
+    exit 0
+  fi
   tail -n 0 -F -- "$history" 2>/dev/null | {
     IFS= read -r _ || exit 1
     printf 'event=history-grew\nprogramme=%s\n' "$programme"

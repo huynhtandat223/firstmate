@@ -378,6 +378,43 @@ test_assistance_status_makes_lag_visible() {
   pass "status: a companion behind its transcript is visibly behind"
 }
 
+test_status_waiting_reports_binding_path() {
+  local dir out history binding
+  dir=$(new_case status-waiting)
+  history="$dir/pi/not-yet-created.jsonl"
+  binding="$dir/home/state/primary-assistance.assistance-binding"
+  printf 'programme_id=primary\nparent_task_id=primary\nassistance_task_id=primary-assistance\nparent_worktree=%s\nparent_history=%s\nprimary_harness=claude\nprimary_session=s-new\n' \
+    "$dir/home" "$history" > "$binding"
+  out=$(run_cli "$dir" status primary) || fail "waiting status failed: $out"
+  assert_contains "$out" "binding=$binding" "waiting status repeated the history path instead of the binding path"
+  pass "status: waiting output identifies both the missing history and its binding"
+}
+
+test_primary_bind_resets_cursor_when_history_changes() {
+  local dir home old_history new_history out
+  dir=$(new_case primary-bind-reset)
+  home="$dir/home"
+  old_history="$dir/pi/old.jsonl"
+  new_history="$dir/pi/new.jsonl"
+  mkdir -p "$dir/pi"
+  printf '{"type":"session","id":"s-old","cwd":"%s"}\n' "$home" > "$old_history"
+  printf 'programme_id=primary\nparent_task_id=primary\nassistance_task_id=primary-assistance\nparent_worktree=%s\nparent_history=%s\nprimary_harness=claude\nprimary_session=s-old\n' \
+    "$home" "$old_history" > "$home/state/primary-assistance.assistance-binding"
+  printf 'primary_harness=claude\nprimary_session=s-new\nparent_history=%s\n' "$new_history" \
+    > "$home/state/primary-assistance.assistance-current"
+  printf '1835\n' > "$home/state/primary-assistance.assistance-cursor"
+  printf 'prior_cursor=1835\nnext_cursor=1836\nturn=1836\tuser\told-turn\ttime\told excerpt\n' \
+    > "$home/state/primary-assistance.assistance-pending"
+
+  out=$(run_cli "$dir" bind --primary) || fail "binding to the named new session failed: $out"
+  assert_contains "$out" "$new_history" "bind did not select the newly published session"
+  assert_absent "$home/state/primary-assistance.assistance-cursor" \
+    "binding to a different transcript retained the old committed cursor"
+  assert_absent "$home/state/primary-assistance.assistance-pending" \
+    "binding to a different transcript retained a pending batch from the old history"
+  pass "primary bind: changing histories resets the committed cursor and pending batch"
+}
+
 test_primary_binding_switch_is_visible_and_not_delivered_as_healthy() {
   local dir home history old_history out code
   dir=$(new_case stale-primary-binding)
@@ -437,7 +474,7 @@ SH
     > "$dir/home/state/prog-assistance.assistance-binding"
 
   FM_HOME="$dir/home" FM_ASSISTANCE_HISTORY_ROOT="$dir/history" \
-    FM_PROCEVENT_CLAIM_ROOT="$dir/claims" FM_SEND="$dir/bin/send" \
+    FM_ROOT_OVERRIDE="$ROOT" FM_PROCEVENT_CLAIM_ROOT="$dir/claims" FM_SEND="$dir/bin/send" \
     "$CLI" arm prog >/dev/null || fail "automatic observation source did not arm"
   source="$dir/home/state/procevent/assistance-prog.source"
   assert_present "$source" "arm wrote no process-event source"
@@ -914,11 +951,13 @@ test_primary_bind_resolves_the_running_harness_store
 test_primary_bind_names_an_unrecognised_harness
 test_primary_bind_alias_uses_the_recorded_running_session
 test_primary_bind_refuses_unmeasured_harness
+test_primary_bind_resets_cursor_when_history_changes
 test_context_usage_is_measured_from_recorded_usage
 test_rotate_uses_the_effective_window_before_nominal_capacity
 test_open_is_idempotent_on_the_record
 test_observe_recovers_cursor_past_history_end
 test_assistance_status_makes_lag_visible
+test_status_waiting_reports_binding_path
 test_primary_binding_switch_is_visible_and_not_delivered_as_healthy
 test_process_event_advances_the_companion_without_an_operator_nudge
 test_observe_records_pending_without_advancing_cursor

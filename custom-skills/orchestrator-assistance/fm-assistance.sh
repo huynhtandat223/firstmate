@@ -192,7 +192,7 @@ cmd_bind() {
       pin=$(fm_assistance_meta_field "$current" primary_session)
       primary_harness=$(fm_assistance_meta_field "$current" primary_harness)
       history=$(fm_assistance_meta_field "$current" parent_history)
-      [ -n "$pin" ] && [ -n "$primary_harness" ] && [ -f "$history" ] \
+      [ -n "$pin" ] && [ -n "$primary_harness" ] && [ -n "$history" ] \
         || die "running primary session record is incomplete; rerun this harness's session-start hook or supply --session <uuid>"
       worktree=$FM_HOME
       rc=0
@@ -235,6 +235,11 @@ cmd_bind() {
   digest=$(fm_assistance_skill_digest "$SKILL_PATH") || die "assistance skill missing at $SKILL_PATH"
 
   binding=$(fm_assistance_binding_path "$FM_HOME" "$pid")
+  if [ "$primary" -eq 1 ] && [ -f "$binding" ] \
+    && [ "$(binding_get "$binding" parent_history)" != "$history" ]; then
+    rm -f "$(fm_assistance_cursor_path "$FM_HOME" "$pid")" \
+      "$(fm_assistance_pending_path "$FM_HOME" "$pid")"
+  fi
   mkdir -p "$(dirname "$binding")"
   {
     printf 'programme_id=%s\n' "$pid"
@@ -533,7 +538,7 @@ cmd_observe() {
 
   binding=$(require_binding "$pid")
   history=$(binding_get "$binding" parent_history)
-  [ -f "$history" ] || die "recorded parent history is gone: $history"
+  [ -f "$history" ] && [ ! -L "$history" ] || { printf 'waiting for parent history: %s\n' "$history"; return 0; }
 
   cursor_file=$(fm_assistance_cursor_path "$FM_HOME" "$pid")
   pending=$(fm_assistance_pending_path "$FM_HOME" "$pid")
@@ -594,8 +599,11 @@ cmd_status() {
   cursor=0
   [ ! -f "$(fm_assistance_cursor_path "$FM_HOME" "$pid")" ] \
     || cursor=$(cat "$(fm_assistance_cursor_path "$FM_HOME" "$pid")")
-  history_lines=0
-  [ ! -f "$history" ] || history_lines=$(wc -l < "$history")
+  [ -f "$history" ] && [ ! -L "$history" ] || {
+    printf 'waiting programme=%s for history=%s binding=%s\n' "$pid" "$history" "$binding"
+    return 0
+  }
+  history_lines=$(wc -l < "$history")
   pending=$(fm_assistance_pending_path "$FM_HOME" "$pid")
   state=caught-up
   if [ "$pid" = primary ]; then

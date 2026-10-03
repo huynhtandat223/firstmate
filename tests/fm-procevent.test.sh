@@ -164,6 +164,28 @@ hold_source_lock_then_handle() {  # <home> <source-id> <sequence> <ready-file> <
   HOLDER_PID=$!
 }
 
+# --- assistance source reports first history creation ----------------------
+ASSIST_HOME="$TMP_ROOT/assistance-missing"; mkdir -p "$ASSIST_HOME/state" "$ASSIST_HOME/bin" "$ASSIST_HOME/custom-skills/orchestrator-assistance"
+ASSIST_HISTORY="$TMP_ROOT/assistance-first-history.jsonl"
+printf 'programme_id=primary\nparent_task_id=primary\nassistance_task_id=primary-assistance\nparent_worktree=%s\nparent_history=%s\nprimary_harness=claude\nprimary_session=s-first\n' \
+  "$ASSIST_HOME" "$ASSIST_HISTORY" > "$ASSIST_HOME/state/primary-assistance.assistance-binding"
+printf 'primary_harness=claude\nprimary_session=s-first\nparent_history=%s\n' "$ASSIST_HISTORY" \
+  > "$ASSIST_HOME/state/primary-assistance.assistance-current"
+fm_test_track_procevent_home "$ASSIST_HOME"
+FM_HOME="$ASSIST_HOME" FM_ROOT_OVERRIDE="$ROOT" FM_PROCEVENT_CLAIM_ROOT="$FM_PROCEVENT_CLAIM_ROOT" \
+  "$ROOT/bin/fm-procevent-assistance.sh" source primary > "$TMP_ROOT/assistance-source.out" &
+assistance_source_pid=$!
+for _ in $(seq 1 100); do
+  kill -0 "$assistance_source_pid" 2>/dev/null || break
+  sleep 0.05
+done
+sleep 0.3
+printf '%s\n' '{"type":"user","uuid":"first","message":{"role":"user","content":"first new session turn"}}' > "$ASSIST_HISTORY"
+wait "$assistance_source_pid" || fail "assistance source failed before observing its first history"
+assert_contains "$(cat "$TMP_ROOT/assistance-source.out")" 'event=history-grew' \
+  "the source did not announce history creation that already contained its first turn"
+pass "assistance source announces the first session turn when its history is created"
+
 # --- inert with nothing configured ------------------------------------------
 IDLE="$TMP_ROOT/idle"; mkdir -p "$IDLE"
 out=$(pe "$IDLE" list)

@@ -30,11 +30,11 @@ case "$session" in
   ''|*[!A-Za-z0-9._-]*) printf 'error: primary assistance session id is unsafe\n' >&2; exit 1 ;;
 esac
 [ -f "$binding" ] && [ ! -L "$binding" ] || exit 0
-[ -f "$history" ] && [ ! -L "$history" ] || {
-  printf 'error: primary assistance history is unavailable: %s\n' "$history" >&2
+case "$history" in /*) ;; *) printf 'error: primary assistance history must be absolute\n' >&2; exit 1 ;; esac
+[ ! -L "$history" ] || {
+  printf 'error: primary assistance history must not be a symlink: %s\n' "$history" >&2
   exit 1
 }
-case "$history" in /*) ;; *) printf 'error: primary assistance history must be absolute\n' >&2; exit 1 ;; esac
 [ -d "$STATE" ] && [ ! -L "$STATE" ] || {
   printf 'error: primary assistance state directory is unavailable\n' >&2
   exit 1
