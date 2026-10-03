@@ -27,6 +27,25 @@ Wake, watcher, away-mode, and Relay-specific state mechanics remain with their n
 `AGENTS.md` retains the run-once and read-once operator rules, lock-refusal safety, installation consent, and direct-report recovery boundaries because those facts apply at every session start.
 Ordinary dead-direct-report recovery is owned by `stuck-crewmate-recovery`, while persistent-secondmate recovery is owned by `secondmate-provisioning`.
 
+## Worker context handoff (config/handoff-thresholds)
+
+The optional home-local, gitignored `config/handoff-thresholds` file selects a worker's context handoff threshold by model.
+Each non-comment line is `<model-glob> <percent|off>`; blank lines and lines starting with `#` are ignored.
+The first matching shell glob wins; an absent file or no match defaults to 40 percent.
+Percentages are integers from 1 through 100; `off` disables context handoff while preserving ordinary turn-end notifications.
+For example:
+
+```text
+openai-codex/gpt-6-astra off
+cx/gpt-6-astra 25
+*/gpt-6.1-sol off
+```
+
+`bin/fm-spawn.sh` resolves the value once from the task's model and records `handoff_pct` in its metadata.
+Relaunch, including the handoff-session procedure, preserves that recorded value rather than rereading changed configuration.
+Tasks without a recorded value resolve it on their next launch.
+This setting affects Claude and Pi worker context hooks, not usage measurement or the three-handoff limit.
+
 ## Calm preference (config/calm)
 
 The Pi Calm extension and the Claude Code Calm mod share the captain's home-local presentation choice in gitignored `config/calm` under the effective Firstmate home, so one `/calm` choice applies on either harness.
