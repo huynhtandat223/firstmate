@@ -1021,6 +1021,9 @@ test_run_publishes_the_claude_primary_session_for_assistance() {
 
   : > "$root/state/primary-assistance.assistance-binding"
   cp "$ROOT/bin/fm-assistance-primary-session.sh" "$root/bin/"
+  mkdir -p "$root/custom-skills/orchestrator-assistance"
+  cp "$ROOT/custom-skills/orchestrator-assistance/fm-assistance.sh" "$root/custom-skills/orchestrator-assistance/"
+  cp "$ROOT/custom-skills/orchestrator-assistance/fm-assistance-lib.sh" "$root/custom-skills/orchestrator-assistance/"
   rm -f "$history"
   status=0
   printf '{"session_id":"s-assist","source":"clear"}' | run_hook_claude "$root" "$home" >/dev/null || status=$?
@@ -1037,7 +1040,12 @@ test_run_publishes_the_claude_primary_session_for_assistance() {
   assert_grep "primary_session=s-assist" "$root/state/primary-assistance.assistance-current" \
     "the hook current-session record lost the new identity"
   assert_grep "parent_history=$history" "$record" "the published history is not the session's own transcript"
-  pass "run wrapper: a Claude SessionStart publishes the running session to an enabled primary companion"
+  assert_grep "parent_history=$history" "$root/state/primary-assistance.assistance-binding" \
+    "the companion binding did not follow the newly published session"
+  out=$(FM_HOME="$root" "$ROOT/custom-skills/orchestrator-assistance/fm-assistance.sh" status primary 2>&1) \
+    || fail "newly bound transcript was not observable: $out"
+  assert_contains "$out" "behind" "new session transcript did not appear in public status"
+  pass "run wrapper: a Claude SessionStart publishes and binds the running session for its primary companion"
 }
 
 test_run_unknown_source_takes_the_helm() {
