@@ -160,6 +160,7 @@ Cue matching runs first; these three moments still get their own pass.
 
 Run it on every observed turn that states a decision, a steer, a plan, or a claim about code, and on every PR head a worker reports through the bound session.
 Read current source, never the turn's own summary of it: the project clone, the worker's recorded worktree (`worktree=` in `state/<task>.meta`), or `gh pr diff <url>` for a PR head.
+A landed task has no meta left: its PR URL is on its Done row (`bin/fm-tasks-axi.sh show <task>`), and `gh pr view <url> --json headRefOid,mergeCommit` gives the head and where it landed.
 Read only; fetch nothing into a clone.
 
 Answer three questions, each with file:line at that exact head:
