@@ -4176,6 +4176,21 @@ EOF
     # Written OUTSIDE the worktree: pi's project-trust gate fires on any extension
     # loaded from inside the project (verified live), but an explicit -e path
     # elsewhere loads without a dialog. Lives in state/, cleaned by teardown.
+    PI_CONTEXT_IMPORT=
+    PI_CONTEXT_CALL=
+    if [ "$KIND" != secondmate ] && [ "$HANDOFF_PCT" != off ]; then
+      PI_CONTEXT_IMPORT="import { contextTurnEnd } from \"$FM_ROOT/bin/fm-context-turn-end.mjs\";"
+      IFS= read -r -d '' PI_CONTEXT_CALL <<EOF || true
+    const usage = ctx?.getContextUsage?.();
+    if (usage?.tokens != null) {
+      await contextTurnEnd("$FM_ROOT/bin/fm-context-handoff.mjs", [
+        "$STATE_REAL/$ID.status", "$BUSY_GEN", "$HANDOFF_PCT",
+        String(usage.tokens), String(usage.contextWindow),
+      ], "$TURNEND");
+      return;
+    }
+EOF
+    fi
     cat >"$STATE/$ID.pi-ext.ts" <<EOF
 // Firstmate semantic busy-state events + turn-end notification; written by
 // fm-spawn under the contract owned by bin/fm-busy-lib.sh.
@@ -4188,7 +4203,7 @@ EOF
 // tool calls) and stays a wake NOTIFICATION touch for the watcher, never
 // current-state truth.
 import { execFile } from "node:child_process";
-import { contextTurnEnd } from "$FM_ROOT/bin/fm-context-turn-end.mjs";
+$PI_CONTEXT_IMPORT
 const busyEvent = (state: string, event: string) =>
   new Promise<void>((resolve) => {
     execFile("$FM_ROOT/bin/fm-busy-event.sh", [
@@ -4203,14 +4218,7 @@ export default function (pi: any) {
     return busyEvent("idle", "agent-settled");
   });
   pi.on("turn_end", async (_event: any, ctx: any) => {
-    const usage = ctx?.getContextUsage?.();
-    if ("$KIND" !== "secondmate" && "$HANDOFF_PCT" !== "off" && usage?.tokens != null) {
-      await contextTurnEnd("$FM_ROOT/bin/fm-context-handoff.mjs", [
-        "$STATE_REAL/$ID.status", "$BUSY_GEN", "$HANDOFF_PCT",
-        String(usage.tokens), String(usage.contextWindow),
-      ], "$TURNEND");
-      return;
-    }
+$PI_CONTEXT_CALL
     execFile("touch", ["$TURNEND"]);
   });
   // A native harness can make progress inside one Pi turn. This separate
