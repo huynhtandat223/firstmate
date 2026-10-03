@@ -252,6 +252,8 @@ The task is complete only when committed on your branch.
 When it is implemented and committed, push your branch and open a PR with \`gh-axi\`.
 Link the task's issue in the PR body with \`Closes #n\` when it finishes the issue, or \`Part of #n\` for an earlier step.
 The PR body must contain a \`## Review brief\` section with 3-5 sentences in ASD-STE100 Simplified Technical English, using the repository's own terms: what changed, why, where to check it, and the risk.
+The harness receipt is the PR's own completed green CI run on the exact head; report its run URL and head SHA.
+Locally run only tests that cover your change and its real-path proof; run the full owner gate locally only to debug a red CI case.
 Before you append \`done:\`, run \`review-rulesets\` on your own exact head as part of finishing the work, in parallel with CI and never gated on it - the review reads the diff, not the run.
 Keep Standards and Spec as separate axes, apply \`classical-testing\` to whether the proof is real, and apply \`writing-for-agents\` to every changed agent-facing document.
 A clean self-review is what hands the work back to firstmate.
@@ -268,6 +270,7 @@ EOF
 # Definition of done
 Delivery contract: mode=local-only
 This task ships **local-only**: no remote, no PR, no pipeline.
+Run the full owner gate locally for the harness receipt because this task has no PR CI run.
 The task is complete only when committed on your branch \`fm/$id\`. Do NOT push, do NOT open a PR, do NOT merge.
 Keep your branch a clean fast-forward onto the current default branch - if \`main\` has advanced, rebase onto it so the eventual merge stays a fast-forward.
 When it is implemented and committed, run \`review-rulesets\` on your own exact head as part of finishing the work.
@@ -290,6 +293,8 @@ When you believe it is complete, append \`done [at=<epoch>]: {summary}\` to the 
 Firstmate will then instruct you to run /no-mistakes to validate and ship a PR.
 Link the task's issue in the PR body with \`Closes #n\` when it finishes the issue, or \`Part of #n\` for an earlier step.
 The PR body must contain a \`## Review brief\` section with 3-5 sentences in ASD-STE100 Simplified Technical English, using the repository's own terms: what changed, why, where to check it, and the risk.
+The harness receipt is the PR's own completed green CI run on the exact head; report its run URL and head SHA.
+Locally run only tests that cover your change and its real-path proof; run the full owner gate locally only to debug a red CI case.
 
 You drive no-mistakes by responding to its gates, not by implementing fixes.
 Follow the guidance no-mistakes itself provides for the mechanics: it loads when you invoke /no-mistakes, and \`no-mistakes axi run --help\` plus the \`help\` lines in each \`axi\` response are authoritative and version-matched to the installed binary.
