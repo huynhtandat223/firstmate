@@ -1020,10 +1020,22 @@ test_run_publishes_the_claude_primary_session_for_assistance() {
   assert_absent "$record" "a home with no primary assistance published a session record"
 
   : > "$root/state/primary-assistance.assistance-binding"
+  cp "$ROOT/bin/fm-assistance-primary-session.sh" "$root/bin/"
+  rm -f "$history"
   status=0
-  printf '{"session_id":"s-assist","source":"resume"}' | run_hook_claude "$root" "$home" >/dev/null || status=$?
-  expect_code 0 "$status" "run wrapper with an assistance binding"
-  assert_grep "primary_session=s-assist" "$record" "the running Claude session was not published"
+  printf '{"session_id":"s-assist","source":"clear"}' | run_hook_claude "$root" "$home" >/dev/null || status=$?
+  expect_code 0 "$status" "run wrapper with an assistance binding before history creation"
+  assert_grep "primary_session=s-assist" "$record" "the running Claude session was not published before history creation"
+  assert_grep "parent_history=$history" "$record" "the published history is not the session's own transcript"
+
+  out=$(FM_HOME="$root" "$ROOT/custom-skills/orchestrator-assistance/fm-assistance.sh" status primary 2>&1) \
+    || fail "status did not treat the not-yet-created transcript as waiting: $out"
+  assert_contains "$out" "waiting" "status did not identify the named history as waiting"
+  printf '{"type":"user","uuid":"u-new","message":{"role":"user","content":"new clear session"}}\n' > "$history"
+  out=$(FM_HOME="$root" "$ROOT/custom-skills/orchestrator-assistance/fm-assistance.sh" bind --primary 2>&1) \
+    || fail "bind did not accept the published session after history appeared: $out"
+  assert_grep "primary_session=s-assist" "$root/state/primary-assistance.assistance-current" \
+    "the hook current-session record lost the new identity"
   assert_grep "parent_history=$history" "$record" "the published history is not the session's own transcript"
   pass "run wrapper: a Claude SessionStart publishes the running session to an enabled primary companion"
 }

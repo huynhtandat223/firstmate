@@ -144,10 +144,8 @@ if [ -f "$STATE/primary-assistance.assistance-binding" ] && [ ! -L "$STATE/prima
     PRIMARY_HISTORY_ROOT=$("$SCRIPT_DIR/fm-harness.sh" primary-history-root claude)
     PRIMARY_HISTORY_DIR=$(printf '%s\n' "$FM_HOME" | tr '/.' '--')
     PRIMARY_HISTORY="$PRIMARY_HISTORY_ROOT/$PRIMARY_HISTORY_DIR/$PRIMARY_SESSION_ID.jsonl"
-    if [ -f "$PRIMARY_HISTORY" ]; then
-      "$SCRIPT_DIR/fm-assistance-primary-session.sh" claude "$PRIMARY_SESSION_ID" "$PRIMARY_HISTORY" \
-        >/dev/null 2>&1 || true
-    fi
+    "$SCRIPT_DIR/fm-assistance-primary-session.sh" claude "$PRIMARY_SESSION_ID" "$PRIMARY_HISTORY" \
+      >/dev/null 2>&1 || true
   fi
 fi
 
