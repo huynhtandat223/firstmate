@@ -82,6 +82,8 @@ One standing watch item is **a decision the parent has settled that has not reac
 This reminds the parent to write the decision down while it is still cheap; the companion never becomes firstmate's memory, and firstmate's continuity comes from its own durable records rather than a second source of truth in this session.
 A second standing watch item is **a PR the parent reports clean, asks to merge, or merges without every review its captain rules require on that exact head** (in this home: its own `review-rulesets` pass and the ChatGPT reader round); send it as a `WATCH` before the report or merge.
 
+A third standing watch item is **a per-case fix or a doc-carried success**: the parent accepts, steers or merges a change that solves one case where a generic seam exists, or counts a run that needed hand-fed hints or a per-case doc as done; send it as a `WATCH`.
+
 Each item carries exactly these six fields:
 
 ```text
