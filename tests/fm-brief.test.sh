@@ -26,6 +26,26 @@ mkdir -p "$BRIEF_HOME/data"
 # CI and locally, where the issue #958/#1069 parser bug does not fire, so this
 # is a weak guard on its own; test_no_heredoc_in_command_substitution and the
 # macos-stock-bash CI job carry the real cross-version enforcement.
+test_review_brief_requirement() {
+  local mode id file
+  for mode in direct-PR no-mistakes local-only scout; do
+    id="review-brief-$mode"
+    if [ "$mode" = scout ]; then
+      FM_HOME="$BRIEF_HOME" "$ROOT/bin/fm-brief.sh" "$id" firstmate --scout >/dev/null
+    else
+      FM_HOME="$BRIEF_HOME" "$ROOT/bin/fm-brief.sh" "$id" firstmate --mode "$mode" >/dev/null
+    fi
+    file="$BRIEF_HOME/data/$id/brief.md"
+    case "$mode" in
+      direct-PR|no-mistakes)
+        grep -q '## Review brief.*3-5 sentences.*ASD-STE100' "$file" || fail "$mode lacks Review brief requirement" ;;
+      *)
+        if grep -q '## Review brief' "$file"; then fail "$mode requires a PR review brief"; fi ;;
+    esac
+  done
+  pass 'Review brief required only for PR-producing ships'
+}
+
 test_script_parses() {
   local out rc
   out=$(bash -n "$ROOT/bin/fm-brief.sh" 2>&1); rc=$?
@@ -1135,3 +1155,4 @@ test_scout_and_secondmate_load_decision_hold_policy
 test_scout_and_secondmate_scaffold
 test_required_skills_and_mode_specific_prose
 test_scout_lavish_line_follows_presentation_floor
+test_review_brief_requirement
