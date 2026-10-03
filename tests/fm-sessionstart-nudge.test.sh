@@ -1020,6 +1020,7 @@ test_run_publishes_the_claude_primary_session_for_assistance() {
   assert_absent "$record" "a home with no primary assistance published a session record"
 
   : > "$root/state/primary-assistance.assistance-binding"
+  printf 'window=test\nharness=pi\nkind=supervisor\n' > "$root/state/primary-assistance.meta"
   cp "$ROOT/bin/fm-assistance-primary-session.sh" "$root/bin/"
   cp "$ROOT/bin/fm-procevent-assistance.sh" "$root/bin/"
   cp "$ROOT/bin/fm-procevent.sh" "$root/bin/"
@@ -1029,12 +1030,13 @@ test_run_publishes_the_claude_primary_session_for_assistance() {
   cp "$ROOT/bin/fm-gate-refuse-lib.sh" "$root/bin/"
   cp "$ROOT/bin/fm-session-lock-lib.sh" "$root/bin/"
   cp "$ROOT/bin/fm-hook-host-lib.sh" "$root/bin/"
-  cp "$ROOT/bin/fm-assistance-primary-session.sh" "$root/bin/"
   cp "$ROOT/bin/fm-harness.sh" "$root/bin/"
+  cp "$ROOT/bin/fm-cursor-lib.sh" "$ROOT/bin/fm-gemini-lib.sh" "$root/bin/"
   mkdir -p "$root/custom-skills/orchestrator-assistance"
   cp "$ROOT/custom-skills/orchestrator-assistance/fm-assistance.sh" "$root/custom-skills/orchestrator-assistance/"
   cp "$ROOT/custom-skills/orchestrator-assistance/fm-assistance-lib.sh" "$root/custom-skills/orchestrator-assistance/"
   cp "$ROOT/custom-skills/orchestrator-assistance/fm-assistance-turns.py" "$root/custom-skills/orchestrator-assistance/"
+  cp "$ROOT/custom-skills/orchestrator-assistance/SKILL.md" "$root/custom-skills/orchestrator-assistance/"
   cp "$ROOT/bin/fm-pr-lib.sh" "$ROOT/bin/fm-wake-lib.sh" "$ROOT/bin/fm-procevent-lib.sh" \
     "$ROOT/bin/fm-operational-input.sh" "$root/bin/"
   rm -f "$history"
