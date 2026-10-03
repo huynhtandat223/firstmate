@@ -172,6 +172,7 @@ Answer three questions, each with file:line at that exact head:
 Report a failed answer as a `FINDING` with watch id `source-match`, `prior-art`, or `rule`, the file:line as `evidence:`, and the existing implementation or rule line as `expected:`.
 Report an answer the source cannot settle as `UNPROVEN`, naming the evidence that would settle it.
 Three passing answers produce no message.
+A turn still carries at most one reminder (step 3): send the first failed answer in the order rule, match, prior art, and send the next one when a later turn touches the same change.
 
 **Done when:** every observed decision turn and every reported PR head has all three answers, each backed by file:line at the exact head or recorded as `UNPROVEN`.
 
