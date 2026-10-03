@@ -262,7 +262,8 @@ cmd_open() {
     return 0
   fi
 
-  FM_HOME="$FM_HOME" "$FM_SPAWN" "$aid" --supervisor \
+  # A read-only scout in a scratch copy of this repository; it reads the home by absolute path.
+  FM_HOME="$FM_HOME" "$FM_SPAWN" "$aid" "$FM_ROOT" --scout \
     --harness "$FM_ASSISTANCE_HARNESS" --model "$FM_ASSISTANCE_MODEL" --effort "$FM_ASSISTANCE_EFFORT" \
     || die "spawn of $aid failed"
   cmd_arm "$pid" >/dev/null

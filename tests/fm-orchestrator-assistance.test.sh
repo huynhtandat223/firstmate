@@ -325,7 +325,7 @@ test_open_is_idempotent_on_the_record() {
 
   out=$(run_cli "$dir" open prog) || fail "first open failed: $out"
   assert_contains "$out" "opened prog-assistance" "first open did not launch the session"
-  assert_grep "prog-assistance --supervisor" "$dir/spawned" "spawn did not name the assistance task as a supervisor"
+  assert_grep "prog-assistance $ROOT --scout" "$dir/spawned" "spawn did not launch the assistance task as a read-only scout of this repository"
   assert_grep "--harness pi" "$dir/spawned" "spawn did not pin the assistance harness"
   assert_grep "--model 9route/cx/gpt-6.1-sol" "$dir/spawned" "spawn did not pin the assistance model"
   assert_grep "--effort high" "$dir/spawned" "spawn did not pin the assistance effort"
