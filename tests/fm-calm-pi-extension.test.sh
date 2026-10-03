@@ -3852,9 +3852,12 @@ if (messages.includes('<div class="hook-message"')) process.exit(1);
 // Pi 1.0.0 retains terminal-hidden custom messages behind its H toggle.
 const syntheticRows = [...messages.matchAll(/<div class="([^"]*)" id="entry-[^"]*">([\s\S]*?)(?=<div class="[^"]*" id="entry-|$)/g)]
   .filter((row) => row[2].includes("[firstmate-synthetic-input]"));
+let visibleMessages = messages;
 for (const row of syntheticRows) {
   if (!row[1].split(" ").includes("hook-message-hidden")) process.exit(1);
+  visibleMessages = visibleMessages.replace(row[0], "");
 }
+if (visibleMessages.includes("[firstmate-synthetic-input]")) process.exit(1);
 if (!/\.hook-message-hidden\s*\{[^}]*display:\s*none/.test(dom)) process.exit(1);
 for (const current of ["CURRENT_WATCHER_E2E", "CURRENT_TURN_END_E2E", "CURRENT_AWAY_E2E", "CURRENT_FROM_FIRSTMATE_E2E", "CURRENT_LAUNCH_BRIEF_E2E"]) {
   if (!messages.includes(current)) process.exit(1);
