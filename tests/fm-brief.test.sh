@@ -47,6 +47,24 @@ test_review_brief_requirement() {
   pass 'Review brief required only for PR-producing ships'
 }
 
+test_ci_receipt_requirement() {
+  local mode id file
+  for mode in direct-PR no-mistakes local-only; do
+    id="ci-receipt-$mode"
+    FM_HOME="$BRIEF_HOME" "$ROOT/bin/fm-brief.sh" "$id" firstmate --mode "$mode" >/dev/null
+    file="$BRIEF_HOME/data/$id/brief.md"
+    if [ "$mode" = local-only ]; then
+      grep -q 'Run the full owner gate locally for the harness receipt' "$file" || fail 'local-only lost local receipt'
+      if grep -q "The harness receipt is the PR's own" "$file"; then fail 'local-only requires CI receipt'; fi
+    else
+      grep -q "The harness receipt is the PR's own completed green CI run on the exact head; report its run URL and head SHA" "$file" || fail "$mode lacks CI receipt"
+      grep -q 'Locally run only tests that cover your change and its real-path proof' "$file" || fail "$mode lacks targeted local proof"
+      grep -q 'full owner gate locally only to debug a red CI case' "$file" || fail "$mode lacks local gate boundary"
+    fi
+  done
+  pass 'CI receipt for PR modes; local receipt for local-only'
+}
+
 test_script_parses() {
   local out rc
   out=$(bash -n "$ROOT/bin/fm-brief.sh" 2>&1); rc=$?
@@ -1157,3 +1175,4 @@ test_scout_and_secondmate_scaffold
 test_required_skills_and_mode_specific_prose
 test_scout_lavish_line_follows_presentation_floor
 test_review_brief_requirement
+test_ci_receipt_requirement
