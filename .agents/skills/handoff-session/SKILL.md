@@ -2,7 +2,7 @@
 name: handoff-session
 description: >-
   Handoff procedure: move a live worker's task onto a fresh session on the same harness and model.
-  Use when a peek shows a worker's context meter (the captain's "quota") at the home's handoff threshold with real work left, or when the captain asks for a handoff.
+  Use on handoff-needed or handoff-limit notifications, when a peek shows a worker's context meter at the home's handoff threshold with work left, or when the captain asks for a handoff.
 user-invocable: false
 metadata:
   internal: true
@@ -12,6 +12,13 @@ metadata:
 
 A handoff gives the same worker a fresh context: the replacement runs on the exact harness, model and effort recorded for the task.
 The home's thresholds and any model-specific exemptions live in `data/captain.md`; this skill owns the procedure.
+
+## Automatic context notifications
+
+On `handoff-needed`, use the procedure below when work remains.
+Claude and Pi workers emit this once per session at the configured context threshold; `bin/fm-context-handoff.mjs` owns measurement and counting.
+On `blocked [key=handoff-limit]`, stop the worker at a safe point, inspect the work and its evidence, and judge quality before deciding the next action.
+Keep that worker stopped without relaunching; resolve the keyed blocker through `fm-send --resolve-key handoff-limit` only when the decision is made.
 
 ## 1. Ask the worker for the handoff
 
