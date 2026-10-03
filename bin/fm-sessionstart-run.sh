@@ -146,8 +146,10 @@ if [ -f "$STATE/primary-assistance.assistance-binding" ] && [ ! -L "$STATE/prima
     PRIMARY_HISTORY="$PRIMARY_HISTORY_ROOT/$PRIMARY_HISTORY_DIR/$PRIMARY_SESSION_ID.jsonl"
     if "$SCRIPT_DIR/fm-assistance-primary-session.sh" claude "$PRIMARY_SESSION_ID" "$PRIMARY_HISTORY" \
       >/dev/null 2>&1; then
-      "$FM_ROOT/custom-skills/orchestrator-assistance/fm-assistance.sh" bind --primary \
+      "$FM_ROOT/custom-skills/orchestrator-assistance/fm-assistance.sh" bind --primary --session "$PRIMARY_SESSION_ID" \
         >/dev/null 2>&1 || true
+      "$SCRIPT_DIR/fm-procevent-assistance.sh" retire primary >/dev/null 2>&1 || true
+      "$SCRIPT_DIR/fm-procevent-assistance.sh" arm primary >/dev/null 2>&1 || true
     fi
   fi
 fi

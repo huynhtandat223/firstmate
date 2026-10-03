@@ -391,12 +391,16 @@ test_primary_bind_resets_cursor_when_history_changes() {
   printf 'primary_harness=claude\nprimary_session=s-new\nparent_history=%s\n' "$new_history" \
     > "$home/state/primary-assistance.assistance-current"
   printf '1835\n' > "$home/state/primary-assistance.assistance-cursor"
+  printf 'prior_cursor=1835\nnext_cursor=1836\nturn=1836\tuser\told-turn\ttime\told excerpt\n' \
+    > "$home/state/primary-assistance.assistance-pending"
 
   out=$(run_cli "$dir" bind --primary) || fail "binding to the named new session failed: $out"
   assert_contains "$out" "$new_history" "bind did not select the newly published session"
   assert_absent "$home/state/primary-assistance.assistance-cursor" \
     "binding to a different transcript retained the old committed cursor"
-  pass "primary bind: changing histories resets the committed cursor"
+  assert_absent "$home/state/primary-assistance.assistance-pending" \
+    "binding to a different transcript retained a pending batch from the old history"
+  pass "primary bind: changing histories resets the committed cursor and pending batch"
 }
 
 test_primary_binding_switch_is_visible_and_not_delivered_as_healthy() {
@@ -458,7 +462,7 @@ SH
     > "$dir/home/state/prog-assistance.assistance-binding"
 
   FM_HOME="$dir/home" FM_ASSISTANCE_HISTORY_ROOT="$dir/history" \
-    FM_PROCEVENT_CLAIM_ROOT="$dir/claims" FM_SEND="$dir/bin/send" \
+    FM_ROOT_OVERRIDE="$ROOT" FM_PROCEVENT_CLAIM_ROOT="$dir/claims" FM_SEND="$dir/bin/send" \
     "$CLI" arm prog >/dev/null || fail "automatic observation source did not arm"
   source="$dir/home/state/procevent/assistance-prog.source"
   assert_present "$source" "arm wrote no process-event source"

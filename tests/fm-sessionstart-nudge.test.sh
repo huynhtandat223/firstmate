@@ -1021,9 +1021,22 @@ test_run_publishes_the_claude_primary_session_for_assistance() {
 
   : > "$root/state/primary-assistance.assistance-binding"
   cp "$ROOT/bin/fm-assistance-primary-session.sh" "$root/bin/"
+  cp "$ROOT/bin/fm-procevent-assistance.sh" "$root/bin/"
+  cp "$ROOT/bin/fm-procevent.sh" "$root/bin/"
+  cp "$ROOT/bin/fm-session-start.sh" "$root/bin/"
+  cp "$ROOT/bin/fm-sessionstart-nudge.sh" "$root/bin/"
+  cp "$ROOT/bin/fm-primary-scope-lib.sh" "$root/bin/"
+  cp "$ROOT/bin/fm-gate-refuse-lib.sh" "$root/bin/"
+  cp "$ROOT/bin/fm-session-lock-lib.sh" "$root/bin/"
+  cp "$ROOT/bin/fm-hook-host-lib.sh" "$root/bin/"
+  cp "$ROOT/bin/fm-assistance-primary-session.sh" "$root/bin/"
+  cp "$ROOT/bin/fm-harness.sh" "$root/bin/"
   mkdir -p "$root/custom-skills/orchestrator-assistance"
   cp "$ROOT/custom-skills/orchestrator-assistance/fm-assistance.sh" "$root/custom-skills/orchestrator-assistance/"
   cp "$ROOT/custom-skills/orchestrator-assistance/fm-assistance-lib.sh" "$root/custom-skills/orchestrator-assistance/"
+  cp "$ROOT/custom-skills/orchestrator-assistance/fm-assistance-turns.py" "$root/custom-skills/orchestrator-assistance/"
+  cp "$ROOT/bin/fm-pr-lib.sh" "$ROOT/bin/fm-wake-lib.sh" "$ROOT/bin/fm-procevent-lib.sh" \
+    "$ROOT/bin/fm-operational-input.sh" "$root/bin/"
   rm -f "$history"
   status=0
   printf '{"session_id":"s-assist","source":"clear"}' | run_hook_claude "$root" "$home" >/dev/null || status=$?
@@ -1042,6 +1055,8 @@ test_run_publishes_the_claude_primary_session_for_assistance() {
   assert_grep "parent_history=$history" "$record" "the published history is not the session's own transcript"
   assert_grep "parent_history=$history" "$root/state/primary-assistance.assistance-binding" \
     "the companion binding did not follow the newly published session"
+  assert_present "$root/state/procevent/assistance-primary.source" \
+    "the new session did not re-arm transcript observation"
   out=$(FM_HOME="$root" "$ROOT/custom-skills/orchestrator-assistance/fm-assistance.sh" status primary 2>&1) \
     || fail "newly bound transcript was not observable: $out"
   assert_contains "$out" "behind" "new session transcript did not appear in public status"

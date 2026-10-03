@@ -237,7 +237,8 @@ cmd_bind() {
   binding=$(fm_assistance_binding_path "$FM_HOME" "$pid")
   if [ "$primary" -eq 1 ] && [ -f "$binding" ] \
     && [ "$(binding_get "$binding" parent_history)" != "$history" ]; then
-    rm -f "$(fm_assistance_cursor_path "$FM_HOME" "$pid")"
+    rm -f "$(fm_assistance_cursor_path "$FM_HOME" "$pid")" \
+      "$(fm_assistance_pending_path "$FM_HOME" "$pid")"
   fi
   mkdir -p "$(dirname "$binding")"
   {
