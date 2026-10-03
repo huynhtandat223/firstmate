@@ -24,6 +24,11 @@ printf '{"transcript_path":"%s"}' "$tmp/transcript" | node "$ROOT/bin/fm-context
 grep -q 'context 40% (80000/200000)' "$tmp/claude.status" || fail 'Claude cache measurement'
 printf '{"transcript_path":"%s"}' "$tmp/transcript" | node "$ROOT/bin/fm-context-handoff.mjs" "$tmp/one-million.status" f 8 claude 'haiku[1m]'
 grep -q 'context 8% (80000/1000000)' "$tmp/one-million.status" || fail '[1m] window'
+for model in claude-opus-5-5-200k claude-sonnet-5-5-200k; do
+  printf '{"message":{"model":"%s","usage":{"input_tokens":80000}}}\n' "$model" > "$tmp/transcript"
+  printf '{"transcript_path":"%s"}' "$tmp/transcript" | node "$ROOT/bin/fm-context-handoff.mjs" "$tmp/$model.status" "$model" 40 claude default
+  grep -q 'context 40% (80000/200000)' "$tmp/$model.status" || fail 'explicit 200k window'
+done
 node --input-type=module - "$ROOT" "$tmp" <<'JS'
 import { pathToFileURL } from 'node:url';
 import fs from 'node:fs';

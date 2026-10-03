@@ -33,7 +33,7 @@ if (mode === 'claude') {
   // Aliases vary by provider: use the actual transcript model, preserving [1m].
   const model = windowOrModel.includes('[1m]') ? windowOrModel : (message.model || windowOrModel);
   if (!model) process.exit(0);
-  if (model.includes('[1m]') || /^claude-(opus-5(?!.*200k)|(?:opus|sonnet)-5[.-]|fable-5)/.test(model)) window = 1000000;
+  if (model.includes('[1m]') || /^claude-(?!.*200k)(opus-5|(?:opus|sonnet)-5[.-]|fable-5)/.test(model)) window = 1000000;
   else if (/^(?:claude-)?(?:opus|sonnet|haiku)(?:-|$)/.test(model)) window = 200000;
   else process.exit(0);
   const usage = message.usage;
