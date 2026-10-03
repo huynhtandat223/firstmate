@@ -4068,7 +4068,11 @@ if [ "$KIND" != secondmate ]; then
     busy_cmd_prefix="$(shell_quote "$FM_ROOT/bin/fm-busy-event.sh") apply $(shell_quote "$STATE_REAL") $(shell_quote "$ID")"
     busy_suffix="--gen $(shell_quote "$BUSY_GEN") --source claude-hook"
     j_submit=$(json_escape "$busy_cmd_prefix busy $busy_suffix --event user-prompt-submit 2>/dev/null || true")
-    j_stop=$(json_escape "touch $(shell_quote "$TURNEND"); $busy_cmd_prefix idle $busy_suffix --event stop 2>/dev/null || true")
+    context_cmd=''
+    if [ "$KIND" != secondmate ]; then
+      context_cmd="$(shell_quote "$(command -v node)") $(shell_quote "$FM_ROOT/bin/fm-context-handoff.mjs") $(shell_quote "$STATE_REAL/$ID.status") $(shell_quote "$BUSY_GEN") $(shell_quote "${FM_HANDOFF_PCT:-40}") claude $(shell_quote "${MODEL:-default}"); "
+    fi
+    j_stop=$(json_escape "${context_cmd}touch $(shell_quote "$TURNEND"); $busy_cmd_prefix idle $busy_suffix --event stop 2>/dev/null || true")
     j_stopfail=$(json_escape "$busy_cmd_prefix idle $busy_suffix --event stop-failure 2>/dev/null || true")
     j_sessionend=$(json_escape "$busy_cmd_prefix idle $busy_suffix --event session-end 2>/dev/null || true")
     cat >"$WT/.claude/settings.local.json" <<EOF
@@ -4179,6 +4183,7 @@ EOF
 // tool calls) and stays a wake NOTIFICATION touch for the watcher, never
 // current-state truth.
 import { execFile } from "node:child_process";
+import { contextTurnEnd } from "$FM_ROOT/bin/fm-context-turn-end.mjs";
 const busyEvent = (state: string, event: string) =>
   new Promise<void>((resolve) => {
     execFile("$FM_ROOT/bin/fm-busy-event.sh", [
@@ -4192,7 +4197,17 @@ export default function (pi: any) {
     if (ctx && typeof ctx.isIdle === "function" && !ctx.isIdle()) return;
     return busyEvent("idle", "agent-settled");
   });
-  pi.on("turn_end", () => execFile("touch", ["$TURNEND"]));
+  pi.on("turn_end", async (_event: any, ctx: any) => {
+    const usage = ctx?.getContextUsage?.();
+    if ("$KIND" !== "secondmate" && usage?.tokens != null) {
+      await contextTurnEnd("$FM_ROOT/bin/fm-context-handoff.mjs", [
+        "$STATE_REAL/$ID.status", "$BUSY_GEN", "${FM_HANDOFF_PCT:-40}",
+        String(usage.tokens), String(usage.contextWindow),
+      ], "$TURNEND");
+      return;
+    }
+    execFile("touch", ["$TURNEND"]);
+  });
   // A native harness can make progress inside one Pi turn. This separate
   // marker prevents false wedge alarms without fabricating a completed turn.
   let lastProgress = 0;

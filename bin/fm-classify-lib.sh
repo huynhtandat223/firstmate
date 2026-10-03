@@ -75,7 +75,7 @@ unset _fm_classify_nounset
 # verb-aware: a nonterminal working: or paused: line never becomes captain-relevant
 # merely because its prose contains one of those tokens (for example
 # "working: rebased onto merged #76").
-FM_CLASSIFY_CAPTAIN_RE_DEFAULT='done:|needs-decision:|blocked:|failed:|PR ready|checks green|ready in branch|merged'
+FM_CLASSIFY_CAPTAIN_RE_DEFAULT='done:|needs-decision:|blocked:|failed:|handoff-needed:|PR ready|checks green|ready in branch|merged'
 
 # The deliberate-external-wait verb. A crew (or firstmate steering it) appends
 #   paused: <reason>
@@ -166,7 +166,7 @@ _fm_status_event_scan() {
     case "$line" in *[![:space:]]*) fallback=$line ;; *) continue ;; esac
     case "$line" in *:*) status_line_verb "$line" verb ;; *) verb='' ;; esac
     case "$verb" in
-      working|needs-decision|blocked|done|failed|note|\
+      working|needs-decision|blocked|done|failed|handoff-needed|note|\
       "${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}"|\
       "${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}"|\
       "${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}") prev=$last; last=$line ;;
@@ -221,7 +221,7 @@ status_is_captain_relevant() {
   esac
   if [ -z "${FM_CAPTAIN_RE+x}" ]; then
     case "$verb" in
-      done|needs-decision|blocked|failed) return 0 ;;
+      done|needs-decision|blocked|failed|handoff-needed) return 0 ;;
     esac
   fi
   _fm_status_unstamped "$line" unstamped
