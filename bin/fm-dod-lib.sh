@@ -250,6 +250,8 @@ Delivery contract: mode=direct-PR
 This task ships **direct-PR**: you raise the PR yourself, without the no-mistakes pipeline.
 The task is complete only when committed on your branch.
 When it is implemented and committed, push your branch and open a PR with \`gh-axi\`.
+Link the task's issue in the PR body with \`Closes #n\` when it finishes the issue, or \`Part of #n\` for an earlier step.
+The PR body must contain a \`## Review brief\` section with 3-5 sentences in ASD-STE100 Simplified Technical English, using the repository's own terms: what changed, why, where to check it, and the risk.
 Before you append \`done:\`, run \`review-rulesets\` on your own exact head as part of finishing the work, in parallel with CI and never gated on it - the review reads the diff, not the run.
 Keep Standards and Spec as separate axes, apply \`classical-testing\` to whether the proof is real, and apply \`writing-for-agents\` to every changed agent-facing document.
 A clean self-review is what hands the work back to firstmate.
@@ -286,6 +288,8 @@ Delivery contract: mode=no-mistakes
 The task is complete only when committed on your branch.
 When you believe it is complete, append \`done [at=<epoch>]: {summary}\` to the status file and stop.
 Firstmate will then instruct you to run /no-mistakes to validate and ship a PR.
+Link the task's issue in the PR body with \`Closes #n\` when it finishes the issue, or \`Part of #n\` for an earlier step.
+The PR body must contain a \`## Review brief\` section with 3-5 sentences in ASD-STE100 Simplified Technical English, using the repository's own terms: what changed, why, where to check it, and the risk.
 
 You drive no-mistakes by responding to its gates, not by implementing fixes.
 Follow the guidance no-mistakes itself provides for the mechanics: it loads when you invoke /no-mistakes, and \`no-mistakes axi run --help\` plus the \`help\` lines in each \`axi\` response are authoritative and version-matched to the installed binary.
