@@ -12,23 +12,27 @@ const threshold = Number(thresholdText || 40);
 let used = Number(mode), window = Number(windowOrModel);
 if (mode === 'claude') {
   const hook = JSON.parse(fs.readFileSync(0, 'utf8'));
-  let message;
+  let message, newestUsage;
   // Claude's Stop event can precede its asynchronous transcript flush.
   for (let attempt = 0; attempt < 20; attempt++) {
     const entries = fs.readFileSync(hook.transcript_path, 'utf8').trim().split('\n');
+    let attemptNewestUsage;
     for (const line of entries.reverse()) {
       try {
         const entry = JSON.parse(line);
         if (entry.message?.usage) {
+          attemptNewestUsage ??= entry.message;
           const text = entry.message.content?.filter(part => part.type === 'text').map(part => part.text).join('') || '';
           if (hook.last_assistant_message && text !== hook.last_assistant_message) continue;
           message = entry.message; break;
         }
       } catch { /* A partial transcript line is not a measurement. */ }
     }
+    newestUsage = attemptNewestUsage || newestUsage;
     if (message) break;
     await new Promise(resolve => setTimeout(resolve, 100));
   }
+  message ??= newestUsage;
   if (!message) process.exit(0);
   // Aliases vary by provider: use the actual transcript model, preserving [1m].
   const model = windowOrModel.includes('[1m]') ? windowOrModel : (message.model || windowOrModel);
