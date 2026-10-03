@@ -4204,7 +4204,6 @@ export default function (pi: any) {
         "$STATE_REAL/$ID.status", "$BUSY_GEN", "${FM_HANDOFF_PCT:-40}",
         String(usage.tokens), String(usage.contextWindow),
       ], "$TURNEND");
-      ctx.abort();
       return;
     }
     execFile("touch", ["$TURNEND"]);
