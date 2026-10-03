@@ -38,9 +38,10 @@ test_review_brief_requirement() {
     file="$BRIEF_HOME/data/$id/brief.md"
     case "$mode" in
       direct-PR|no-mistakes)
-        grep -q '## Review brief.*3-5 sentences.*ASD-STE100' "$file" || fail "$mode lacks Review brief requirement" ;;
+        grep -q '## Review brief.*3-5 sentences.*ASD-STE100' "$file" || fail "$mode lacks Review brief requirement"
+        grep -q 'Closes #n.*Part of #n' "$file" || fail "$mode lacks issue link requirement" ;;
       *)
-        if grep -q '## Review brief' "$file"; then fail "$mode requires a PR review brief"; fi ;;
+        if grep -Eq '## Review brief|Closes #n|Part of #n' "$file"; then fail "$mode requires PR body content"; fi ;;
     esac
   done
   pass 'Review brief required only for PR-producing ships'
