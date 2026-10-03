@@ -4198,7 +4198,7 @@ export default function (pi: any) {
     return busyEvent("idle", "agent-settled");
   });
   pi.on("turn_end", async (_event: any, ctx: any) => {
-    const usage = ctx.getContextUsage();
+    const usage = ctx?.getContextUsage?.();
     if ("$KIND" !== "secondmate" && usage?.tokens != null) {
       await contextTurnEnd("$FM_ROOT/bin/fm-context-handoff.mjs", [
         "$STATE_REAL/$ID.status", "$BUSY_GEN", "${FM_HANDOFF_PCT:-40}",
