@@ -58,7 +58,13 @@ SH
 target=\$1; shift
 printf '%s\t%s\n' "\$target" "\$*" >> "$dir/sent"
 SH
-  chmod +x "$dir/bin/spawn" "$dir/bin/send"
+  cat > "$dir/bin/tasks" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$dir/tasks"
+[ "\$1" != show ] || grep -q "^add \$2 " "$dir/tasks"
+SH
+  chmod +x "$dir/bin/spawn" "$dir/bin/send" "$dir/bin/tasks"
+  : > "$dir/tasks"
   : > "$dir/spawned"
   : > "$dir/sent"
   printf '%s\n' "$dir"
@@ -88,6 +94,7 @@ run_cli() {  # <case-dir> <args...>
   FM_PROCEVENT_CLAIM_ROOT="$dir/claims" \
   FM_SPAWN="$dir/bin/spawn" \
   FM_SEND="$dir/bin/send" \
+  FM_TASKS="$dir/bin/tasks" \
   "$CLI" "$@" 2>&1
 }
 
@@ -147,6 +154,7 @@ run_rotate() {  # <case-dir> <handoff-path>
   FM_PROCEVENT_CLAIM_ROOT="$dir/claims" \
   FM_SPAWN="$dir/bin/spawn" \
   FM_SEND="$dir/bin/send" \
+  FM_TASKS="$dir/bin/tasks" \
   FM_CONTROL="$dir/bin/control" \
   FM_ASSISTANCE_PRIMARY_HARNESS=claude \
   FM_ASSISTANCE_PRIMARY_MODEL=claude-opus-5-200k \
@@ -329,6 +337,8 @@ test_open_is_idempotent_on_the_record() {
   assert_grep "--harness pi" "$dir/spawned" "spawn did not pin the assistance harness"
   assert_grep "--model 9route/cx/gpt-6.1-sol" "$dir/spawned" "spawn did not pin the assistance model"
   assert_grep "--effort high" "$dir/spawned" "spawn did not pin the assistance effort"
+  assert_grep "Read and follow" "$dir/home/data/prog-assistance/brief.md" "open did not write the companion brief fm-spawn requires"
+  assert_grep "add prog-assistance Assistance companion for prog --kind scout" "$dir/tasks" "open did not file the backlog item fm-spawn requires"
 
   # fm-spawn records the task; a second open must resume it.
   fm_write_meta "$dir/home/state/prog-assistance.meta" "harness=pi" "kind=supervisor"
