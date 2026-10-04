@@ -335,7 +335,7 @@ test_open_is_idempotent_on_the_record() {
   assert_contains "$out" "opened prog-assistance" "first open did not launch the session"
   assert_grep "prog-assistance $ROOT --scout" "$dir/spawned" "spawn did not launch the assistance task as a read-only scout of this repository"
   assert_grep "--harness pi" "$dir/spawned" "spawn did not pin the assistance harness"
-  assert_grep "--model 9route/cx/gpt-6.1-sol" "$dir/spawned" "spawn did not pin the assistance model"
+  assert_grep "--model 9route/cx/gpt-6-luna" "$dir/spawned" "spawn did not pin the assistance model"
   assert_grep "--effort high" "$dir/spawned" "spawn did not pin the assistance effort"
   assert_grep "Read and follow" "$dir/home/data/prog-assistance/brief.md" "open did not write the companion brief fm-spawn requires"
   assert_grep "add prog-assistance Assistance companion for prog --kind scout" "$dir/tasks" "open did not file the backlog item fm-spawn requires"
