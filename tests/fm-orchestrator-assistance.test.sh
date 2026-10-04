@@ -287,7 +287,7 @@ test_primary_bind_resolves_the_running_harness_store() {
   printf '{"type":"mode","sessionId":"s-live"}\n' > "$dir/claude/--elsewhere--/s-live.jsonl"
 
   out=$(FM_ASSISTANCE_PRIMARY_HARNESS=claude FM_ASSISTANCE_PRIMARY_HISTORY_ROOT="$dir/claude" \
-    run_cli "$dir" bind --primary --session s-live) \
+    FM_ASSISTANCE_HISTORY_ROOT="$dir/claude" run_cli "$dir" bind --primary --session s-live) \
     || fail "primary bind failed on a claude primary: $out"
   assert_contains "$out" "$claude_dir/s-live.jsonl" "primary bind did not resolve this home's own claude transcript"
 
@@ -413,6 +413,37 @@ test_primary_bind_resets_cursor_when_history_changes() {
   assert_absent "$home/state/primary-assistance.assistance-pending" \
     "binding to a different transcript retained a pending batch from the old history"
   pass "primary bind: changing histories resets the committed cursor and pending batch"
+}
+
+test_primary_history_rebind_does_not_replay_settled_turns() {
+  local dir home old_history new_history cursor_file
+  dir=$(new_case primary-rebind-cursor)
+  home="$dir/home"
+  export FM_ASSISTANCE_PRIMARY_HARNESS=claude FM_ASSISTANCE_PRIMARY_HISTORY_ROOT="$dir/history"
+  local history_dir
+  history_dir="$dir/history/$(printf '%s' "$home" | tr '/.' '--')"
+  old_history="$history_dir/s-old.jsonl"
+  new_history="$history_dir/s-new.jsonl"
+  mkdir -p "$history_dir"
+  printf '{"type":"user","uuid":"settled-turn","timestamp":"now","message":{"role":"user","content":"old"}}\n' > "$old_history"
+  printf '{"type":"user","uuid":"new-turn","timestamp":"now","message":{"role":"user","content":"new"}}\n' > "$new_history"
+  printf 'programme_id=primary\nparent_task_id=primary\nassistance_task_id=primary-assistance\nparent_worktree=%s\nparent_history=%s\nprimary_harness=claude\nprimary_session=s-old\n' "$home" "$old_history" > "$home/state/primary-assistance.assistance-binding"
+  FM_HOME="$home" "$ROOT/bin/fm-assistance-primary-session.sh" claude s-old "$old_history" || fail "publishing old session failed"
+  cursor_file=$(FM_HOME="$home" bash -c '. "$1/custom-skills/orchestrator-assistance/fm-assistance-lib.sh"; fm_assistance_cursor_path "$FM_HOME" primary' _ "$ROOT")
+  printf '1835\n' > "$cursor_file"
+  FM_HOME="$home" "$ROOT/bin/fm-assistance-primary-session.sh" claude s-new "$new_history" || fail "publishing new session failed"
+  run_cli "$dir" observe primary >/dev/null || fail "observing initial history failed"
+  run_cli "$dir" settle primary --turn settled-turn --outcome suppressed --cue cue --evidence test --reason settled >/dev/null || fail "settling old-history turn failed"
+  [ "$(cat "$cursor_file")" -gt 0 ] || fail "settlement did not commit old-history cursor"
+  FM_HOME="$home" "$ROOT/bin/fm-assistance-primary-session.sh" claude s-new "$new_history" || fail "publishing new session failed"
+  run_cli "$dir" bind --primary >/dev/null || fail "binding away failed"
+  [ ! -f "$cursor_file" ] || fail "new history inherited another history's cursor"
+  FM_HOME="$home" "$ROOT/bin/fm-assistance-primary-session.sh" claude s-old "$old_history" || fail "republishing old session failed"
+  run_cli "$dir" bind --primary >/dev/null || fail "binding back failed"
+  out=$(run_cli "$dir" observe primary) || fail "observing rebound history failed: $out"
+  assert_not_contains "$out" "settled-turn" "observe replayed a turn with a durable outcome after history rebind"
+  assert_absent "$home/state/primary-assistance.assistance-pending" "settled turn became pending again after rebind"
+  pass "primary rebind: settled turns are filtered before creating a new pending batch"
 }
 
 test_primary_binding_switch_is_visible_and_not_delivered_as_healthy() {
@@ -959,6 +990,7 @@ test_observe_recovers_cursor_past_history_end
 test_assistance_status_makes_lag_visible
 test_status_waiting_reports_binding_path
 test_primary_binding_switch_is_visible_and_not_delivered_as_healthy
+test_primary_history_rebind_does_not_replay_settled_turns
 test_process_event_advances_the_companion_without_an_operator_nudge
 test_observe_records_pending_without_advancing_cursor
 test_suppressed_settlement_advances_once

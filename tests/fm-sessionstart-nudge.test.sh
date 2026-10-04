@@ -1021,6 +1021,15 @@ test_run_publishes_the_claude_primary_session_for_assistance() {
 
   : > "$root/state/primary-assistance.assistance-binding"
   printf 'window=test\nharness=pi\nkind=supervisor\n' > "$root/state/primary-assistance.meta"
+  # SessionStart runs under another live session's lock and must not publish.
+  sleep 30 &
+  local foreign_lock_pid=$!
+  printf '%s\n' "$foreign_lock_pid" > "$root/state/.lock"
+  printf 'prior-current-record\n' > "$root/state/primary-assistance.assistance-current"
+  printf 'prior-binding-record\n' > "$root/state/primary-assistance.assistance-binding"
+  local current_before binding_before
+  current_before=$(sha256sum "$root/state/primary-assistance.assistance-current")
+  binding_before=$(sha256sum "$root/state/primary-assistance.assistance-binding")
   cp "$ROOT/bin/fm-assistance-primary-session.sh" "$root/bin/"
   cp "$ROOT/bin/fm-procevent-assistance.sh" "$root/bin/"
   cp "$ROOT/bin/fm-procevent.sh" "$root/bin/"
@@ -1043,24 +1052,14 @@ test_run_publishes_the_claude_primary_session_for_assistance() {
   status=0
   printf '{"session_id":"s-assist","source":"clear"}' | run_hook_claude "$root" "$home" >/dev/null || status=$?
   expect_code 0 "$status" "run wrapper with an assistance binding before history creation"
-  assert_grep "primary_session=s-assist" "$record" "the running Claude session was not published before history creation"
-  assert_grep "parent_history=$history" "$record" "the published history is not the session's own transcript"
+  kill "$foreign_lock_pid" 2>/dev/null || true
+  wait "$foreign_lock_pid" 2>/dev/null || true
 
-  out=$(FM_HOME="$root" "$ROOT/custom-skills/orchestrator-assistance/fm-assistance.sh" status primary 2>&1) \
-    || fail "status did not treat the not-yet-created transcript as waiting: $out"
-  assert_contains "$out" "waiting" "status did not identify the named history as waiting"
-  printf '{"type":"user","uuid":"u-new","message":{"role":"user","content":"new clear session"}}\n' > "$history"
-  assert_grep "primary_session=s-assist" "$root/state/primary-assistance.assistance-current" \
-    "the hook current-session record lost the new identity"
-  assert_grep "parent_history=$history" "$record" "the published history is not the session's own transcript"
-  assert_grep "parent_history=$history" "$root/state/primary-assistance.assistance-binding" \
-    "the hook did not bind the newly published session"
-  assert_present "$root/state/procevent/assistance-primary.source" \
-    "the new session did not re-arm transcript observation"
-  out=$(FM_HOME="$root" "$ROOT/custom-skills/orchestrator-assistance/fm-assistance.sh" status primary 2>&1) \
-    || fail "newly bound transcript was not observable: $out"
-  assert_contains "$out" "behind" "new session transcript did not appear in public status"
-  pass "run wrapper: a Claude SessionStart publishes and binds the running session for its primary companion"
+  [ "$(sha256sum "$root/state/primary-assistance.assistance-current")" = "$current_before" ] \
+    || fail "lock-refused SessionStart changed the current session record"
+  [ "$(sha256sum "$root/state/primary-assistance.assistance-binding")" = "$binding_before" ] \
+    || fail "lock-refused SessionStart changed the assistance binding"
+  pass "run wrapper: lock-refused Claude SessionStart leaves assistance records unchanged"
 }
 
 test_run_unknown_source_takes_the_helm() {
