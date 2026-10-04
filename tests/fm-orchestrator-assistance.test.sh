@@ -416,7 +416,7 @@ test_primary_bind_resets_cursor_when_history_changes() {
 }
 
 test_primary_history_rebind_does_not_replay_settled_turns() {
-  local dir home old_history new_history cursor_file new_cursor
+  local dir home old_history new_history cursor_file
   dir=$(new_case primary-rebind-cursor)
   home="$dir/home"
   export FM_ASSISTANCE_PRIMARY_HARNESS=claude FM_ASSISTANCE_PRIMARY_HISTORY_ROOT="$dir/history"
