@@ -237,8 +237,9 @@ cmd_bind() {
   binding=$(fm_assistance_binding_path "$FM_HOME" "$pid")
   if [ "$primary" -eq 1 ] && [ -f "$binding" ] \
     && [ "$(binding_get "$binding" parent_history)" != "$history" ]; then
-    rm -f "$(fm_assistance_cursor_path "$FM_HOME" "$pid")" \
-      "$(fm_assistance_pending_path "$FM_HOME" "$pid")"
+    # Outcomes are keyed by turn identity across history rebinds. Preserve the
+    # cursor and pending batch so settled turns are not replayed as new input.
+    rm -f "$(fm_assistance_pending_path "$FM_HOME" "$pid")"
   fi
   mkdir -p "$(dirname "$binding")"
   {
@@ -495,7 +496,7 @@ reconcile_cursor() {  # <programme-id> <pending-file> <cursor-file> <outcomes-fi
     case "$marker" in turn=*) ;; *) continue ;; esac
     line=${marker#turn=}
     if [ "$prefix_open" -eq 0 ] && outcome_has_turn "$outcomes" "$puuid"; then
-      cursor=$line
+      if [ "$line" -gt "$cursor" ]; then cursor=$line; fi
     else
       # Once an earlier turn is unsettled, retain every later turn, including
       # already-settled ones, so a later settlement can advance the whole pair.

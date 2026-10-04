@@ -131,7 +131,8 @@ fi
 # Publish that identity for an already-enabled primary assistance companion so a
 # context clear becomes an exact binding change instead of silent transcript
 # abandonment. Other harnesses publish through their own session-start adapter.
-if [ -f "$STATE/primary-assistance.assistance-binding" ] && [ ! -L "$STATE/primary-assistance.assistance-binding" ] \
+if fm_session_lock_owned_by_self "$STATE" \
+  && [ -f "$STATE/primary-assistance.assistance-binding" ] && [ ! -L "$STATE/primary-assistance.assistance-binding" ] \
   && [ -n "${PAYLOAD:-}" ] && [ "$("$SCRIPT_DIR/fm-harness.sh" 2>/dev/null || true)" = claude ]; then
   PRIMARY_SESSION_ID=$(printf '%s' "$PAYLOAD" | awk '
     BEGIN { RS = "\"" }
