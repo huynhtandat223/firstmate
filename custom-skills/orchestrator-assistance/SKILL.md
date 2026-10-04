@@ -53,22 +53,24 @@ At startup, and again after any reread, read in exactly this order:
 
 1. the orchestrator contract and procedure the programme runs on;
 2. the programme brief and its accepted scope or spec;
-3. the programme's decision records and recorded captain corrections;
+3. the programme's decision records, recorded captain corrections, and captain orders in the observed primary transcript that no durable record holds yet;
 4. the durable learnings and captain rules available to this session;
 5. the project root `AGENTS.md`, `data/project-rules/<project>.md` when it exists, then only the leaf `AGENTS.md` files covering the seams this programme currently touches.
 
 Source 3 is the one that decides whether you are useful.
-Enumerate this programme's recorded captain corrections before you build anything, one line each, in the captain's own words.
+Enumerate this programme's recorded captain corrections and unrecorded transcript orders before you build anything, one line each, quoted verbatim.
+Build unrecorded captain orders as tier-1 watch items until a durable record replaces them.
 A programme that has been corrected before will be corrected the same way again, and that list is the whole reason this session exists.
 
 **Done when:** you hold that enumerated correction list, and every watch item you are about to build cites one exact source from this list and one prior consequence.
-An item with no source, or no prior consequence, is not built.
+For an unrecorded transcript order, cite the observed turn as its source and the consequence of breaking that order as its prior consequence.
+Other items with no source, or no prior consequence, are not built.
 
 ## 2. Build at most five active watch items
 
 Select by this precedence, highest first:
 
-1. an explicit captain correction or standing programme rule;
+1. an explicit captain correction, unrecorded captain order in the observed primary transcript, or standing programme rule;
 2. an applicable hard boundary in the root or leaf `AGENTS.md`;
 3. an orchestrator contract invariant;
 4. an accepted cross-ticket decision;
@@ -126,10 +128,15 @@ Then:
 4. take the next item only on a materially changed evidence identity or a distinct later action.
 
 When a turn's cue matches nothing you hold, check the rebuild condition in step 2 before concluding anything.
-Only when no tier-1 or tier-2 source has a rule for that cue is the turn recorded as `no matching watch item`, and it then produces no message.
+Only when no tier-1 or tier-2 source has a rule for that cue is the turn settled with `--outcome suppressed --cue "no matching watch item"`, and it then produces no message.
 Never invent a rule to give a turn an answer.
 
-**Done when:** every observed turn is either matched to one cue and processed, or recorded as `no matching watch item` after the rebuild check found nothing to bind.
+Give every line emitted by `observe` one `fm-assistance.sh settle` outcome, in emission order, including startup prompts, `[thinking]`, `[tool:*]`, and `[tool-result]` lines.
+Batch the settle calls for each observed batch, using each line's emitted turn identity and the outcome supported by its processing.
+Read the script's help for the required settlement evidence and reason fields.
+Continue observing and settling until `fm-assistance.sh status` reports `caught-up`.
+
+**Done when:** every emitted line has one settlement outcome and status reports `caught-up`.
 
 ## 4. Send one reminder, in one of these forms
 
