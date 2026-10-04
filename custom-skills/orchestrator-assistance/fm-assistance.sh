@@ -574,6 +574,12 @@ cmd_observe() {
 
   next=$(printf '%s\n' "$out" | sed -n 's/^#next=//p')
   records=$(printf '%s\n' "$out" | grep -v '^#next=' || true)
+  if [ -z "$until" ] && [ -n "$records" ]; then
+    records=$(printf '%s\n' "$records" | awk -F '\t' -v outcomes="$(fm_assistance_outcomes_path "$FM_HOME" "$pid")" '
+      BEGIN { while ((getline line < outcomes) > 0) if (line ~ /^turn=/) { sub(/^turn=/, "", line); sub(/\t.*/, "", line); settled[line]=1 } }
+      !($3 in settled)
+    ')
+  fi
   printf '%s\n' "$records"
 
   if [ -z "$until" ] && [ -n "$next" ]; then
