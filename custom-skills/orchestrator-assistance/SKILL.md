@@ -113,9 +113,11 @@ Record the swap with the turn that caused it.
 ## 3. Match one cue per new parent turn
 
 Read new parent turns with `fm-assistance.sh observe`.
-Identify each turn's cue from this closed list, and no other:
+Identify each turn's action cue from this closed list:
 
 `options draft`, `worker brief`, `platform proposal`, `blocked claim`, `ownership claim`, `report claim`, `old pass reused`, `merge with live dependents`, `dispatch`, `verification plan`, `completion claim`, `scope note`, `guidance write`.
+
+For any emitted line that fits no listed action cue, use `no matching watch item` as its settlement cue.
 
 `verification plan` is the moment a behavior or interface decision is declared settled and the next thing is to build it.
 It is a distinct cue because the evidence question there is not who decided, but how anyone will know the built thing works.
