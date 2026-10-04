@@ -40,7 +40,7 @@
 # shellcheck disable=SC2034 # Read by fm-assistance.sh, which sources this file.
 FM_ASSISTANCE_HARNESS="pi"
 # shellcheck disable=SC2034 # Read by fm-assistance.sh, which sources this file.
-FM_ASSISTANCE_MODEL="9route/cx/gpt-6.1-sol"
+FM_ASSISTANCE_MODEL="9route/cx/gpt-6-luna"
 # shellcheck disable=SC2034 # Read by fm-assistance.sh, which sources this file.
 FM_ASSISTANCE_EFFORT="high"
 
