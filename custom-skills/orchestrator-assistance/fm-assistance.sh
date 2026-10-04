@@ -237,9 +237,8 @@ cmd_bind() {
   binding=$(fm_assistance_binding_path "$FM_HOME" "$pid")
   if [ "$primary" -eq 1 ] && [ -f "$binding" ] \
     && [ "$(binding_get "$binding" parent_history)" != "$history" ]; then
-    # Outcomes are keyed by turn identity across history rebinds. Preserve the
-    # cursor and pending batch so settled turns are not replayed as new input.
-    rm -f "$(fm_assistance_pending_path "$FM_HOME" "$pid")"
+    rm -f "$(fm_assistance_cursor_path "$FM_HOME" "$pid")" \
+      "$(fm_assistance_pending_path "$FM_HOME" "$pid")"
   fi
   mkdir -p "$(dirname "$binding")"
   {

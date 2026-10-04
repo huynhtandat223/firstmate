@@ -408,15 +408,15 @@ test_primary_bind_resets_cursor_when_history_changes() {
 
   out=$(run_cli "$dir" bind --primary) || fail "binding to the named new session failed: $out"
   assert_contains "$out" "$new_history" "bind did not select the newly published session"
-  [ "$(cat "$home/state/primary-assistance.assistance-cursor")" = 1835 ] \
-    || fail "binding to a different transcript did not preserve the monotonic cursor"
+  assert_absent "$home/state/primary-assistance.assistance-cursor" \
+    "binding to a different transcript retained the old committed cursor"
   assert_absent "$home/state/primary-assistance.assistance-pending" \
     "binding to a different transcript retained a pending batch from the old history"
-  pass "primary bind: changing histories preserves the committed cursor and clears the old pending batch"
+  pass "primary bind: changing histories resets the committed cursor and pending batch"
 }
 
 test_primary_history_rebind_preserves_settled_turn_and_monotonic_cursor() {
-  local dir home old_history new_history
+  local dir home old_history new_history cursor_file new_cursor
   dir=$(new_case primary-rebind-cursor)
   home="$dir/home"
   export FM_ASSISTANCE_PRIMARY_HARNESS=claude FM_ASSISTANCE_PRIMARY_HISTORY_ROOT="$dir/history"
@@ -427,23 +427,24 @@ test_primary_history_rebind_preserves_settled_turn_and_monotonic_cursor() {
   mkdir -p "$history_dir"
   printf '{"type":"user","uuid":"settled-turn","timestamp":"now","message":{"role":"user","content":"old"}}\n' > "$old_history"
   printf '{"type":"user","uuid":"new-turn","timestamp":"now","message":{"role":"user","content":"new"}}\n' > "$new_history"
-  printf 'programme_id=primary\\nparent_task_id=primary\\nassistance_task_id=primary-assistance\\nparent_worktree=%s\\nparent_history=%s\\nprimary_harness=claude\\nprimary_session=s-old\\n' "$home" "$old_history" > "$home/state/primary-assistance.assistance-binding"
+  printf 'programme_id=primary\nparent_task_id=primary\nassistance_task_id=primary-assistance\nparent_worktree=%s\nparent_history=%s\nprimary_harness=claude\nprimary_session=s-old\n' "$home" "$old_history" > "$home/state/primary-assistance.assistance-binding"
   FM_HOME="$home" "$ROOT/bin/fm-assistance-primary-session.sh" claude s-old "$old_history" || fail "publishing old session failed"
-  printf 'turn=settled-turn\\toutcome=suppressed\\n' > "$home/state/primary-assistance.assistance-outcomes"
-  printf 'turn=new-turn\\toutcome=suppressed\\n' >> "$home/state/primary-assistance.assistance-outcomes"
-  printf '1835\n' > "$home/state/primary-assistance.assistance-cursor"
-  printf 'primary_harness=claude\\nprimary_session=s-new\\nparent_history=%s\\n' "$new_history" > "$home/state/primary-assistance.assistance-current"
+  printf 'turn=settled-turn\toutcome=suppressed\n' > "$home/state/primary-assistance.assistance-outcomes"
+  cursor_file=$(FM_HOME="$home" bash -c '. "$1/custom-skills/orchestrator-assistance/fm-assistance-lib.sh"; fm_assistance_cursor_path "$FM_HOME" primary "$2"' _ "$ROOT" "$old_history")
+  printf '1835\n' > "$cursor_file"
   FM_HOME="$home" "$ROOT/bin/fm-assistance-primary-session.sh" claude s-new "$new_history" || fail "publishing new session failed"
-  run_cli "$dir" bind --primary >/dev/null || fail "binding away failed: $(run_cli "$dir" bind --primary 2>&1 || true)"
+  run_cli "$dir" bind --primary >/dev/null || fail "binding away failed"
+  new_cursor=$(FM_HOME="$home" bash -c '. "$1/custom-skills/orchestrator-assistance/fm-assistance-lib.sh"; fm_assistance_cursor_path "$FM_HOME" primary "$2"' _ "$ROOT" "$new_history")
+  [ ! -f "$new_cursor" ] || fail "new history inherited another history's cursor"
   FM_HOME="$home" "$ROOT/bin/fm-assistance-primary-session.sh" claude s-old "$old_history" || fail "republishing old session failed"
   run_cli "$dir" bind --primary >/dev/null || fail "binding back failed"
-  printf 'prior_cursor=0\\nnext_cursor=1\\nturn=1\\tuser\\tsettled-turn\\ttime\\told\\n' > "$home/state/primary-assistance.assistance-pending"
+  printf 'prior_cursor=0\nnext_cursor=1\nturn=1\tuser\tsettled-turn\ttime\told\n' > "$home/state/primary-assistance.assistance-pending"
   for _ in $(seq 1 1835); do printf '{}\n' >> "$old_history"; done
-  printf '1835\n' > "$home/state/primary-assistance.assistance-cursor"
-  run_cli "$dir" observe primary >/dev/null || fail "settled reconciliation failed: $(run_cli "$dir" observe primary 2>&1 || true)"
-  [ "$(cat "$home/state/primary-assistance.assistance-cursor")" -ge 1835 ] || fail "cursor moved backward after rebind: $(cat "$home/state/primary-assistance.assistance-cursor")"
-  [ ! -f "$home/state/primary-assistance.assistance-pending" ] || { printf "pending:\n" >&2; cat "$home/state/primary-assistance.assistance-pending" >&2; fail "settled turn replayed as pending after rebind"; }
-  pass "primary rebind: settled turn is not replayed and cursor remains monotonic"
+  printf '1835\n' > "$cursor_file"
+  run_cli "$dir" observe primary >/dev/null || fail "settled reconciliation failed"
+  [ "$(cat "$cursor_file")" -ge 1835 ] || fail "cursor moved backward after rebind"
+  assert_absent "$home/state/primary-assistance.assistance-pending" "settled turn replayed after rebind"
+  pass "primary rebind: each history retains its cursor and settled turns do not replay"
 }
 
 test_primary_binding_switch_is_visible_and_not_delivered_as_healthy() {
