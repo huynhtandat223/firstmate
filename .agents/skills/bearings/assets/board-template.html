@@ -277,6 +277,11 @@ a { color: inherit; text-decoration: none; }
 }
 /* Task evidence stays within the narrowest phone row; links are tap targets. */
 .bb-row__main { min-width: 0; }
+#bb-underway .bb-row { align-items: flex-start; }
+@media (max-width: 600px) {
+  #bb-underway .bb-row { flex-direction: column; }
+  #bb-underway .bb-row__main { width: 100%; }
+}
 .bb-materials { margin-top: 12px; overflow-wrap: anywhere; }
 .bb-materials p { margin: 6px 0; font-size: 13px; line-height: 1.5; }
 .bb-materials__outcome { opacity: .75; }
