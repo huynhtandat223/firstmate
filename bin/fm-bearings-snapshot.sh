@@ -243,6 +243,26 @@ fi
 HOME_LABEL=$(printf '%s' "$SNAP" | jq -er '.fm_home | strings | split("/") | (.[-2:] | join("/"))') \
   || { echo "fm-bearings-snapshot: invalid canonical snapshot" >&2; exit 1; }
 
+# Durable local task materials are read through their owner, never from chat.
+# Only live tasks and captain calls need this view; archived records stay private.
+TASK_CONTEXT='{}'
+MATERIAL_WARNINGS='[]'
+while IFS= read -r id; do
+  [ -n "$id" ] || continue
+  context=$(FM_HOME="$(printf '%s' "$SNAP" | jq -r '.fm_home')" "$SCRIPT_DIR/fm-task-links.sh" "$id" show --json) || {
+    MATERIAL_WARNINGS=$(printf '%s' "$MATERIAL_WARNINGS" | jq --arg id "$id" '. + [{surface:("task materials unavailable: " + $id),reveal:"fm-task-links.sh <id> show"}]')
+    continue
+  }
+  pr=$(printf '%s' "$SNAP" | jq -r --arg id "$id" '.tasks[] | select(.id == $id and .pr.source == "meta") | .pr.url // empty')
+  title=$(printf '%s' "$SNAP" | jq -r --arg id "$id" '[.backlog.records[] | select(.id == $id) | .title][0] // ""')
+  context=$(printf '%s' "$context" | jq --arg pr "$pr" --arg title "$title" '
+    del(.schema) | if .purpose == "" then .purpose = $title else . end
+    | if $pr != "" then .links = ([{url:$pr,label:"PR"}] + [.links[] | select(.url != $pr)]) else . end')
+  TASK_CONTEXT=$(printf '%s' "$TASK_CONTEXT" | jq --arg id "$id" --argjson context "$context" '.[$id] = $context')
+done <<EOF
+$(printf '%s' "$SNAP" | jq -r '[.tasks[] | select(.kind != "secondmate") | .id] + [.backlog.records[] | select(.structured and .hold_bucket != null) | .id] | unique[]')
+EOF
+
 # --- optional live GitHub PR enrichment -------------------------------------
 PR_STATUS='not_requested (run: /bearings include PRs)'
 CANDIDATE_PRS='[]'
@@ -369,6 +389,8 @@ MODEL=$(printf '%s' "$SNAP" | jq \
   --argjson pr_rows_capped "$PR_ROWS_CAPPED" \
   --argjson pr_rows_min_total "$PR_ROWS_MIN_TOTAL" \
   --argjson return_catchup "$RETURN_CATCHUP" \
+  --argjson task_context "$TASK_CONTEXT" \
+  --argjson material_warnings "$MATERIAL_WARNINGS" \
   --argjson candidate_prs "$CANDIDATE_PRS" "$FM_LANDED_JQ_DEFS"'
   def trunc($n): if . == null then null else
     (tostring | gsub("\\s+"; " ") | if (length > $n) then (.[:$n] + "…") else . end) end;
@@ -638,6 +660,12 @@ MODEL=$(printf '%s' "$SNAP" | jq \
       reports: (if $all_reports == 1 then $reports_all else $reports_all[:$reports_n] end),
       recorded_prs: (if $all_recorded_prs == 1 then $recorded_prs_all else $recorded_prs_all[:$recorded_prs_n] end)
     }
+  | .in_flight |= map(. as $task | . + ($task_context[.id] // {})
+      | .purpose = ((if (.purpose // "") == "" then $task.name else .purpose end) | fit(240))
+      | .outcome = ((.outcome // "") | fit(300)))
+  | .decisions_open |= map(. + ($task_context[.id] // {})
+      | .purpose = ((.purpose // "") | fit(240))
+      | .outcome = ((.outcome // "") | fit(300)))
   | . + (if ($unhealthy_all | length) > 0 then
            {unhealthy_endpoints:(if $all_unhealthy == 1 then $unhealthy_all else $unhealthy_all[:$unhealthy_n] end)}
          else {} end)
@@ -646,7 +674,7 @@ MODEL=$(printf '%s' "$SNAP" | jq \
   | . + (if $f_paths then {paths:[ $snap.tasks[] | {id, worktree:(.paths.worktree.path // "-"), home:(.paths.home.path // "-"), status:.paths.status_log.path, report:.paths.report.path} ]} else {} end)
   | . + (if $f_actions then {actions:[ $snap.tasks[] | {id, watch:(.actions.watch // .actions.send // "-"), steer:(.actions.steer // .actions.send // "-")} ]} else {} end)
   | . + (if $f_endpoints then {endpoints:[ $snap.tasks[] | {id, backend, target:(.endpoint.target // "-"), exists:.endpoint.exists, agent:.endpoint.agent_alive} ]} else {} end)
-  | . + {omitted: (
+  | . + {omitted: ($material_warnings +
       [ (if $f_bodies then empty else {surface:"backlog item bodies", reveal:"--fields bodies"} end),
         (if $f_paths then empty else {surface:"task paths", reveal:"--fields paths"} end),
         (if $f_actions then empty else {surface:"watch/steer actions", reveal:"--fields actions"} end),
@@ -717,10 +745,14 @@ TOON=$(printf '%s\n' "$MODEL" | jq -r '
       "\($k): ", ($v | to_entries[] | emit(.key;.value) | "  " + .)
     elif ($v | type) == "array" then
       if ($v | length) == 0 then "\($k): []"
-      else
+      elif all($v[]; type == "object" and (keys == ($v[0] | keys)) and all(.[]; type != "array" and type != "object")) then
         ($v[0] | keys_unsorted) as $ks
         | ( "\($k)[\($v | length)]{\($ks | map(q) | join(","))}:",
             ($v[] as $row | "  " + ([ $ks[] as $kk | ($row[$kk] | scal) ] | join(","))) )
+      else
+        "\($k)[\($v | length)]:",
+        ($v[] | [to_entries[] | emit(.key; .value)] | to_entries[]
+          | (if .key == 0 then "  - " else "    " end) + .value)
       end
     else "\($k): " + ($v | scal)
     end;

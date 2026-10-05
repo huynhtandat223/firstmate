@@ -27,6 +27,10 @@ class Node {
     this.classList = {
       add: (c) => { this.className = (this.className + " " + c).trim(); },
       contains: (c) => this.className.split(/\s+/).includes(c),
+      toggle: (c, on) => {
+        this.className = this.className.split(/\s+/).filter((v) => v !== c).join(" ");
+        if (on) this.classList.add(c);
+      },
     };
   }
   get textContent() {
@@ -103,6 +107,10 @@ const rowsOf = (container) =>
       return {
         title: main?.children.find((c) => c.className.includes("bb-row__title"))?.textContent ?? "",
         sub: main?.children.find((c) => c.className.includes("bb-row__sub"))?.textContent ?? "",
+        purpose: main?.querySelectorAll(".bb-materials__purpose")[0]?.textContent ?? "",
+        outcome: main?.querySelectorAll(".bb-materials__outcome")[0]?.textContent ?? "",
+        links: main?.querySelectorAll(".bb-materials__link").map((a) => ({url:a.href,label:a.textContent})) ?? [],
+        gaps: main?.querySelectorAll(".bb-materials__gap").map((n) => n.textContent) ?? [],
         badges: badgesOf(row),
         pickable: row.children.some((c) => c.className.includes("bb-pick") && !c.className.includes("spacer")),
       };

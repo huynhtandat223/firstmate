@@ -1088,6 +1088,10 @@ test_toon_json_parity() {
       n=$(printf '%s' "$json" | jq --arg k "$k" '.[$k] | length')
       if [ "$n" = 0 ]; then
         assert_contains "$toon" "$k: []" "empty array $k must render as 'key: []'"
+      elif printf '%s' "$json" | jq -e --arg k "$k" '.[$k] as $v | any($v[]; (keys != ($v[0] | keys)) or any(.[]; type == "array" or type == "object"))' >/dev/null; then
+        # Nested/nonuniform records use list form, not JSON strings in cells.
+        assert_contains "$toon" "${k}[$n]:" "TOON nested $k count must equal JSON length $n"
+        assert_contains "$toon" '  - id:' 'TOON nested rows must begin an object list item'
       else
         # Header must declare the same count and the same field set.
         hdr=$(printf '%s' "$toon" | grep -E "^$k\[[0-9]+\]\{" || true)
@@ -2487,6 +2491,46 @@ EOF
 # A captain scanning Underway must be able to tell WHICH task a row is, and the
 # board orders Charted Next by the durable filed date, so both facts have to come
 # out of fleet state rather than being invented at render time.
+test_task_materials_publish_and_project_from_durable_records() {
+  local home fakebin json before
+  home=$(make_home task-materials)
+  : > "$home/data/secondmates.md"
+  mkdir -p "$home/projects/wt" "$home/data/material-task"
+  printf '## In flight\n- [ ] material-task - Durable purpose fallback (repo: firstmate) (kind: ship)\n\n## Queued\n\n## Done\n' > "$home/data/backlog.md"
+  fm_write_meta "$home/state/material-task.meta" \
+    "window=firstmate:fm-material-task" "worktree=$home/projects/wt" "project=firstmate" \
+    "harness=claude" "kind=ship" "mode=direct-PR" "pr=https://github.com/example/repo/pull/8"
+  record_claude_state "$home/state" material-task busy
+  printf '## Captain\x27s intent\n\nExplain the UI at a glance.\n\n## Firstmate spec\nOther text\n' > "$home/data/material-task/brief.md"
+  printf 'done [at=1100]: Preview ready\nworking [at=1101]: internal activity after outcome\n' > "$home/state/material-task.status"
+  FM_HOME="$home" "$ROOT/bin/fm-task-links.sh" material-task add-url http://127.0.0.1:5001/review 'Review' >/dev/null || fail 'URL publication failed'
+  FM_HOME="$home" "$ROOT/bin/fm-task-links.sh" material-task add-image "$home/missing.png" 'Latest screen' >/dev/null || fail 'missing-image publication failed'
+  before=$(FM_HOME="$home" "$ROOT/bin/fm-task-links.sh" material-task show --json)
+  FM_HOME="$home" "$ROOT/bin/fm-task-links.sh" material-task add-url javascript:alert 'Bad' >/dev/null 2>&1 && fail 'unsafe URL accepted'
+  [ "$before" = "$(FM_HOME="$home" "$ROOT/bin/fm-task-links.sh" material-task show --json)" ] || fail 'invalid publication changed the record'
+  FM_HOME="$home" "$ROOT/bin/fm-task-links.sh" material-task add-url http://127.0.0.1:5001/review 'Review' >/dev/null
+  FM_HOME="$home" "$ROOT/bin/fm-task-links.sh" ../escape show >/dev/null 2>&1 && fail 'task traversal accepted'
+  fakebin=$(make_fakebin "$home")
+  json=$(run "$home" "$fakebin" --json)
+  printf '%s' "$json" | jq -e --arg path "$home/missing.png" '
+    .in_flight[] | select(.id == "material-task")
+    | .purpose == "Explain the UI at a glance." and .outcome == "Preview ready"
+      and .links == [{url:"https://github.com/example/repo/pull/8",label:"PR"},{url:"http://127.0.0.1:5001/review",label:"Review"}]
+      and .images == [{path:$path,label:"Latest screen"}]
+  ' >/dev/null || fail "materials projection lost authoritative context: $json"
+  rm "$home/data/material-task/brief.md"
+  json=$(run "$home" "$fakebin" --json)
+  printf '%s' "$json" | jq -e '.in_flight[] | select(.id == "material-task") | .purpose == "Durable purpose fallback"' >/dev/null || fail 'purpose did not fall back to title'
+  { printf '## Captain\x27s intent\n'; printf '%400s\n' '' | tr ' ' x; } > "$home/data/material-task/brief.md"
+  { printf 'done: '; printf '%400s\n' '' | tr ' ' x; } >> "$home/state/material-task.status"
+  json=$(run "$home" "$fakebin" --json)
+  printf '%s' "$json" | jq -e '.in_flight[] | select(.id == "material-task") | (.purpose | length) == 240 and (.outcome | length) == 300' >/dev/null || fail 'context exceeds board payload limits'
+  printf '{broken' > "$home/data/material-task/links.json"
+  json=$(run "$home" "$fakebin" --json)
+  printf '%s' "$json" | jq -e '.omitted | any(.surface == "task materials unavailable: material-task")' >/dev/null || fail 'corrupt materials silently disappeared'
+  pass 'task publisher and snapshot retain PR, review link, missing screenshot, purpose and classified outcome'
+}
+
 test_underway_and_gate_rows_carry_the_durable_name_and_filed_date() {
   local home mate fakebin json
   home=$(make_home durable-name-filed)
@@ -3355,6 +3399,7 @@ test_working_captain_holds_keep_their_bucket_surfaces
 test_active_children_project_independent_of_home_captain_hold
 test_nameless_legacy_summary_uses_its_durable_identifier
 test_newest_filed_gates_are_selected_before_snapshot_bounds
+test_task_materials_publish_and_project_from_durable_records
 test_underway_and_gate_rows_carry_the_durable_name_and_filed_date
 test_mixed_secondmate_roles_partial_state_and_captain_readiness
 test_main_captain_readiness_matches_secondmate_projection

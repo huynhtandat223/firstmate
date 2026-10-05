@@ -79,6 +79,14 @@
 # first; a row with no comparable date keeps its payload order after every dated
 # row. Anything else in that field refuses rather than sorting on garbage.
 #
+# Underway rows and Captain's Call cards MAY carry purpose/outcome strings,
+# links[] of {url,label} with HTTP(S) URLs, and images[] of {path,label} with
+# absolute PNG/JPEG/GIF/WebP/AVIF paths (the task publisher is fm-task-links.sh).
+# build copies valid raster bytes up to 10 MiB beside the board under a
+# content-addressed name; the effective image gets src and missing fields.
+# Missing, oversized, or non-raster files stay as labelled gaps, never embeds.
+# Text and lists are bounded: purpose 240, outcome 300, links 13, images 6.
+#
 # The board path is stable - $FM_HOME/.lavish/bearings-board.html - so a
 # re-invocation rebuilds the same file in place, which keeps the same Lavish
 # session URL and the same canonical process-event source id. Injection escapes
@@ -133,6 +141,19 @@ validate_payload() {  # <data.json>
       or (.[$name]
         | type == "string"
           and test("^https://[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?::[0-9]{1,5})?(?:[/?#][^[:space:]]*)?$"));
+    def material_text($max): type == "string" and length <= $max;
+    def material_url: type == "string" and length <= 2048
+      and test("^https?://[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?::[0-9]{1,5})?(?:[/?#][^[:space:][:cntrl:]]*)?$");
+    def optional_materials:
+      ((has("purpose") | not) or (.purpose | material_text(240)))
+      and ((has("outcome") | not) or (.outcome | material_text(300)))
+      and ((has("links") | not) or (.links | type == "array" and length <= 13
+        and all(.[]; type == "object" and (.url | material_url) and (.label | nonempty_string and length <= 2048))))
+      and ((has("images") | not) or (.images | type == "array" and length <= 6
+        and all(.[]; type == "object" and (.path | type == "string" and length <= 2048
+          and startswith("/") and (test("[[:cntrl:]]") | not) and test("\\.(png|jpe?g|gif|webp|avif)$"; "i"))
+          and (.label | nonempty_string and length <= 2048)
+          and (has("src") | not) and (has("missing") | not))));
     def version: type == "string" and test("^(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})$");
     def optional_subject:
       (has("subject") | not)
@@ -146,6 +167,7 @@ validate_payload() {  # <data.json>
       and (.key | slug(128))
       and (.type == "decision" or .type == "merge" or .type == "credential")
       and repo_marker
+      and optional_materials
       and (.title | nonempty_string)
       and (.options | type == "array")
       and ((.options | length) > 0 or .allow_freeform == true)
@@ -170,7 +192,7 @@ validate_payload() {  # <data.json>
       and ([.options[].value] | index("reconcile") == null)
       and (if .type == "merge" then (.risk | nonempty_string) else true end);
     def underway_item:
-      type == "object" and repo_marker and name_marker and (.id | nonempty_string)
+      type == "object" and repo_marker and name_marker and optional_materials and (.id | nonempty_string)
       and (.state | nonempty_string) and (.doing | nonempty_string) and (.kind | nonempty_string);
     def landed_item:
       type == "object" and repo_marker and (.id | nonempty_string)
@@ -357,6 +379,43 @@ await_source_owner() {  # <source-id>
   printf '%s\n' "${owner:-none}"
 }
 
+# Publish only bounded raster bytes, not arbitrary files with an image suffix.
+materialize_images() {  # <effective.json> <board-directory>
+  local data=$1 dir=$2 path stage ext hash src index='{}' updated
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    src=''
+    stage=$(mktemp "$dir/.image.XXXXXX") || return 1
+    if [ -f "$path" ] && perl -e 'exit((-s $ARGV[0]) <= 10485760 ? 0 : 1)' "$path" && cp -- "$path" "$stage"; then
+      ext=$(perl -e '
+        open my $f, "<", $ARGV[0] or exit 1; binmode $f;
+        exit 1 if -s $f > 10485760;
+        read $f, my $h, 32;
+        if ($h =~ /^\x89PNG\r\n\x1a\n/) { print "png" }
+        elsif ($h =~ /^\xff\xd8\xff/) { print "jpg" }
+        elsif ($h =~ /^GIF8[79]a/) { print "gif" }
+        elsif ($h =~ /^RIFF....WEBP/s) { print "webp" }
+        elsif ($h =~ /^....ftypavif/s) { print "avif" }
+        else { exit 1 }
+      ' "$stage") || ext=''
+      if [ -n "$ext" ]; then
+        hash=$(shasum -a 256 "$stage" | awk '{print $1}') || { rm -f "$stage"; return 1; }
+        src="bearings-image-$hash.$ext"
+        if ! { chmod 0600 "$stage" && mv -f "$stage" "$dir/$src"; }; then rm -f "$stage"; return 1; fi
+      fi
+    fi
+    rm -f "$stage"
+    index=$(printf '%s' "$index" | jq --arg path "$path" --arg src "$src" '.[$path] = {src:$src,missing:($src == "")}') || return 1
+  done <<EOF
+$(jq -r '[.underway[],.captains_call[]] | [.[].images[]?.path] | unique[]' "$data")
+EOF
+  updated=$(jq --argjson index "$index" '
+    def images: if has("images") then .images |= map(. + $index[.path]) else . end;
+    .underway |= map(images) | .captains_call |= map(images)
+  ' "$data") || return 1
+  printf '%s\n' "$updated" > "$data"
+}
+
 command_build() {
   local data=${1-} board json tmp sid extracted effective owner version pre_reopen_owner
   [ "$#" -eq 1 ] || { usage >&2; exit 2; }
@@ -374,6 +433,9 @@ command_build() {
     rm -f -- "$effective"
     fail "cannot reconcile the board payload against landed work"
   fi
+  board=$(board_path)
+  (umask 077; mkdir -p "${board%/*}") || fail "cannot create ${board%/*}"
+  materialize_images "$effective" "${board%/*}" || { rm -f -- "$effective"; fail "cannot publish board images"; }
   json=$(jq -c . "$effective") || { rm -f -- "$effective"; fail "cannot compact the board data"; }
   rm -f -- "$effective"
   # `<` never appears in JSON syntax outside strings, so escaping every
