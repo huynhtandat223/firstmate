@@ -232,6 +232,22 @@ test_an_underway_row_leads_with_the_task_name_and_keeps_its_run_status
 test_an_underway_identifier_label_is_not_replaced_by_run_status
 test_charted_next_reads_newest_filed_first
 test_charted_rows_without_a_filed_date_follow_the_dated_rows_in_payload_order
+test_task_materials_render_with_labelled_missing_image() {
+  local home out
+  home=$(make_home material-render)
+  out=$(render_board "$home" '[{"id":"task","repo":"sample","name":"UI task","state":"working","kind":"ship","doing":"Checking UI",
+    "purpose":"Show context without chat","outcome":"Preview ready",
+    "links":[{"url":"https://github.com/example/repo/pull/8","label":"PR"},{"url":"http://127.0.0.1:5001/review","label":"Review"}],
+    "images":[{"path":"/absent/screen.png","label":"Mobile screen"}]}]' '[]')
+  printf '%s' "$out" | jq -e '
+    .error == "" and (.underway[0] | .purpose == "Show context without chat"
+      and .outcome == "Latest outcome: Preview ready" and [.links[].label] == ["PR","Review"]
+      and .gaps == ["Image unavailable: Mobile screen"])
+  ' >/dev/null || fail "task evidence did not render: $out"
+  pass 'task purpose, latest outcome, PR and review links and missing image labels render'
+}
+
+test_task_materials_render_with_labelled_missing_image
 test_a_warning_row_reads_as_a_repair_not_as_queued_work
 test_warnings_are_excluded_from_the_charted_next_count
 test_a_board_of_only_warnings_still_reports_nothing_queued

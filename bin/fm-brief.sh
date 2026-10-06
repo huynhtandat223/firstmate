@@ -539,6 +539,8 @@ $ASK_USER_BLOCK
    Firstmate's reply normally writes that closing line at answer time; when a blocker or wait clears WITHOUT a firstmate reply, append \`resolved [at=<epoch>]: {how it cleared}\` yourself (same \`[key=<slug>]\` if you opened it with one) as you resume.
 $RULE7_SHIP
 
+Publish task review URLs and screenshots with \`FM_HOME=$(shell_quote "$FM_HOME") $(shell_quote "$FM_ROOT/bin/fm-task-links.sh") $ID add-url <url> [label]\` or \`add-image <absolute-path> [label]\`; the publisher's \`--help\` owns the record and image limits.
+
 $INBOX_SECTION
 
 # Project memory

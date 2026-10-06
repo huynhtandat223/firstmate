@@ -777,6 +777,37 @@ test_build_refuses_a_nondecision_reconcile_value() {
   pass "build reserves reconcile across non-decision cards"
 }
 
+test_material_payload_validation_and_raster_serving() {
+  local home data board out src
+  home=$(make_home materials)
+  data="$home/payload.json"
+  board="$home/.lavish/bearings-board.html"
+  write_valid_payload "$data"
+  # A valid one-pixel PNG, plus absent and non-raster files with image suffixes.
+  printf '%s' 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aN1sAAAAASUVORK5CYII=' | base64 -d > "$home/screen.png"
+  printf 'not an image' > "$home/not-image.png"
+  jq --arg path "$home/screen.png" --arg missing "$home/missing.png" --arg bad "$home/not-image.png" '
+    .underway[0] = {id:"task",name:"UI task",repo:"sample",kind:"ship",state:"working",doing:"Testing UI",purpose:"Show progress",outcome:"Preview ready",links:[{url:"http://127.0.0.1:5001/review",label:"Review"}],
+      images:[{path:$path,label:"Screenshot"},{path:$missing,label:"Missing screenshot"},{path:$bad,label:"Not raster"}]}
+    | .captains_call[0] += (.underway[0] | {purpose,outcome,links,images})
+  ' "$data" > "$data.tmp" && mv "$data.tmp" "$data"
+  run_board "$home" build "$data" >/dev/null || fail 'materials payload refused'
+  out=$(extract_payload "$board")
+  printf '%s' "$out" | jq -e '
+    .underway[0].images[0].missing == false
+    and .underway[0].images[1].missing == true and .underway[0].images[2].missing == true
+    and .captains_call[0].images == .underway[0].images
+  ' >/dev/null || fail "image copy or labelled gaps are missing: $out"
+  src=$(printf '%s' "$out" | jq -r '.underway[0].images[0].src')
+  cmp "$home/screen.png" "$home/.lavish/$src" || fail 'served image differs from screenshot'
+  for mutation in '.underway[0].links[0].url = "javascript:alert(1)"' '.captains_call[0].images[0].path = "relative.png"' '.underway[0].purpose = 7' '.underway[0].images[0].src = "arbitrary.png"' '.underway[0].images[0].path = "/tmp/active.svg"'; do
+    jq "$mutation" "$data" > "$data.bad"
+    run_board "$home" build "$data.bad" >/dev/null 2>&1 && fail "unsafe materials accepted: $mutation"
+  done
+  pass 'optional materials validate on both surfaces and only raster bytes are served beside the board'
+}
+
+test_material_payload_validation_and_raster_serving
 test_path_is_stable_and_home_scoped
 test_build_refuses_malformed_payloads_before_touching_the_board
 test_charted_kind_is_optional_and_accepts_both_values

@@ -109,6 +109,8 @@ Compose the payload from the same snapshot with the same ranking judgment as the
 - `charted_more` counts omitted queued rows only, while `charted_warning_more` counts omitted warning rows only; keep both counts separate whenever the board payload truncates Charted Next.
 - Every Underway row copies the task-identifying `in_flight.name` from the snapshot into an explicit `name` field, which the board leads with while keeping the run status on its second line.
   The snapshot command's header owns its durable-title-or-id normalization; never replace the projected label with run status or invent another label.
+- Copy `purpose`, `outcome`, `links`, and `images` from the matching snapshot `in_flight` or `decisions_open` row onto Underway rows and Captain's Call cards; `bin/fm-task-links.sh` owns publishing the durable materials, and `bin/fm-bearings-board.sh` owns their payload validation and image serving.
+  Keep any recorded PR link when live PR checks were not requested; a link is not proof of green checks.
 - Every Charted Next row copies the snapshot gate's durable filed date into `filed`, and the board orders the section by it, newest filed first.
   Follow `bin/fm-bearings-board.sh`'s payload contract for the accepted format.
   Omit it or pass null for a row with no durable filed date - the main-inventory or return-catchup warning, an unavailable secondmate home, or a queued row filed before dates were recorded - and the board keeps those rows in payload order after every dated row.
