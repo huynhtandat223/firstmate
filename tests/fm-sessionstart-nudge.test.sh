@@ -1008,60 +1008,6 @@ test_run_reads_source_from_the_hook_payload() {
   pass "run wrapper: the hook payload's source field drives routing with no explicit argument"
 }
 
-test_run_publishes_the_claude_primary_session_for_assistance() {
-  local root="$TMP_ROOT/run-assist" home="$TMP_ROOT/run-assist-home" history record status=0
-  make_run_primary "$root"
-  history="$home/.claude/projects/$(printf '%s\n' "$root" | tr '/.' '--')/s-assist.jsonl"
-  mkdir -p "$(dirname "$history")"
-  echo '{}' > "$history"
-  record="$root/state/primary-assistance.assistance-current"
-  printf '{"session_id":"s-assist","source":"resume"}' | run_hook_claude "$root" "$home" >/dev/null || status=$?
-  expect_code 0 "$status" "run wrapper without an assistance binding"
-  assert_absent "$record" "a home with no primary assistance published a session record"
-
-  : > "$root/state/primary-assistance.assistance-binding"
-  printf 'window=test\nharness=pi\nkind=supervisor\n' > "$root/state/primary-assistance.meta"
-  # SessionStart runs under another live session's lock and must not publish.
-  sleep 30 &
-  local foreign_lock_pid=$!
-  printf '%s\n' "$foreign_lock_pid" > "$root/state/.lock"
-  printf 'prior-current-record\n' > "$root/state/primary-assistance.assistance-current"
-  printf 'prior-binding-record\n' > "$root/state/primary-assistance.assistance-binding"
-  local current_before binding_before
-  current_before=$(sha256sum "$root/state/primary-assistance.assistance-current")
-  binding_before=$(sha256sum "$root/state/primary-assistance.assistance-binding")
-  cp "$ROOT/bin/fm-assistance-primary-session.sh" "$root/bin/"
-  cp "$ROOT/bin/fm-procevent-assistance.sh" "$root/bin/"
-  cp "$ROOT/bin/fm-procevent.sh" "$root/bin/"
-  cp "$ROOT/bin/fm-session-start.sh" "$root/bin/"
-  cp "$ROOT/bin/fm-sessionstart-nudge.sh" "$root/bin/"
-  cp "$ROOT/bin/fm-primary-scope-lib.sh" "$root/bin/"
-  cp "$ROOT/bin/fm-gate-refuse-lib.sh" "$root/bin/"
-  cp "$ROOT/bin/fm-session-lock-lib.sh" "$root/bin/"
-  cp "$ROOT/bin/fm-hook-host-lib.sh" "$root/bin/"
-  cp "$ROOT/bin/fm-harness.sh" "$root/bin/"
-  cp "$ROOT/bin/fm-cursor-lib.sh" "$ROOT/bin/fm-gemini-lib.sh" "$root/bin/"
-  mkdir -p "$root/custom-skills/orchestrator-assistance"
-  cp "$ROOT/custom-skills/orchestrator-assistance/fm-assistance.sh" "$root/custom-skills/orchestrator-assistance/"
-  cp "$ROOT/custom-skills/orchestrator-assistance/fm-assistance-lib.sh" "$root/custom-skills/orchestrator-assistance/"
-  cp "$ROOT/custom-skills/orchestrator-assistance/fm-assistance-turns.py" "$root/custom-skills/orchestrator-assistance/"
-  cp "$ROOT/custom-skills/orchestrator-assistance/SKILL.md" "$root/custom-skills/orchestrator-assistance/"
-  cp "$ROOT/bin/fm-pr-lib.sh" "$ROOT/bin/fm-wake-lib.sh" "$ROOT/bin/fm-procevent-lib.sh" \
-    "$ROOT/bin/fm-operational-input.sh" "$root/bin/"
-  rm -f "$history"
-  status=0
-  printf '{"session_id":"s-assist","source":"clear"}' | run_hook_claude "$root" "$home" >/dev/null || status=$?
-  expect_code 0 "$status" "run wrapper with an assistance binding before history creation"
-  kill "$foreign_lock_pid" 2>/dev/null || true
-  wait "$foreign_lock_pid" 2>/dev/null || true
-
-  [ "$(sha256sum "$root/state/primary-assistance.assistance-current")" = "$current_before" ] \
-    || fail "lock-refused SessionStart changed the current session record"
-  [ "$(sha256sum "$root/state/primary-assistance.assistance-binding")" = "$binding_before" ] \
-    || fail "lock-refused SessionStart changed the assistance binding"
-  pass "run wrapper: lock-refused Claude SessionStart leaves assistance records unchanged"
-}
-
 test_run_unknown_source_takes_the_helm() {
   local root="$TMP_ROOT/run-unknown" out status=0
   make_run_primary "$root"
@@ -1129,7 +1075,6 @@ test_run_clear_without_completion_finishes_startup
 test_run_clear_rejects_previous_owner_completion
 test_run_resume_delegates_to_the_nudge
 test_run_reads_source_from_the_hook_payload
-test_run_publishes_the_claude_primary_session_for_assistance
 test_run_unknown_source_takes_the_helm
 test_run_gate_and_scope_are_silent
 test_run_reports_a_failed_session_start_as_digest_text

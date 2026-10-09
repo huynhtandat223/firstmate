@@ -1260,8 +1260,7 @@ window_for_task() {  # <task-key> [state]
 inject_msg() {  # <message> [state]
   local msg=$1 state target backend
   state="${2:-$(_state_root)}"
-  # Presence is the daemon's policy gate. It intentionally stays outside the
-  # shared owner so primary assistance can deliver while away mode is off.
+  # Presence is the daemon's policy gate before guarded delivery.
   afk_active "$state" || { log "inject deferred: afk inactive"; return 1; }
   target="${FM_SUPERVISOR_TARGET:-$FM_SUPERVISOR_TARGET_DEFAULT}"
   backend="${FM_SUPERVISOR_BACKEND:-tmux}"

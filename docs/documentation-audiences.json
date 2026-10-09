@@ -493,10 +493,6 @@
       "audience": "agent-runtime"
     },
     {
-      "path": "custom-skills/orchestrator-assistance/SKILL.md",
-      "audience": "agent-runtime"
-    },
-    {
       "path": "custom-skills/orchestrator/PROGRAMME.md",
       "audience": "agent-runtime"
     },
