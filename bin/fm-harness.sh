@@ -13,16 +13,6 @@
 #                                        config/secondmate-harness, or empty when absent.
 #        fm-harness.sh secondmate-effort   print the optional EFFORT token from
 #                                        config/secondmate-harness, or empty when absent.
-#        fm-harness.sh primary-history-root <harness>
-#                                        print the verified primary session store.
-#        fm-harness.sh primary-history-matcher <harness>
-#                                        print the verified session identity matcher.
-#        fm-harness.sh primary-context-capacity <harness> <model>
-#                                        print the measured nominal model capacity.
-#        fm-harness.sh primary-effective-window <harness> <model>
-#                                        print the running primary's effective window.
-#        fm-harness.sh primary-rotation-command <harness>
-#                                        print the measured session replacement command.
 #        fm-harness.sh validate-native-effort <harness> <model> <effort>
 #                                        Refuse ultra unless the harness is pi or
 #                                        pi-signed and the model explicitly names
@@ -506,73 +496,7 @@ validate_native_effort() {
   return 1
 }
 
-primary_history_root() {
-  case "$1" in
-    claude) printf '%s\n' "$HOME/.claude/projects" ;;
-    pi|pi-signed) printf '%s\n' "$HOME/.pi/agent/sessions" ;;
-    *) printf 'unmeasured\n' ;;
-  esac
-}
-
-primary_history_matcher() {
-  case "$1" in
-    claude) printf 'claude-path\n' ;;
-    pi|pi-signed) printf 'pi-header-cwd\n' ;;
-    *) printf 'unmeasured\n' ;;
-  esac
-}
-
-primary_context_capacity() {
-  case "$1:$2" in
-    claude:claude-opus-5) printf '1000000\n' ;;
-    claude:claude-opus-5-200k) printf '200000\n' ;;
-    pi:cx/gpt-5.6-luna|pi-signed:cx/gpt-5.6-luna) printf '200000\n' ;;
-    *) printf 'unmeasured\n' ;;
-  esac
-}
-
-primary_effective_window() {
-  local harness=$1 model=$2 lock_pid env_file line configured=
-  case "$harness" in
-    claude)
-      lock_pid=$(cat "$FM_HOME/state/.lock" 2>/dev/null || true)
-      case "$lock_pid" in
-        ''|*[!0-9]*) ;;
-        *)
-          env_file="/proc/$lock_pid/environ"
-          if [ -r "$env_file" ]; then
-            while IFS= read -r -d '' line; do
-              case "$line" in
-                CLAUDE_CODE_AUTO_COMPACT_WINDOW=*) configured=${line#CLAUDE_CODE_AUTO_COMPACT_WINDOW=} ;;
-              esac
-            done < "$env_file"
-          fi
-          ;;
-      esac
-      [ -n "$configured" ] || configured=${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-}
-      case "$configured" in
-        ''|*[!0-9]*|0) primary_context_capacity "$harness" "$model" ;;
-        *) printf '%s\n' "$configured" ;;
-      esac
-      ;;
-    *) primary_context_capacity "$harness" "$model" ;;
-  esac
-}
-
-primary_rotation_command() {
-  case "$1" in
-    claude) printf '/clear\n' ;;
-    pi|pi-signed) printf '/new\n' ;;
-    *) printf 'unmeasured\n' ;;
-  esac
-}
-
 case "${1:-}" in
-  primary-history-root) primary_history_root "${2:-$(detect_own)}" ;;
-  primary-history-matcher) primary_history_matcher "${2:-$(detect_own)}" ;;
-  primary-context-capacity) primary_context_capacity "${2:-$(detect_own)}" "${3:-}" ;;
-  primary-effective-window) primary_effective_window "${2:-$(detect_own)}" "${3:-}" ;;
-  primary-rotation-command) primary_rotation_command "${2:-$(detect_own)}" ;;
   validate-native-effort) shift; validate_native_effort "$@" ;;
   ancestry)
     case "${2:-}" in

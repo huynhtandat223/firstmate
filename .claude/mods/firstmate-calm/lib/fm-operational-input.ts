@@ -24,7 +24,6 @@ export const FIRSTMATE_OPERATIONAL_GENERIC_KINDS = [
   "watcher",
   "turn-end-guard",
   "away-supervisor",
-  "assistance",
   "launch-brief",
   "branch-outcome",
 ] as const;

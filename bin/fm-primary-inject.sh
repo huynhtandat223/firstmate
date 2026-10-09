@@ -44,31 +44,6 @@ fm_primary_inject_busy() {  # <backend> <target>
   printf '%s' "$tail" | grep -v '^[[:space:]]*$' | tail -12 | fm_busy_lines_match "${harness:-unknown}"
 }
 
-# fm_primary_rotate: <backend> <target> <handoff>
-#
-# Replace the bound primary's in-process session through its own supported
-# session command, then submit the captain's fixed continuation prompt. This
-# is the sole lifecycle action assistance may request.
-fm_primary_rotate() {
-  local backend=$1 target=$2 handoff=$3 harness command prompt verdict
-  if [ -n "${FM_PRIMARY_ROTATE:-}" ]; then
-    "$FM_PRIMARY_ROTATE" "$backend" "$target" "$handoff"
-    return $?
-  fi
-  harness=${FM_DAEMON_PRIMARY_HARNESS:-}
-  [ -n "$harness" ] || harness=$("$FM_PRIMARY_INJECT_DIR/fm-harness.sh" 2>/dev/null || printf unknown)
-  command=$("$FM_PRIMARY_INJECT_DIR/fm-harness.sh" primary-rotation-command "$harness")
-  case "$command" in
-    /clear|/new) ;;
-    *) fm_primary_inject_log "primary rotation refused: harness $harness has no measured session replacement command"; return 1 ;;
-  esac
-  fm_backend_target_exists "$backend" "$target" || return 1
-  fm_backend_send_text_submit "$backend" "$target" "$command" "${FM_INJECT_CONFIRM_RETRIES:-3}" "${FM_INJECT_CONFIRM_SLEEP:-0.5}" "${FM_INJECT_CONFIRM_SLEEP:-0.5}" >/dev/null || return 1
-  prompt="$handoff you're orchestrator, continue your work"
-  verdict=$(fm_backend_send_text_submit "$backend" "$target" "$prompt" "${FM_INJECT_CONFIRM_RETRIES:-3}" "${FM_INJECT_CONFIRM_SLEEP:-0.5}" "${FM_INJECT_CONFIRM_SLEEP:-0.5}") || return 1
-  [ "$verdict" = empty ]
-}
-
 # fm_primary_inject: <kind> <backend> <target> <message>
 #
 # The caller must perform any policy or presence gate before calling this
@@ -77,10 +52,6 @@ fm_primary_rotate() {
 fm_primary_inject() {
   local kind=$1 backend=$2 target=$3 message=$4 encoded composer retries sleep_s verdict
 
-  if [ "$kind" = assistance ] && [ -n "${FM_PRIMARY_HANDOFF:-}" ]; then
-    "$FM_PRIMARY_HANDOFF" "$backend" "$target" "$message"
-    return $?
-  fi
   message=$(fm_primary_inject_collapse_newlines "$message")
   fm_operational_input_encode "$kind" "$message" encoded || return 1
   fm_backend_target_exists "$backend" "$target" || return 1
@@ -103,38 +74,5 @@ fm_primary_inject() {
     return 0
   fi
   fm_primary_inject_log "inject failed: submit unconfirmed after $retries retries (verdict=$verdict)"
-  return 1
-}
-
-# Resolve the live primary pane from the home lock holder's inherited runtime
-# markers. An explicit override is useful for operators and isolated tests.
-# Prints <backend><TAB><target> and refuses when the primary identity is not
-# discoverable rather than guessing another pane.
-fm_primary_target_from_home() {  # <fm-home>
-  local home=$1 state lock_pid env_file line tmux_pane herdr_pane herdr_session
-  if [ -n "${FM_PRIMARY_TARGET:-}" ]; then
-    printf '%s\t%s\n' "${FM_PRIMARY_BACKEND:-tmux}" "$FM_PRIMARY_TARGET"
-    return 0
-  fi
-  state="$home/state"
-  lock_pid=$(cat "$state/.lock" 2>/dev/null || true)
-  case "$lock_pid" in ''|*[!0-9]*) return 1 ;; esac
-  env_file="/proc/$lock_pid/environ"
-  [ -r "$env_file" ] || return 1
-  while IFS= read -r -d '' line; do
-    case "$line" in
-      TMUX_PANE=*) tmux_pane=${line#TMUX_PANE=} ;;
-      HERDR_PANE_ID=*) herdr_pane=${line#HERDR_PANE_ID=} ;;
-      HERDR_SESSION=*) herdr_session=${line#HERDR_SESSION=} ;;
-    esac
-  done < "$env_file"
-  if [ -n "${tmux_pane:-}" ]; then
-    printf 'tmux\t%s\n' "$tmux_pane"
-    return 0
-  fi
-  if [ -n "${herdr_pane:-}" ]; then
-    printf 'herdr\t%s:%s\n' "${herdr_session:-default}" "$herdr_pane"
-    return 0
-  fi
   return 1
 }
