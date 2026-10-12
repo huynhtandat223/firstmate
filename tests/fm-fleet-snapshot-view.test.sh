@@ -138,6 +138,7 @@ test_records_only_skips_backend_reads() {
   write_fixture "$home"
   sed -i 's/^backend=.*/backend=herdr/' "$home"/state/*.meta
   sed -i 's/^window=.*/window=task-session:task-pane/' "$home"/state/*.meta
+  printf 'backend=herdr\n' >> "$home/state/secondmate-task.meta"
   fakebin=$(make_fakebin "$home")
   cat > "$fakebin/herdr" <<'SH'
 #!/usr/bin/env bash
@@ -160,13 +161,15 @@ SH
   [ -s "$records" ] || fail "normal snapshot did not exercise herdr"
   printf '%s\n' "$records_only" | jq -e '
     .tasks[] | select(.id == "ship-task") |
-    .hints.pending_decision and (.hints.open_decisions | length == 1)
+    .hints.pending_decision and
+    .hints.open_decisions == [{key:"default",verb:"needs-decision",summary:"choose an API shape"}]
   ' >/dev/null || fail "records-only lost the status-log decision fold"
-  # Live pane/run-step reconciliation can clear record hints in regular mode.
-  regular=$(printf '%s\n' "$regular" | jq --argjson ro "$records_only" '
-    .tasks |= map(. as $task | if .current_state.source == "pane" or .current_state.source == "run-step"
-      then .hints = ($ro.tasks[] | select(.id == $task.id) | .hints) else . end)')
-  filter='del(.generated,.tasks[].current_state,.tasks[].endpoint,.tasks[].paths.status_log.last_event.age_seconds,.tasks[].hints.last_event_text,.secondmate_current.records[].freshness,.secondmate_current.records[].terminal_evidence.observed_at,.secondmate_current.freshness,.secondmate_current.registry.freshness)'
+  # Compare decision hints only where regular mode did not reconcile live activity.
+  jq -en --argjson ro "$records_only" --argjson regular "$regular" '
+    all($regular.tasks[] | select(.current_state.source != "pane" and .current_state.source != "run-step");
+      . as $task | ($ro.tasks[] | select(.id == $task.id) | .hints) == $task.hints)
+  ' >/dev/null || fail "record-derived hints differ without live reconciliation"
+  filter='del(.generated,.tasks[].current_state,.tasks[].endpoint,.tasks[].paths.status_log.last_event.age_seconds,.tasks[].hints.open_decisions,.tasks[].hints.pending_decision,.tasks[].hints.blocked_event,.secondmate_current.records[].freshness,.secondmate_current.records[].terminal_evidence,.secondmate_current.freshness,.secondmate_current.registry.freshness)'
   jq -en --argjson ro "$records_only" --argjson regular "$regular" \
     "(\$ro | $filter) == (\$regular | $filter) and all(\$ro.tasks[] | select(.remote.host == null); .current_state.state == \"unknown\" and .current_state.source == \"records-only\" and .endpoint.exists == null)" >/dev/null || {
       diff -u <(printf '%s\n' "$records_only" | jq -S "$filter") \
