@@ -1600,11 +1600,6 @@ BASH
 
 terminal_evidence_json() {  # <parent-task-json> <event-note> <evidence-contradicts>
   local task=$1 note=$2 evidence_contradicts=$3 backend target exists expected out rc clean bytes lines seen=false contradiction=false reason='' remote_host id captured_meta
-  if [ "$RECORDS_ONLY" = 1 ]; then
-    jq -n --arg observed "$SNAPSHOT_NOW" \
-      '{provenance:"parent-direct-report-terminal",trust:"untrusted-supplement",captured:false,observed_at:$observed,freshness:"not-collected",reason:"records-only",lines:0,bytes:0,event_note_seen:false,contradiction:false}'
-    return 0
-  fi
   backend=$(printf '%s' "$task" | jq -r '.backend // ""')
   target=$(printf '%s' "$task" | jq -r '.endpoint.target // ""')
   exists=$(printf '%s' "$task" | jq -r '.endpoint.exists // "unknown"')
@@ -1613,6 +1608,11 @@ terminal_evidence_json() {  # <parent-task-json> <event-note> <evidence-contradi
   if [ -n "$remote_host" ]; then
     jq -n --arg observed "$SNAPSHOT_NOW" --arg reason "remote terminal evidence is not collected by the primary" \
       '{provenance:"remote-direct-report-terminal",trust:"untrusted-supplement",captured:false,observed_at:$observed,freshness:"not-collected",reason:$reason,lines:0,bytes:0,event_note_seen:false,contradiction:false}'
+    return 0
+  fi
+  if [ "$RECORDS_ONLY" = 1 ]; then
+    jq -n --arg observed "$SNAPSHOT_NOW" \
+      '{provenance:"parent-direct-report-terminal",trust:"untrusted-supplement",captured:false,observed_at:$observed,freshness:"not-collected",reason:"records-only",lines:0,bytes:0,event_note_seen:false,contradiction:false}'
     return 0
   fi
   expected="fm-$id"

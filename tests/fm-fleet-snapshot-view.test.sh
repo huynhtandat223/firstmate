@@ -169,13 +169,27 @@ SH
     all($regular.tasks[] | select(.current_state.source != "pane" and .current_state.source != "run-step");
       . as $task | ($ro.tasks[] | select(.id == $task.id) | .hints) == $task.hints)
   ' >/dev/null || fail "record-derived hints differ without live reconciliation"
-  filter='del(.generated,.tasks[].current_state,.tasks[].endpoint,.tasks[].paths.status_log.last_event.age_seconds,.tasks[].hints.open_decisions,.tasks[].hints.pending_decision,.tasks[].hints.blocked_event,.secondmate_current.records[].freshness,.secondmate_current.records[].terminal_evidence,.secondmate_current.freshness,.secondmate_current.registry.freshness)'
+  printf '%s\n' "$records_only" | jq -e '
+    all(.secondmate_current.records[]; .terminal_evidence.captured == false and
+      .terminal_evidence.provenance == "parent-direct-report-terminal" and
+      .terminal_evidence.reason == "records-only")
+  ' >/dev/null || fail "records-only terminal evidence has incorrect provenance"
+  filter='(.secondmate_current.records[] | select(.remote == false) | .terminal_evidence.reason) = null | del(.generated,.tasks[].current_state,.tasks[].endpoint,.tasks[].paths.status_log.last_event.age_seconds,.tasks[].hints.open_decisions,.tasks[].hints.pending_decision,.tasks[].hints.blocked_event,.secondmate_current.records[].freshness,.secondmate_current.records[].terminal_evidence.observed_at,.secondmate_current.records[].terminal_evidence.freshness,.secondmate_current.freshness,.secondmate_current.registry.freshness)'
   jq -en --argjson ro "$records_only" --argjson regular "$regular" \
     "(\$ro | $filter) == (\$regular | $filter) and all(\$ro.tasks[] | select(.remote.host == null); .current_state.state == \"unknown\" and .current_state.source == \"records-only\" and .endpoint.exists == null)" >/dev/null || {
       diff -u <(printf '%s\n' "$records_only" | jq -S "$filter") \
         <(printf '%s\n' "$regular" | jq -S "$filter") || true
       fail "records-only snapshot changed non-runtime fields"
     }
+  printf 'remote_host=example.invalid\nremote_backend=herdr\nremote_target=task-session:task-pane\n' >> "$home/state/secondmate-task.meta"
+  : > "$records"
+  records_only=$(PATH="$fakebin:$PATH" FM_HOME="$home" HERDR_CALLS="$records" \
+    "$SNAPSHOT" --json --records-only)
+  [ ! -s "$records" ] || fail "remote records-only snapshot called herdr"
+  printf '%s\n' "$records_only" | jq -e '
+    .secondmate_current.records[] | select(.id == "secondmate-task") |
+    .terminal_evidence.provenance == "remote-direct-report-terminal"
+  ' >/dev/null || fail "records-only changed remote terminal provenance"
   pass "records-only skips backend reads and preserves record hints"
 }
 
