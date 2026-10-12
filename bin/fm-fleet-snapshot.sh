@@ -3,6 +3,7 @@
 #
 # Output contract: `--json` prints one object with schema
 # `fm-fleet-snapshot.v1`.
+# `--records-only` skips runtime state and endpoint reads.
 # The command does not acquire the session lock, drain wakes, arm watchers,
 # mutate backlog state, or write reports. Its default ledger collector may
 # atomically refresh parent-side cached copies of remote home summaries under
@@ -232,11 +233,13 @@ esac
 
 usage() {
   cat <<'EOF'
-usage: fm-fleet-snapshot.sh --json
+usage: fm-fleet-snapshot.sh --json [--records-only]
        fm-fleet-snapshot.sh --secondmate-home-summary
 
 Print a structured snapshot of the firstmate fleet.
-JSON is the stable machine-readable output contract. The default snapshot
+JSON is the stable machine-readable output contract. `--records-only` may be combined
+with `--json` to skip runtime state and endpoint reads, reporting state as unknown.
+The default snapshot
 refreshes only its parent-side remote-summary cache as an observational side effect.
 
 --contribution-input emits the canonical local backlog/tasks ownership pair only,
@@ -287,14 +290,17 @@ EOF
 }
 
 OUTPUT_MODE=json
-case "${1:---json}" in
-  --json) ;;
-  --secondmate-home-summary) OUTPUT_MODE=secondmate-home-summary ;;
-  --contribution-input) OUTPUT_MODE=contribution-input ;;
-  -h|--help) usage; exit 0 ;;
-  *) usage >&2; exit 2 ;;
-esac
-
+RECORDS_ONLY=0
+for arg in "$@"; do
+  case "$arg" in
+    --json) ;;
+    --records-only) RECORDS_ONLY=1 ;;
+    --secondmate-home-summary) OUTPUT_MODE=secondmate-home-summary ;;
+    --contribution-input) OUTPUT_MODE=contribution-input ;;
+    -h|--help) usage; exit 0 ;;
+    *) usage >&2; exit 2 ;;
+  esac
+done
 command -v jq >/dev/null 2>&1 || { echo "fm-fleet-snapshot: jq not found" >&2; exit 1; }
 
 bool_json() {
@@ -645,7 +651,12 @@ prefetch_task_observations() {  # <meta> <id>
     snapshot_mark_optional_present "$report_path" "$report_capture" || current_rc=1
   fi
 
-  if [ -n "$remote_host" ]; then
+  if [ "$RECORDS_ONLY" = 1 ]; then
+    jq -n '{state:"unknown",source:"records-only",detail:null,raw:""}' \
+      > "$current_file" || current_rc=1
+    endpoint_exists=null
+    agent_alive=unknown
+  elif [ -n "$remote_host" ]; then
     jq -n '{state:"unknown",source:"none",detail:"remote endpoint liveness not collected by fleet snapshot",raw:""}' \
       > "$current_file" || current_rc=1
     agent_alive=unknown
@@ -676,8 +687,12 @@ prefetch_task_observations() {  # <meta> <id>
   # the manifest. If teardown/relaunch raced any read, discard the whole sample.
   if ! snapshot_task_generation_is_current "$meta" "$id"; then
     rm -f -- "$status_capture" "$report_capture"
-    jq -n '{state:"unknown",source:"none",detail:"task generation changed during snapshot",raw:""}' \
-      > "$current_file" || current_rc=1
+    if [ "$RECORDS_ONLY" = 1 ]; then
+      jq -n '{state:"unknown",source:"records-only",detail:null,raw:""}' > "$current_file" || current_rc=1
+    else
+      jq -n '{state:"unknown",source:"none",detail:"task generation changed during snapshot",raw:""}' \
+        > "$current_file" || current_rc=1
+    fi
     endpoint_exists=null
     agent_alive=unknown
   fi

@@ -132,6 +132,41 @@ EOF
     "mode=ship"
 }
 
+test_records_only_skips_backend_reads() {
+  local home fakebin records regular records_only filter
+  home=$(make_home records-only)
+  write_fixture "$home"
+  sed -i 's/^backend=.*/backend=herdr/' "$home"/state/*.meta
+  sed -i 's/^window=.*/window=task-session:task-pane/' "$home"/state/*.meta
+  fakebin=$(make_fakebin "$home")
+  cat > "$fakebin/herdr" <<'SH'
+#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "${HERDR_CALLS:?}"
+exit 0
+SH
+  cat > "$fakebin/fm-terminal-capture" <<'SH'
+#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "${HERDR_CALLS:?}"
+exit 0
+SH
+  chmod +x "$fakebin/herdr" "$fakebin/fm-terminal-capture"
+  records="$home/herdr-calls"
+  records_only=$(PATH="$fakebin:$PATH" FM_HOME="$home" HERDR_CALLS="$records" \
+    "$SNAPSHOT" --json --records-only)
+  [ ! -s "$records" ] || fail "records-only snapshot called herdr"
+  : > "$records"
+  regular=$(PATH="$fakebin:$PATH" FM_HOME="$home" HERDR_CALLS="$records" \
+    "$SNAPSHOT" --json)
+  [ -s "$records" ] || fail "normal snapshot did not exercise herdr"
+  filter='del(.generated,.tasks[].current_state,.tasks[].endpoint,.tasks[].paths.status_log.last_event.age_seconds,.tasks[].hints.last_event_text,.tasks[].hints.open_decisions,.tasks[].hints.pending_decision,.tasks[].hints.blocked_event,.secondmate_current.records[].freshness,.secondmate_current.records[].terminal_evidence.observed_at,.secondmate_current.freshness,.secondmate_current.registry.freshness)'
+  jq -en --argjson ro "$records_only" --argjson regular "$regular" \
+    "(\$ro | $filter) == (\$regular | $filter) and all(\$ro.tasks[] | select(.remote.host == null); .current_state.state == \"unknown\" and .current_state.source == \"records-only\" and .endpoint.exists == null)" >/dev/null || {
+      diff -u <(printf '%s\\n' "$records_only" | jq -S "$filter") \
+        <(printf '%s\\n' "$regular" | jq -S "$filter") || true
+      fail "records-only snapshot changed non-runtime fields"
+    }
+}
+
 test_empty_fleet_json() {
   local home out view
   home=$(make_home empty)
@@ -1152,6 +1187,7 @@ EOF
   pass "home-summary excludes kind=secondmate from unowned_current and terminal_in_flight"
 }
 
+test_records_only_skips_backend_reads
 test_empty_fleet_json
 test_fixture_snapshot_json
 test_home_summary_excludes_secondmate_from_child_inventory
