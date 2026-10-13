@@ -393,6 +393,23 @@ Removing the `--force` arm makes the forced generic case refuse; honoring `--for
 Restoring `fm_backend_orca_kill`'s swallowed tool check makes the CLI-absent adapter case report success.
 Dropping the retention-is-not-durable line makes the refusal claim a retention teardown does not own.
 
+## Assistance self-rotation
+
+Verified 2026-10-13 on Claude Code 2.1.296 and Herdr 0.8.2 with `FM_ASSISTANCE_LIVE_E2E=1 bin/fm-test-run.sh tests/fm-assistance-live-e2e.test.sh`.
+The opt-in test uses a named Herdr lab, a real Claude session, a scratch source and real inbox/backlog records; it forces the 40-percent input through the production context hook.
+The guard prints these current success receipts:
+
+```text
+ok - real assistance start, proposal, held board item, spawn refusal and repeated start
+ok - registered process-event cadence wakes the real assistance
+ok - forced 40-percent request produced stow, handoff and a fresh continuing Claude session
+ok - startup recovery relaunched the enabled assistance after process loss
+ok - captain command stopped assistance and disabled restart; home retained
+```
+
+The lab helper verifies the default session tripwire after cleanup.
+Other harnesses and backends are refused by assistance start until equivalent self-rotation proof exists.
+
 ## Claude workspace trust
 
 Verified 2026-09-03 on Claude Code 2.1.259.

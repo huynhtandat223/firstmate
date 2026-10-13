@@ -1347,6 +1347,7 @@ backlog_record_reconcile() {
       return 2
     fi
     if [ "$(fm_meta_get "$meta" kind)" != secondmate ] \
+       && [ "$(fm_meta_get "$meta" kind)" != assistance ] \
        && [ "$(fm_meta_get "$meta" cleanup_recovery)" != orca ]; then
       row=
       if fm_backlog_row_probe "$DATA" "$id"; then
@@ -1641,6 +1642,9 @@ if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" != 1 ]; then
     if network_sweep_authorized 'dead-secondmate relaunch'; then
       __fm_timing_stamp=$(fm_timing_now_ms)
       secondmate_liveness_sweep
+      if [ -f "$DATA/assistances.md" ]; then
+        "$FM_ROOT/bin/fm-assistance.sh" recover || echo 'NETWORK_CHECKS: enabled assistance could not be restarted; run fm-assistance.sh recover to inspect the refusal'
+      fi
       fm_timing_record phase secondmate-liveness "$__fm_timing_stamp"
     fi
     if network_sweep_authorized 'secondmate convergence'; then

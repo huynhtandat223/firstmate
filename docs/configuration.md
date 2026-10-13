@@ -322,6 +322,21 @@ This does not relax protection for any other untracked file.
 An existing linked-worktree home that predates this rule advances through its marker-only state during its next bootstrap or spawn local sync, after which Git ignores the marker normally.
 A local standalone-clone home cannot receive a primary-local commit through that no-fetch sync, so it receives the rule through `/updatefirstmate`'s origin refresh instead.
 
+## Assistance homes
+
+Assistances use the persistent-home seed and launch machinery, but keep their local routes in `data/assistances.md`, separate from secondmate routing.
+The route format is the same local suffix described under [Secondmate routes](#secondmate-routes-datasecondmatesmd).
+Private profiles live in `config/assistances/<name>.json`; the [assistance command](../bin/fm-assistance.sh) owns the field schema and command syntax.
+A profile supplies the name, charter, harness/model/effort, source/recipe pairs, and check cadence; no domain profile ships with Firstmate.
+This release supports Claude on Herdr and rejects other combinations because their self-rotation has not been proved.
+Each home stores its profile in `data/assistance.json`, its role in `data/charter.md`, its identity in `.fm-assistance-home`, and its parent binding in `.fm-assistance-parent`.
+The parent binding uses the existing local secondmate-parent record format, under the assistance-specific filename.
+`config/assistance-enabled` records restart eligibility; session-start recovery starts only enabled dead or missing assistances and preserves ambiguous endpoints.
+`bin/fm-assistance-hook.sh` owns Claude context measurement and cadence hooks; `bin/fm-assistance-rotate.sh` owns self-stow validation and fresh-session continuation at 40 percent.
+Only the assistance's recorded endpoint is used for rotation, and its own `data/assistance-stow.md` and `data/assistance-handoff.md` survive it.
+The [secondmate-provisioning skill](../.agents/skills/secondmate-provisioning/SKILL.md#assistance-authority) owns the reversed authority and proposal-handling procedure.
+These script guards enforce the cooperative agent role, not an operating-system sandbox against arbitrary same-user shell commands.
+
 ## FM_HOME
 
 `FM_HOME` selects the operational home for one firstmate instance.
