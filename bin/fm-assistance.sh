@@ -152,12 +152,15 @@ case "${1:-}" in
     [ $# -eq 1 ] || die 'recover accepts no arguments'
     fm_assistance_require_dispatcher || exit 1
     [ -f "$REG" ] || exit 0
+    failed=0
     while IFS= read -r line; do
       case "$line" in '- '*) ;; *) continue ;; esac
       secondmate_registry_parse_line "$line" || die 'invalid assistance registry'
       [ -f "$SECONDMATE_REGISTRY_HOME/config/assistance-enabled" ] || continue
-      start "$SECONDMATE_REGISTRY_ID"
+      # One unavailable profile must not suppress other enabled homes.
+      if ! "$SCRIPT_DIR/fm-assistance.sh" start "$SECONDMATE_REGISTRY_ID"; then failed=1; fi
     done < "$REG"
+    exit "$failed"
     ;;
   stop)
     [ $# -eq 3 ] && [ "$3" = --captain ] || die 'usage: fm-assistance.sh stop <name> --captain'

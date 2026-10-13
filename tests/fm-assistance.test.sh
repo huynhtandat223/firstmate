@@ -41,6 +41,18 @@ refused "$ROOT/bin/fm-teardown.sh" sample
 pass 'parent cannot steer, stop or remove assistance through ordinary worker commands'
 "$ROOT/bin/fm-assistance.sh" recover
 pass 'disabled assistance is not restarted'
+cp "$parent/data/assistances.md" "$TMP_ROOT/registry"
+for name in missing-one missing-two; do
+  mkdir -p "$TMP_ROOT/$name/config"
+  touch "$TMP_ROOT/$name/config/assistance-enabled"
+  printf -- '- %s - Missing profile (home: %s; scope: observe; projects: ; added 2026-10-13)\n' "$name" "$TMP_ROOT/$name" >> "$parent/data/assistances.md"
+done
+if "$ROOT/bin/fm-assistance.sh" recover > "$TMP_ROOT/recover.out" 2>&1; then fail 'recovery hid unavailable profiles'; fi
+for name in missing-one missing-two; do
+  grep -q "$name.json" "$TMP_ROOT/recover.out" || fail "recovery skipped $name after another failure"
+done
+cp "$TMP_ROOT/registry" "$parent/data/assistances.md"
+pass 'one recovery refusal does not suppress later enabled assistances'
 mkdir -p "$parent/config/assistances"
 printf '{"name":"unsupported","harness":"pi"}\n' > "$parent/config/assistances/unsupported.json"
 if "$ROOT/bin/fm-assistance.sh" start unsupported > "$TMP_ROOT/unsupported.out" 2>&1; then fail 'unsupported rotation harness was accepted'; fi
