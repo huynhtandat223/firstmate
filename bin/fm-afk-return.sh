@@ -522,7 +522,13 @@ EOF
 
   # 6. cost.
   live=0
-  for meta in "$STATE"/*.meta; do [ -f "$meta" ] && live=$((live + 1)); done
+  for meta in "$STATE"/*.meta; do
+    [ -f "$meta" ] || continue
+    case "$(grep '^kind=' "$meta" 2>/dev/null | tail -1 | cut -d= -f2-)" in
+      secondmate | assistance) continue ;;
+    esac
+    live=$((live + 1))
+  done
   printf 'Cost: %s supervision outcome(s) recorded (%s routine, %s captain); %s task(s) live at return.\n' \
     "$((routine + captain))" "$routine" "$captain" "$live"
 }

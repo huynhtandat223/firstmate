@@ -10,6 +10,8 @@
 #
 # Usage: fm-claude-trust.sh <worktree> <project>
 #        fm-claude-trust.sh --secondmate-home <home> <id>
+#        fm-claude-trust.sh --assistance-home <home> <id>
+# Assistance mode uses the same scope checks with .fm-assistance-home identity.
 #   <worktree>  the isolated task worktree this spawn launches into
 #   <project>   the primary checkout that worktree belongs to
 #   <home>      the seeded secondmate home this spawn launches into
@@ -173,21 +175,23 @@ unset CDPATH \
 
 usage() {
   echo "usage: fm-claude-trust.sh <worktree> <project>" >&2
-  echo "       fm-claude-trust.sh --secondmate-home <home> <id>" >&2
+  echo "       fm-claude-trust.sh --secondmate-home|--assistance-home <home> <id>" >&2
   exit 2
 }
 
 # MODE selects which structural scope test decides the argument, and SCOPE_NOUN
 # names what the argument was expected to be so every shared refusal below reads
 # correctly in both modes.
+SUB_KIND=secondmate
 case "${1:-}" in
-  --secondmate-home)
+  --secondmate-home|--assistance-home)
+    [ "$1" != --assistance-home ] || SUB_KIND=assistance
     [ "$#" -eq 3 ] || usage
     MODE=secondmate-home
     TARGET_ARG=$2
     SUB_ID=$3
     PROJ_ARG=
-    SCOPE_NOUN="secondmate home"
+    SCOPE_NOUN="$SUB_KIND home"
     ;;
   '' | -h | --help)
     usage
@@ -313,9 +317,9 @@ else
   # make some other file's bytes stand in for the seed, and a marker this user
   # does not own was planted by someone else.
   [ -n "$SUB_ID" ] || refuse "no secondmate id was supplied, so '$TARGET_REAL' cannot be matched against its seed marker"
-  SUB_MARKER="$TARGET_REAL/.fm-secondmate-home"
+  SUB_MARKER="$TARGET_REAL/.fm-$SUB_KIND-home"
   [ ! -L "$SUB_MARKER" ] || refuse "'$SUB_MARKER' is a symlink; a seeded secondmate home carries the marker as a regular file"
-  [ -f "$SUB_MARKER" ] || refuse "'$TARGET_REAL' carries no .fm-secondmate-home marker, so it is not a seeded secondmate home"
+  [ -f "$SUB_MARKER" ] || refuse "'$TARGET_REAL' carries no .fm-$SUB_KIND-home marker, so it is not a seeded $SUB_KIND home"
   [ -O "$SUB_MARKER" ] || refuse "'$SUB_MARKER' is not owned by this user"
   SUB_MARKER_ID=$(cat "$SUB_MARKER" 2>/dev/null) || true
   [ "$SUB_MARKER_ID" = "$SUB_ID" ] || refuse "'$TARGET_REAL' is marked for secondmate '${SUB_MARKER_ID:-unknown}', not '$SUB_ID'"

@@ -2,7 +2,9 @@
 # Provision and route persistent secondmate homes.
 #
 # Usage:
-#   fm-home-seed.sh <id> <home|-> {<project>...|--no-projects}
+#   fm-home-seed.sh [--assistance] <id> <home|-> {<project>...|--no-projects}
+#       --assistance uses data/assistances.md and assistance identity markers.
+#       The caller supplies a filled assistance charter; provisioning is shared.
 #       Provision <home> as an isolated firstmate home. If <home> is "-", acquire
 #       a fresh firstmate worktree via "treehouse get --lease", which durably
 #       leases the worktree under the secondmate <id> so the home survives with
@@ -38,9 +40,16 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 PROJECTS="${FM_PROJECTS_OVERRIDE:-$FM_HOME/projects}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
+# --assistance shares provisioning, but never publishes a secondmate route.
+HOME_KIND=secondmate
+if [ "${1:-}" = --assistance ]; then
+  HOME_KIND=assistance
+  shift
+fi
 REG="$DATA/secondmates.md"
-SUB_HOME_MARKER=".fm-secondmate-home"
-SUB_HOME_PARENT_MARKER=".fm-secondmate-parent"
+[ "$HOME_KIND" != assistance ] || REG="$DATA/assistances.md"
+SUB_HOME_MARKER=".fm-$HOME_KIND-home"
+SUB_HOME_PARENT_MARKER=".fm-$HOME_KIND-parent"
 # shellcheck source=bin/fm-secondmate-registry-lib.sh
 . "$SCRIPT_DIR/fm-secondmate-registry-lib.sh"
 # shellcheck source=bin/fm-secondmate-parent-lib.sh
@@ -51,7 +60,7 @@ SUB_HOME_PARENT_MARKER=".fm-secondmate-parent"
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 
 usage() {
-  echo "usage: fm-home-seed.sh <id> <home|-> {<project>...|--no-projects}" >&2
+  echo "usage: fm-home-seed.sh [--assistance] <id> <home|-> {<project>...|--no-projects}" >&2
   echo "       fm-home-seed.sh validate" >&2
 }
 
@@ -872,6 +881,11 @@ seed_home() {
   SEED_HOME="$home"
   validate_registry_home_text "$home" || return 1
   validate_home_assignment "$id" "$home"
+  if { [ "$HOME_KIND" = assistance ] && [ -e "$home/.fm-secondmate-home" ]; } ||
+    { [ "$HOME_KIND" = secondmate ] && [ -e "$home/.fm-assistance-home" ]; }; then
+    echo 'error: assistance rule: a persistent home cannot change kind' >&2
+    return 1
+  fi
   validate_operational_dirs "$home" || return 1
   validate_seed_leaf_files "$home" || return 1
   validate_existing_parent_binding "$home" || return 1

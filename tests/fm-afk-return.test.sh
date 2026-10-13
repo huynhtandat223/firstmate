@@ -390,6 +390,14 @@ test_return_brief_composes_from_record_store_and_held_set() {
   printf 'blocked [key=dep]: needs the upstream dependency\nneeds-decision [key=pick]: choose the target\n' > "$dir/home/state/other.status"
   printf 'window=synthetic:fm-dead\nbackend=tmux\nkind=scout\n' > "$dir/home/state/dead.meta"
   printf 'failed: the reproduction never compiled\n' > "$dir/home/state/dead.status"
+  # Persistent homes are not ordinary live tasks; stopped assistance records
+  # intentionally remain after their process exits.
+  printf 'window=synthetic:mate\nbackend=tmux\nkind=secondmate\n' > "$dir/home/state/zz-mate.meta"
+  printf 'window=synthetic:observer\nbackend=tmux\nkind=assistance\n' > "$dir/home/state/zz-observer.meta"
+  printf 'window=\nkind=assistance\n' > "$dir/home/state/zz-observer-stopped.meta"
+  : > "$dir/home/state/zz-mate.status"
+  : > "$dir/home/state/zz-observer.status"
+  : > "$dir/home/state/zz-observer-stopped.status"
   outcome_in "$dir" append --task fix-windows --verdict captain \
     --summary 'blocked on a token only the captain holds; held for return' --wake 'signal: fix-windows.status' >/dev/null \
     || fail "could not seed the captain outcome row"

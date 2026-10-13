@@ -307,6 +307,10 @@ if [ "$#" -lt 1 ] || ! fm_task_id_path_safe "$1"; then
   exit 2
 fi
 ID=$1
+# shellcheck source=bin/fm-assistance-guard-lib.sh
+. "$SCRIPT_DIR/fm-assistance-guard-lib.sh"
+fm_assistance_require_dispatcher || exit 1
+fm_assistance_require_ordinary_target "$STATE/$ID.meta" || exit 1
 FORCE=
 LEGACY_RECORD_GIVEN=0
 shift

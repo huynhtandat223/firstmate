@@ -715,6 +715,8 @@ prefetch_task_current_states() {
   for meta in "$STATE"/*.meta; do
     [ -e "$meta" ] || continue
     id=$(basename "$meta" .meta)
+    # Assistances are independent observers, not board work or secondmate routes.
+    [ "$(meta_value "$meta" kind)" != assistance ] || continue
     captured_meta="$SNAPSHOT_TASK_DIR/$id.meta"
     if ! cp -- "$meta" "$captured_meta" 2>"$captured_meta.copy-error"; then
       # Teardown may unlink a task after the glob selected it but before cp opens

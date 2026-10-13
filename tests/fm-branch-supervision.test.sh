@@ -888,6 +888,10 @@ test_away_record_relocates_main_owned_actions_to_the_branch() {
   # that gate rather than proceeding to ordinary validation.
   fm_write_meta "$home/state/task-a.meta" "window=fm-task-a" "kind=ship"
   fm_write_meta "$home/state/mate-1.meta" "window=remote:mate-1" "kind=secondmate"
+  # Persistent observers never spend an ordinary-worker slot, including a
+  # stopped assistance whose durable metadata is intentionally retained.
+  fm_write_meta "$home/state/observer-live.meta" "window=observer-live" "kind=assistance"
+  fm_write_meta "$home/state/observer-stopped.meta" "window=" "kind=assistance"
   out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$root" FM_SUPERVISION_ACTOR=branch \
     "$ROOT/bin/fm-spawn.sh" task-new --mode no-mistakes --yolo off 2>&1)
   status=$?

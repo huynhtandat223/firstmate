@@ -1,7 +1,7 @@
 ---
 name: secondmate-provisioning
 description: >-
-  Agent-only reference for persistent secondmate setup and retirement.
+  Agent-only reference for persistent secondmate setup and retirement, and assistance start or proposal intake.
   Use when creating, seeding, validating, launching, recovering, handing backlog to, pushing inherited local material into, or retiring a secondmate home, or when editing data/secondmates.md.
   Covers local leases, whole-home remote routes, transactional seeding, record intake for an existing or inherited domain, project clone restrictions, secondmate harness pins, inherited local-material push, idle charter, handoff helper, and teardown safety.
 user-invocable: false
@@ -14,6 +14,19 @@ metadata:
 Use this reference before creating, seeding, validating, launching, handing backlog to, recovering, pushing inherited local material into, or retiring a persistent secondmate, and before editing `data/secondmates.md`.
 
 Keep the always-inline routing rules in `AGENTS.md` authoritative: route by natural-language `scope:`, local-only projects stay with the main firstmate, and secondmates are idle by default.
+
+## Assistance authority
+
+Load this branch before starting an assistance or handling an assistance proposal from the captain inbox.
+Assistances share the seed and launch machinery but use the separate registry and profile contract in [configuration](../../../docs/configuration.md#assistance-homes).
+Firstmate may run `bin/fm-assistance.sh start <name>`; an already-live assistance is returned without steering or reading its chat.
+Firstmate does not route work, hand off backlog, stop, retire, or rotate an assistance.
+The human operator alone runs `bin/fm-assistance.sh stop <name> --captain` from a terminal outside an agent; it disables recovery and preserves the home.
+An assistance observes its profile sources read-only, investigates, speaks directly to the human in plain language, and sends proposals through `bin/fm-assistance.sh propose`.
+When an inbox note contains an assistance proposal, run `bin/fm-assistance.sh record <inbox-id>` in the parent home.
+The command records a backlog item through the captain-hold wrapper before acknowledging the note; it does not dispatch work or treat the proposal as approval.
+The board's normal captain-answer path remains the authority to release and dispatch that item.
+An assistance owns its cadence and context rotation; the parent never performs a worker handoff for it.
 
 ## Routing table
 

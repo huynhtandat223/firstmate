@@ -711,6 +711,8 @@ recorded_windows() {
   local meta w seen=
   for meta in "$STATE"/*.meta; do
     [ -e "$meta" ] || continue
+    # Assistance cadence and self-rotation belong to that home, never its parent.
+    [ "$(fm_meta_get "$meta" kind)" != assistance ] || continue
     w=$(fm_backend_target_of_meta "$meta")
     [ -n "$w" ] || continue
     case "$seen" in

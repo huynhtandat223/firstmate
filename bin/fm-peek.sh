@@ -38,6 +38,10 @@ if [ -n "$REMOTE_META" ] && [ -n "$(fm_meta_get "$REMOTE_META" remote_host)" ]; 
   exit 0
 fi
 
+# shellcheck source=bin/fm-assistance-guard-lib.sh
+. "$SCRIPT_DIR/fm-assistance-guard-lib.sh"
+ASSISTANCE_META=${REMOTE_META:-$(fm_backend_meta_for_window "$RAW_TARGET" "$STATE" 2>/dev/null || true)}
+fm_assistance_require_ordinary_target "$ASSISTANCE_META" || exit 1
 T=$(fm_backend_resolve_selector "$RAW_TARGET" "$STATE")
 
 BACKEND=$(fm_backend_of_selector "$RAW_TARGET" "$T" "$STATE")
