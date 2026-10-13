@@ -59,7 +59,7 @@ case "${1:-}" in
     FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-procevent.sh" start assistance-cadence >/dev/null
     [ "$(<"$STATE/assistance-session")" = "$session" ] || exit 0
     [ ! -f "$STATE/assistance-rotation.json" ] || exit 0
-    echo 'Assistance cadence: read your own durable notifications, check the profile sources, investigate new evidence, and propose only relevant work.' >&2
+    echo 'Assistance cadence: run bin/fm-wake-drain.sh in this home to read the due procevent assistance-cadence sequence. After checking the profile sources, acknowledge it with bin/fm-procevent.sh handled assistance-cadence <sequence> and the exact --ack-through command printed by the drain. Investigate new evidence and propose only relevant work. This assistance uses its own cadence hook, not a parent supervision cycle; do not repair or start a fleet watcher.' >&2
     exit 2
     ;;
   *) echo 'error: expected start, usage, stop or cadence' >&2; exit 2 ;;
