@@ -13,6 +13,8 @@ STATE="$FM_HOME/state"
 . "$SCRIPT_DIR/fm-backend.sh"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+# shellcheck source=bin/fm-secondmate-parent-lib.sh
+. "$SCRIPT_DIR/fm-secondmate-parent-lib.sh"
 request="$STATE/assistance-rotation.json"
 [ -f "$request" ] || { echo 'error: no context rotation request' >&2; exit 1; }
 session=$(jq -er .session "$request")
@@ -29,7 +31,11 @@ grep -qi '^## Next action' "$FM_HOME/data/assistance-handoff.md" || { echo 'erro
 endpoint=$(<"$STATE/assistance-endpoint")
 name=$(<"$FM_HOME/.fm-assistance-home")
 [[ "$name" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]] || exit 1
-parent=$(awk -F= '$1 == "parent_home" {print substr($0,13)}' "$FM_HOME/.fm-assistance-parent")
+if ! fm_secondmate_parent_record_parse "$FM_HOME/.fm-assistance-parent" || [ "$FM_SECONDMATE_PARENT_ROUTE" != local ]; then
+  echo 'error: assistance parent binding is invalid or unsupported' >&2
+  exit 1
+fi
+parent=$FM_SECONDMATE_PARENT_HOME
 meta="$parent/state/$name.meta"
 if [ "$(fm_meta_get "$meta" kind)" != assistance ] ||
   [ "$(fm_meta_get "$meta" home)" != "$FM_HOME" ] ||

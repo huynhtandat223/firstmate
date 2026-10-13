@@ -53,6 +53,13 @@ refused "$ROOT/bin/fm-home-seed.sh" --assistance other "$other" --no-projects
 [ -f "$other/.fm-secondmate-home" ] || fail 'kind refusal damaged secondmate identity'
 pass 'assistance seed refuses a secondmate home and preserves its identity'
 
+cp "$helper/.fm-assistance-parent" "$TMP_ROOT/parent-binding"
+printf 'parent_home=%s\n' "$parent" >> "$helper/.fm-assistance-parent"
+if FM_HOME="$helper" "$ROOT/bin/fm-assistance.sh" propose bad bad bad > "$TMP_ROOT/binding.out" 2>&1; then fail 'ambiguous parent binding was accepted'; fi
+[ ! -e "$parent/state/inbox" ] || fail 'invalid binding wrote a proposal'
+cp "$TMP_ROOT/parent-binding" "$helper/.fm-assistance-parent"
+pass 'proposal uses the shared parent-binding validation'
+
 FM_HOME="$helper" "$ROOT/bin/fm-assistance.sh" propose 'Inspect new report' 'New information needs a decision' 'https://example.test/report' > "$TMP_ROOT/proposal.out"
 [ "$(find "$parent/state/inbox" -name '*.note' | wc -l | tr -d ' ')" = 1 ] || fail 'proposal was not delivered once'
 [ "$(wc -l < "$parent/state/.wake-queue" | tr -d ' ')" = 1 ] || fail 'proposal did not produce exactly one wake'

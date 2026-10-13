@@ -22,6 +22,8 @@ export FM_HOME
 . "$SCRIPT_DIR/fm-assistance-guard-lib.sh"
 # shellcheck source=bin/fm-secondmate-registry-lib.sh
 . "$SCRIPT_DIR/fm-secondmate-registry-lib.sh"
+# shellcheck source=bin/fm-secondmate-parent-lib.sh
+. "$SCRIPT_DIR/fm-secondmate-parent-lib.sh"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 # shellcheck source=bin/fm-backend.sh
@@ -111,7 +113,9 @@ propose() {
   [ -f "$FM_HOME/.fm-assistance-home" ] || die 'proposal command requires an assistance home'
   name=$(<"$FM_HOME/.fm-assistance-home")
   valid_id "$name"
-  parent=$(awk -F= '$1 == "parent_home" {print substr($0,13)}' "$FM_HOME/.fm-assistance-parent")
+  fm_secondmate_parent_record_parse "$FM_HOME/.fm-assistance-parent" || die 'assistance parent binding is invalid'
+  [ "$FM_SECONDMATE_PARENT_ROUTE" = local ] || die 'assistance requires a local parent'
+  parent=$FM_SECONDMATE_PARENT_HOME
   [ -d "$parent" ] || die 'assistance parent binding is unavailable'
   # Text is data, never a shell instruction. Only the parent records backlog work.
   jq -cn --arg assistance "$name" --arg title "$1" --arg why "$2" --arg evidence "$3" \
