@@ -101,6 +101,26 @@ jq -e '.session == "first"' "$helper/state/assistance-rotation.json" >/dev/null
 if FM_HOME="$helper" "$ROOT/bin/fm-assistance-rotate.sh" > "$TMP_ROOT/rotate.out" 2>&1; then fail 'rotation accepted missing stow/handoff'; fi
 grep -q 'missing ordinary assistance-stow.md' "$TMP_ROOT/rotate.out" || fail 'rotation refusal did not name missing stow'
 pass 'actual hooks request self-stow at 40 percent and refuse rotation without its artifacts'
+printf '{"session_id":"first"}\n' | FM_HOME="$helper" "$ROOT/bin/fm-assistance-hook.sh" start >/dev/null
+[ -f "$helper/state/assistance-rotation.json" ] || fail 'resuming the same session discarded its rotation request'
+printf '{"session_id":"recovered"}\n' | FM_HOME="$helper" "$ROOT/bin/fm-assistance-hook.sh" start >/dev/null
+[ ! -e "$helper/state/assistance-rotation.json" ] || fail 'new session retained a stale rotation request'
+printf '{"cadence_seconds":1}\n' > "$helper/data/assistance.json"
+set +e
+printf '{"session_id":"recovered"}\n' | FM_HOME="$helper" "$ROOT/bin/fm-assistance-hook.sh" cadence > "$TMP_ROOT/cadence.out" 2>&1
+rc=$?
+set -e
+[ "$rc" = 2 ] || fail 'recovered session did not schedule a cadence wake'
+grep -q 'Assistance cadence:' "$TMP_ROOT/cadence.out" || fail 'cadence did not request continuation'
+[ -f "$helper/state/procevent-inbox/assistance-cadence.1.result" ] || fail 'recovered cadence produced no durable result'
+printf '{"session_id":"recovered","context_window":{"context_window_size":100000,"used_percentage":40}}\n' | FM_HOME="$helper" "$ROOT/bin/fm-assistance-hook.sh" usage >/dev/null
+set +e
+printf '{"session_id":"recovered"}\n' | FM_HOME="$helper" "$ROOT/bin/fm-assistance-hook.sh" stop > "$TMP_ROOT/recovered-stop.out" 2>&1
+rc=$?
+set -e
+[ "$rc" = 2 ] || fail 'recovered session did not request rotation at 40 percent'
+jq -e '.session == "recovered"' "$helper/state/assistance-rotation.json" >/dev/null || fail 'rotation request was not rebound to the recovered session'
+pass 'new session clears stale rotation, schedules cadence and creates its own 40-percent request'
 # The registry is deliberately populated, but secondmate routing cannot use it.
 if "$ROOT/bin/fm-backlog-handoff.sh" sample "proposal-$id" > "$TMP_ROOT/handoff.out" 2>&1; then fail 'secondmate handoff adopted an assistance'; fi
 "$ROOT/bin/fm-tasks-axi.sh" show "proposal-$id" >/dev/null || fail 'refused handoff moved the proposal'

@@ -1426,7 +1426,9 @@ spawn_refuse_if_away_spend_cap() {
   live=0
   for meta in "$STATE"/*.meta; do
     [ -f "$meta" ] || continue
-    [ "$(grep '^kind=' "$meta" 2>/dev/null | tail -1 | cut -d= -f2-)" != secondmate ] || continue
+    case "$(grep '^kind=' "$meta" 2>/dev/null | tail -1 | cut -d= -f2-)" in
+      secondmate | assistance) continue ;;
+    esac
     live=$((live + 1))
   done
   if [ "$live" -ge "$cap" ]; then
@@ -1438,9 +1440,9 @@ spawn_refuse_if_away_spend_cap() {
 # away-posture record exists, a fresh ordinary spawn refuses for BOTH actors
 # once this home already holds that many ordinary task records, counted the
 # same way the return brief counts tasks live at return (every state/*.meta
-# whose kind is not secondmate). A relaunch replaces a worker that already
-# counts, and a secondmate is a persistent home rather than spend, so both are
-# exempt. Checked before any endpoint, worktree, or record exists, so a refusal
+# whose kind is neither secondmate nor assistance). A relaunch replaces a worker
+# that already counts; persistent homes do not consume ordinary-worker slots.
+# Both are exempt. Checked before any endpoint, worktree, or record exists, so a refusal
 # costs nothing to unwind; rechecked after the task-set lock so two fresh
 # spawns cannot both publish from a stale count.
 spawn_refuse_if_away_spend_cap

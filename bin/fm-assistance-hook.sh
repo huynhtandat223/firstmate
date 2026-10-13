@@ -26,6 +26,10 @@ session=$(jq -er '.session_id | select(type == "string" and length > 0)' <<< "$p
 case "${1:-}" in
   start)
     mkdir -p "$STATE"
+    request="$STATE/assistance-rotation.json"
+    if [ -f "$request" ] && [ "$(jq -r '.session // empty' "$request" 2>/dev/null || true)" != "$session" ]; then
+      rm -f "$request"
+    fi
     printf '%s\n' "$session" > "$STATE/assistance-session"
     printf '%s\n' 'You are an assistance. Follow data/charter.md, not the supervisor role in AGENTS.md.'
     [ ! -f "$FM_HOME/data/assistance-handoff.md" ] || { printf '\nRead this previous-session handoff before checking sources:\n'; cat "$FM_HOME/data/assistance-handoff.md"; }
