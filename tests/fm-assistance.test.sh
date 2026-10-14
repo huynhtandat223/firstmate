@@ -59,7 +59,7 @@ lab="$TMP_ROOT/dispatch-lab"
 mkdir -p "$lab/bin"
 cp "$ROOT"/bin/*.sh "$lab/bin/"
 # shellcheck disable=SC2016
-printf 'fm_meta_get() { grep "^$2=" "$1" | cut -d= -f2-; }\nfm_backend_agent_state() { echo alive; }\nfm_backend_of_meta() { echo fixture; }\nfm_backend_target_of_meta() { echo fixture; }\nfm_backend_send_text_submit() { echo ring >> "$FM_HOME/state/rings"; }\n' > "$lab/bin/fm-backend.sh"
+printf 'fm_meta_get() { grep "^$2=" "$1" | cut -d= -f2-; }\nfm_backend_agent_state() { if [ -f "$FM_HOME/state/fixture-dead" ]; then echo dead; else echo alive; fi; }\nfm_backend_of_meta() { echo fixture; }\nfm_backend_target_of_meta() { echo fixture; }\nfm_backend_send_text_submit() { echo ring >> "$FM_HOME/state/rings"; }\n' > "$lab/bin/fm-backend.sh"
 mkdir -p "$parent/config/assistances"
 jq -n '{name:"sample",harness:"claude",model:"test",effort:"medium",charter:"Observe",sources:[],trigger_mode:"event-driven"}' > "$parent/config/assistances/sample.json"
 printf '{"old":true}\n' > "$helper/data/assistance.json"
@@ -70,13 +70,26 @@ cmp "$helper/data/assistance.json" "$TMP_ROOT/installed.json" || fail 'refusal c
 cp "$parent/config/assistances/sample.json" "$helper/data/assistance.json"
 "$lab/bin/fm-assistance.sh" start sample
 jq -e '.trigger_mode == "event-driven"' "$helper/data/assistance.json" >/dev/null || fail 'live attach retained old profile'
+printf 'home=%s\n' "$helper" >> "$parent/state/sample.meta"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$lab/bin/fm-spawn.sh"
+mkdir -p "$helper/state/procevent"
+FM_HOME="$helper" "$ROOT/bin/fm-procevent.sh" register assistance-cadence assistance-cadence -- "$ROOT/bin/fm-procevent-assistance-cadence.sh" wait >/dev/null
+jq '.charter="New charter"' "$parent/config/assistances/sample.json" > "$TMP_ROOT/new-profile.json"
+cp "$TMP_ROOT/new-profile.json" "$parent/config/assistances/sample.json"
+touch "$parent/state/fixture-dead"
+"$lab/bin/fm-assistance.sh" stop sample --captain --captain-words 'Stop sample.'
+[ ! -e "$helper/state/procevent/assistance-cadence.source" ] || fail 'stop retained cadence registration'
+"$lab/bin/fm-assistance.sh" start sample
+cmp "$parent/config/assistances/sample.json" "$helper/data/assistance.json" || fail 'restart retained old profile'
+[ "$(<"$helper/data/charter.md")" = 'New charter' ] || fail 'restart retained old charter'
+rm "$parent/state/fixture-dead"
+rm -f "$parent/data/assistance-authority.jsonl" "$helper/data/assistance-authority.jsonl"
 mkdir -p "$parent/config/assistances"
 jq -n '{name:"sample",harness:"claude",model:"test",effort:"medium",charter:"Observe",sources:[],trigger_mode:"event-driven"}' > "$parent/config/assistances/sample.json"
 "$ROOT/bin/fm-assistance.sh" validate sample
 jq '.trigger_mode="cadence" | .cadence_seconds=900' "$parent/config/assistances/sample.json" > "$TMP_ROOT/profile.json"
 cp "$TMP_ROOT/profile.json" "$parent/config/assistances/sample.json"
 "$ROOT/bin/fm-assistance.sh" validate sample
-printf 'home=%s\n' "$helper" >> "$parent/state/sample.meta"
 mkdir -p "$helper/data/pending-mentions"
 printf '{"schema":"fm-assistance-mentions.v1","messages":[{"id":"one","arrival":1,"content":"Observe this"}]}\n' > "$helper/data/pending-mentions/one.json"
 if "$ROOT/bin/fm-assistance.sh" source-event sample one.json; then fail 'mismatched content basename accepted'; fi
