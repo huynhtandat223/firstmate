@@ -264,7 +264,6 @@ case "${1:-}" in
       alive|dead|missing) ;;
       *) die 'assistance process cannot be attributed; stop refused' ;;
     esac
-    FM_HOME="$home" "$SCRIPT_DIR/fm-procevent.sh" retire assistance-cadence
     # Record this invocation's authority before disabling recovery or exiting.
     mkdir -p "$DATA"
     authority="$DATA/assistance-authority.jsonl"
@@ -278,6 +277,7 @@ case "${1:-}" in
       tee -a "$receipt" < "$STATE/.assistance-stop-$$.receipt" >/dev/null
     done
     rm "$STATE/.assistance-stop-$$.receipt"
+    FM_HOME="$home" "$SCRIPT_DIR/fm-procevent.sh" retire assistance-cadence
     case "$endpoint_state" in
       dead|missing)
         rm -f "$home/config/assistance-enabled"

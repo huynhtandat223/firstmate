@@ -77,6 +77,12 @@ FM_HOME="$helper" "$ROOT/bin/fm-procevent.sh" register assistance-cadence assist
 jq '.charter="New charter"' "$parent/config/assistances/sample.json" > "$TMP_ROOT/new-profile.json"
 cp "$TMP_ROOT/new-profile.json" "$parent/config/assistances/sample.json"
 touch "$parent/state/fixture-dead"
+touch "$TMP_ROOT/authority-target"
+ln -s "$TMP_ROOT/authority-target" "$parent/data/assistance-authority.jsonl"
+if "$lab/bin/fm-assistance.sh" stop sample --captain --captain-words 'Stop sample.' > "$TMP_ROOT/refused-stop.out" 2>&1; then fail 'symlink authority accepted'; fi
+[ -f "$helper/state/procevent/assistance-cadence.source" ] || fail 'authority refusal retired cadence'
+[ -f "$helper/config/assistance-enabled" ] || fail 'authority refusal disabled assistance'
+rm "$parent/data/assistance-authority.jsonl"
 "$lab/bin/fm-assistance.sh" stop sample --captain --captain-words 'Stop sample.'
 [ ! -e "$helper/state/procevent/assistance-cadence.source" ] || fail 'stop retained cadence registration'
 "$lab/bin/fm-assistance.sh" start sample
