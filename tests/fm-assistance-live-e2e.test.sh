@@ -141,7 +141,11 @@ if "$code/bin/fm-assistance.sh" steer sample 'Write a note.' > "$TMP_ROOT/refuse
 find "$parent/state/sample.inbox" -name '*.msg' | grep -q . || fail 'steer did not reach durable inbox'
 jq -e 'select(.action == "steer" and .words == "Tell sample to read this instruction.")' "$helper/data/assistance-authority.jsonl" >/dev/null || fail 'home steer authority missing'
 pass 'steer refuses missing authority and delivers through durable inbox with home receipt'
-sleep 5
+for ((n=0;n<60;n++)); do
+  [ "$(fm_backend_busy_state herdr "$target")" = idle ] && break
+  sleep 1
+done
+[ "$(fm_backend_busy_state herdr "$target")" = idle ] || fail 'authorized stop requires assistance idle after steer'
 words='Stop the sample assistance now.'
 "$code/bin/fm-assistance.sh" stop sample --captain --captain-words "$words" | tee "$TMP_ROOT/authorized-stop.log"
 jq -e --arg words "$words" 'select(.name == "sample" and .action == "stop" and .words == $words)' "$parent/data/assistance-authority.jsonl" >/dev/null || fail 'verbatim stop authority missing'
