@@ -3358,6 +3358,30 @@ test_a_remote_home_without_any_ledger_is_explicitly_unreadable_without_remote_co
   pass "a missing remote ledger stays explicitly unreadable without remote summary computation"
 }
 
+test_task_worker_model_and_effort_metadata() {
+  local home json records_only
+  home=$(make_home worker-model-metadata)
+  fm_write_meta "$home/state/pinned.meta" \
+    'harness=pi' 'model=vendor/model="quoted"' 'effort=xhigh' 'kind=ship'
+  fm_write_meta "$home/state/legacy.meta" 'kind=scout'
+  fm_write_meta "$home/state/empty.meta" 'harness=pi' 'model=' 'effort=' 'kind=ship'
+  for records_only in '' --records-only; do
+    # No endpoint or runtime exists: exercise the real metadata-to-JSON path.
+    # shellcheck disable=SC2086
+    json=$(FM_HOME="$home" "$ROOT/bin/fm-fleet-snapshot.sh" --json $records_only) \
+      || fail "worker metadata snapshot failed"
+    printf '%s' "$json" | jq -e '
+      (.tasks | map({id,harness,model,effort})) == [
+        {id:"empty",harness:"pi",model:"",effort:""},
+        {id:"legacy",harness:"",model:"",effort:""},
+        {id:"pinned",harness:"pi",model:"vendor/model=\"quoted\"",effort:"xhigh"}
+      ]
+    ' >/dev/null || fail "worker metadata was lost or changed: $json"
+  done
+  pass "task records preserve model and effort strings and empty metadata defaults"
+}
+
+test_task_worker_model_and_effort_metadata
 test_task_teardown_during_metadata_capture_does_not_abort_snapshot
 test_current_state_uses_captured_status_observation
 test_relaunched_task_does_not_inherit_reused_endpoint_state
