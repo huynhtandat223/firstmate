@@ -6,7 +6,7 @@
 #   fm-notify-me.sh decision ID [--producer NAME]
 #   fm-notify-me.sh --help
 # Environment: FM_NOTIFY_BASE_URL (default http://127.0.0.1:5001),
-#   FM_NOTIFY_RECIPIENT (default Dev 5001 owner user id),
+#   FM_NOTIFY_RECIPIENT (required unless $FM_HOME/config/notify-recipient exists),
 #   FM_NOTIFY_PRODUCER (decision token selector, default firstmate).
 # Tokens: ~/.local/share/cfw-scripts-private/notify-NAME.token; regular private
 #   files only (no group/other permissions). Tokens never enter command arguments.
@@ -80,7 +80,11 @@ request() {
       --write-out '%{http_code}' "${args[@]}" "$url"
 }
 if [[ $command == post ]]; then
-  recipient=${FM_NOTIFY_RECIPIENT:-652900d9-d49b-4b1e-b3ae-ad47a16b10a3}
+  recipient=${FM_NOTIFY_RECIPIENT:-}
+  if [[ -z $recipient && -n ${FM_HOME:-} && -f $FM_HOME/config/notify-recipient ]]; then
+    recipient=$(<"$FM_HOME/config/notify-recipient")
+  fi
+  [[ -n $recipient ]] || error "set FM_NOTIFY_RECIPIENT or configure \$FM_HOME/config/notify-recipient" 2
   jq -cn --arg recipient "$recipient" --arg dedupe "$dedupe" --arg title "$title" \
     --arg body "$body" --arg severity "$severity" --arg link "$link" --argjson actions "$actions" \
     '{recipient:$recipient,kind:"notification",dedupeKey:$dedupe,title:$title,body:$body,severity:$severity,actions:$actions} + (if $link=="" then {} else {link:$link} end)' > "$work/payload"

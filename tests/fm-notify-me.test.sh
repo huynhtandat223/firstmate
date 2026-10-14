@@ -25,7 +25,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
   if notification is not None:
    return self.reply(409,{'errorCode':'UNIQUE_KEY_CONFLICT','details':{'existingId':ident}})
   assert 'producer' not in body and 'createdAt' not in body
-  assert body['recipient'] and body['kind']=='notification'
+  assert body['recipient']=='fixture-owner' and body['kind']=='notification'
   assert body['title']=='Quote " and newline\n' and body['body']=='Plain body'
   assert body['severity']=='warning' and body['link']=='https://example.org/review'
   assert body['actions']==[{'actionId':'approve','label':'Approve: now'},{'actionId':'reject','label':'Reject'}]
@@ -46,7 +46,11 @@ for ((i=0;i<100;i++)); do [[ ! -f $work/port ]] || break; sleep 0.05; done
 [[ -f $work/port ]] || { echo 'server did not start' >&2; exit 1; }
 HOME="$work/home"
 FM_NOTIFY_BASE_URL="http://127.0.0.1:$(<"$work/port")"
-export HOME FM_NOTIFY_BASE_URL
+FM_HOME="$work/fm-home"
+mkdir -p "$FM_HOME/config"
+printf 'fixture-owner\n' > "$FM_HOME/config/notify-recipient"
+export HOME FM_NOTIFY_BASE_URL FM_HOME
+unset FM_NOTIFY_RECIPIENT
 # A user's curl tracing defaults must not expose the producer credential.
 printf 'trace-ascii = -\n' > "$HOME/.curlrc"
 cli=$ROOT/bin/fm-notify-me.sh
@@ -54,7 +58,9 @@ id=11111111-2222-3333-4444-555555555555
 args=(post --producer firstmate --dedupe test --title $'Quote " and newline\n' --body 'Plain body' --severity warning --link https://example.org/review --action 'approve:Approve: now' --action reject:Reject)
 "$cli" "${args[@]}" > "$work/post-out" 2> "$work/post-err"
 [[ $(<"$work/post-out") == "$id" ]]
-! grep -q fixture-token "$work/post-out" "$work/post-err"
+if grep -q fixture-token "$work/post-out" "$work/post-err"; then
+  echo 'credential leaked through curl defaults' >&2; exit 1
+fi
 [[ -f $work/posted ]]
 [[ $("$cli" "${args[@]}") == "$id" ]]
 [[ -z $("$cli" decision "$id") ]]
@@ -83,6 +89,10 @@ chmod 644 "$HOME/.local/share/cfw-scripts-private/notify-firstmate.token"
 reject 1 "${args[@]}"
 chmod 600 "$HOME/.local/share/cfw-scripts-private/notify-firstmate.token"
 reject 1 post --producer missing --dedupe t --title t --body b
+rm "$FM_HOME/config/notify-recipient"
+reject 2 "${args[@]}"
+FM_NOTIFY_RECIPIENT=fixture-owner "$cli" "${args[@]}" > "$work/override-out"
+[[ $(<"$work/override-out") == "$id" ]]
 "$cli" --help >/dev/null
 "$cli" decision --help >/dev/null
 printf 'ok - notify-me posts atomic actions, deduplicates, reads decisions, and refuses invalid input and unsafe credentials\n'
