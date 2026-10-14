@@ -2,7 +2,7 @@
 # Persistent assistance homes, using the secondmate seed and spawn owners.
 # Usage:
 #   fm-assistance.sh start <name>
-#   fm-assistance.sh stop <name> --captain
+#   fm-assistance.sh stop <name> --captain [--captain-words <verbatim instruction>]
 #   fm-assistance.sh recover
 #   fm-assistance.sh propose <title> <why> <evidence>
 #   fm-assistance.sh record <inbox-id>
@@ -10,8 +10,10 @@
 # name, charter, harness, model, effort, sources [{source,recipe}], cadence_seconds.
 # Only Claude on Herdr is accepted until another adapter proves self-rotation.
 # start enables and launches, or returns the existing endpoint without steering.
-# stop is human-only (no detected harness ancestor/marker), disables restart and
-# exits only the recorded assistance endpoint. It never removes the home.
+# stop accepts a human terminal, or a dispatcher with nonblank --captain-words.
+# Before mutation, it appends an action-bound JSON record (name, action, words,
+# epoch, harness) to data/assistance-authority.jsonl; records never grant reuse.
+# It disables restart and exits only the recorded endpoint, retaining the home.
 # propose is assistance-only; record is parent-only and uses the hold wrapper.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -33,7 +35,7 @@ STATE="$FM_HOME/state"
 REG="$DATA/assistances.md"
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 valid_id() { [[ "$1" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]] || die 'invalid identifier'; }
-help() { printf '%s\n' 'fm-assistance.sh start <name> | stop <name> --captain | recover' 'fm-assistance.sh propose <title> <why> <evidence> | record <inbox-id>'; }
+help() { printf '%s\n' 'fm-assistance.sh start <name> | stop <name> --captain [--captain-words <verbatim instruction>] | recover' 'fm-assistance.sh propose <title> <why> <evidence> | record <inbox-id>'; }
 profile() {
   valid_id "$1"
   PROFILE="$FM_HOME/config/assistances/$1.json"
@@ -163,8 +165,19 @@ case "${1:-}" in
     exit "$failed"
     ;;
   stop)
-    [ $# -eq 3 ] && [ "$3" = --captain ] || die 'usage: fm-assistance.sh stop <name> --captain'
-    [ "$("$SCRIPT_DIR/fm-harness.sh")" = unknown ] || die 'assistance rule: only the captain may stop an assistance; run from a human terminal'
+    [ $# -ge 3 ] && [ "$3" = --captain ] || die 'usage: fm-assistance.sh stop <name> --captain [--captain-words <verbatim instruction>]'
+    words=''
+    case $# in
+      3) ;;
+      5) [ "$4" = --captain-words ] || die 'expected --captain-words'; words=$5
+         [[ "$words" =~ [^[:space:]] ]] || die 'assistance rule: captain words must not be blank' ;;
+      *) die 'invalid stop arguments' ;;
+    esac
+    fm_assistance_require_dispatcher || exit 1
+    harness=$("$SCRIPT_DIR/fm-harness.sh")
+    if [ "$harness" != unknown ] && [ -z "$words" ]; then
+      die 'assistance rule: stopping from an agent requires the explicit verbatim instruction in --captain-words'
+    fi
     valid_id "$2"
     home=$(assistance_home "$2")
     check_binding "$2" "$home"
@@ -172,7 +185,20 @@ case "${1:-}" in
     if [ ! -f "$meta" ] || ! grep -qx 'kind=assistance' "$meta"; then die 'assistance endpoint record unavailable'; fi
     [ "$(fm_meta_get "$meta" home)" = "$home" ] || die 'assistance endpoint home does not match the registry'
     target=$(fm_backend_target_of_meta "$meta")
-    case "$(fm_backend_agent_state herdr "$target")" in
+    endpoint_state=$(fm_backend_agent_state herdr "$target")
+    case "$endpoint_state" in
+      alive|dead|missing) ;;
+      *) die 'assistance process cannot be attributed; stop refused' ;;
+    esac
+    # Record this invocation's authority before disabling recovery or exiting.
+    mkdir -p "$DATA"
+    authority="$DATA/assistance-authority.jsonl"
+    if [ -L "$authority" ] || { [ -e "$authority" ] && [ ! -f "$authority" ]; }; then
+      die 'authority record must be an ordinary file'
+    fi
+    jq -cn --arg name "$2" --arg words "$words" --arg harness "$harness" --argjson epoch "$(date +%s)" \
+      '{name:$name,action:"stop",words:$words,epoch:$epoch,harness:$harness}' >> "$authority"
+    case "$endpoint_state" in
       dead|missing)
         rm -f "$home/config/assistance-enabled"
         printf 'stopped: %s (already stopped; home retained)\n' "$2"; exit 0 ;;

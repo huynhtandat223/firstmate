@@ -133,6 +133,21 @@ for ((n=0;n<30;n++)); do
 done
 [ "$(fm_backend_agent_state herdr "$target")" = alive ] || fail 'recovered process was not attributable'
 pass 'startup recovery relaunched the enabled assistance after process loss'
+if "$code/bin/fm-assistance.sh" stop sample --captain > "$TMP_ROOT/refused-stop.log" 2>&1; then fail 'agent stop without words succeeded'; fi
+grep -q 'verbatim instruction' "$TMP_ROOT/refused-stop.log" || fail 'missing authority refusal'
+[ -f "$helper/config/assistance-enabled" ] || fail 'refused stop disabled recovery'
+words='Stop the sample assistance now.'
+"$code/bin/fm-assistance.sh" stop sample --captain --captain-words "$words" | tee "$TMP_ROOT/authorized-stop.log"
+jq -e --arg words "$words" 'select(.name == "sample" and .action == "stop" and .words == $words)' "$parent/data/assistance-authority.jsonl" >/dev/null || fail 'verbatim stop authority missing'
+[ ! -e "$helper/config/assistance-enabled" ] || fail 'authorized stop left restart enabled'
+"$code/bin/fm-assistance.sh" start sample
+target=$(fm_backend_target_of_meta "$meta")
+for ((n=0;n<30;n++)); do
+  [ "$(fm_backend_agent_state herdr "$target")" = alive ] && break
+  sleep 1
+done
+[ "$(fm_backend_agent_state herdr "$target")" = alive ] || fail 'human-stop test requires a live assistance'
+pass 'agent stop refuses absent words and records explicit words before stopping'
 # A separate shell in the owned lab models the captain terminal, not firstmate.
 # Lab teardown is always the final safety net; it never touches default.
 terminal=$(PATH="$ORIGINAL_PATH" "$LAB_HELPER" run "$SESSION" tab create --cwd "$parent" --label captain-stop --no-focus | jq -er '.result.root_pane.pane_id')

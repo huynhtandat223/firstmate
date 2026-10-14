@@ -39,6 +39,11 @@ refused "$ROOT/bin/fm-send.sh" sample 'steer'
 refused "$ROOT/bin/fm-control.sh" sample exit
 refused "$ROOT/bin/fm-teardown.sh" sample
 pass 'parent cannot steer, stop or remove assistance through ordinary worker commands'
+refused env PI_CODING_AGENT=true "$ROOT/bin/fm-assistance.sh" stop sample --captain
+refused env PI_CODING_AGENT=true "$ROOT/bin/fm-assistance.sh" stop sample --captain --captain-words '   '
+[ ! -e "$parent/data/assistance-authority.jsonl" ] || fail 'refused authority wrote a receipt'
+refused env FM_HOME="$helper" "$ROOT/bin/fm-assistance.sh" stop sample --captain --captain-words 'Stop sample.'
+pass 'agent stop requires nonblank words and assistance cannot authorize itself'
 "$ROOT/bin/fm-assistance.sh" recover
 pass 'disabled assistance is not restarted'
 cp "$parent/data/assistances.md" "$TMP_ROOT/registry"

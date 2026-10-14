@@ -17,16 +17,18 @@ Keep the always-inline routing rules in `AGENTS.md` authoritative: route by natu
 
 ## Assistance authority
 
-Load this branch before starting an assistance or handling an assistance proposal from the captain inbox.
+Load this branch before operating an assistance or handling an assistance proposal from the captain inbox.
 Assistances share the seed and launch machinery but use the separate registry and profile contract in [configuration](../../../docs/configuration.md#assistance-homes).
-Firstmate may run `bin/fm-assistance.sh start <name>`; an already-live assistance is returned without steering or reading its chat.
-Firstmate does not route work, hand off backlog, stop, retire, or rotate an assistance.
-The human operator alone runs `bin/fm-assistance.sh stop <name> --captain` from a terminal outside an agent; it disables recovery and preserves the home.
+Firstmate may perform any assistance operation only on the owner's current explicit instruction for that action and that assistance.
+Never infer permission, reuse an earlier instruction, or carry authority to another assistance.
+Use the assistance command's supported operation; its header and help own stop syntax and the durable verbatim authority record.
+The human-terminal stop path remains available.
+An already-live start returns the endpoint without steering or reading its chat.
 An assistance observes its profile sources read-only, investigates, speaks directly to the human in plain language, and sends proposals through `bin/fm-assistance.sh propose`.
 When an inbox note contains an assistance proposal, run `bin/fm-assistance.sh record <inbox-id>` in the parent home.
 The command records a backlog item through the captain-hold wrapper before acknowledging the note; it does not dispatch work or treat the proposal as approval.
 The board's normal captain-answer path remains the authority to release and dispatch that item.
-An assistance owns its cadence and context rotation; the parent never performs a worker handoff for it.
+An assistance owns automatic cadence and context rotation; explicit owner instructions are required for parent intervention.
 
 ## Routing table
 
