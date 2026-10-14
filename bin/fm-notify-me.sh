@@ -75,7 +75,7 @@ request() {
   local args=()
   [[ $method != POST ]] || args=(--data-binary @"$work/payload")
   printf 'header = "Authorization: Bearer %s"\n' "$token" |
-    curl --config - --silent --globoff --max-time 30 --request "$method" \
+    curl -q --config - --silent --globoff --max-time 30 --request "$method" \
       --header 'Content-Type: application/json' --output "$work/response" \
       --write-out '%{http_code}' "${args[@]}" "$url"
 }

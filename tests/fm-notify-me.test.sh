@@ -47,10 +47,14 @@ for ((i=0;i<100;i++)); do [[ ! -f $work/port ]] || break; sleep 0.05; done
 HOME="$work/home"
 FM_NOTIFY_BASE_URL="http://127.0.0.1:$(<"$work/port")"
 export HOME FM_NOTIFY_BASE_URL
+# A user's curl tracing defaults must not expose the producer credential.
+printf 'trace-ascii = -\n' > "$HOME/.curlrc"
 cli=$ROOT/bin/fm-notify-me.sh
 id=11111111-2222-3333-4444-555555555555
 args=(post --producer firstmate --dedupe test --title $'Quote " and newline\n' --body 'Plain body' --severity warning --link https://example.org/review --action 'approve:Approve: now' --action reject:Reject)
-[[ $("$cli" "${args[@]}") == "$id" ]]
+"$cli" "${args[@]}" > "$work/post-out" 2> "$work/post-err"
+[[ $(<"$work/post-out") == "$id" ]]
+! grep -q fixture-token "$work/post-out" "$work/post-err"
 [[ -f $work/posted ]]
 [[ $("$cli" "${args[@]}") == "$id" ]]
 [[ -z $("$cli" decision "$id") ]]
