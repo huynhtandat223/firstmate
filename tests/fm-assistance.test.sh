@@ -54,6 +54,76 @@ refused "$ROOT/bin/fm-send.sh" sample --assistance-captain-words 'Press a key.' 
 pass 'authorized assistance send still refuses parser-native text and keys without receipts'
 "$ROOT/bin/fm-assistance.sh" recover
 pass 'disabled assistance is not restarted'
+# Isolated dispatch adapter: no real backend lifecycle or endpoint is reached.
+lab="$TMP_ROOT/dispatch-lab"
+mkdir -p "$lab/bin"
+cp "$ROOT"/bin/*.sh "$lab/bin/"
+# shellcheck disable=SC2016
+printf 'fm_meta_get() { grep "^$2=" "$1" | cut -d= -f2-; }\nfm_backend_agent_state() { if [ -f "$FM_HOME/state/fixture-dead" ]; then echo dead; else echo alive; fi; }\nfm_backend_of_meta() { echo fixture; }\nfm_backend_target_of_meta() { echo fixture; }\nfm_backend_send_text_submit() { echo ring >> "$FM_HOME/state/rings"; }\n' > "$lab/bin/fm-backend.sh"
+mkdir -p "$parent/config/assistances"
+jq -n '{name:"sample",harness:"claude",model:"test",effort:"medium",charter:"Observe",sources:[],trigger_mode:"event-driven"}' > "$parent/config/assistances/sample.json"
+printf '{"old":true}\n' > "$helper/data/assistance.json"
+cp "$helper/data/assistance.json" "$TMP_ROOT/installed.json"
+if "$lab/bin/fm-assistance.sh" start sample > "$TMP_ROOT/attach.out" 2>&1; then fail 'live profile change accepted'; fi
+grep -q 'profile changed; stop then start' "$TMP_ROOT/attach.out" || fail 'profile change lacked restart instruction'
+cmp "$helper/data/assistance.json" "$TMP_ROOT/installed.json" || fail 'refusal changed profile'
+cp "$parent/config/assistances/sample.json" "$helper/data/assistance.json"
+"$lab/bin/fm-assistance.sh" start sample
+jq -e '.trigger_mode == "event-driven"' "$helper/data/assistance.json" >/dev/null || fail 'live attach retained old profile'
+printf 'home=%s\n' "$helper" >> "$parent/state/sample.meta"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$lab/bin/fm-spawn.sh"
+mkdir -p "$helper/state/procevent"
+FM_HOME="$helper" "$ROOT/bin/fm-procevent.sh" register assistance-cadence assistance-cadence -- "$ROOT/bin/fm-procevent-assistance-cadence.sh" wait >/dev/null
+jq '.charter="New charter"' "$parent/config/assistances/sample.json" > "$TMP_ROOT/new-profile.json"
+cp "$TMP_ROOT/new-profile.json" "$parent/config/assistances/sample.json"
+touch "$parent/state/fixture-dead"
+touch "$TMP_ROOT/authority-target"
+ln -s "$TMP_ROOT/authority-target" "$parent/data/assistance-authority.jsonl"
+if "$lab/bin/fm-assistance.sh" stop sample --captain --captain-words 'Stop sample.' > "$TMP_ROOT/refused-stop.out" 2>&1; then fail 'symlink authority accepted'; fi
+[ -f "$helper/state/procevent/assistance-cadence.source" ] || fail 'authority refusal retired cadence'
+[ -f "$helper/config/assistance-enabled" ] || fail 'authority refusal disabled assistance'
+rm "$parent/data/assistance-authority.jsonl"
+"$lab/bin/fm-assistance.sh" stop sample --captain --captain-words 'Stop sample.'
+[ ! -e "$helper/state/procevent/assistance-cadence.source" ] || fail 'stop retained cadence registration'
+"$lab/bin/fm-assistance.sh" start sample
+cmp "$parent/config/assistances/sample.json" "$helper/data/assistance.json" || fail 'restart retained old profile'
+grep -qx 'New charter' "$helper/data/charter.md" || fail 'restart retained old charter'
+grep -qx '# Assistance role' "$helper/data/charter.md" || fail 'restart lost assistance role'
+grep -qx 'Run no fleet startup, dispatch, steering, merge, or project mutation.' "$helper/data/charter.md" || fail 'restart lost role boundaries'
+rm "$parent/state/fixture-dead"
+rm -f "$parent/data/assistance-authority.jsonl" "$helper/data/assistance-authority.jsonl"
+mkdir -p "$parent/config/assistances"
+jq -n '{name:"sample",harness:"claude",model:"test",effort:"medium",charter:"Observe",sources:[],trigger_mode:"event-driven"}' > "$parent/config/assistances/sample.json"
+"$ROOT/bin/fm-assistance.sh" validate sample
+jq '.trigger_mode="cadence" | .cadence_seconds=900' "$parent/config/assistances/sample.json" > "$TMP_ROOT/profile.json"
+cp "$TMP_ROOT/profile.json" "$parent/config/assistances/sample.json"
+"$ROOT/bin/fm-assistance.sh" validate sample
+mkdir -p "$helper/data/pending-mentions"
+printf '{"schema":"fm-assistance-mentions.v1","messages":[{"id":"one","arrival":1,"content":"Observe this"}]}\n' > "$helper/data/pending-mentions/one.json"
+if "$ROOT/bin/fm-assistance.sh" source-event sample one.json; then fail 'mismatched content basename accepted'; fi
+record=$(jq -c '.messages | map([.id,.arrival])' "$helper/data/pending-mentions/one.json" | sha256sum | cut -d' ' -f1).json
+mv "$helper/data/pending-mentions/one.json" "$helper/data/pending-mentions/$record"
+"$ROOT/bin/fm-assistance.sh" source-event sample "$record"
+"$ROOT/bin/fm-assistance.sh" source-event sample "$record"
+[ "$(find "$parent/state/sample.inbox" -maxdepth 1 -name '*.msg' | wc -l | tr -d ' ')" = 1 ] || fail 'source event duplicated'
+grep -q 'fm-assistance-source.v1' "$parent/state/sample.inbox/001.msg" || fail 'source type missing'
+if "$ROOT/bin/fm-assistance.sh" steer sample --captain-words 'Owner instruction' "$(<"$helper/data/pending-mentions/$record")"; then fail 'source record accepted as captain words'; fi
+[ ! -e "$parent/data/assistance-authority.jsonl" ] || fail 'source event granted authority'
+[ -f "$helper/data/pending-mentions/$record" ] || fail 'delivery deleted pending evidence'
+if FM_HOME="$helper" "$ROOT/bin/fm-assistance.sh" acknowledge-source "$record"; then fail 'ack accepted before inbox acknowledgement'; fi
+mv "$parent/state/sample.inbox/001.msg" "$parent/state/sample.inbox/handled/001.msg"
+cp "$helper/data/pending-mentions/$record" "$TMP_ROOT/original-pending.json"
+jq '.messages[0].id="changed"' "$TMP_ROOT/original-pending.json" > "$helper/data/pending-mentions/$record"
+if FM_HOME="$helper" "$ROOT/bin/fm-assistance.sh" acknowledge-source "$record"; then fail 'ack accepted mutated identity'; fi
+[ -f "$helper/data/pending-mentions/$record" ] || fail 'refused ack deleted evidence'
+cp "$TMP_ROOT/original-pending.json" "$helper/data/pending-mentions/$record"
+FM_HOME="$helper" "$ROOT/bin/fm-assistance.sh" acknowledge-source "$record"
+if FM_HOME="$helper" "$ROOT/bin/fm-assistance.sh" acknowledge-source "$record"; then fail 'missing pending ack succeeded'; fi
+cp "$TMP_ROOT/original-pending.json" "$helper/data/pending-mentions/$record"
+"$lab/bin/fm-assistance.sh" source-event sample "$record"
+[ ! -e "$parent/state/rings" ] || fail 'handled replay rang old source'
+[ ! -e "$helper/data/pending-mentions/$record" ] || fail 'handled replay retained pending evidence'
+pass 'event profile, cadence compatibility and authority-free idempotent source delivery'
 cp "$parent/data/assistances.md" "$TMP_ROOT/registry"
 for name in missing-one missing-two; do
   mkdir -p "$TMP_ROOT/$name/config"
@@ -118,6 +188,9 @@ printf '{"session_id":"first"}\n' | FM_HOME="$helper" "$ROOT/bin/fm-assistance-h
 [ -f "$helper/state/assistance-rotation.json" ] || fail 'resuming the same session discarded its rotation request'
 printf '{"session_id":"recovered"}\n' | FM_HOME="$helper" "$ROOT/bin/fm-assistance-hook.sh" start >/dev/null
 [ ! -e "$helper/state/assistance-rotation.json" ] || fail 'new session retained a stale rotation request'
+printf '{"trigger_mode":"event-driven"}\n' > "$helper/data/assistance.json"
+printf '{"session_id":"recovered"}\n' | FM_HOME="$helper" "$ROOT/bin/fm-assistance-hook.sh" cadence
+[ ! -e "$helper/state/procevent-inbox/assistance-cadence.1.result" ] || fail 'event home scheduled cadence'
 printf '{"cadence_seconds":1}\n' > "$helper/data/assistance.json"
 set +e
 printf '{"session_id":"recovered"}\n' | FM_HOME="$helper" "$ROOT/bin/fm-assistance-hook.sh" cadence > "$TMP_ROOT/cadence.out" 2>&1

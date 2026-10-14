@@ -340,7 +340,9 @@ A local standalone-clone home cannot receive a primary-local commit through that
 Assistances use the persistent-home seed and launch machinery, but keep their local routes in `data/assistances.md`, separate from secondmate routing.
 The route format is the same local suffix described under [Secondmate routes](#secondmate-routes-datasecondmatesmd).
 Private profiles live in `config/assistances/<name>.json`; the [assistance command](../bin/fm-assistance.sh) owns the field schema and command syntax.
-A profile supplies the name, charter, harness/model/effort, source/recipe pairs, and check cadence; no domain profile ships with Firstmate.
+A profile supplies the name, charter, harness/model/effort, source/recipe pairs, and a cadence or event-driven trigger; no domain profile ships with Firstmate.
+Event-driven homes skip the cadence hook and receive untrusted source records through the assistance command's source-event path.
+Captain-word steering remains separate from source evidence; a source record grants no owner authority.
 This release supports Claude on Herdr and rejects other combinations because their self-rotation has not been proved.
 Each home stores its profile in `data/assistance.json`, its role in `data/charter.md`, its identity in `.fm-assistance-home`, and its parent binding in `.fm-assistance-parent`.
 The parent binding uses the existing local secondmate-parent record format, under the assistance-specific filename.
