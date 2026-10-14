@@ -58,6 +58,7 @@ pass 'disabled assistance is not restarted'
 lab="$TMP_ROOT/dispatch-lab"
 mkdir -p "$lab/bin"
 cp "$ROOT"/bin/*.sh "$lab/bin/"
+# shellcheck disable=SC2016
 printf 'fm_meta_get() { grep "^$2=" "$1" | cut -d= -f2-; }\nfm_backend_agent_state() { echo alive; }\nfm_backend_of_meta() { echo fixture; }\nfm_backend_target_of_meta() { echo fixture; }\nfm_backend_send_text_submit() { echo ring >> "$FM_HOME/state/rings"; }\n' > "$lab/bin/fm-backend.sh"
 mkdir -p "$parent/config/assistances"
 jq -n '{name:"sample",harness:"claude",model:"test",effort:"medium",charter:"Observe",sources:[],trigger_mode:"event-driven"}' > "$parent/config/assistances/sample.json"
