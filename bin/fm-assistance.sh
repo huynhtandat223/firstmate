@@ -164,6 +164,15 @@ case "${1:-}" in
     done < "$REG"
     exit "$failed"
     ;;
+  steer)
+    [ $# -eq 5 ] && [ "$3" = --captain-words ] || die 'usage: fm-assistance.sh steer <name> --captain-words <verbatim instruction> <text>'
+    fm_assistance_require_dispatcher || exit 1
+    valid_id "$2"
+    [[ "$4" =~ [^[:space:]] ]] || die 'assistance rule: captain words must not be blank'
+    home=$(assistance_home "$2")
+    check_binding "$2" "$home"
+    "$SCRIPT_DIR/fm-send.sh" "$2" --assistance-captain-words "$4" "$5"
+    ;;
   stop)
     [ $# -ge 3 ] && [ "$3" = --captain ] || die 'usage: fm-assistance.sh stop <name> --captain [--captain-words <verbatim instruction>]'
     words=''
@@ -197,7 +206,12 @@ case "${1:-}" in
       die 'authority record must be an ordinary file'
     fi
     jq -cn --arg name "$2" --arg words "$words" --arg harness "$harness" --argjson epoch "$(date +%s)" \
-      '{name:$name,action:"stop",words:$words,epoch:$epoch,harness:$harness}' >> "$authority"
+      '{name:$name,action:"stop",words:$words,epoch:$epoch,harness:$harness}' > "$STATE/.assistance-stop-$$.receipt"
+    for receipt in "$authority" "$home/data/assistance-authority.jsonl"; do
+      [ ! -L "$receipt" ] || die 'authority record must not be a symlink'
+      tee -a "$receipt" < "$STATE/.assistance-stop-$$.receipt" >/dev/null
+    done
+    rm "$STATE/.assistance-stop-$$.receipt"
     case "$endpoint_state" in
       dead|missing)
         rm -f "$home/config/assistance-enabled"

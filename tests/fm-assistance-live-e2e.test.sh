@@ -136,6 +136,12 @@ pass 'startup recovery relaunched the enabled assistance after process loss'
 if "$code/bin/fm-assistance.sh" stop sample --captain > "$TMP_ROOT/refused-stop.log" 2>&1; then fail 'agent stop without words succeeded'; fi
 grep -q 'verbatim instruction' "$TMP_ROOT/refused-stop.log" || fail 'missing authority refusal'
 [ -f "$helper/config/assistance-enabled" ] || fail 'refused stop disabled recovery'
+if "$code/bin/fm-assistance.sh" steer sample 'Write a note.' > "$TMP_ROOT/refused-steer.log" 2>&1; then fail 'steer without words succeeded'; fi
+"$code/bin/fm-assistance.sh" steer sample --captain-words 'Tell sample to read this instruction.' 'Read this instruction and finish your turn.'
+find "$parent/state/sample.inbox" -name '*.msg' | grep -q . || fail 'steer did not reach durable inbox'
+jq -e 'select(.action == "steer" and .words == "Tell sample to read this instruction.")' "$helper/data/assistance-authority.jsonl" >/dev/null || fail 'home steer authority missing'
+pass 'steer refuses missing authority and delivers through durable inbox with home receipt'
+sleep 5
 words='Stop the sample assistance now.'
 "$code/bin/fm-assistance.sh" stop sample --captain --captain-words "$words" | tee "$TMP_ROOT/authorized-stop.log"
 jq -e --arg words "$words" 'select(.name == "sample" and .action == "stop" and .words == $words)' "$parent/data/assistance-authority.jsonl" >/dev/null || fail 'verbatim stop authority missing'

@@ -20,6 +20,7 @@ fm_assistance_require_dispatcher() {
 fm_assistance_require_ordinary_target() {
   local meta=$1
   if [ -f "$meta" ] && grep -qx 'kind=assistance' "$meta"; then
+    if [[ "${2:-}" =~ [^[:space:]] ]]; then return 0; fi
     echo 'error: assistance rule: ordinary worker commands cannot control an assistance; use fm-assistance.sh for an owner-authorized operation' >&2
     return 1
   fi

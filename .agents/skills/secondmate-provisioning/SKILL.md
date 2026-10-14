@@ -22,6 +22,7 @@ Assistances share the seed and launch machinery but use the separate registry an
 Firstmate may perform any assistance operation only on the owner's current explicit instruction for that action and that assistance.
 Never infer permission, reuse an earlier instruction, or carry authority to another assistance.
 Use the assistance command's supported operation; its header and help own stop syntax and the durable verbatim authority record.
+Profile edits also require the owner's explicit instruction for each change.
 The human-terminal stop path remains available.
 An already-live start returns the endpoint without steering or reading its chat.
 An assistance observes its profile sources read-only, investigates, speaks directly to the human in plain language, and sends proposals through `bin/fm-assistance.sh propose`.

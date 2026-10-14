@@ -355,7 +355,7 @@ fm_send_resolve_target() { # <raw-target>
 
   meta=$(fm_backend_meta_for_selector "$raw" "$STATE" 2>/dev/null || true)
   if [ -n "$meta" ]; then
-    fm_assistance_require_ordinary_target "$meta" || return 1
+    fm_assistance_require_ordinary_target "$meta" "${ASSISTANCE_CAPTAIN_WORDS:-}" || return 1
     if [ -n "$(fm_meta_get "$meta" remote_host)" ]; then
       id=$(fm_send_id_from_meta "$meta")
       RESOLVED_TARGET="remote:$id"
@@ -409,7 +409,7 @@ fm_send_resolve_target() { # <raw-target>
 
   meta=$(fm_backend_meta_for_window "$raw" "$STATE" 2>/dev/null || true)
   if [ -n "$meta" ]; then
-    fm_assistance_require_ordinary_target "$meta" || return 1
+    fm_assistance_require_ordinary_target "$meta" "${ASSISTANCE_CAPTAIN_WORDS:-}" || return 1
     target=$(fm_backend_target_of_meta "$meta")
     if [ -z "$target" ]; then
       echo "error: no backend target recorded in $meta (tried explicit target '$raw' via recorded window/terminal; backend=from-meta)" >&2
@@ -446,6 +446,11 @@ fm_send_resolve_target() { # <raw-target>
   return 1
 }
 
+ASSISTANCE_CAPTAIN_WORDS=''
+if [ "${2:-}" = --assistance-captain-words ]; then
+  [ $# -ge 4 ] && [[ "$3" =~ [^[:space:]] ]] || { echo 'error: assistance rule: nonblank captain words required' >&2; exit 1; }
+  ASSISTANCE_CAPTAIN_WORDS=$3
+fi
 RAW_TARGET=$1
 fm_send_resolve_target "$RAW_TARGET" || exit 1
 T=$RESOLVED_TARGET
@@ -488,6 +493,11 @@ fm_send_add_resolve_key() { # <key>
 }
 while :; do
   case "${1:-}" in
+  --assistance-captain-words)
+    [ $# -ge 2 ] && [[ "$2" =~ [^[:space:]] ]] || { echo "error: assistance rule: nonblank captain words required" >&2; exit 1; }
+    ASSISTANCE_CAPTAIN_WORDS=$2
+    shift 2
+    ;;
   --resolve-key)
     [ $# -ge 2 ] || {
       echo "error: --resolve-key requires a key" >&2
@@ -1038,6 +1048,16 @@ else
       fi
       echo "error: steer not sent to $INBOX_TASK_ID: the task retired or changed endpoint during target resolution" >&2
       exit 1
+    fi
+    if [ -n "$ASSISTANCE_CAPTAIN_WORDS" ]; then
+      grep -qx 'kind=assistance' "$TARGET_META" || { echo 'error: authority requires an assistance target' >&2; exit 1; }
+      assistance_home=$(fm_meta_get "$TARGET_META" home)
+      [ -d "$assistance_home/data" ] || { echo 'error: assistance home unavailable' >&2; exit 1; }
+      receipt=$(jq -cn --arg name "$INBOX_TASK_ID" --arg words "$ASSISTANCE_CAPTAIN_WORDS" --argjson epoch "$(date +%s)" '{name:$name,action:"steer",words:$words,epoch:$epoch}')
+      for authority in "$FM_HOME/data/assistance-authority.jsonl" "$assistance_home/data/assistance-authority.jsonl"; do
+        [ ! -L "$authority" ] || { echo 'error: authority record must not be a symlink' >&2; exit 1; }
+        printf '%s\n' "$receipt" >> "$authority"
+      done
     fi
     if [ "${FM_SEND_IDEMPOTENT:-0}" = 1 ]; then
       INBOX_RECORD=$(fm_task_inbox_write_idempotent "$STATE" "$INBOX_TASK_ID" "$MESSAGE" \
