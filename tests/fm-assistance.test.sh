@@ -54,6 +54,15 @@ refused "$ROOT/bin/fm-send.sh" sample --assistance-captain-words 'Press a key.' 
 pass 'authorized assistance send still refuses parser-native text and keys without receipts'
 "$ROOT/bin/fm-assistance.sh" recover
 pass 'disabled assistance is not restarted'
+# Isolated dispatch adapter: no real backend lifecycle or endpoint is reached.
+lab="$TMP_ROOT/dispatch-lab"
+mkdir -p "$lab/bin"
+cp "$ROOT"/bin/*.sh "$lab/bin/"
+printf 'fm_meta_get() { grep "^$2=" "$1" | cut -d= -f2-; }\nfm_backend_agent_state() { echo alive; }\nfm_backend_of_meta() { echo fixture; }\nfm_backend_target_of_meta() { echo fixture; }\nfm_backend_send_text_submit() { echo ring >> "$FM_HOME/state/rings"; }\n' > "$lab/bin/fm-backend.sh"
+mkdir -p "$parent/config/assistances"
+jq -n '{name:"sample",harness:"claude",model:"test",effort:"medium",charter:"Observe",sources:[],trigger_mode:"event-driven"}' > "$parent/config/assistances/sample.json"
+"$lab/bin/fm-assistance.sh" start sample
+jq -e '.trigger_mode == "event-driven"' "$helper/data/assistance.json" >/dev/null || fail 'live attach retained old profile'
 mkdir -p "$parent/config/assistances"
 jq -n '{name:"sample",harness:"claude",model:"test",effort:"medium",charter:"Observe",sources:[],trigger_mode:"event-driven"}' > "$parent/config/assistances/sample.json"
 "$ROOT/bin/fm-assistance.sh" validate sample
@@ -75,6 +84,8 @@ if "$ROOT/bin/fm-assistance.sh" steer sample --captain-words 'Owner instruction'
 [ -f "$helper/data/pending-mentions/$record" ] || fail 'delivery deleted pending evidence'
 if FM_HOME="$helper" "$ROOT/bin/fm-assistance.sh" acknowledge-source "$record"; then fail 'ack accepted before inbox acknowledgement'; fi
 mv "$parent/state/sample.inbox/001.msg" "$parent/state/sample.inbox/handled/001.msg"
+"$lab/bin/fm-assistance.sh" source-event sample "$record"
+[ ! -e "$parent/state/rings" ] || fail 'handled replay rang old source'
 FM_HOME="$helper" "$ROOT/bin/fm-assistance.sh" acknowledge-source "$record"
 [ ! -e "$helper/data/pending-mentions/$record" ] || fail 'ack did not retire pending evidence'
 pass 'event profile, cadence compatibility and authority-free idempotent source delivery'
