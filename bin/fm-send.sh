@@ -772,6 +772,14 @@ fm_send_feed_resolved_holds() { # <answer-text>
 # send implementation. A failed backend send is still surfaced below as a hard
 # error with the attempted resolution attached.
 
+if [ -n "$TARGET_META" ] && grep -qx 'kind=assistance' "$TARGET_META"; then
+  case "$*" in
+    --key*|/*|\$*)
+      echo 'error: assistance rule: keys and parser-native commands are refused; use fm-assistance.sh stop for lifecycle control' >&2
+      exit 1 ;;
+  esac
+fi
+
 if [ "${1:-}" = "--key" ]; then
   [ -z "$FIRE_AND_FORGET_ID" ] ||
     {
@@ -902,6 +910,9 @@ else
       *) INBOX_PLANE=1 ;;
       esac
     fi
+  fi
+  if [ -n "$TARGET_META" ] && grep -qx 'kind=assistance' "$TARGET_META"; then
+    INBOX_PLANE=1
   fi
   if [ "$INBOX_PLANE" = 1 ] && [ "$TARGET_BACKEND" = remote ]; then
     # Remote inbox leg: the message becomes a durable record in the remote

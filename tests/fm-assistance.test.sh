@@ -44,6 +44,14 @@ refused env PI_CODING_AGENT=true "$ROOT/bin/fm-assistance.sh" stop sample --capt
 [ ! -e "$parent/data/assistance-authority.jsonl" ] || fail 'refused authority wrote a receipt'
 refused env FM_HOME="$helper" "$ROOT/bin/fm-assistance.sh" stop sample --captain --captain-words 'Stop sample.'
 pass 'agent stop requires nonblank words and assistance cannot authorize itself'
+for text in /exit '$skill'; do
+  refused "$ROOT/bin/fm-send.sh" sample --assistance-captain-words 'Tell sample this.' "$text"
+done
+refused "$ROOT/bin/fm-send.sh" sample --assistance-captain-words 'Press a key.' --key Enter
+[ ! -e "$parent/data/assistance-authority.jsonl" ] || fail 'parser-native refusal wrote parent authority'
+[ ! -e "$helper/data/assistance-authority.jsonl" ] || fail 'parser-native refusal wrote home authority'
+[ ! -e "$parent/state/sample.inbox" ] || fail 'parser-native refusal wrote inbox'
+pass 'authorized assistance send still refuses parser-native text and keys without receipts'
 "$ROOT/bin/fm-assistance.sh" recover
 pass 'disabled assistance is not restarted'
 cp "$parent/data/assistances.md" "$TMP_ROOT/registry"
