@@ -69,6 +69,11 @@ printf '{"schema":"fm-assistance-mentions.v1","messages":[{"id":"one","arrival":
 grep -q 'fm-assistance-source.v1' "$parent/state/sample.inbox/001.msg" || fail 'source type missing'
 if "$ROOT/bin/fm-assistance.sh" steer sample --captain-words 'Owner instruction' "$(<"$helper/data/pending-mentions/one.json")"; then fail 'source record accepted as captain words'; fi
 [ ! -e "$parent/data/assistance-authority.jsonl" ] || fail 'source event granted authority'
+[ -f "$helper/data/pending-mentions/one.json" ] || fail 'delivery deleted pending evidence'
+if FM_HOME="$helper" "$ROOT/bin/fm-assistance.sh" acknowledge-source one.json; then fail 'ack accepted before inbox acknowledgement'; fi
+mv "$parent/state/sample.inbox/001.msg" "$parent/state/sample.inbox/handled/001.msg"
+FM_HOME="$helper" "$ROOT/bin/fm-assistance.sh" acknowledge-source one.json
+[ ! -e "$helper/data/pending-mentions/one.json" ] || fail 'ack did not retire pending evidence'
 pass 'event profile, cadence compatibility and authority-free idempotent source delivery'
 cp "$parent/data/assistances.md" "$TMP_ROOT/registry"
 for name in missing-one missing-two; do
