@@ -334,7 +334,7 @@ The parent binding uses the existing local secondmate-parent record format, unde
 `config/assistance-enabled` records restart eligibility; session-start recovery starts only enabled dead or missing assistances and preserves ambiguous endpoints.
 `bin/fm-assistance-hook.sh` owns Claude context measurement and cadence hooks; `bin/fm-assistance-rotate.sh` owns self-stow validation and fresh-session continuation at 40 percent.
 Only the assistance's recorded endpoint is used for rotation, and its own `data/assistance-stow.md` and `data/assistance-handoff.md` survive it.
-The [secondmate-provisioning skill](../.agents/skills/secondmate-provisioning/SKILL.md#assistance-authority) owns the reversed authority and proposal-handling procedure.
+The [secondmate-provisioning skill](../.agents/skills/secondmate-provisioning/SKILL.md#assistance-authority) owns per-action owner authority and the proposal-handling procedure.
 These script guards enforce the cooperative agent role, not an operating-system sandbox against arbitrary same-user shell commands.
 
 ## FM_HOME

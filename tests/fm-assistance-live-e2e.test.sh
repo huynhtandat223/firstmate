@@ -133,6 +133,31 @@ for ((n=0;n<30;n++)); do
 done
 [ "$(fm_backend_agent_state herdr "$target")" = alive ] || fail 'recovered process was not attributable'
 pass 'startup recovery relaunched the enabled assistance after process loss'
+if "$code/bin/fm-assistance.sh" stop sample --captain > "$TMP_ROOT/refused-stop.log" 2>&1; then fail 'agent stop without words succeeded'; fi
+grep -q 'verbatim instruction' "$TMP_ROOT/refused-stop.log" || fail 'missing authority refusal'
+[ -f "$helper/config/assistance-enabled" ] || fail 'refused stop disabled recovery'
+if "$code/bin/fm-assistance.sh" steer sample 'Write a note.' > "$TMP_ROOT/refused-steer.log" 2>&1; then fail 'steer without words succeeded'; fi
+"$code/bin/fm-assistance.sh" steer sample --captain-words 'Tell sample to read this instruction.' 'Read this instruction and finish your turn.'
+find "$parent/state/sample.inbox" -name '*.msg' | grep -q . || fail 'steer did not reach durable inbox'
+jq -e 'select(.action == "steer" and .words == "Tell sample to read this instruction.")' "$helper/data/assistance-authority.jsonl" >/dev/null || fail 'home steer authority missing'
+pass 'steer refuses missing authority and delivers through durable inbox with home receipt'
+for ((n=0;n<60;n++)); do
+  [ "$(fm_backend_busy_state herdr "$target")" = idle ] && break
+  sleep 1
+done
+[ "$(fm_backend_busy_state herdr "$target")" = idle ] || fail 'authorized stop requires assistance idle after steer'
+words='Stop the sample assistance now.'
+"$code/bin/fm-assistance.sh" stop sample --captain --captain-words "$words" | tee "$TMP_ROOT/authorized-stop.log"
+jq -e --arg words "$words" 'select(.name == "sample" and .action == "stop" and .words == $words)' "$parent/data/assistance-authority.jsonl" >/dev/null || fail 'verbatim stop authority missing'
+[ ! -e "$helper/config/assistance-enabled" ] || fail 'authorized stop left restart enabled'
+"$code/bin/fm-assistance.sh" start sample
+target=$(fm_backend_target_of_meta "$meta")
+for ((n=0;n<30;n++)); do
+  if [ "$(fm_backend_agent_state herdr "$target")" = alive ] && [ "$(fm_backend_busy_state herdr "$target")" = idle ]; then break; fi
+  sleep 1
+done
+[ "$(fm_backend_agent_state herdr "$target")" = alive ] && [ "$(fm_backend_busy_state herdr "$target")" = idle ] || fail 'human-stop test requires an idle live assistance'
+pass 'agent stop refuses absent words and records explicit words before stopping'
 # A separate shell in the owned lab models the captain terminal, not firstmate.
 # Lab teardown is always the final safety net; it never touches default.
 terminal=$(PATH="$ORIGINAL_PATH" "$LAB_HELPER" run "$SESSION" tab create --cwd "$parent" --label captain-stop --no-focus | jq -er '.result.root_pane.pane_id')
