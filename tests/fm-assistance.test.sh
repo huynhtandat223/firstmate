@@ -62,6 +62,12 @@ cp "$ROOT"/bin/*.sh "$lab/bin/"
 printf 'fm_meta_get() { grep "^$2=" "$1" | cut -d= -f2-; }\nfm_backend_agent_state() { echo alive; }\nfm_backend_of_meta() { echo fixture; }\nfm_backend_target_of_meta() { echo fixture; }\nfm_backend_send_text_submit() { echo ring >> "$FM_HOME/state/rings"; }\n' > "$lab/bin/fm-backend.sh"
 mkdir -p "$parent/config/assistances"
 jq -n '{name:"sample",harness:"claude",model:"test",effort:"medium",charter:"Observe",sources:[],trigger_mode:"event-driven"}' > "$parent/config/assistances/sample.json"
+printf '{"old":true}\n' > "$helper/data/assistance.json"
+cp "$helper/data/assistance.json" "$TMP_ROOT/installed.json"
+if "$lab/bin/fm-assistance.sh" start sample > "$TMP_ROOT/attach.out" 2>&1; then fail 'live profile change accepted'; fi
+grep -q 'profile changed; stop then start' "$TMP_ROOT/attach.out" || fail 'profile change lacked restart instruction'
+cmp "$helper/data/assistance.json" "$TMP_ROOT/installed.json" || fail 'refusal changed profile'
+cp "$parent/config/assistances/sample.json" "$helper/data/assistance.json"
 "$lab/bin/fm-assistance.sh" start sample
 jq -e '.trigger_mode == "event-driven"' "$helper/data/assistance.json" >/dev/null || fail 'live attach retained old profile'
 mkdir -p "$parent/config/assistances"
@@ -85,10 +91,17 @@ if "$ROOT/bin/fm-assistance.sh" steer sample --captain-words 'Owner instruction'
 [ -f "$helper/data/pending-mentions/$record" ] || fail 'delivery deleted pending evidence'
 if FM_HOME="$helper" "$ROOT/bin/fm-assistance.sh" acknowledge-source "$record"; then fail 'ack accepted before inbox acknowledgement'; fi
 mv "$parent/state/sample.inbox/001.msg" "$parent/state/sample.inbox/handled/001.msg"
+cp "$helper/data/pending-mentions/$record" "$TMP_ROOT/original-pending.json"
+jq '.messages[0].id="changed"' "$TMP_ROOT/original-pending.json" > "$helper/data/pending-mentions/$record"
+if FM_HOME="$helper" "$ROOT/bin/fm-assistance.sh" acknowledge-source "$record"; then fail 'ack accepted mutated identity'; fi
+[ -f "$helper/data/pending-mentions/$record" ] || fail 'refused ack deleted evidence'
+cp "$TMP_ROOT/original-pending.json" "$helper/data/pending-mentions/$record"
+FM_HOME="$helper" "$ROOT/bin/fm-assistance.sh" acknowledge-source "$record"
+if FM_HOME="$helper" "$ROOT/bin/fm-assistance.sh" acknowledge-source "$record"; then fail 'missing pending ack succeeded'; fi
+cp "$TMP_ROOT/original-pending.json" "$helper/data/pending-mentions/$record"
 "$lab/bin/fm-assistance.sh" source-event sample "$record"
 [ ! -e "$parent/state/rings" ] || fail 'handled replay rang old source'
-FM_HOME="$helper" "$ROOT/bin/fm-assistance.sh" acknowledge-source "$record"
-[ ! -e "$helper/data/pending-mentions/$record" ] || fail 'ack did not retire pending evidence'
+[ ! -e "$helper/data/pending-mentions/$record" ] || fail 'handled replay retained pending evidence'
 pass 'event profile, cadence compatibility and authority-free idempotent source delivery'
 cp "$parent/data/assistances.md" "$TMP_ROOT/registry"
 for name in missing-one missing-two; do
