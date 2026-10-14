@@ -54,6 +54,22 @@ refused "$ROOT/bin/fm-send.sh" sample --assistance-captain-words 'Press a key.' 
 pass 'authorized assistance send still refuses parser-native text and keys without receipts'
 "$ROOT/bin/fm-assistance.sh" recover
 pass 'disabled assistance is not restarted'
+mkdir -p "$parent/config/assistances"
+jq -n '{name:"sample",harness:"claude",model:"test",effort:"medium",charter:"Observe",sources:[],trigger_mode:"event-driven"}' > "$parent/config/assistances/sample.json"
+"$ROOT/bin/fm-assistance.sh" validate sample
+jq '.trigger_mode="cadence" | .cadence_seconds=900' "$parent/config/assistances/sample.json" > "$TMP_ROOT/profile.json"
+cp "$TMP_ROOT/profile.json" "$parent/config/assistances/sample.json"
+"$ROOT/bin/fm-assistance.sh" validate sample
+printf 'home=%s\n' "$helper" >> "$parent/state/sample.meta"
+mkdir -p "$helper/data/pending-mentions"
+printf '{"schema":"fm-assistance-mentions.v1","messages":[{"id":"one","arrival":1,"content":"Observe this"}]}\n' > "$helper/data/pending-mentions/one.json"
+"$ROOT/bin/fm-assistance.sh" source-event sample one.json
+"$ROOT/bin/fm-assistance.sh" source-event sample one.json
+[ "$(find "$parent/state/sample.inbox" -maxdepth 1 -name '*.msg' | wc -l | tr -d ' ')" = 1 ] || fail 'source event duplicated'
+grep -q 'fm-assistance-source.v1' "$parent/state/sample.inbox/001.msg" || fail 'source type missing'
+if "$ROOT/bin/fm-assistance.sh" steer sample --captain-words 'Owner instruction' "$(<"$helper/data/pending-mentions/one.json")"; then fail 'source record accepted as captain words'; fi
+[ ! -e "$parent/data/assistance-authority.jsonl" ] || fail 'source event granted authority'
+pass 'event profile, cadence compatibility and authority-free idempotent source delivery'
 cp "$parent/data/assistances.md" "$TMP_ROOT/registry"
 for name in missing-one missing-two; do
   mkdir -p "$TMP_ROOT/$name/config"
@@ -118,6 +134,9 @@ printf '{"session_id":"first"}\n' | FM_HOME="$helper" "$ROOT/bin/fm-assistance-h
 [ -f "$helper/state/assistance-rotation.json" ] || fail 'resuming the same session discarded its rotation request'
 printf '{"session_id":"recovered"}\n' | FM_HOME="$helper" "$ROOT/bin/fm-assistance-hook.sh" start >/dev/null
 [ ! -e "$helper/state/assistance-rotation.json" ] || fail 'new session retained a stale rotation request'
+printf '{"trigger_mode":"event-driven"}\n' > "$helper/data/assistance.json"
+printf '{"session_id":"recovered"}\n' | FM_HOME="$helper" "$ROOT/bin/fm-assistance-hook.sh" cadence
+[ ! -e "$helper/state/procevent-inbox/assistance-cadence.1.result" ] || fail 'event home scheduled cadence'
 printf '{"cadence_seconds":1}\n' > "$helper/data/assistance.json"
 set +e
 printf '{"session_id":"recovered"}\n' | FM_HOME="$helper" "$ROOT/bin/fm-assistance-hook.sh" cadence > "$TMP_ROOT/cadence.out" 2>&1

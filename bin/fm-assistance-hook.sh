@@ -57,6 +57,8 @@ case "${1:-}" in
     fi
     ;;
   cadence)
+    # Event-driven homes spend no timer or model work on empty polls.
+    if jq -e '.trigger_mode == "event-driven"' "$FM_HOME/data/assistance.json" >/dev/null 2>&1; then exit 0; fi
     [ ! -f "$STATE/assistance-rotation.json" ] || exit 0
     # The durable source owner, not a private timer loop, captures the cadence.
     FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-procevent.sh" register assistance-cadence assistance-cadence -- "$SCRIPT_DIR/fm-procevent-assistance-cadence.sh" wait >/dev/null
