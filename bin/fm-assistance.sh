@@ -3,6 +3,7 @@
 # Usage:
 #   fm-assistance.sh start <name>
 #   fm-assistance.sh stop <name> --captain [--captain-words <verbatim instruction>]
+#   fm-assistance.sh steer <name> --captain-words <verbatim instruction> <text>
 #   fm-assistance.sh recover
 #   fm-assistance.sh propose <title> <why> <evidence>
 #   fm-assistance.sh record <inbox-id>
@@ -12,7 +13,8 @@
 # start enables and launches, or returns the existing endpoint without steering.
 # stop accepts a human terminal, or a dispatcher with nonblank --captain-words.
 # Before mutation, it appends an action-bound JSON record (name, action, words,
-# epoch, harness) to data/assistance-authority.jsonl; records never grant reuse.
+# epoch, harness) to data/assistance-authority.jsonl in both homes; no reuse.
+# steer uses fm-send's ordinary durable inbox, recording words in both homes.
 # It disables restart and exits only the recorded endpoint, retaining the home.
 # propose is assistance-only; record is parent-only and uses the hold wrapper.
 set -euo pipefail
@@ -35,7 +37,7 @@ STATE="$FM_HOME/state"
 REG="$DATA/assistances.md"
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 valid_id() { [[ "$1" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]] || die 'invalid identifier'; }
-help() { printf '%s\n' 'fm-assistance.sh start <name> | stop <name> --captain [--captain-words <verbatim instruction>] | recover' 'fm-assistance.sh propose <title> <why> <evidence> | record <inbox-id>'; }
+help() { printf '%s\n' 'fm-assistance.sh start <name> | stop <name> --captain [--captain-words <verbatim instruction>] | recover' 'fm-assistance.sh steer <name> --captain-words <verbatim instruction> <text>' 'fm-assistance.sh propose <title> <why> <evidence> | record <inbox-id>'; }
 profile() {
   valid_id "$1"
   PROFILE="$FM_HOME/config/assistances/$1.json"
