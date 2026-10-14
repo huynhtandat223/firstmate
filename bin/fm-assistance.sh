@@ -68,6 +68,22 @@ check_binding() {
   [ -f "$home/.fm-assistance-home" ] && [ "$(<"$home/.fm-assistance-home")" = "$name" ] || die 'assistance home identity mismatch'
   [ ! -e "$home/.fm-secondmate-home" ] || die 'assistance home has a secondmate identity'
 }
+render_brief() {
+      printf '# Assistance role\n\nYou are an assistance, not a supervisor or worker.\n'
+      printf 'Read data/assistance.json for your profile and data/assistance-handoff.md when present.\n'
+      printf 'Observe sources read-only and investigate before proposing work.\n'
+      printf 'Speak directly to the user in plain human language.\n'
+      printf 'Write only private records in your own home and proposals through bin/fm-assistance.sh propose.\n'
+      printf 'Run no fleet startup, dispatch, steering, merge, or project mutation.\n'
+      printf 'On an assistance cadence notification, inspect the profile sources using their named recipes.\n'
+      printf 'Use bin/fm-wake-drain.sh to read and acknowledge your own notifications.\n'
+      printf 'At a rotation request, stow your observations and source cursors in data/, write data/assistance-handoff.md, then run bin/fm-assistance-rotate.sh.\n'
+      printf 'The handoff must include ## Suggested skills and ## Next action.\n'
+      printf '\n# Charter\n\n'
+      jq -r .charter "$PROFILE"
+      printf '\n# Routing scope\n\nObserve and propose only.\n'
+      printf '\n# Project clones\n\nNone. This is a project-less domain.\n'
+}
 start() {
   local name=$1 home meta status
   valid_id "$name"
@@ -97,27 +113,12 @@ start() {
   if [ -z "$home" ]; then
     mkdir -p "$DATA/$name"
     [ ! -e "$DATA/$name/brief.md" ] || die 'identifier has an existing brief'
-    {
-      printf '# Assistance role\n\nYou are an assistance, not a supervisor or worker.\n'
-      printf 'Read data/assistance.json for your profile and data/assistance-handoff.md when present.\n'
-      printf 'Observe sources read-only and investigate before proposing work.\n'
-      printf 'Speak directly to the user in plain human language.\n'
-      printf 'Write only private records in your own home and proposals through bin/fm-assistance.sh propose.\n'
-      printf 'Run no fleet startup, dispatch, steering, merge, or project mutation.\n'
-      printf 'On an assistance cadence notification, inspect the profile sources using their named recipes.\n'
-      printf 'Use bin/fm-wake-drain.sh to read and acknowledge your own notifications.\n'
-      printf 'At a rotation request, stow your observations and source cursors in data/, write data/assistance-handoff.md, then run bin/fm-assistance-rotate.sh.\n'
-      printf 'The handoff must include ## Suggested skills and ## Next action.\n'
-      printf '\n# Charter\n\n'
-      jq -r .charter "$PROFILE"
-      printf '\n# Routing scope\n\nObserve and propose only.\n'
-      printf '\n# Project clones\n\nNone. This is a project-less domain.\n'
-    } > "$DATA/$name/brief.md"
+    render_brief > "$DATA/$name/brief.md"
     "$SCRIPT_DIR/fm-home-seed.sh" --assistance "$name" - --no-projects
     home=$(assistance_home "$name")
   fi
   check_binding "$name" "$home"
-  jq -r .charter "$PROFILE" > "$home/data/charter.md"
+  render_brief > "$home/data/charter.md"
   cp "$PROFILE" "$home/data/assistance.json"
   printf 'enabled\n' > "$home/config/assistance-enabled"
   "$SCRIPT_DIR/fm-spawn.sh" "$name" "$home" --assistance --backend herdr \
@@ -178,10 +179,8 @@ case "${1:-}" in
     [ "$acknowledged" = 1 ] || die 'source inbox acknowledgement required before deletion'
     [ ! -L "$pending" ] && [ ! -L "$FM_HOME/data/pending-mentions" ] || die 'ordinary pending record required'
     [ -f "$pending" ] || die 'pending record unavailable'
-    if [ -f "$pending" ]; then
-      digest=$(jq -c '.messages | map([.id,.arrival])' "$pending" | sha256sum | cut -d' ' -f1)
-      [ "$2" = "$digest.json" ] || die 'pending record content basename mismatch'
-    fi
+    digest=$(jq -c '.messages | map([.id,.arrival])' "$pending" | sha256sum | cut -d' ' -f1)
+    [ "$2" = "$digest.json" ] || die 'pending record content basename mismatch'
     rm -f "$pending"
     ;;
   validate) [ $# -eq 2 ] || die 'usage: validate <name>'; profile "$2" ;;

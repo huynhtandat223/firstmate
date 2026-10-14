@@ -81,7 +81,9 @@ touch "$parent/state/fixture-dead"
 [ ! -e "$helper/state/procevent/assistance-cadence.source" ] || fail 'stop retained cadence registration'
 "$lab/bin/fm-assistance.sh" start sample
 cmp "$parent/config/assistances/sample.json" "$helper/data/assistance.json" || fail 'restart retained old profile'
-[ "$(<"$helper/data/charter.md")" = 'New charter' ] || fail 'restart retained old charter'
+grep -qx 'New charter' "$helper/data/charter.md" || fail 'restart retained old charter'
+grep -qx '# Assistance role' "$helper/data/charter.md" || fail 'restart lost assistance role'
+grep -qx 'Run no fleet startup, dispatch, steering, merge, or project mutation.' "$helper/data/charter.md" || fail 'restart lost role boundaries'
 rm "$parent/state/fixture-dead"
 rm -f "$parent/data/assistance-authority.jsonl" "$helper/data/assistance-authority.jsonl"
 mkdir -p "$parent/config/assistances"
