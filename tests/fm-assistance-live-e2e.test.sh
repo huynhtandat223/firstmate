@@ -143,10 +143,10 @@ jq -e --arg words "$words" 'select(.name == "sample" and .action == "stop" and .
 "$code/bin/fm-assistance.sh" start sample
 target=$(fm_backend_target_of_meta "$meta")
 for ((n=0;n<30;n++)); do
-  [ "$(fm_backend_agent_state herdr "$target")" = alive ] && break
+  if [ "$(fm_backend_agent_state herdr "$target")" = alive ] && [ "$(fm_backend_busy_state herdr "$target")" = idle ]; then break; fi
   sleep 1
 done
-[ "$(fm_backend_agent_state herdr "$target")" = alive ] || fail 'human-stop test requires a live assistance'
+[ "$(fm_backend_agent_state herdr "$target")" = alive ] && [ "$(fm_backend_busy_state herdr "$target")" = idle ] || fail 'human-stop test requires an idle live assistance'
 pass 'agent stop refuses absent words and records explicit words before stopping'
 # A separate shell in the owned lab models the captain terminal, not firstmate.
 # Lab teardown is always the final safety net; it never touches default.
