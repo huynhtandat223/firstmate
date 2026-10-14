@@ -6,6 +6,17 @@ The files and environment variables you set to operate firstmate.
 
 The shared orchestrator behavior lives in [`AGENTS.md`](../AGENTS.md) - edit it like any prompt when the fleet is empty, or dispatch shared-repo edits to a crewmate while tasks are in flight.
 
+## Notifications for producers
+
+Firstmate, the DMS assistance, and scripts use [`bin/fm-notify-me.sh`](../bin/fm-notify-me.sh) to post owner notifications and read decisions.
+Its header and `--help` own the command syntax, output, token paths, and environment settings.
+Each producer needs its own service account with only Notifications route grants; store its issued token privately and never copy it into instructions or logs.
+The command selects that account's token; the server sets the producer identity and creation time.
+A repeated dedupe key returns the existing notification without changing its content or actions.
+Read the recorded decision before continuing an action that needs owner approval; a successful post is not approval.
+Notifications do not execute actions or replace Firstmate's existing approval rules.
+The targeted behavior check is `bin/fm-test-run.sh tests/fm-notify-me.test.sh`.
+
 ## Operational home layout and state
 
 This section is the single owner of the top-level operational-home layout; producer script headers and their help own exact child-file fields and mutation contracts.
