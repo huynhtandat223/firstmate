@@ -152,6 +152,10 @@ start() {
     status=$(fm_backend_agent_state "$(fm_backend_of_meta "$meta")" "$(fm_backend_target_of_meta "$meta")")
     case "$status" in
       alive)
+        if [ "$(jq -r .harness "$PROFILE")" = pi ] &&
+          fm_backend_capture "$(fm_backend_of_meta "$meta")" "$(fm_backend_target_of_meta "$meta")" 80 2>/dev/null | grep -q 'Trust project folder?'; then
+          die "Pi assistance awaits folder trust: select Trust and press Enter in its terminal, then retry assistance start $name"
+        fi
         home=$(assistance_home "$name")
         check_binding "$name" "$home"
         cmp -s "$PROFILE" "$home/data/assistance.json" || die 'profile changed; stop then start'

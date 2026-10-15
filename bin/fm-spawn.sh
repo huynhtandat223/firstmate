@@ -4994,6 +4994,24 @@ if [ "$KIND" = secondmate ] && [ "$ASSISTANCE" -eq 0 ] && [ "${FM_SKIP_SECONDMAT
   fi
 fi
 
+# A persistent Pi home may still require folder trust even with discovery off.
+# Do not report a started assistance while its initial instructions are parked.
+if [ "$ASSISTANCE" -eq 1 ] && [ "$HARNESS" = pi ]; then
+  for ((pi_ready_attempt=0; pi_ready_attempt<10; pi_ready_attempt++)); do
+    pi_ready_capture=$(fm_backend_capture "$BACKEND" "$T" 80 "$W" 2>/dev/null || true)
+    if printf '%s\n' "$pi_ready_capture" | grep -q 'Trust project folder?'; then
+      spawn_send_key "$T" Enter
+      sleep 2
+      pi_ready_capture=$(fm_backend_capture "$BACKEND" "$T" 80 "$W" 2>/dev/null || true)
+      if printf '%s\n' "$pi_ready_capture" | grep -q 'Trust project folder?'; then
+        echo "error: Pi assistance awaits folder trust in $T: select Trust and press Enter" >&2
+        exit 1
+      fi
+    fi
+    sleep 1
+  done
+fi
+
 # This is the commit point: all endpoint and harness delivery that can reject
 # the spawn has succeeded. Re-read and transition while holding the same
 # per-task lock as metadata publication, then and only then report success.
