@@ -31,7 +31,7 @@ case "${1:-}" in
       rm -f "$request"
     fi
     printf '%s\n' "$session" > "$STATE/assistance-session"
-    printf '%s\n' 'You are an assistance. Follow data/charter.md, not the supervisor role in AGENTS.md.'
+    printf '%s\n' "You are an assistance. Follow $FM_HOME/data/charter.md, not the supervisor role in AGENTS.md."
     [ ! -f "$FM_HOME/data/assistance-handoff.md" ] || { printf '\nRead this previous-session handoff before checking sources:\n'; cat "$FM_HOME/data/assistance-handoff.md"; }
     ;;
   usage)
@@ -52,20 +52,20 @@ case "${1:-}" in
       # Once fresh stow/handoff exist, permit this turn to end so self-clear can
       # reach idle. Repeated requests converge under the rotation owner's lock.
       if "$SCRIPT_DIR/fm-assistance-rotate.sh" >/dev/null 2>&1; then exit 0; fi
-      echo 'Assistance context reached 40%. Stow observations and source cursors into data/assistance-stow.md. Write data/assistance-handoff.md with Suggested skills and Next action, then run bin/fm-assistance-rotate.sh. Do not ask the parent to rotate you.' >&2
+      echo "Assistance context reached 40%. Stow observations and source cursors into $FM_HOME/data/assistance-stow.md. Write $FM_HOME/data/assistance-handoff.md with Suggested skills and Next action, then run $SCRIPT_DIR/fm-assistance-rotate.sh. Do not ask the parent to rotate you." >&2
       exit 2
     fi
     ;;
   cadence)
-    # Event-driven homes spend no timer or model work on empty polls.
-    if jq -e '.trigger_mode == "event-driven"' "$FM_HOME/data/assistance.json" >/dev/null 2>&1; then exit 0; fi
+    # Event-driven and self-delivery homes spend no timer or model work on empty polls.
+    if jq -e '.trigger_mode == "event-driven" or .trigger_mode == "self"' "$FM_HOME/data/assistance.json" >/dev/null 2>&1; then exit 0; fi
     [ ! -f "$STATE/assistance-rotation.json" ] || exit 0
     # The durable source owner, not a private timer loop, captures the cadence.
     FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-procevent.sh" register assistance-cadence assistance-cadence -- "$SCRIPT_DIR/fm-procevent-assistance-cadence.sh" wait >/dev/null
     FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-procevent.sh" start assistance-cadence >/dev/null
     [ "$(<"$STATE/assistance-session")" = "$session" ] || exit 0
     [ ! -f "$STATE/assistance-rotation.json" ] || exit 0
-    echo 'Assistance cadence: run bin/fm-wake-drain.sh in this home to read the due procevent assistance-cadence sequence. After checking the profile sources, acknowledge it with bin/fm-procevent.sh handled assistance-cadence <sequence> and the exact --ack-through command printed by the drain. Investigate new evidence and propose only relevant work. This assistance uses its own cadence hook, not a parent supervision cycle; do not repair or start a fleet watcher.' >&2
+    echo "Assistance cadence: run $FM_HOME/bin/fm-wake-drain.sh to read the due procevent assistance-cadence sequence. After checking the profile sources, acknowledge it with $FM_HOME/bin/fm-procevent.sh handled assistance-cadence <sequence> and the exact --ack-through command printed by the drain. Investigate new evidence and propose only relevant work. This assistance uses its own cadence hook, not a parent supervision cycle; do not repair or start a fleet watcher." >&2
     exit 2
     ;;
   *) echo 'error: expected start, usage, stop or cadence' >&2; exit 2 ;;

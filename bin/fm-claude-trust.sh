@@ -10,8 +10,11 @@
 #
 # Usage: fm-claude-trust.sh <worktree> <project>
 #        fm-claude-trust.sh --secondmate-home <home> <id>
-#        fm-claude-trust.sh --assistance-home <home> <id>
+#        fm-claude-trust.sh --assistance-home <home> <id> [<workdir>]
 # Assistance mode uses the same scope checks with .fm-assistance-home identity.
+# An optional <workdir> is the project directory the assistance starts in; it is
+# judged by fm_assistance_workdir_error and trusted, trust-only, in the same
+# atomic write as the home.
 #   <worktree>  the isolated task worktree this spawn launches into
 #   <project>   the primary checkout that worktree belongs to
 #   <home>      the seeded secondmate home this spawn launches into
@@ -175,7 +178,7 @@ unset CDPATH \
 
 usage() {
   echo "usage: fm-claude-trust.sh <worktree> <project>" >&2
-  echo "       fm-claude-trust.sh --secondmate-home|--assistance-home <home> <id>" >&2
+  echo "       fm-claude-trust.sh --secondmate-home|--assistance-home <home> <id> [<workdir>]" >&2
   exit 2
 }
 
@@ -183,10 +186,15 @@ usage() {
 # names what the argument was expected to be so every shared refusal below reads
 # correctly in both modes.
 SUB_KIND=secondmate
+WORKDIR_ARG=
 case "${1:-}" in
   --secondmate-home|--assistance-home)
     [ "$1" != --assistance-home ] || SUB_KIND=assistance
-    [ "$#" -eq 3 ] || usage
+    if [ "$#" -eq 4 ] && [ "$SUB_KIND" = assistance ]; then
+      WORKDIR_ARG=$4
+    else
+      [ "$#" -eq 3 ] || usage
+    fi
     MODE=secondmate-home
     TARGET_ARG=$2
     SUB_ID=$3
@@ -341,6 +349,23 @@ else
   done
 fi
 
+# The assistance workdir is a project the assistance only reads. The shared
+# guard owns what a workdir may be; the root, home and config-directory refusals
+# above apply to it as well, judged on the resolved path the pane will report.
+WORKDIR_REAL=
+if [ -n "$WORKDIR_ARG" ]; then
+  WORKDIR_REASON=$(
+    # shellcheck source=bin/fm-assistance-guard-lib.sh
+    . "$(dirname "${BASH_SOURCE[0]}")/fm-assistance-guard-lib.sh"
+    FM_HOME=${FM_HOME:-$TARGET_REAL} fm_assistance_workdir_error "$WORKDIR_ARG"
+  ) || refuse "workdir '$WORKDIR_ARG' is unusable: $WORKDIR_REASON"
+  WORKDIR_REAL=$(real_dir "$WORKDIR_ARG") || true
+  [ -n "$WORKDIR_REAL" ] || refuse "workdir '$WORKDIR_ARG' is not an accessible directory"
+  [ "$WORKDIR_REAL" != / ] || refuse "'/' is the filesystem root, not a workdir"
+  [ "$WORKDIR_REAL" != "$CONFIG_DIR_REAL" ] || refuse "'$WORKDIR_REAL' is the Claude config directory, not a workdir"
+  [ "$WORKDIR_REAL" != "${HOME_REAL:-}" ] || refuse "'$WORKDIR_REAL' is the home directory, not a workdir"
+fi
+
 # The store write needs node, and a missing interpreter refuses like every other
 # failure here. Degrading instead would launch a worker straight into the dialog
 # this registration exists to remove, which is the one outcome the whole control
@@ -420,13 +445,13 @@ IMPORT_FLAGS='["hasClaudeMdExternalIncludesApproved","hasClaudeMdExternalInclude
 if [ "$MODE" = worktree ]; then
   WRITE_ARGS=("$STORE" "$MODE" "$TARGET_REAL" "$PROJ_CANON" "$TRUST_FLAG" "$IMPORT_FLAGS")
 else
-  WRITE_ARGS=("$STORE" "$MODE" "$TARGET_REAL" "" "$TRUST_FLAG" "$IMPORT_FLAGS")
+  WRITE_ARGS=("$STORE" "$MODE" "$TARGET_REAL" "" "$TRUST_FLAG" "$IMPORT_FLAGS" "$WORKDIR_REAL")
 fi
 if ! node - "${WRITE_ARGS[@]}" <<'NODE'
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
-const [store, mode, target, project, trustFlag, importFlagsJson] = process.argv.slice(2);
+const [store, mode, target, project, trustFlag, importFlagsJson, workdir = ""] = process.argv.slice(2);
 const importFlags = JSON.parse(importFlagsJson);
 const readStore = () => {
   try {
@@ -501,6 +526,10 @@ const attempt = () => {
   } else {
     setFlags(projects, target, [trustFlag]);
     keys = [[target, [trustFlag]]];
+    if (workdir !== "") {
+      setFlags(projects, workdir, [trustFlag]);
+      keys.push([workdir, [trustFlag]]);
+    }
   }
   // Unpredictable name plus an exclusive create: the config directory may be
   // writable by another local account, and a predictable path could be
@@ -551,6 +580,7 @@ then
 fi
 
 echo "trusted: $TARGET_REAL"
+[ -z "$WORKDIR_REAL" ] || echo "trusted (workdir): $WORKDIR_REAL"
 if [ "$MODE" = worktree ]; then
   echo "trusted (project root): $PROJ_CANON"
 fi

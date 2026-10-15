@@ -67,7 +67,7 @@ done
 for ((attempt=0; attempt<60; attempt++)); do
   if [ "$(<"$STATE/assistance-session")" != "$session" ]; then
     rm -f "$request"
-    fm_backend_send_text_submit herdr "$endpoint" 'Read data/charter.md and data/assistance-handoff.md, then continue from Next action.' 3 0.2 1.2
+    fm_backend_send_text_submit herdr "$endpoint" "Read $FM_HOME/data/charter.md and $FM_HOME/data/assistance-handoff.md, then continue from Next action." 3 0.2 1.2
     echo 'rotation: fresh session continuing from persisted handoff'
     exit 0
   fi

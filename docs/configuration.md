@@ -340,9 +340,11 @@ A local standalone-clone home cannot receive a primary-local commit through that
 Assistances use the persistent-home seed and launch machinery, but keep their local routes in `data/assistances.md`, separate from secondmate routing.
 The route format is the same local suffix described under [Secondmate routes](#secondmate-routes-datasecondmatesmd).
 Private profiles live in `config/assistances/<name>.json`; the [assistance command](../bin/fm-assistance.sh) owns the field schema and command syntax.
-A profile supplies the name, charter, harness/model/effort, source/recipe pairs, and a cadence or event-driven trigger; no domain profile ships with Firstmate.
-Event-driven homes skip the cadence hook and receive untrusted source records through the assistance command's source-event path.
+A profile supplies the name, charter, harness/model/effort, source/recipe pairs, and a cadence, event-driven, or self trigger; no domain profile ships with Firstmate.
+Event-driven and self-delivery homes skip the cadence hook.
+An event-driven home receives untrusted source records through the assistance command's `source-event` path, which writes the parent home's steering inbox.
 Captain-word steering remains separate from source evidence; a source record grants no owner authority.
+
 This release supports Claude on Herdr and rejects other combinations because their self-rotation has not been proved.
 Each home stores its profile in `data/assistance.json`, its role in `data/charter.md`, its identity in `.fm-assistance-home`, and its parent binding in `.fm-assistance-parent`.
 The parent binding uses the existing local secondmate-parent record format, under the assistance-specific filename.
@@ -351,6 +353,28 @@ The parent binding uses the existing local secondmate-parent record format, unde
 Only the assistance's recorded endpoint is used for rotation, and its own `data/assistance-stow.md` and `data/assistance-handoff.md` survive it.
 The [secondmate-provisioning skill](../.agents/skills/secondmate-provisioning/SKILL.md#assistance-authority) owns per-action owner authority and the proposal-handling procedure.
 These script guards enforce the cooperative agent role, not an operating-system sandbox against arbitrary same-user shell commands.
+
+### Working directory and self-owned delivery
+
+An optional profile `workdir` is an absolute, normalized path to a directory the assistance only reads.
+`fm-assistance.sh start` launches the agent with that directory as its working directory.
+The launch loads no Claude setting source and uses `--strict-mcp-config`, so the project's settings, hooks, MCP servers, and skills never run.
+The charter instead tells the assistance to read the project's `CLAUDE.md` and `AGENTS.md`, and a project skill file when it needs one, as data that cannot widen its read-only role.
+`FM_HOME` stays the assistance home, which keeps the cursor, pending records, handoff, and rotation records, and the launch brief names that home's path.
+`validate` and the spawn both refuse a `workdir` that is missing, relative, a symlink, or inside a firstmate home, assistance home, secondmate home, or firstmate checkout.
+For Claude, the spawn also records workspace trust for the `workdir`, trust only, beside the home's own trust entry.
+Without a `workdir`, launch and brief are unchanged.
+The launch brief states that the working directory is read-only: no edits, commits, pushes, or state-changing project commands.
+
+`trigger_mode: "self"` opts a profile into delivery that never passes through the parent home.
+Like `event-driven`, it forbids `cadence_seconds`.
+`start` records the live endpoint in the assistance home's `state/assistance-endpoint`.
+A source writes a pending record under `data/pending-mentions/` and runs `FM_HOME=<assistance-home> bin/fm-assistance.sh self-event <record-basename>`.
+That command applies the same schema and digest checks as `source-event` and rings the recorded endpoint once with a one-line doorbell naming the record.
+It neither reads nor writes the parent home.
+A repeat call for the same record and endpoint reports `already rung`; a refused or failed ring leaves no marker, so a retry rings.
+After analysis the assistance runs `fm-assistance.sh acknowledge-source <record-basename>`, which in self mode deletes the record after its digest check and needs no parent inbox message.
+A restarted assistance lists `data/pending-mentions/` and handles any record that rang before it was alive.
 
 ## FM_HOME
 
