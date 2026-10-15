@@ -507,3 +507,26 @@ out=$(spawn_workdir "$selflab" --workdir "$TMP_ROOT/wd-key-hooks") && fail 'spaw
 m=$(mutant settings fm-assistance-guard-lib.sh 'defines command-running key' ':')
 must_accept_workdir "$m" "$TMP_ROOT/wd-key-hooks"
 pass 'a workdir whose project settings run a command is refused by validate and spawn, naming file and key'
+
+# Two overlapping self-event calls for one record ring once: the marker check,
+# the send and the marker write run under one per-record lock in the home.
+rm -rf "$selfhome/state/assistance-rung" "$selfhome/state/rings"
+rec=$(mkrecord good)
+touch "$selfhome/state/fixture-slow"
+self_event "$selflab" "$rec" > "$TMP_ROOT/overlap-a.out" 2>&1 &
+pid_a=$!
+self_event "$selflab" "$rec" > "$TMP_ROOT/overlap-b.out" 2>&1 &
+pid_b=$!
+wait "$pid_a" "$pid_b"
+[ "$(wc -l < "$selfhome/state/rings" | tr -d ' ')" = 1 ] || fail "overlapping self-event calls rang $(wc -l < "$selfhome/state/rings") times"
+cat "$TMP_ROOT/overlap-a.out" "$TMP_ROOT/overlap-b.out" | grep -q '^already rung' || fail 'the second overlapping call did not see the first ring'
+rm -rf "$selfhome/state/assistance-rung" "$selfhome/state/rings"
+m=$(mutant e-lock fm-assistance.sh 'fm_lock_acquire_wait "$ring_lock"' '    :')
+self_event "$m" "$rec" > "$TMP_ROOT/overlap-a.out" 2>&1 &
+pid_a=$!
+self_event "$m" "$rec" > "$TMP_ROOT/overlap-b.out" 2>&1 &
+pid_b=$!
+wait "$pid_a" "$pid_b"
+[ "$(wc -l < "$selfhome/state/rings" | tr -d ' ')" = 2 ] || fail 'the ring lock is not red when removed'
+rm -rf "$selfhome/state/assistance-rung" "$selfhome/state/rings" "$selfhome/state/fixture-slow"
+pass 'overlapping self-event calls for one record ring once, and the lock is red when removed'

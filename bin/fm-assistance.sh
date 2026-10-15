@@ -14,7 +14,8 @@
 # self-event is the delivery for trigger_mode "self": run with FM_HOME set to the
 # assistance home, it validates the record exactly as source-event does and rings
 # state/assistance-endpoint once with a doorbell line naming the record. It never
-# reads or writes the parent home. Only the exact backend verdict "empty" counts as
+# reads or writes the parent home. A per-record lock in the home's state/ serialises
+# overlapping calls. Only the exact backend verdict "empty" counts as
 # delivered and writes the marker, so any other outcome stays retryable.
 # In self mode acknowledge-source needs only the record's own digest check.
 #   fm-assistance.sh recover
@@ -232,6 +233,10 @@ case "${1:-}" in
       *) die 'assistance endpoint is not alive; the record is retained for retry' ;;
     esac
     marker="$STATE/assistance-rung/$2"
+    # One lock per record covers the marker check, the send and the marker write.
+    ring_lock="$STATE/.assistance-ring-$2.lock"
+    fm_lock_acquire_wait "$ring_lock"
+    trap 'fm_lock_release "$ring_lock"' EXIT
     if [ -f "$marker" ] && [ "$(<"$marker")" = "$endpoint" ]; then
       printf 'already rung: %s\n' "$2"
       exit 0
