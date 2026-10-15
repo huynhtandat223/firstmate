@@ -17,7 +17,8 @@
 # reads or writes the parent home. A per-record lock in the home's state/ serialises
 # overlapping calls. Only the exact backend verdict "empty" counts as
 # delivered and writes the marker, so any other outcome stays retryable.
-# In self mode acknowledge-source needs only the record's own digest check.
+# In self mode acknowledge-source needs only the record's own digest check and
+# takes the same per-record lock around that check and the delete.
 #   fm-assistance.sh recover
 #   fm-assistance.sh propose <title> <why> <evidence>
 #   fm-assistance.sh record <inbox-id>
@@ -84,6 +85,14 @@ pending_record_check() {  # <pending-path> <basename>
   jq -e '.schema == "fm-assistance-mentions.v1" and (.messages | type == "array" and length > 0 and all(.[]; (.id | type == "string" and length > 0) and (.arrival | type == "number") and (.content | type == "string")))' "$1" >/dev/null || die 'invalid pending mentions'
   digest=$(jq -c '.messages | map([.id,.arrival])' "$1" | sha256sum | cut -d' ' -f1)
   [ "$2" = "$digest.json" ] || die 'pending record content basename mismatch'
+}
+# The per-record lock serialises self-event and self-mode acknowledgement, so a
+# ring and a retire of one record never interleave.
+record_lock() {  # <basename>: takes the lock and releases it at exit
+  mkdir -p "$STATE"
+  RECORD_LOCK="$STATE/.assistance-ring-$1.lock"
+  fm_lock_acquire_wait "$RECORD_LOCK"
+  trap 'fm_lock_release "$RECORD_LOCK"' EXIT
 }
 self_mode() { jq -e '.trigger_mode == "self"' "$FM_HOME/data/assistance.json" >/dev/null 2>&1; }
 assistance_home() {
@@ -205,6 +214,7 @@ case "${1:-}" in
     [[ "$2" =~ ^[a-zA-Z0-9_-]+\.json$ ]] || die 'invalid pending record basename'
     name=$(<"$FM_HOME/.fm-assistance-home")
     pending="$FM_HOME/data/pending-mentions/$2"
+    ! self_mode || record_lock "$2"
     if ! self_mode; then
       fm_secondmate_parent_record_parse "$FM_HOME/.fm-assistance-parent" || die 'invalid parent binding'
       [ "$FM_SECONDMATE_PARENT_ROUTE" = local ] || die 'local parent required'
@@ -224,7 +234,6 @@ case "${1:-}" in
     [ -f "$FM_HOME/.fm-assistance-home" ] && [ ! -e "$FM_HOME/.fm-secondmate-home" ] || die 'self-event requires FM_HOME to be an assistance home'
     self_mode || die 'assistance profile does not select trigger_mode self'
     [[ "$2" =~ ^[a-zA-Z0-9_-]+\.json$ ]] || die 'invalid pending record basename'
-    pending_record_check "$FM_HOME/data/pending-mentions/$2" "$2"
     endpoint_file="$STATE/assistance-endpoint"
     [ -f "$endpoint_file" ] && [ ! -L "$endpoint_file" ] || die 'assistance endpoint record unavailable'
     endpoint=$(<"$endpoint_file")
@@ -233,10 +242,9 @@ case "${1:-}" in
       *) die 'assistance endpoint is not alive; the record is retained for retry' ;;
     esac
     marker="$STATE/assistance-rung/$2"
-    # One lock per record covers the marker check, the send and the marker write.
-    ring_lock="$STATE/.assistance-ring-$2.lock"
-    fm_lock_acquire_wait "$ring_lock"
-    trap 'fm_lock_release "$ring_lock"' EXIT
+    # The record check, marker check, send and marker write all run under the lock.
+    record_lock "$2"
+    pending_record_check "$FM_HOME/data/pending-mentions/$2" "$2"
     if [ -f "$marker" ] && [ "$(<"$marker")" = "$endpoint" ]; then
       printf 'already rung: %s\n' "$2"
       exit 0

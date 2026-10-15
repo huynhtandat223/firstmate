@@ -521,7 +521,7 @@ wait "$pid_a" "$pid_b"
 [ "$(wc -l < "$selfhome/state/rings" | tr -d ' ')" = 1 ] || fail "overlapping self-event calls rang $(wc -l < "$selfhome/state/rings") times"
 cat "$TMP_ROOT/overlap-a.out" "$TMP_ROOT/overlap-b.out" | grep -q '^already rung' || fail 'the second overlapping call did not see the first ring'
 rm -rf "$selfhome/state/assistance-rung" "$selfhome/state/rings"
-m=$(mutant e-lock fm-assistance.sh 'fm_lock_acquire_wait "$ring_lock"' '    :')
+m=$(mutant e-lock fm-assistance.sh 'fm_lock_acquire_wait "$RECORD_LOCK"' '  :')
 self_event "$m" "$rec" > "$TMP_ROOT/overlap-a.out" 2>&1 &
 pid_a=$!
 self_event "$m" "$rec" > "$TMP_ROOT/overlap-b.out" 2>&1 &
@@ -551,3 +551,62 @@ FM_HOME="$selfhome" "$ROOT/bin/fm-procevent.sh" retire assistance-cadence >/dev/
 cp "$TMP_ROOT/self-profile.json" "$selfhome/data/assistance.json"
 rm -rf "$selfhome/state/assistance-rung" "$selfhome/state/rings"
 pass 'doorbell and cadence messages name absolute commands in the assistance home'
+
+# The record check runs inside the per-record lock, and self-mode acknowledgement
+# takes the same lock around its check and delete, so a ring and an
+# acknowledgement of one record never interleave.
+hold_lock() {  # <lockdir> <seconds>: hold the lock in a background shell until released
+  bash -c '. "$1/bin/fm-wake-lib.sh"; fm_lock_acquire_wait "$2"; : > "$2.held"; sleep "$3"; fm_lock_release "$2"' _ "$selflab" "$1" "$2" &
+  HOLD_PID=$!
+  for _ in $(seq 1 50); do [ -e "$1.held" ] && break; sleep 0.1; done
+  [ -e "$1.held" ] || fail 'test lock holder did not start'
+}
+rm -rf "$selfhome/state/assistance-rung" "$selfhome/state/rings" "$selfhome"/state/.assistance-ring-*
+rec=$(mkrecord good)
+lock="$selfhome/state/.assistance-ring-$rec.lock"
+# A ring that waits for the lock re-checks the record once it holds it.
+hold_lock "$lock" 2
+self_event "$selflab" "$rec" > "$TMP_ROOT/inlock-ring.out" 2>&1 &
+ring_pid=$!
+sleep 0.5
+rm -f "$selfhome/data/pending-mentions/$rec"
+wait "$HOLD_PID"
+rm -f "$lock.held"
+if wait "$ring_pid"; then fail 'a ring that waited for the lock accepted a record deleted meanwhile'; fi
+[ ! -e "$selfhome/state/rings" ] || fail 'a ring typed a doorbell for a record deleted while it waited'
+m=$(mutant l-check fm-assistance.sh '    pending_record_check "$FM_HOME/data/pending-mentions/$2" "$2"' '    :')
+mutate_line "$m" fm-assistance.sh '    record_lock "$2"' '    pending_record_check "$FM_HOME/data/pending-mentions/$2" "$2"; record_lock "$2"'
+rec=$(mkrecord good)
+hold_lock "$lock" 2
+self_event "$m" "$rec" > "$TMP_ROOT/inlock-ring.out" 2>&1 &
+ring_pid=$!
+sleep 0.5
+rm -f "$selfhome/data/pending-mentions/$rec"
+wait "$HOLD_PID"
+wait "$ring_pid" || true
+rm -f "$lock.held"
+[ -e "$selfhome/state/rings" ] || fail 'the in-lock record check is not red when it runs before the lock'
+rm -rf "$selfhome/state/assistance-rung" "$selfhome/state/rings"
+# Acknowledgement waits for a ring that holds the lock, then deletes record and marker together.
+rec=$(mkrecord good)
+hold_lock "$lock" 2
+ack "$selflab" "$rec" > "$TMP_ROOT/inlock-ack.out" 2>&1 &
+ack_pid=$!
+sleep 0.7
+[ -f "$selfhome/data/pending-mentions/$rec" ] || fail 'self-mode acknowledgement deleted a record while its ring lock was held'
+wait "$ack_pid" || fail "self-mode acknowledgement failed after the lock cleared: $(cat "$TMP_ROOT/inlock-ack.out")"
+wait "$HOLD_PID"
+rm -f "$lock.held"
+[ ! -e "$selfhome/data/pending-mentions/$rec" ] || fail 'self-mode acknowledgement kept the record after the lock cleared'
+rec=$(mkrecord good)
+m=$(mutant l-ack fm-assistance.sh '! self_mode || record_lock "$2"' '    :')
+hold_lock "$lock" 2
+ack "$m" "$rec" > "$TMP_ROOT/inlock-ack.out" 2>&1 &
+ack_pid=$!
+sleep 0.7
+[ ! -f "$selfhome/data/pending-mentions/$rec" ] || fail 'the acknowledgement lock is not red when removed'
+wait "$HOLD_PID"
+wait "$ack_pid" || true
+rm -f "$lock.held"
+rm -rf "$selfhome/state/assistance-rung" "$selfhome/state/rings"
+pass 'self-event checks the record inside its lock and self-mode acknowledgement takes the same lock'
