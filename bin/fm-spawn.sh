@@ -1928,7 +1928,8 @@ launch_template() {
   opencode) printf '%s' 'OPENCODE_CONFIG_CONTENT='\''{"permission":{"*":"allow"}}'\'' opencode __MODELFLAG__--prompt "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
   pi | pi-signed)
     printf '%s' '__PIBIN____PITUIMODE__'
-    if [ "$kind" = secondmate ]; then
+    [ "$ASSISTANCE" -eq 0 ] || printf '%s' ' --no-approve --no-extensions'
+    if [ "$kind" = secondmate ] && [ "$ASSISTANCE" -eq 0 ]; then
       printf '%s' ' __MODELFLAG____EFFORTFLAG__-e __PITURNEND__ -e __PIWATCH__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
     else
       printf '%s' ' __MODELFLAG____EFFORTFLAG__-e __PIEXT__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
@@ -2156,11 +2157,11 @@ esac
 # secondmate whose supervision cycle could never be armed.
 # agy has none either: it exposes no hook surface for primary supervision and
 # docs/supervision-protocols/ carries no agy wake protocol (agy 1.2.0).
-if [ "$ASSISTANCE" -eq 1 ] && { [ "$HARNESS" != claude ] || [ "$BACKEND" != herdr ] || [ "$RELAUNCH" -ne 0 ]; }; then
-  echo 'error: assistance self-rotation supports only Claude on Herdr; use assistance start for recovery' >&2
+if [ "$ASSISTANCE" -eq 1 ] && { [[ "$HARNESS" != claude && "$HARNESS" != pi && "$HARNESS" != agy ]] || [ "$BACKEND" != herdr ] || [ "$RELAUNCH" -ne 0 ]; }; then
+  echo 'error: assistance supports claude, pi, agy on Herdr; use assistance start for recovery' >&2
   exit 1
 fi
-if [ "$KIND" = secondmate ] && { [ "$HARNESS" = muse ] || [ "$HARNESS" = gemini ] || [ "$HARNESS" = agy ]; }; then
+if [ "$KIND" = secondmate ] && [ "$ASSISTANCE" -eq 0 ] && { [ "$HARNESS" = muse ] || [ "$HARNESS" = gemini ] || [ "$HARNESS" = agy ]; }; then
   echo "error: $HARNESS is a verified crewmate/scout adapter only and cannot run a secondmate; it has no primary supervision protocol. Select a harness verified for secondmates." >&2
   exit 1
 fi
@@ -4071,7 +4072,7 @@ if [ "$RELAUNCH" -eq 1 ]; then
   RELAUNCH_REPLACEMENT_STATE=$STATE_REAL
   RELAUNCH_REPLACEMENT_WT=$WT
 fi
-if [ "$KIND" != secondmate ]; then
+if [ "$KIND" != secondmate ] || { [ "$ASSISTANCE" -eq 1 ] && [ "$HARNESS" = pi ]; }; then
   # Arm the semantic busy-state contract (bin/fm-busy-lib.sh) for every
   # adapter with a verified semantic source. The launch brief sent below IS a
   # submitted turn, so the seed record is busy/fm-spawn. The minted gen is
@@ -4990,6 +4991,28 @@ if [ "$KIND" = secondmate ] && [ "$ASSISTANCE" -eq 0 ] && [ "${FM_SKIP_SECONDMAT
     else
       echo "CONFIG_REREAD: secondmate $ID: cleanup failed; pre-relaunch generations were force-cleared where possible (destination=$PROJ_ABS source=$FM_HOME)" >&2
     fi
+  fi
+fi
+
+# A persistent Pi home may still require folder trust even with discovery off.
+# Do not report a started assistance while its initial instructions are parked.
+if [ "$ASSISTANCE" -eq 1 ] && [ "$HARNESS" = pi ]; then
+  pi_assistance_started=0
+  for ((pi_ready_attempt=0; pi_ready_attempt<30; pi_ready_attempt++)); do
+    pi_ready_capture=$(fm_backend_capture "$BACKEND" "$T" 80 "$W" 2>/dev/null || true)
+    if printf '%s\n' "$pi_ready_capture" | grep -q 'Trust project folder?'; then
+      echo "error: Pi assistance unexpectedly awaits folder trust in $T despite --no-approve; launch refused" >&2
+      exit 1
+    fi
+    if grep -q ' source=pi-ext ' "$STATE_REAL/$ID.busy-state" 2>/dev/null; then
+      pi_assistance_started=1
+      break
+    fi
+    sleep 1
+  done
+  if [ "$pi_assistance_started" -ne 1 ]; then
+    echo "error: Pi assistance launch turn did not begin in $T" >&2
+    exit 1
   fi
 fi
 

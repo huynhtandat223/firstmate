@@ -138,9 +138,9 @@ done
 cp "$TMP_ROOT/registry" "$parent/data/assistances.md"
 pass 'one recovery refusal does not suppress later enabled assistances'
 mkdir -p "$parent/config/assistances"
-printf '{"name":"unsupported","harness":"pi"}\n' > "$parent/config/assistances/unsupported.json"
+printf '{"name":"unsupported","harness":"codex"}\n' > "$parent/config/assistances/unsupported.json"
 if "$ROOT/bin/fm-assistance.sh" start unsupported > "$TMP_ROOT/unsupported.out" 2>&1; then fail 'unsupported rotation harness was accepted'; fi
-grep -q 'only Claude self-rotation is supported' "$TMP_ROOT/unsupported.out" || fail 'unsupported harness lacked explanation'
+grep -q 'allowed harnesses: claude, pi, agy' "$TMP_ROOT/unsupported.out" || fail 'unsupported harness lacked explanation'
 other="$TMP_ROOT/other"
 mkdir -p "$other/bin"
 printf 'project\n' > "$other/AGENTS.md"
