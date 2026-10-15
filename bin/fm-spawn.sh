@@ -4,9 +4,14 @@
 # Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>]
 #        fm-spawn.sh <task-id> <project-dir> --scout [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>]
 #        fm-spawn.sh <task-id> [<firstmate-home>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] --secondmate
-#        fm-spawn.sh <id> <assistance-home> --assistance --harness claude --backend herdr
+#        fm-spawn.sh <id> <assistance-home> --assistance --harness claude --backend herdr [--workdir <abs-dir>]
 #   --assistance shares persistent launch mechanics but records kind=assistance,
 #   reads data/assistances.md and uses assistance hooks rather than supervision.
+#   --workdir (assistance only) starts the agent in that project directory instead
+#   of the home; FM_HOME stays the home. It is re-checked here by
+#   fm_assistance_workdir_error and trusted for Claude alongside the home, and
+#   Claude then loads the project setting source so that project's CLAUDE.md and
+#   skills apply (the home-only launch loads no setting source).
 #   --mode and --yolo are this task's delivery contract, REQUIRED for every ship
 #   spawn and refused on --scout and --secondmate spawns. Firstmate resolves both
 #   per task at intake (AGENTS.md section 7); data/projects.md holds the captain's
@@ -567,6 +572,7 @@ BACKEND_ARG=
 MODE=
 YOLO=
 TRACEPARENT_ARG=
+WORKDIR_ARG=
 HARNESS_SET=0
 MODEL_SET=0
 EFFORT_SET=0
@@ -574,6 +580,7 @@ BACKEND_SET=0
 MODE_SET=0
 YOLO_SET=0
 TRACEPARENT_SET=0
+WORKDIR_SET=0
 RELAUNCH=0
 POS=()
 want_value=
@@ -613,6 +620,10 @@ for a in "$@"; do
     traceparent)
       TRACEPARENT_ARG=$a
       TRACEPARENT_SET=1
+      ;;
+    workdir)
+      WORKDIR_ARG=$a
+      WORKDIR_SET=1
       ;;
     *)
       echo "error: internal parser state for --$want_value" >&2
@@ -675,6 +686,11 @@ for a in "$@"; do
     TRACEPARENT_ARG=${a#--traceparent=}
     TRACEPARENT_SET=1
     ;;
+  --workdir) want_value=workdir ;;
+  --workdir=*)
+    WORKDIR_ARG=${a#--workdir=}
+    WORKDIR_SET=1
+    ;;
   *) POS+=("$a") ;;
   esac
 done
@@ -713,6 +729,16 @@ done
 if [ "$ASSISTANCE" -eq 1 ] && [ "$KIND" != secondmate ]; then
   echo 'error: --assistance cannot be combined with --scout' >&2
   exit 1
+fi
+if [ "$WORKDIR_SET" -eq 1 ]; then
+  [ "$ASSISTANCE" -eq 1 ] || {
+    echo 'error: --workdir applies only to --assistance spawns' >&2
+    exit 1
+  }
+  WORKDIR_REASON=$(fm_assistance_workdir_error "$WORKDIR_ARG") || {
+    echo "error: invalid assistance workdir: $WORKDIR_REASON" >&2
+    exit 1
+  }
 fi
 # A parent-delivered carrier replaces this home's own resolution, so it is
 # refused unless it is a secondmate spawn carrying a strictly valid W3C value.
@@ -1860,7 +1886,7 @@ launch_template() {
   # supervisor contract instead, so this task-worker statement does not apply.
   claude)
     if [ "$ASSISTANCE" -eq 1 ]; then
-      printf '%s' 'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude __CLAUDEPERMFLAG__ --setting-sources "" --settings __ASSISTANCESETTINGS__ --append-system-prompt '\''You are an assistance, not a firstmate or worker. Your assistance charter is the role contract. You observe read-only sources, speak to the human, and propose work. You never dispatch or steer agents. Stow and rotate your own session when the context hook requests it.'\'' '
+      printf '%s' 'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude __CLAUDEPERMFLAG__ --setting-sources __ASSISTANCESOURCES__ --settings __ASSISTANCESETTINGS__ --append-system-prompt '\''You are an assistance, not a firstmate or worker. Your assistance charter is the role contract. You observe read-only sources, speak to the human, and propose work. You never dispatch or steer agents. Stow and rotate your own session when the context hook requests it.'\'' '
     else
       printf '%s' 'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude __CLAUDEPERMFLAG__ --settings '\''{"feedbackDrafts":"off","attribution":{"commit":"","pr":"","sessionUrl":false}}'\'' '
     fi
@@ -3365,7 +3391,7 @@ else
             HERDR_PROJECTION_ID=$(fm_backend_herdr_projection_journal_create "$STATE" "$ID") || exit 1
             HERDR_PROJECTION_LABEL=$(fm_backend_herdr_projection_workspace_label "$ID" "$HERDR_PROJECTION_ID")
             if ! FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_projection_create_task \
-              "$PROJ_ABS" "$HERDR_PROJECTION_LABEL" "$W"; then
+              "${WORKDIR_ARG:-$PROJ_ABS}" "$HERDR_PROJECTION_LABEL" "$W"; then
               if [ "${FM_BACKEND_HERDR_PROJECTION_CLEANUP_SAFE:-0}" = 1 ]; then
                 HERDR_PROJECTION_ABORT_CLEANUP=1
                 HERDR_PROJECTION_ABORT_SESSION=$FM_BACKEND_HERDR_PROJECTION_SESSION
@@ -3418,7 +3444,7 @@ else
       HERDR_SEEDED_DEFAULT_TAB_ID=${HERDR_CONTAINER_RAW#*$'\t'}
       HERDR_SES=${CONTAINER%%:*}
       HERDR_WORKSPACE_ID=${CONTAINER#*:}
-      HERDR_TASK_IDS=$(FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_create_task "$CONTAINER" "$W" "$PROJ_ABS" "$HERDR_SEEDED_DEFAULT_TAB_ID") || exit 1
+      HERDR_TASK_IDS=$(FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_create_task "$CONTAINER" "$W" "${WORKDIR_ARG:-$PROJ_ABS}" "$HERDR_SEEDED_DEFAULT_TAB_ID") || exit 1
       read -r HERDR_TAB_ID HERDR_PANE_ID <<EOF
 $HERDR_TASK_IDS
 EOF
@@ -3969,6 +3995,7 @@ case "$HARNESS" in
 claude*)
   if [ "$KIND" = secondmate ]; then
     spawn_trust_args=("--$PERSISTENT_KIND-home" "$PROJ_ABS" "$ID")
+    [ -z "$WORKDIR_ARG" ] || spawn_trust_args+=("$WORKDIR_ARG")
   else
     spawn_trust_args=("$WT" "$PROJ_ABS")
   fi
@@ -4699,6 +4726,11 @@ if [ "$KIND" = secondmate ]; then
     printf '%s\n' "$T" > "$PROJ_ABS/state/assistance-endpoint"
     FM_HOME="$PROJ_ABS" "$SCRIPT_DIR/fm-assistance-hook.sh" settings > "$PROJ_ABS/state/assistance-settings.json"
     LAUNCH=${LAUNCH//__ASSISTANCESETTINGS__/$(shell_quote "$PROJ_ABS/state/assistance-settings.json")}
+    # An empty setting-sources list also stops Claude from loading CLAUDE.md, so a
+    # workdir launch reads the project source to load that project's own context.
+    assistance_sources='""'
+    [ -z "$WORKDIR_ARG" ] || assistance_sources=project
+    LAUNCH=${LAUNCH//__ASSISTANCESOURCES__/$assistance_sources}
   fi
   # Keep this in step with fm_supervision_model (bin/fm-wake-lib.sh): Claude's
   # Stop auto-arm and Cursor's stop-hook park both run the watcher only BETWEEN

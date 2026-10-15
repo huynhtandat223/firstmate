@@ -813,6 +813,94 @@ test_secondmate_spawn_fails_closed_when_home_trust_cannot_be_recorded() {
   pass "fm-spawn.sh: a claude secondmate spawn refuses when home trust cannot be recorded"
 }
 
+# --- assistance workdir ------------------------------------------------------
+
+# seed_assistance_home <home> <id>: the marker, instance files and operational
+# directories fm-home-seed.sh --assistance leaves behind.
+seed_assistance_home() {
+  local home=$1 id=$2
+  mkdir -p "$home/bin" "$home/data" "$home/state" "$home/config" "$home/projects"
+  printf '# Firstmate\n' > "$home/AGENTS.md"
+  printf '%s\n' "$id" > "$home/.fm-assistance-home"
+}
+
+run_assistance_trust() {  # <config> <home> <id> <workdir> [fm-home]
+  CLAUDE_CONFIG_DIR="$1" HOME="$1" FM_HOME="${5:-$2}" "${TRUST_BIN:-$TRUST}" --assistance-home "$2" "$3" "$4" 2>&1
+}
+
+# The assistance starts in a project directory instead of its home, so Claude
+# meets that directory's trust dialog first. It is registered, trust only, in
+# the same write as the home.
+test_assistance_workdir_is_trusted_with_its_home() {
+  local case_dir home workdir out store
+  case_dir="$TMP_ROOT/assist-workdir"
+  home="$case_dir/home"
+  workdir="$case_dir/project"
+  mkdir -p "$case_dir/claude-config" "$workdir"
+  seed_assistance_home "$home" dms
+  out=$(run_assistance_trust "$case_dir/claude-config" "$home" dms "$workdir")
+  expect_code 0 $? "an assistance home with a plain workdir must be trusted: $out"
+  store="$case_dir/claude-config/.claude.json"
+  assert_trusted "$store" "$home" "the assistance home was not trusted"
+  assert_trusted "$store" "$workdir" "the assistance workdir was not trusted"
+  assert_contains "$out" "trusted (workdir): $workdir" "registration did not report the workdir"
+  assert_trust_only_no_import_consent "$store" "$workdir" "the workdir entry gained import consent"
+  pass "fm-claude-trust.sh: an assistance workdir is trusted beside its home, trust only"
+}
+
+# Each refusal must leave the store exactly as it was, and each must be the
+# guard's own doing: the mutant copy with that guard removed accepts the path.
+test_assistance_workdir_refusals_and_mutants() {
+  local case_dir home out store mutant before name path reason
+  case_dir="$TMP_ROOT/assist-workdir-refuse"
+  home="$case_dir/home"
+  mkdir -p "$case_dir/claude-config" "$case_dir/project" "$case_dir/other-home/sub"
+  seed_assistance_home "$home" dms
+  seed_assistance_home "$case_dir/other-home" other
+  ln -s "$case_dir/project" "$case_dir/link"
+  store="$case_dir/claude-config/.claude.json"
+  printf '{"projects":{}}\n' > "$store"
+  before=$(cat "$store")
+  mutant="$case_dir/mutant/bin"
+  mkdir -p "$mutant"
+  cp "$ROOT"/bin/fm-claude-trust.sh "$ROOT"/bin/fm-assistance-guard-lib.sh "$mutant/"
+  for spec in \
+    "relative|project|workdir must be an absolute path" \
+    "missing|$case_dir/absent|not an accessible directory" \
+    "symlink|$case_dir/link|must not be a symlink" \
+    "inside-home|$home/projects|inside a firstmate home" \
+    "inside-assistance|$case_dir/other-home/sub|inside an assistance home" \
+    "filesystem-root|/|normalized path" \
+    "user-home|$case_dir/claude-config|Claude config directory"; do
+    name=${spec%%|*}
+    path=${spec#*|}
+    reason=${path#*|}
+    path=${path%%|*}
+    out=$(cd "$case_dir" && run_assistance_trust "$case_dir/claude-config" "$home" dms "$path")
+    expect_code 1 $? "workdir $name must be refused: $out"
+    assert_contains "$out" "$reason" "the $name refusal did not name its reason"
+    [ "$(cat "$store")" = "$before" ] || fail "the $name refusal changed the store"
+  done
+  # The shared guard decides, so removing its symlink line must let the trust
+  # script register the link: the refusal above is that line's doing.
+  sed -i.bak '/workdir must not be a symlink/d' "$mutant/fm-assistance-guard-lib.sh"
+  cmp -s "$ROOT/bin/fm-assistance-guard-lib.sh" "$mutant/fm-assistance-guard-lib.sh" && fail "mutation of the shared workdir guard did not apply"
+  out=$(cd "$case_dir" && TRUST_BIN="$mutant/fm-claude-trust.sh" run_assistance_trust "$case_dir/claude-config" "$home" dms "$case_dir/link")
+  expect_code 0 $? "the trust script without the symlink guard must register the link: $out"
+  pass "fm-claude-trust.sh: an unusable assistance workdir is refused and leaves the store untouched"
+}
+
+# The workdir argument belongs to assistance mode only.
+test_workdir_argument_is_assistance_only() {
+  local case_dir out
+  case_dir="$TMP_ROOT/assist-workdir-mode"
+  mkdir -p "$case_dir/claude-config" "$case_dir/project"
+  seed_secondmate_home "$case_dir/home" sm-n1 clone
+  out=$(CLAUDE_CONFIG_DIR="$case_dir/claude-config" HOME="$case_dir/claude-config" "$TRUST" --secondmate-home "$case_dir/home" sm-n1 "$case_dir/project" 2>&1)
+  expect_code 2 $? "a secondmate home must not take a workdir: $out"
+  pass "fm-claude-trust.sh: a workdir is accepted only in assistance mode"
+}
+
 test_fresh_worktree_is_trusted
 test_fresh_worktree_also_trusts_the_project_root_without_import_consent
 test_registration_carries_forward_existing_import_consent
@@ -844,3 +932,6 @@ test_secondmate_leased_worktree_home_is_trusted
 test_secondmate_home_trust_refuses_everything_unseeded
 test_worktree_mode_still_refuses_a_secondmate_home
 test_secondmate_spawn_fails_closed_when_home_trust_cannot_be_recorded
+test_assistance_workdir_is_trusted_with_its_home
+test_assistance_workdir_refusals_and_mutants
+test_workdir_argument_is_assistance_only
