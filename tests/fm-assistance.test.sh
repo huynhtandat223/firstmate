@@ -530,3 +530,24 @@ wait "$pid_a" "$pid_b"
 [ "$(wc -l < "$selfhome/state/rings" | tr -d ' ')" = 2 ] || fail 'the ring lock is not red when removed'
 rm -rf "$selfhome/state/assistance-rung" "$selfhome/state/rings" "$selfhome/state/fixture-slow"
 pass 'overlapping self-event calls for one record ring once, and the lock is red when removed'
+
+# The cwd is the workdir, so every command a notification names is an absolute
+# path into the assistance home.
+rm -rf "$selfhome/state/assistance-rung" "$selfhome/state/rings"
+rec=$(mkrecord good)
+self_event "$selflab" "$rec" >/dev/null
+grep -qF "propose concrete work through $selfhome/bin/fm-assistance.sh propose" "$selfhome/state/rings" || fail 'doorbell does not name the absolute propose command'
+grep -qF "then run $selfhome/bin/fm-assistance.sh acknowledge-source $rec." "$selfhome/state/rings" || fail 'doorbell does not name the absolute acknowledge command'
+printf '{"cadence_seconds":1}\n' > "$selfhome/data/assistance.json"
+printf 'cad\n' > "$selfhome/state/assistance-session"
+set +e
+printf '{"session_id":"cad"}\n' | FM_HOME="$selfhome" "$ROOT/bin/fm-assistance-hook.sh" cadence > "$TMP_ROOT/cad-hook.out" 2>&1
+rc=$?
+set -e
+[ "$rc" = 2 ] || fail "cadence hook did not request a turn: rc=$rc"
+grep -qF "$selfhome/bin/fm-wake-drain.sh" "$TMP_ROOT/cad-hook.out" || fail 'cadence message does not name the absolute wake-drain command'
+grep -qF "$selfhome/bin/fm-procevent.sh handled" "$TMP_ROOT/cad-hook.out" || fail 'cadence message does not name the absolute procevent command'
+FM_HOME="$selfhome" "$ROOT/bin/fm-procevent.sh" retire assistance-cadence >/dev/null 2>&1 || true
+cp "$TMP_ROOT/self-profile.json" "$selfhome/data/assistance.json"
+rm -rf "$selfhome/state/assistance-rung" "$selfhome/state/rings"
+pass 'doorbell and cadence messages name absolute commands in the assistance home'
