@@ -224,7 +224,7 @@ project="$TMP_ROOT/project-workdir"
 mkdir -p "$selflab/bin" "$selfparent"/{data,state,config/assistances} "$selfhome"/{data/pending-mentions,state,config} "$project"
 cp "$ROOT"/bin/*.sh "$selflab/bin/"
 # shellcheck disable=SC2016
-printf 'fm_meta_get() { grep "^$2=" "$1" | cut -d= -f2-; }\nfm_backend_agent_state() { if [ -f "$FM_HOME/state/fixture-dead" ]; then echo dead; else echo alive; fi; }\nfm_backend_composer_state() { if [ -f "$FM_HOME/state/fixture-pending" ]; then echo pending; else echo empty; fi; }\nfm_backend_of_meta() { echo fixture; }\nfm_backend_target_of_meta() { echo fixture; }\nfm_backend_send_text_submit() { printf "%%s\\n" "$3" >> "$FM_HOME/state/rings"; echo empty; }\n' > "$selflab/bin/fm-backend.sh"
+printf 'fm_meta_get() { grep "^$2=" "$1" | cut -d= -f2-; }\nfm_backend_agent_state() { if [ -f "$FM_HOME/state/fixture-dead" ]; then echo dead; else echo alive; fi; }\nfm_backend_composer_state() { if [ -f "$FM_HOME/state/fixture-pending" ]; then echo pending; else echo empty; fi; }\nfm_backend_of_meta() { echo fixture; }\nfm_backend_target_of_meta() { echo fixture; }\nfm_backend_send_text_submit() { [ ! -f "$FM_HOME/state/fixture-slow" ] || sleep 1; printf "%%s\\n" "$3" >> "$FM_HOME/state/rings"; cat "$FM_HOME/state/fixture-verdict" 2>/dev/null || echo empty; }\n' > "$selflab/bin/fm-backend.sh"
 printf 'self\n' > "$selfhome/.fm-assistance-home"
 printf 'schema=fm-secondmate-parent.v1\nroute=local\nparent_home=%s\n' "$selfparent" > "$selfhome/.fm-assistance-parent"
 printf 'fixture:pane\n' > "$selfhome/state/assistance-endpoint"
@@ -453,3 +453,25 @@ m=$(mutant s-assistance-only fm-spawn.sh '  [ "$ASSISTANCE" -eq 1 ] || {' '  tru
 out=$(FM_HOME="$selfparent" FM_SPAWN_NO_GUARD=1 "$m/bin/fm-spawn.sh" worker "$project" --workdir "$project" --mode direct-PR --yolo off 2>&1) || true
 [[ "$out" != *'applies only to --assistance'* ]] || fail 'assistance-only guard is not red when removed'
 pass 'fm-spawn refuses a bad or misplaced workdir and each spawn guard is red when removed'
+
+# A doorbell counts as delivered only on the exact verdict "empty"; any other
+# verdict leaves the record retryable (the composer-pending check holds the retry
+# until the typed text clears).
+rm -rf "$selfhome/state/assistance-rung" "$selfhome/state/rings"
+rec=$(mkrecord good)
+for verdict in pending unknown send-failed; do
+  printf '%s\n' "$verdict" > "$selfhome/state/fixture-verdict"
+  if out=$(self_event "$selflab" "$rec"); then fail "verdict $verdict was treated as delivered"; fi
+  [[ "$out" == *'not confirmed'* ]] || fail "verdict $verdict refusal lacked its reason: $out"
+  [ ! -e "$selfhome/state/assistance-rung/$rec" ] || fail "verdict $verdict wrote the ring marker"
+done
+rm "$selfhome/state/fixture-verdict"
+self_event "$selflab" "$rec" >/dev/null || fail 'a confirmed doorbell was refused after unconfirmed attempts'
+[ -f "$selfhome/state/assistance-rung/$rec" ] || fail 'a confirmed doorbell left no marker'
+m=$(mutant e-verdict fm-assistance.sh '[ "$verdict" = empty ] || die' '    :')
+rm -rf "$selfhome/state/assistance-rung"
+printf 'pending\n' > "$selfhome/state/fixture-verdict"
+self_event "$m" "$rec" >/dev/null || fail 'verdict mutant refused'
+[ -f "$selfhome/state/assistance-rung/$rec" ] || fail 'verdict guard is not red when removed'
+rm -rf "$selfhome/state/fixture-verdict" "$selfhome/state/assistance-rung" "$selfhome/state/rings"
+pass 'self-event writes its ring marker only on the exact empty verdict'
