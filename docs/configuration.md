@@ -345,7 +345,10 @@ Event-driven and self-delivery homes skip the cadence hook.
 An event-driven home receives untrusted source records through the assistance command's `source-event` path, which writes the parent home's steering inbox.
 Captain-word steering remains separate from source evidence; a source record grants no owner authority.
 
-This release supports Claude on Herdr and rejects other combinations because their self-rotation has not been proved.
+Assistance profiles support `claude`, `pi`, and `agy` on Herdr.
+Automatic context rotation is supported only on Claude; Pi's worker context measurement does not feed assistance rotation.
+For Pi and AGY, persist a handoff and rotate with stop followed by start.
+Installed AGY 1.3.5 did not execute project `.agents/hooks.json` SessionStart or PostInvocation handlers in two isolated probes, so automatic rotation is unsupported.
 Each home stores its profile in `data/assistance.json`, its role in `data/charter.md`, its identity in `.fm-assistance-home`, and its parent binding in `.fm-assistance-parent`.
 The parent binding uses the existing local secondmate-parent record format, under the assistance-specific filename.
 `config/assistance-enabled` records restart eligibility; session-start recovery starts only enabled dead or missing assistances and preserves ambiguous endpoints.
