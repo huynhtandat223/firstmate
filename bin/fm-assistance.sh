@@ -71,6 +71,9 @@ profile() {
     (.sources | type == "array" and all(.[]; (.source | type == "string" and length > 0) and (.recipe | type == "string" and length > 0))) and
     ((has("workdir") | not) or (.workdir | type == "string" and length > 0))
   ' "$PROFILE" >/dev/null || die 'invalid assistance profile; allowed harnesses: claude, pi, agy'
+  if jq -e '.harness != "claude" and (.trigger_mode // "cadence") == "cadence"' "$PROFILE" >/dev/null; then
+    die 'Pi and AGY assistances require trigger_mode event-driven or self; cadence is supported only on claude'
+  fi
   WORKDIR=
   if jq -e 'has("workdir")' "$PROFILE" >/dev/null; then
     WORKDIR=$(jq -r .workdir "$PROFILE")

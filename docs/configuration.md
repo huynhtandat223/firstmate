@@ -346,6 +346,7 @@ An event-driven home receives untrusted source records through the assistance co
 Captain-word steering remains separate from source evidence; a source record grants no owner authority.
 
 Assistance profiles support `claude`, `pi`, and `agy` on Herdr.
+Pi and AGY require `trigger_mode: "event-driven"` or `"self"`; cadence, including the default mode, is refused because only Claude arms the cadence hook.
 Automatic context rotation is supported only on Claude; Pi's worker context measurement does not feed assistance rotation.
 For Pi and AGY, persist a handoff and rotate with stop followed by start.
 Installed AGY 1.3.5 did not execute project `.agents/hooks.json` SessionStart or PostInvocation handlers in two isolated probes, so automatic rotation is unsupported.
