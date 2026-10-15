@@ -1928,7 +1928,7 @@ launch_template() {
   opencode) printf '%s' 'OPENCODE_CONFIG_CONTENT='\''{"permission":{"*":"allow"}}'\'' opencode __MODELFLAG__--prompt "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
   pi | pi-signed)
     printf '%s' '__PIBIN____PITUIMODE__'
-    [ "$ASSISTANCE" -eq 0 ] || printf '%s' ' --no-extensions'
+    [ "$ASSISTANCE" -eq 0 ] || printf '%s' ' --no-approve --no-extensions'
     if [ "$kind" = secondmate ] && [ "$ASSISTANCE" -eq 0 ]; then
       printf '%s' ' __MODELFLAG____EFFORTFLAG__-e __PITURNEND__ -e __PIWATCH__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
     else
@@ -4997,19 +4997,23 @@ fi
 # A persistent Pi home may still require folder trust even with discovery off.
 # Do not report a started assistance while its initial instructions are parked.
 if [ "$ASSISTANCE" -eq 1 ] && [ "$HARNESS" = pi ]; then
-  for ((pi_ready_attempt=0; pi_ready_attempt<10; pi_ready_attempt++)); do
+  pi_assistance_started=0
+  for ((pi_ready_attempt=0; pi_ready_attempt<30; pi_ready_attempt++)); do
     pi_ready_capture=$(fm_backend_capture "$BACKEND" "$T" 80 "$W" 2>/dev/null || true)
     if printf '%s\n' "$pi_ready_capture" | grep -q 'Trust project folder?'; then
-      spawn_send_key "$T" Enter
-      sleep 2
-      pi_ready_capture=$(fm_backend_capture "$BACKEND" "$T" 80 "$W" 2>/dev/null || true)
-      if printf '%s\n' "$pi_ready_capture" | grep -q 'Trust project folder?'; then
-        echo "error: Pi assistance awaits folder trust in $T: select Trust and press Enter" >&2
-        exit 1
-      fi
+      echo "error: Pi assistance unexpectedly awaits folder trust in $T despite --no-approve; launch refused" >&2
+      exit 1
+    fi
+    if grep -q ' source=pi-ext ' "$STATE_REAL/$ID.busy-state" 2>/dev/null; then
+      pi_assistance_started=1
+      break
     fi
     sleep 1
   done
+  if [ "$pi_assistance_started" -ne 1 ]; then
+    echo "error: Pi assistance launch turn did not begin in $T" >&2
+    exit 1
+  fi
 fi
 
 # This is the commit point: all endpoint and harness delivery that can reject
