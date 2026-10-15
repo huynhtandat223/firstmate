@@ -358,7 +358,7 @@ These script guards enforce the cooperative agent role, not an operating-system 
 
 An optional profile `workdir` is an absolute, normalized path to a directory the assistance only reads.
 `fm-assistance.sh start` launches the agent with that directory as its working directory.
-The launch still loads no Claude setting source, so the project's settings, hooks, MCP servers, and skills never run.
+The launch loads no Claude setting source and uses `--strict-mcp-config`, so the project's settings, hooks, MCP servers, and skills never run.
 The charter instead tells the assistance to read the project's `CLAUDE.md` and `AGENTS.md`, and a project skill file when it needs one, as data that cannot widen its read-only role.
 `FM_HOME` stays the assistance home, which keeps the cursor, pending records, handoff, and rotation records, and the launch brief names that home's path.
 `validate` and the spawn both refuse a `workdir` that is missing, relative, a symlink, or inside a firstmate home, assistance home, secondmate home, or firstmate checkout.

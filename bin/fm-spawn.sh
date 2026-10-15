@@ -1887,7 +1887,7 @@ launch_template() {
   # supervisor contract instead, so this task-worker statement does not apply.
   claude)
     if [ "$ASSISTANCE" -eq 1 ]; then
-      printf '%s' 'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude __CLAUDEPERMFLAG__ --setting-sources "" --settings __ASSISTANCESETTINGS__ --append-system-prompt '\''You are an assistance, not a firstmate or worker. Your assistance charter is the role contract. You observe read-only sources, speak to the human, and propose work. You never dispatch or steer agents. Stow and rotate your own session when the context hook requests it.'\'' '
+      printf '%s' 'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude __CLAUDEPERMFLAG__ --setting-sources "" --strict-mcp-config --settings __ASSISTANCESETTINGS__ --append-system-prompt '\''You are an assistance, not a firstmate or worker. Your assistance charter is the role contract. You observe read-only sources, speak to the human, and propose work. You never dispatch or steer agents. Stow and rotate your own session when the context hook requests it.'\'' '
     else
       printf '%s' 'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude __CLAUDEPERMFLAG__ --settings '\''{"feedbackDrafts":"off","attribution":{"commit":"","pr":"","sessionUrl":false}}'\'' '
     fi
