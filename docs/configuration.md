@@ -357,12 +357,11 @@ These script guards enforce the cooperative agent role, not an operating-system 
 ### Working directory and self-owned delivery
 
 An optional profile `workdir` is an absolute, normalized path to a directory the assistance only reads.
-`fm-assistance.sh start` launches the agent with that directory as its working directory and Claude's `project` setting source, so the harness loads that project's `CLAUDE.md` and skills.
-The project's non-command settings, such as permissions, apply too; a home-only launch loads no setting source.
+`fm-assistance.sh start` launches the agent with that directory as its working directory.
+The launch still loads no Claude setting source, so the project's settings, hooks, MCP servers, and skills never run.
+The charter instead tells the assistance to read the project's `CLAUDE.md` and `AGENTS.md`, and a project skill file when it needs one, as data that cannot widen its read-only role.
 `FM_HOME` stays the assistance home, which keeps the cursor, pending records, handoff, and rotation records, and the launch brief names that home's path.
 `validate` and the spawn both refuse a `workdir` that is missing, relative, a symlink, or inside a firstmate home, assistance home, secondmate home, or firstmate checkout.
-They also refuse a `workdir` whose `.claude/settings.json` or `.claude/settings.local.json` defines a key that runs a command (`hooks`, `statusLine`, `apiKeyHelper`, and the other keys listed in `bin/fm-assistance-guard-lib.sh`), and name the file and key, because the launch loads those settings.
-The check runs at validate and spawn time, so a settings edit made after launch is not caught until the next start.
 For Claude, the spawn also records workspace trust for the `workdir`, trust only, beside the home's own trust entry.
 Without a `workdir`, launch and brief are unchanged.
 The launch brief states that the working directory is read-only: no edits, commits, pushes, or state-changing project commands.

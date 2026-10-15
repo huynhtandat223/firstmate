@@ -9,9 +9,10 @@
 #   reads data/assistances.md and uses assistance hooks rather than supervision.
 #   --workdir (assistance only) starts the agent in that project directory instead
 #   of the home; FM_HOME stays the home. It is re-checked here by
-#   fm_assistance_workdir_error and trusted for Claude alongside the home, and
-#   Claude then loads the project setting source so that project's CLAUDE.md and
-#   skills apply (the home-only launch loads no setting source).
+#   fm_assistance_workdir_error and trusted for Claude alongside the home. The
+#   launch still loads no setting source, so the project's settings, hooks, MCP
+#   servers and skills never run; the charter has the agent read the project's
+#   CLAUDE.md and AGENTS.md itself, as data.
 #   --mode and --yolo are this task's delivery contract, REQUIRED for every ship
 #   spawn and refused on --scout and --secondmate spawns. Firstmate resolves both
 #   per task at intake (AGENTS.md section 7); data/projects.md holds the captain's
@@ -1886,7 +1887,7 @@ launch_template() {
   # supervisor contract instead, so this task-worker statement does not apply.
   claude)
     if [ "$ASSISTANCE" -eq 1 ]; then
-      printf '%s' 'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude __CLAUDEPERMFLAG__ --setting-sources __ASSISTANCESOURCES__ --settings __ASSISTANCESETTINGS__ --append-system-prompt '\''You are an assistance, not a firstmate or worker. Your assistance charter is the role contract. You observe read-only sources, speak to the human, and propose work. You never dispatch or steer agents. Stow and rotate your own session when the context hook requests it.'\'' '
+      printf '%s' 'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude __CLAUDEPERMFLAG__ --setting-sources "" --settings __ASSISTANCESETTINGS__ --append-system-prompt '\''You are an assistance, not a firstmate or worker. Your assistance charter is the role contract. You observe read-only sources, speak to the human, and propose work. You never dispatch or steer agents. Stow and rotate your own session when the context hook requests it.'\'' '
     else
       printf '%s' 'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude __CLAUDEPERMFLAG__ --settings '\''{"feedbackDrafts":"off","attribution":{"commit":"","pr":"","sessionUrl":false}}'\'' '
     fi
@@ -4726,11 +4727,6 @@ if [ "$KIND" = secondmate ]; then
     printf '%s\n' "$T" > "$PROJ_ABS/state/assistance-endpoint"
     FM_HOME="$PROJ_ABS" "$SCRIPT_DIR/fm-assistance-hook.sh" settings > "$PROJ_ABS/state/assistance-settings.json"
     LAUNCH=${LAUNCH//__ASSISTANCESETTINGS__/$(shell_quote "$PROJ_ABS/state/assistance-settings.json")}
-    # An empty setting-sources list also stops Claude from loading CLAUDE.md, so a
-    # workdir launch reads the project source to load that project's own context.
-    assistance_sources='""'
-    [ -z "$WORKDIR_ARG" ] || assistance_sources=project
-    LAUNCH=${LAUNCH//__ASSISTANCESOURCES__/$assistance_sources}
   fi
   # Keep this in step with fm_supervision_model (bin/fm-wake-lib.sh): Claude's
   # Stop auto-arm and Cursor's stop-hook park both run the watcher only BETWEEN

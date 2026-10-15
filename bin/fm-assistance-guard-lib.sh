@@ -26,19 +26,14 @@ fm_assistance_require_ordinary_target() {
   fi
 }
 
-# Claude settings keys that run a command or load executable code, from the
-# vendor's settings reference (code.claude.com/docs/en/settings-reference).
-FM_ASSISTANCE_COMMAND_KEYS='["hooks","statusLine","subagentStatusLine","apiKeyHelper","awsAuthRefresh","awsCredentialExport","gcpAuthRefresh","otelHeadersHelper","fileSuggestion","enabledPlugins","extraKnownMarketplaces","enableAllProjectMcpServers","enabledMcpjsonServers"]'
-
 # Prints the first reason a profile `workdir` is unusable and returns 1, or
 # prints nothing and returns 0. fm-assistance.sh validates with it and
 # fm-spawn.sh and fm-claude-trust.sh re-check with it before using the path.
 # The workdir is a project the assistance only reads, so it must be a real
-# directory outside every firstmate home, and its project Claude settings may
-# not define a key that runs a command, because the launch loads them. Each refusal is its own single-line
+# directory outside every firstmate home. Each refusal is its own single-line
 # guard so a test can remove exactly one and see it go red.
 fm_assistance_workdir_error() {  # <path>
-  local path=${1:-} real dir home guard_root file key
+  local path=${1:-} real dir home guard_root
   case "$path" in
     /*) ;;
     *) echo 'workdir must be an absolute path'; return 1 ;;
@@ -63,10 +58,5 @@ fm_assistance_workdir_error() {  # <path>
     [ ! -e "$dir/.fm-secondmate-home" ] || { echo 'workdir must not be inside a secondmate home'; return 1; }
     { [ ! -f "$dir/AGENTS.md" ] || [ ! -f "$dir/bin/fm-spawn.sh" ]; } || { echo 'workdir must not be inside a firstmate checkout'; return 1; }
     dir=${dir%/*}
-  done
-  for file in settings.json settings.local.json; do
-    [ -e "$real/.claude/$file" ] || continue
-    key=$(jq -r --argjson keys "$FM_ASSISTANCE_COMMAND_KEYS" 'if type == "object" then . as $s | [$keys[] | select($s[.] != null and $s[.] != {} and $s[.] != [] and $s[.] != "" and $s[.] != false)] | first // "" else error("not an object") end' "$real/.claude/$file" 2>/dev/null) || { echo "workdir's .claude/$file cannot be read as a JSON object, so it cannot be shown free of command-running keys"; return 1; }
-    [ -z "$key" ] || { echo "workdir's .claude/$file defines command-running key '$key'"; return 1; }
   done
 }
