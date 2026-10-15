@@ -475,3 +475,35 @@ self_event "$m" "$rec" >/dev/null || fail 'verdict mutant refused'
 [ -f "$selfhome/state/assistance-rung/$rec" ] || fail 'verdict guard is not red when removed'
 rm -rf "$selfhome/state/fixture-verdict" "$selfhome/state/assistance-rung" "$selfhome/state/rings"
 pass 'self-event writes its ring marker only on the exact empty verdict'
+
+# The workdir launch loads Claude's project setting source, so a workdir whose
+# project settings define a command-running key would run that command inside
+# the read-only role. validate and the spawn both refuse it through the shared
+# guard and name the file and key.
+settings_workdir() {  # <name> <settings-file> <json> -> echoes the workdir
+  local dir="$TMP_ROOT/wd-$1"
+  mkdir -p "$dir/.claude"
+  printf '%s\n' "$3" > "$dir/.claude/$2"
+  printf '%s\n' "$dir"
+}
+for key in hooks statusLine subagentStatusLine apiKeyHelper awsAuthRefresh awsCredentialExport gcpAuthRefresh otelHeadersHelper fileSuggestion enabledPlugins extraKnownMarketplaces enableAllProjectMcpServers enabledMcpjsonServers; do
+  case "$key" in
+    hooks | enabledPlugins | extraKnownMarketplaces) value='{"x":["y"]}' ;;
+    enabledMcpjsonServers) value='["srv"]' ;;
+    enableAllProjectMcpServers) value='true' ;;
+    *) value='{"type":"command","command":"true"}' ;;
+  esac
+  dir=$(settings_workdir "key-$key" settings.json "$(jq -n --arg k "$key" --argjson v "$value" '{($k): $v}')")
+  must_refuse_workdir "$selflab" "$dir" "defines command-running key '$key'"
+done
+dir=$(settings_workdir local settings.local.json '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"true"}]}]}}')
+must_refuse_workdir "$selflab" "$dir" ".claude/settings.local.json defines command-running key 'hooks'"
+dir=$(settings_workdir invalid settings.json '{not json')
+must_refuse_workdir "$selflab" "$dir" 'cannot be read as a JSON object'
+dir=$(settings_workdir quiet settings.json '{"permissions":{"allow":["Read"]},"env":{"A":"b"},"hooks":{},"statusLine":null}')
+must_accept_workdir "$selflab" "$dir"
+out=$(spawn_workdir "$selflab" --workdir "$TMP_ROOT/wd-key-hooks") && fail 'spawn accepted a workdir with project hooks'
+[[ "$out" == *"defines command-running key 'hooks'"* ]] || fail "spawn hooks refusal lacked its reason: $out"
+m=$(mutant settings fm-assistance-guard-lib.sh 'defines command-running key' ':')
+must_accept_workdir "$m" "$TMP_ROOT/wd-key-hooks"
+pass 'a workdir whose project settings run a command is refused by validate and spawn, naming file and key'
