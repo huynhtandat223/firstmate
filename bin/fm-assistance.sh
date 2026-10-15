@@ -364,7 +364,11 @@ case "${1:-}" in
     esac
     # Disable recovery before ending this exact process; preserve all home data.
     rm -f "$home/config/assistance-enabled"
-    fm_backend_send_text_submit herdr "$target" /exit 3 0.2 1.2 >/dev/null || true
+    # Reuse the verified harness exit vocabulary rather than Claude's command.
+    # shellcheck source=bin/fm-control-lib.sh
+    . "$SCRIPT_DIR/fm-control-lib.sh"
+    exit_command=$(fm_control_exit_command "$(fm_meta_get "$meta" harness)")
+    fm_backend_send_text_submit herdr "$target" "$exit_command" 3 0.2 1.2 >/dev/null || true
     for ((attempt=0; attempt<30; attempt++)); do
       case "$(fm_backend_agent_state herdr "$target")" in
         dead|missing) printf 'stopped: %s (home retained)\n' "$2"; exit 0 ;;
