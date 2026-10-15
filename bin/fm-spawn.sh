@@ -1928,6 +1928,7 @@ launch_template() {
   opencode) printf '%s' 'OPENCODE_CONFIG_CONTENT='\''{"permission":{"*":"allow"}}'\'' opencode __MODELFLAG__--prompt "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
   pi | pi-signed)
     printf '%s' '__PIBIN____PITUIMODE__'
+    [ "$ASSISTANCE" -eq 0 ] || printf '%s' ' --no-extensions'
     if [ "$kind" = secondmate ] && [ "$ASSISTANCE" -eq 0 ]; then
       printf '%s' ' __MODELFLAG____EFFORTFLAG__-e __PITURNEND__ -e __PIWATCH__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
     else
