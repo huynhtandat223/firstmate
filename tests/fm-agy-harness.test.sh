@@ -75,6 +75,37 @@ assert_agy_not_trusted() {  # <store> <path> <msg>
   return 0
 }
 
+test_agy_assistance_trust_scope() {
+  local base home store out workdir
+  base="$TMP_ROOT/assistance-trust"
+  home="$base/coach"
+  workdir="$base/observed"
+  mkdir -p "$base/user" "$home/bin" "$home/data" "$home/state" "$home/config" "$workdir"
+  printf 'coach\n' > "$home/.fm-assistance-home"
+  touch "$home/AGENTS.md"
+  store="$base/user/.gemini/antigravity-cli/settings.json"
+  HOME="$base/user" "$TRUST" --assistance-home "$home" coach >/dev/null || fail 'seeded assistance trust failed'
+  assert_agy_trusted "$store" "$home" 'assistance home was not trusted'
+  HOME="$base/user" "$TRUST" --assistance-home "$home" coach "$workdir" >/dev/null || fail 'assistance workdir trust failed'
+  assert_agy_trusted "$store" "$workdir" 'workdir was not trusted'
+  HOME="$base/user" "$TRUST" --assistance-home "$home" coach "$workdir" >/dev/null || fail 'repeat assistance trust failed'
+  if out=$(HOME="$base/user" "$TRUST" --assistance-home "$home" wrong 2>&1); then
+    fail "wrong assistance identity accepted: $out"
+  fi
+  rm "$home/.fm-assistance-home"
+  ln -s "$home/AGENTS.md" "$home/.fm-assistance-home"
+  if HOME="$base/user" "$TRUST" --assistance-home "$home" coach >/dev/null 2>&1; then
+    fail 'symlink assistance marker accepted'
+  fi
+  rm "$home/.fm-assistance-home"
+  printf 'coach\n' > "$home/.fm-assistance-home"
+  ln -s "$workdir" "$home/projects"
+  if HOME="$base/user" "$TRUST" --assistance-home "$home" coach >/dev/null 2>&1; then
+    fail 'operational directory escaping assistance home accepted'
+  fi
+  pass 'agy assistance trust validates identity, containment, workdir and repeat registration'
+}
+
 test_agy_ancestry_detects_the_native_command_name() {
   local fakebin out
   fakebin=$(fm_fakebin "$TMP_ROOT/anc-native")
@@ -908,6 +939,7 @@ test_agy_hung_listing_is_cut_off_and_launches
 test_agy_zero_model_timeout_is_clamped_to_the_default_bound
 test_agy_trust_registers_the_logical_and_resolved_worktree_paths
 test_agy_trust_creates_a_missing_store
+test_agy_assistance_trust_scope
 test_agy_trust_refuses_out_of_scope_paths
 test_agy_fresh_worktree_is_pre_trusted_and_launches_without_a_dialog
 test_agy_dialog_despite_registration_is_answered_once

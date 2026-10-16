@@ -3990,8 +3990,8 @@ fi
 # preselects the safe answer, so a failed registration is not fatal here: the
 # post-launch gate (agy_wait_for_working) answers the dialog itself and, on a
 # path that was not pre-registered, refuses to count a busy turn as ready until
-# it has done so. agy is crewmate/scout only (refused above for secondmate), so
-# only the worktree shape applies.
+# it has done so. Assistances use their seeded home identity and optional
+# validated workdir; ordinary secondmates remain refused above.
 AGY_TRUST_PREREGISTERED=0
 case "$HARNESS" in
 claude*)
@@ -4007,8 +4007,14 @@ claude*)
   fi
   ;;
 agy)
-  if [ "$KIND" != secondmate ]; then
-    if "$FM_ROOT/bin/fm-agy-trust.sh" "$WT" "$PROJ_ABS" >/dev/null; then
+  if [ "$ASSISTANCE" -eq 1 ] || [ "$KIND" != secondmate ]; then
+    if [ "$ASSISTANCE" -eq 1 ]; then
+      spawn_trust_args=(--assistance-home "$PROJ_ABS" "$ID")
+      [ -z "$WORKDIR_ARG" ] || spawn_trust_args+=("$WORKDIR_ARG")
+    else
+      spawn_trust_args=("$WT" "$PROJ_ABS")
+    fi
+    if "$FM_ROOT/bin/fm-agy-trust.sh" "${spawn_trust_args[@]}" >/dev/null; then
       AGY_TRUST_PREREGISTERED=1
     else
       echo "warning: could not pre-register agy workspace trust for $WT; the launch will answer the folder-trust dialog in window $T instead" >&2
