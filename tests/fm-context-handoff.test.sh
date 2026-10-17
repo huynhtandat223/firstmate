@@ -87,6 +87,12 @@ fs.readSync = function(...args) {
   if (bytes > 131072) throw Error('transcript read exceeded bounded tail budget');
   return result;
 };
+const readFile = fs.readFileSync;
+fs.readFileSync = function(path, ...args) {
+  if (String(path).endsWith('/large-transcript')) throw Error('unbounded transcript read');
+  return readFile.call(this, path, ...args);
+};
+require('node:module').syncBuiltinESMExports();
 JS
 python3 - "$tmp/large-transcript" <<'PYTHON'
 import sys
