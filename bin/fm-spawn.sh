@@ -4144,11 +4144,16 @@ if [ "$KIND" != secondmate ] || { [ "$ASSISTANCE" -eq 1 ] && [ "$HARNESS" = pi ]
     if [ "$KIND" != secondmate ] && [ "$HANDOFF_PCT" != off ]; then
       context_cmd="$(shell_quote "$(command -v node)") $(shell_quote "$FM_ROOT/bin/fm-context-handoff.mjs") $(shell_quote "$STATE_REAL/$ID.status") $(shell_quote "$BUSY_GEN") $(shell_quote "$HANDOFF_PCT") claude $(shell_quote "${MODEL:-default}"); "
     fi
+    j_posttool=''
+    if [ -n "$context_cmd" ]; then
+      j_context=$(json_escape "${context_cmd%; } || true")
+      j_posttool="\"PostToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"$j_context\"}]}],"
+    fi
     j_stop=$(json_escape "${context_cmd}touch $(shell_quote "$TURNEND"); $busy_cmd_prefix idle $busy_suffix --event stop 2>/dev/null || true")
     j_stopfail=$(json_escape "$busy_cmd_prefix idle $busy_suffix --event stop-failure 2>/dev/null || true")
     j_sessionend=$(json_escape "$busy_cmd_prefix idle $busy_suffix --event session-end 2>/dev/null || true")
     cat >"$WT/.claude/settings.local.json" <<EOF
-{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"$j_submit"}]}],"Stop":[{"hooks":[{"type":"command","command":"$j_stop"}]}],"StopFailure":[{"hooks":[{"type":"command","command":"$j_stopfail"}]}],"SessionEnd":[{"hooks":[{"type":"command","command":"$j_sessionend"}]}]}}
+{"hooks":{${j_posttool}"UserPromptSubmit":[{"hooks":[{"type":"command","command":"$j_submit"}]}],"Stop":[{"hooks":[{"type":"command","command":"$j_stop"}]}],"StopFailure":[{"hooks":[{"type":"command","command":"$j_stopfail"}]}],"SessionEnd":[{"hooks":[{"type":"command","command":"$j_sessionend"}]}]}}
 EOF
     exclude_path '.claude/settings.local.json'
     ;;

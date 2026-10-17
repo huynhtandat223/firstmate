@@ -36,6 +36,12 @@ done
 [ "$(grep -c '^handoff-needed ' "$status")" = 3 ] || fail 'handoff count'
 [ "$(grep -c '^blocked .*handoff-limit' "$status")" = 1 ] || fail 'fourth trigger'
 [ "$(wc -l < "$status" | tr -d ' ')" = 4 ] || fail 'per-session duplicate'
+printf old > "$tmp/concurrent.status.handoff-session"
+for run in 1 2 3 4 5 6 7 8; do
+  node "$ROOT/bin/fm-context-handoff.mjs" "$tmp/concurrent.status" new 40 50000 100000 &
+done
+wait
+[ "$(grep -c '^handoff-needed ' "$tmp/concurrent.status")" = 1 ] || fail 'concurrent generation claim duplicated'
 status_is_captain_relevant "$(head -1 "$status")" || fail 'handoff notification not actionable'
 status_is_captain_relevant "$(tail -1 "$status")" || fail 'limit not actionable'
 printf '%s\n' '{"message":{"model":"claude-haiku-4-5","usage":{"input_tokens":10000,"cache_read_input_tokens":60000,"cache_creation_input_tokens":10000}}}' > "$tmp/transcript"
@@ -44,10 +50,23 @@ grep -q 'context 40% (80000/200000)' "$tmp/claude.status" || fail 'Claude cache 
 printf '%s\n' '{"message":{"model":"claude-haiku-4-5","content":[{"type":"tool_use","id":"toolu_test","name":"Read","input":{}}],"usage":{"input_tokens":10000,"cache_read_input_tokens":60000,"cache_creation_input_tokens":10000}}}' > "$tmp/transcript"
 printf '{"transcript_path":"%s","last_assistant_message":"not flushed yet"}' "$tmp/transcript" | node "$ROOT/bin/fm-context-handoff.mjs" "$tmp/tool-use.status" g 40 claude default
 grep -q 'handoff-needed .*context 40% (80000/200000)' "$tmp/tool-use.status" || fail 'Claude newest tool-use usage fallback'
+for invocation in 1 2; do
+  printf '{"hook_event_name":"PostToolUse","tool_name":"Read","tool_input":{},"tool_response":"ok","transcript_path":"%s"}' "$tmp/transcript" | node "$ROOT/bin/fm-context-handoff.mjs" "$tmp/post-tool.status" post-tool 40 claude default
+done
+[ "$(grep -c '^handoff-needed ' "$tmp/post-tool.status")" = 1 ] || fail 'Claude PostToolUse repeated in same generation'
+[ "$(wc -l < "$tmp/post-tool.status" | tr -d ' ')" = 1 ] || fail 'Claude PostToolUse duplicate output'
+printf '{"hook_event_name":"PostToolUse","transcript_path":"%s"}' "$tmp/missing-transcript" | node "$ROOT/bin/fm-context-handoff.mjs" "$tmp/post-tool.status" post-tool 40 claude default
+[ "$(wc -l < "$tmp/post-tool.status" | tr -d ' ')" = 1 ] || fail 'marked generation read transcript or emitted output'
 printf '%s\n' '{"message":{"model":"claude-haiku-4-5","usage":{"input_tokens":10000}}}' > "$tmp/transcript"
 (sleep 0.5; printf '%s\n' '{"message":{"model":"claude-haiku-4-5","content":[{"type":"tool_use","id":"toolu_late","name":"Read","input":{}}],"usage":{"input_tokens":80000}}}' >> "$tmp/transcript") &
 printf '{"transcript_path":"%s","last_assistant_message":"not flushed yet"}' "$tmp/transcript" | node "$ROOT/bin/fm-context-handoff.mjs" "$tmp/late-tool-use.status" h 40 claude default
 wait
+printf '%s\n' '{"message":{"model":"claude-haiku-4-5","usage":{"input_tokens":10000}}}' > "$tmp/partial-transcript"
+printf '%s' '{"message":{"model":"claude-haiku-4-5","usage":' >> "$tmp/partial-transcript"
+(sleep 0.5; printf '%s\n' '{"input_tokens":80000}}}' >> "$tmp/partial-transcript") &
+printf '{"hook_event_name":"PostToolUse","transcript_path":"%s"}' "$tmp/partial-transcript" | node "$ROOT/bin/fm-context-handoff.mjs" "$tmp/partial.status" partial 40 claude default
+wait
+grep -q 'context 40% (80000/200000)' "$tmp/partial.status" || fail 'partial PostToolUse transcript did not retry'
 grep -q 'handoff-needed .*context 40% (80000/200000)' "$tmp/late-tool-use.status" || fail 'Claude retries use newly flushed usage entry'
 printf '%s\n' '{"message":{"model":"claude-haiku-4-5","usage":{"input_tokens":10000,"cache_read_input_tokens":60000,"cache_creation_input_tokens":10000}}}' > "$tmp/transcript"
 printf '{"transcript_path":"%s"}' "$tmp/transcript" | node "$ROOT/bin/fm-context-handoff.mjs" "$tmp/one-million.status" f 8 claude 'haiku[1m]'
@@ -57,6 +76,33 @@ for model in claude-opus-5-5-200k claude-sonnet-5-5-200k; do
   printf '{"transcript_path":"%s"}' "$tmp/transcript" | node "$ROOT/bin/fm-context-handoff.mjs" "$tmp/$model.status" "$model" 40 claude default
   grep -q 'context 40% (80000/200000)' "$tmp/$model.status" || fail 'explicit 200k window'
 done
+# The preload counts actual transcript read bytes, not implementation source.
+cat > "$tmp/read-budget.cjs" <<'JS'
+const fs = require('node:fs');
+const original = fs.readSync;
+let bytes = 0;
+fs.readSync = function(...args) {
+  const result = original.apply(this, args);
+  bytes += result;
+  if (bytes > 131072) throw Error('transcript read exceeded bounded tail budget');
+  return result;
+};
+const readFile = fs.readFileSync;
+fs.readFileSync = function(path, ...args) {
+  if (String(path).endsWith('/large-transcript')) throw Error('unbounded transcript read');
+  return readFile.call(this, path, ...args);
+};
+require('node:module').syncBuiltinESMExports();
+JS
+python3 - "$tmp/large-transcript" <<'PYTHON'
+import sys
+with open(sys.argv[1], 'w') as f:
+    for _ in range(100000):
+        f.write('{"padding":"' + 'x' * 200 + '"}\n')
+    f.write('{"message":{"model":"claude-haiku-4-5","usage":{"input_tokens":80000}}}\n')
+PYTHON
+printf '{"transcript_path":"%s"}' "$tmp/large-transcript" | node --require "$tmp/read-budget.cjs" "$ROOT/bin/fm-context-handoff.mjs" "$tmp/large.status" large 40 claude default
+grep -q '^handoff-needed ' "$tmp/large.status" || fail 'large transcript tail measurement'
 node --input-type=module - "$ROOT" "$tmp" <<'JS'
 import { pathToFileURL } from 'node:url';
 import fs from 'node:fs';

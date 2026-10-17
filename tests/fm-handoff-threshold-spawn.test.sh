@@ -34,9 +34,15 @@ for pair in 'claude-off openai-codex/gpt-6-astra' 'claude-number cx/gpt-6-astra'
   out=$(fm_test_run_spawn "$home" "$tmp/wt" "$fakebin" "$id" "$tmp/project" --harness claude --model "$model" --mode direct-PR --yolo off) || fail "$out"
   python3 - "$tmp/wt/.claude/settings.local.json" "$id" <<'PY'
 import json,sys
-command=json.load(open(sys.argv[1]))['hooks']['Stop'][0]['hooks'][0]['command']
+hooks=json.load(open(sys.argv[1]))['hooks']
+command=hooks['Stop'][0]['hooks'][0]['command']
 assert 'touch ' in command
 assert ('fm-context-handoff.mjs' in command) == (sys.argv[2] == 'claude-number')
+assert ('PostToolUse' in hooks) == (sys.argv[2] == 'claude-number')
+if 'PostToolUse' in hooks:
+    post=hooks['PostToolUse'][0]['hooks'][0]['command']
+    assert post.endswith(' || true')
+    assert post.removesuffix(' || true') == command.split('; touch ')[0]
 PY
 done
 echo 'PASS: model resolution and off/numbered Claude and Pi wiring'

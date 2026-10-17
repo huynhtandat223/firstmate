@@ -8,15 +8,34 @@
 // older models and Haiku 4.5 have 200K. Unknown models refuse measurement.
 import fs from 'node:fs';
 const [status, generation, thresholdText, mode, windowOrModel] = process.argv.slice(2);
+const marker = `${status}.handoff-session`;
+if (fs.existsSync(marker) && fs.readFileSync(marker, 'utf8') === generation) process.exit(0);
 const threshold = Number(thresholdText || 40);
 let used = Number(mode), window = Number(windowOrModel);
+function transcriptTail(path) {
+  const fd = fs.openSync(path, 'r');
+  try {
+    const size = fs.fstatSync(fd).size;
+    for (let length = Math.min(size, 65536); ; length = Math.min(size, length * 2)) {
+      const buffer = Buffer.alloc(length);
+      fs.readSync(fd, buffer, 0, length, size - length);
+      const text = buffer.toString('utf8');
+      const lines = (length < size ? text.slice(text.indexOf('\n') + 1) : text).trim().split('\n');
+      if (length === size || lines.some(line => {
+        try { return Boolean(JSON.parse(line).message?.usage); } catch { return false; }
+      })) return lines;
+    }
+  } finally { fs.closeSync(fd); }
+}
 if (mode === 'claude') {
   const hook = JSON.parse(fs.readFileSync(0, 'utf8'));
   let message, newestUsage;
   // Claude's Stop event can precede its asynchronous transcript flush.
   for (let attempt = 0; attempt < 20; attempt++) {
-    const entries = fs.readFileSync(hook.transcript_path, 'utf8').trim().split('\n');
+    const entries = transcriptTail(hook.transcript_path);
     let attemptNewestUsage;
+    let partialTail = false;
+    try { JSON.parse(entries.at(-1)); } catch { partialTail = true; }
     for (const line of entries.reverse()) {
       try {
         const entry = JSON.parse(line);
@@ -29,7 +48,8 @@ if (mode === 'claude') {
       } catch { /* A partial transcript line is not a measurement. */ }
     }
     newestUsage = attemptNewestUsage || newestUsage;
-    if (message) break;
+    if (message && !partialTail) break;
+    message = undefined;
     await new Promise(resolve => setTimeout(resolve, 100));
   }
   message ??= newestUsage;
@@ -47,13 +67,10 @@ if (!Number.isFinite(threshold) || threshold < 0 || threshold > 100 || !Number.i
 const percent = used * 100 / window;
 if (percent < threshold) process.exit(0);
 // The spawn busy generation survives extension reloads but changes on relaunch.
-const marker = `${status}.handoff-session`;
-if (fs.existsSync(marker)) {
-  if (fs.readFileSync(marker, 'utf8') === generation) process.exit(0);
-  fs.unlinkSync(marker);
-}
-try { fs.writeFileSync(marker, generation, {flag: 'wx', mode: 0o600}); }
+const claim = `${marker}.${Buffer.from(generation).toString('hex')}`;
+try { fs.writeFileSync(claim, generation, {flag: 'wx', mode: 0o600}); }
 catch (error) { if (error.code === 'EEXIST') process.exit(0); throw error; }
+fs.writeFileSync(marker, generation, {mode: 0o600});
 const history = fs.existsSync(status) ? fs.readFileSync(status, 'utf8') : '';
 const count = history.split('\n').filter(line => /^handoff-needed(?:\s|:)/.test(line)).length;
 const pct = Math.floor(percent);
@@ -62,4 +79,4 @@ const line = count >= 3
   ? `blocked [key=handoff-limit] [at=${at}]: 3 handoffs done; context ${pct}%; firstmate to judge quality`
   : `handoff-needed [at=${at}]: context ${pct}% (${used}/${window})`;
 try { fs.appendFileSync(status, `${line}\n`); process.stdout.write(`${line}\n`); }
-catch (error) { fs.unlinkSync(marker); throw error; }
+catch (error) { fs.unlinkSync(claim); fs.unlinkSync(marker); throw error; }
