@@ -34,6 +34,8 @@ if (mode === 'claude') {
   for (let attempt = 0; attempt < 20; attempt++) {
     const entries = transcriptTail(hook.transcript_path);
     let attemptNewestUsage;
+    let partialTail = false;
+    try { JSON.parse(entries.at(-1)); } catch { partialTail = true; }
     for (const line of entries.reverse()) {
       try {
         const entry = JSON.parse(line);
@@ -46,7 +48,8 @@ if (mode === 'claude') {
       } catch { /* A partial transcript line is not a measurement. */ }
     }
     newestUsage = attemptNewestUsage || newestUsage;
-    if (message) break;
+    if (message && !partialTail) break;
+    message = undefined;
     await new Promise(resolve => setTimeout(resolve, 100));
   }
   message ??= newestUsage;

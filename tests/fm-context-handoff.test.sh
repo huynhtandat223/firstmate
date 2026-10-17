@@ -61,6 +61,12 @@ printf '%s\n' '{"message":{"model":"claude-haiku-4-5","usage":{"input_tokens":10
 (sleep 0.5; printf '%s\n' '{"message":{"model":"claude-haiku-4-5","content":[{"type":"tool_use","id":"toolu_late","name":"Read","input":{}}],"usage":{"input_tokens":80000}}}' >> "$tmp/transcript") &
 printf '{"transcript_path":"%s","last_assistant_message":"not flushed yet"}' "$tmp/transcript" | node "$ROOT/bin/fm-context-handoff.mjs" "$tmp/late-tool-use.status" h 40 claude default
 wait
+printf '%s\n' '{"message":{"model":"claude-haiku-4-5","usage":{"input_tokens":10000}}}' > "$tmp/partial-transcript"
+printf '%s' '{"message":{"model":"claude-haiku-4-5","usage":' >> "$tmp/partial-transcript"
+(sleep 0.5; printf '%s\n' '{"input_tokens":80000}}}' >> "$tmp/partial-transcript") &
+printf '{"hook_event_name":"PostToolUse","transcript_path":"%s"}' "$tmp/partial-transcript" | node "$ROOT/bin/fm-context-handoff.mjs" "$tmp/partial.status" partial 40 claude default
+wait
+grep -q 'context 40% (80000/200000)' "$tmp/partial.status" || fail 'partial PostToolUse transcript did not retry'
 grep -q 'handoff-needed .*context 40% (80000/200000)' "$tmp/late-tool-use.status" || fail 'Claude retries use newly flushed usage entry'
 printf '%s\n' '{"message":{"model":"claude-haiku-4-5","usage":{"input_tokens":10000,"cache_read_input_tokens":60000,"cache_creation_input_tokens":10000}}}' > "$tmp/transcript"
 printf '{"transcript_path":"%s"}' "$tmp/transcript" | node "$ROOT/bin/fm-context-handoff.mjs" "$tmp/one-million.status" f 8 claude 'haiku[1m]'
