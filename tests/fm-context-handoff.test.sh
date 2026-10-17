@@ -36,6 +36,12 @@ done
 [ "$(grep -c '^handoff-needed ' "$status")" = 3 ] || fail 'handoff count'
 [ "$(grep -c '^blocked .*handoff-limit' "$status")" = 1 ] || fail 'fourth trigger'
 [ "$(wc -l < "$status" | tr -d ' ')" = 4 ] || fail 'per-session duplicate'
+printf old > "$tmp/concurrent.status.handoff-session"
+for run in 1 2 3 4 5 6 7 8; do
+  node "$ROOT/bin/fm-context-handoff.mjs" "$tmp/concurrent.status" new 40 50000 100000 &
+done
+wait
+[ "$(grep -c '^handoff-needed ' "$tmp/concurrent.status")" = 1 ] || fail 'concurrent generation claim duplicated'
 status_is_captain_relevant "$(head -1 "$status")" || fail 'handoff notification not actionable'
 status_is_captain_relevant "$(tail -1 "$status")" || fail 'limit not actionable'
 printf '%s\n' '{"message":{"model":"claude-haiku-4-5","usage":{"input_tokens":10000,"cache_read_input_tokens":60000,"cache_creation_input_tokens":10000}}}' > "$tmp/transcript"
