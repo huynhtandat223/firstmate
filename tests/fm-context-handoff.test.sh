@@ -70,6 +70,27 @@ for model in claude-opus-5-5-200k claude-sonnet-5-5-200k; do
   printf '{"transcript_path":"%s"}' "$tmp/transcript" | node "$ROOT/bin/fm-context-handoff.mjs" "$tmp/$model.status" "$model" 40 claude default
   grep -q 'context 40% (80000/200000)' "$tmp/$model.status" || fail 'explicit 200k window'
 done
+# The preload counts actual transcript read bytes, not implementation source.
+cat > "$tmp/read-budget.cjs" <<'JS'
+const fs = require('node:fs');
+const original = fs.readSync;
+let bytes = 0;
+fs.readSync = function(...args) {
+  const result = original.apply(this, args);
+  bytes += result;
+  if (bytes > 131072) throw Error('transcript read exceeded bounded tail budget');
+  return result;
+};
+JS
+python3 - "$tmp/large-transcript" <<'PYTHON'
+import sys
+with open(sys.argv[1], 'w') as f:
+    for _ in range(100000):
+        f.write('{"padding":"' + 'x' * 200 + '"}\n')
+    f.write('{"message":{"model":"claude-haiku-4-5","usage":{"input_tokens":80000}}}\n')
+PYTHON
+printf '{"transcript_path":"%s"}' "$tmp/large-transcript" | node --require "$tmp/read-budget.cjs" "$ROOT/bin/fm-context-handoff.mjs" "$tmp/large.status" large 40 claude default
+grep -q '^handoff-needed ' "$tmp/large.status" || fail 'large transcript tail measurement'
 node --input-type=module - "$ROOT" "$tmp" <<'JS'
 import { pathToFileURL } from 'node:url';
 import fs from 'node:fs';

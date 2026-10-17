@@ -12,12 +12,27 @@ const marker = `${status}.handoff-session`;
 if (fs.existsSync(marker) && fs.readFileSync(marker, 'utf8') === generation) process.exit(0);
 const threshold = Number(thresholdText || 40);
 let used = Number(mode), window = Number(windowOrModel);
+function transcriptTail(path) {
+  const fd = fs.openSync(path, 'r');
+  try {
+    const size = fs.fstatSync(fd).size;
+    for (let length = Math.min(size, 65536); ; length = Math.min(size, length * 2)) {
+      const buffer = Buffer.alloc(length);
+      fs.readSync(fd, buffer, 0, length, size - length);
+      const text = buffer.toString('utf8');
+      const lines = (length < size ? text.slice(text.indexOf('\n') + 1) : text).trim().split('\n');
+      if (length === size || lines.some(line => {
+        try { return Boolean(JSON.parse(line).message?.usage); } catch { return false; }
+      })) return lines;
+    }
+  } finally { fs.closeSync(fd); }
+}
 if (mode === 'claude') {
   const hook = JSON.parse(fs.readFileSync(0, 'utf8'));
   let message, newestUsage;
   // Claude's Stop event can precede its asynchronous transcript flush.
   for (let attempt = 0; attempt < 20; attempt++) {
-    const entries = fs.readFileSync(hook.transcript_path, 'utf8').trim().split('\n');
+    const entries = transcriptTail(hook.transcript_path);
     let attemptNewestUsage;
     for (const line of entries.reverse()) {
       try {
