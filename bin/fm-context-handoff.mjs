@@ -8,6 +8,8 @@
 // older models and Haiku 4.5 have 200K. Unknown models refuse measurement.
 import fs from 'node:fs';
 const [status, generation, thresholdText, mode, windowOrModel] = process.argv.slice(2);
+const marker = `${status}.handoff-session`;
+if (fs.existsSync(marker) && fs.readFileSync(marker, 'utf8') === generation) process.exit(0);
 const threshold = Number(thresholdText || 40);
 let used = Number(mode), window = Number(windowOrModel);
 if (mode === 'claude') {
@@ -47,7 +49,6 @@ if (!Number.isFinite(threshold) || threshold < 0 || threshold > 100 || !Number.i
 const percent = used * 100 / window;
 if (percent < threshold) process.exit(0);
 // The spawn busy generation survives extension reloads but changes on relaunch.
-const marker = `${status}.handoff-session`;
 if (fs.existsSync(marker)) {
   if (fs.readFileSync(marker, 'utf8') === generation) process.exit(0);
   fs.unlinkSync(marker);

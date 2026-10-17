@@ -49,6 +49,8 @@ for invocation in 1 2; do
 done
 [ "$(grep -c '^handoff-needed ' "$tmp/post-tool.status")" = 1 ] || fail 'Claude PostToolUse repeated in same generation'
 [ "$(wc -l < "$tmp/post-tool.status" | tr -d ' ')" = 1 ] || fail 'Claude PostToolUse duplicate output'
+printf '{"hook_event_name":"PostToolUse","transcript_path":"%s"}' "$tmp/missing-transcript" | node "$ROOT/bin/fm-context-handoff.mjs" "$tmp/post-tool.status" post-tool 40 claude default
+[ "$(wc -l < "$tmp/post-tool.status" | tr -d ' ')" = 1 ] || fail 'marked generation read transcript or emitted output'
 printf '%s\n' '{"message":{"model":"claude-haiku-4-5","usage":{"input_tokens":10000}}}' > "$tmp/transcript"
 (sleep 0.5; printf '%s\n' '{"message":{"model":"claude-haiku-4-5","content":[{"type":"tool_use","id":"toolu_late","name":"Read","input":{}}],"usage":{"input_tokens":80000}}}' >> "$tmp/transcript") &
 printf '{"transcript_path":"%s","last_assistant_message":"not flushed yet"}' "$tmp/transcript" | node "$ROOT/bin/fm-context-handoff.mjs" "$tmp/late-tool-use.status" h 40 claude default
