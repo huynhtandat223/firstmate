@@ -177,6 +177,16 @@ jq -e --arg id "proposal-$id" '.backlog.records[] | select(.id == $id and .hold_
 [ ! -e "$parent/data/secondmates.md" ] || fail 'proposal altered secondmate registry'
 pass 'real inbox wake becomes a real held backlog item, without a secondmate route'
 
+# A note already queued by the old proposal command has no sender field.
+printf 'schema=fm-inbox.v1\n--\n{"assistance":"sample","title":"Legacy report","why":"Needs review (old capture)","evidence":"legacy source"}\n' > "$parent/state/inbox/legacy.note"
+"$ROOT/bin/fm-assistance.sh" record legacy > "$TMP_ROOT/legacy-record.out"
+"$ROOT/bin/fm-tasks-axi.sh" show proposal-legacy --full > "$TMP_ROOT/legacy-task.out"
+grep -q 'sender unknown: Legacy report' "$TMP_ROOT/legacy-task.out" || fail 'legacy title lost unknown sender'
+grep -q '^  held: yes$' "$TMP_ROOT/legacy-task.out" || fail 'legacy proposal was not held'
+grep -q 'from sender unknown' "$TMP_ROOT/legacy-task.out" || fail 'legacy reason lost unknown sender'
+[ -f "$parent/state/inbox/handled/legacy.note" ] || fail 'legacy proposal was not acknowledged'
+pass 'a pre-sender proposal is recorded and held with sender unknown'
+
 printf '{"session_id":"first"}\n' | FM_HOME="$helper" "$ROOT/bin/fm-assistance-hook.sh" start >/dev/null
 FM_HOME="$helper" "$ROOT/bin/fm-assistance-hook.sh" settings | jq -e '.hooks.Stop[0].hooks[1].asyncRewake == true' >/dev/null
 printf '{"session_id":"first","context_window":{"context_window_size":100000,"used_percentage":39}}\n' | FM_HOME="$helper" "$ROOT/bin/fm-assistance-hook.sh" usage >/dev/null

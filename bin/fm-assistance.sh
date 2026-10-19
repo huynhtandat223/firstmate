@@ -209,6 +209,8 @@ record() {
   note="$STATE/inbox/$id.note"
   [ -f "$note" ] && [ ! -L "$note" ] || die 'proposal note is unavailable'
   payload=$(awk 'body {print} $0 == "--" {body=1}' "$note")
+  # Notes queued before sender capture remain recordable; new proposals are strict.
+  payload=$(jq 'if type == "object" and (has("from") | not) then .from = {name:"sender unknown",id:"unknown"} else . end' <<< "$payload")
   jq -e 'type == "object" and ([.assistance,.title,.why,.evidence] | all(type == "string" and length > 0)) and (.from | type == "object" and ([.name,.id] | all(type == "string" and test("\\S"))))' <<< "$payload" >/dev/null || die 'not an assistance proposal'
   name=$(jq -r .assistance <<< "$payload")
   assistance_home "$name" >/dev/null
