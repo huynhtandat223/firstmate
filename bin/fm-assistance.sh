@@ -20,7 +20,9 @@
 # In self mode acknowledge-source needs only the record's own digest check and
 # takes the same per-record lock around that check and the delete.
 #   fm-assistance.sh recover
-#   fm-assistance.sh propose <title> <why> <evidence>
+#   fm-assistance.sh propose <title> <why> <evidence> <from-json>
+# from-json is {name,id}, copied from the captured message. For old records use
+# {"name":"sender unknown","id":"unknown"}; non-message proposals name a source.
 #   fm-assistance.sh record <inbox-id>
 # Profiles: config/assistances/<name>.json in the parent home. Required fields:
 # name, charter, harness, model, effort, sources [{source,recipe}].
@@ -56,7 +58,7 @@ STATE="$FM_HOME/state"
 REG="$DATA/assistances.md"
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 valid_id() { [[ "$1" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]] || die 'invalid identifier'; }
-help() { printf '%s\n' 'fm-assistance.sh validate <name> | source-event <name> <pending-record-basename>' 'FM_HOME=<assistance-home> fm-assistance.sh self-event <pending-record-basename> | acknowledge-source <pending-record-basename>' 'fm-assistance.sh start <name> | stop <name> --captain [--captain-words <verbatim instruction>] | recover' 'fm-assistance.sh steer <name> --captain-words <verbatim instruction> <text>' 'fm-assistance.sh propose <title> <why> <evidence> | record <inbox-id>'; }
+help() { printf '%s\n' 'fm-assistance.sh validate <name> | source-event <name> <pending-record-basename>' 'FM_HOME=<assistance-home> fm-assistance.sh self-event <pending-record-basename> | acknowledge-source <pending-record-basename>' 'fm-assistance.sh start <name> | stop <name> --captain [--captain-words <verbatim instruction>] | recover' 'fm-assistance.sh steer <name> --captain-words <verbatim instruction> <text>' 'fm-assistance.sh propose <title> <why> <evidence> <from-json> | record <inbox-id>'; }
 profile() {
   valid_id "$1"
   PROFILE="$FM_HOME/config/assistances/$1.json"
@@ -117,6 +119,7 @@ render_brief() {  # [<home>]: with a workdir, the home path makes every record p
   fi
   printf 'Read %sdata/assistance.json for your profile and %sdata/assistance-handoff.md when present.\n' "$p" "$p"
   printf 'Observe sources read-only and investigate before proposing work.\n'
+  printf 'For proposals, copy the captured message from object as the required from-json argument shown by fm-assistance.sh --help. For older records without from, use {"name":"sender unknown","id":"unknown"}; for non-message proposals, name the source explicitly in both fields. Start each board question with from.name.\n'
   printf 'Speak directly to the user in plain human language.\n'
   printf 'Write only private records in your own home and proposals through %sbin/fm-assistance.sh propose.\n' "$p"
   printf 'Run no fleet startup, dispatch, steering, merge, or project mutation.\n'
@@ -185,6 +188,7 @@ start() {
 }
 propose() {
   local name parent
+  jq -e 'type == "object" and ([.name,.id] | all(type == "string" and test("\\S")))' <<< "$4" >/dev/null || die 'sender requires name and id'
   [ -f "$FM_HOME/.fm-assistance-home" ] || die 'proposal command requires an assistance home'
   name=$(<"$FM_HOME/.fm-assistance-home")
   valid_id "$name"
@@ -193,8 +197,8 @@ propose() {
   parent=$FM_SECONDMATE_PARENT_HOME
   [ -d "$parent" ] || die 'assistance parent binding is unavailable'
   # Text is data, never a shell instruction. Only the parent records backlog work.
-  jq -cn --arg assistance "$name" --arg title "$1" --arg why "$2" --arg evidence "$3" \
-    '{assistance:$assistance,title:$title,why:$why,evidence:$evidence}' |
+  jq -cn --arg assistance "$name" --arg title "$1" --arg why "$2" --arg evidence "$3" --argjson from "$4" \
+    '{assistance:$assistance,title:$title,why:$why,evidence:$evidence,from:$from}' |
     FM_HOME="$parent" FM_STATE_OVERRIDE='' FM_DATA_OVERRIDE='' FM_CONFIG_OVERRIDE='' \
       "$SCRIPT_DIR/fm-inbox.sh" note -
 }
@@ -205,12 +209,12 @@ record() {
   note="$STATE/inbox/$id.note"
   [ -f "$note" ] && [ ! -L "$note" ] || die 'proposal note is unavailable'
   payload=$(awk 'body {print} $0 == "--" {body=1}' "$note")
-  jq -e 'type == "object" and ([.assistance,.title,.why,.evidence] | all(type == "string" and length > 0))' <<< "$payload" >/dev/null || die 'not an assistance proposal'
+  jq -e 'type == "object" and ([.assistance,.title,.why,.evidence] | all(type == "string" and length > 0)) and (.from | type == "object" and ([.name,.id] | all(type == "string" and test("\\S"))))' <<< "$payload" >/dev/null || die 'not an assistance proposal'
   name=$(jq -r .assistance <<< "$payload")
   assistance_home "$name" >/dev/null
   task="proposal-$id"
-  title=$(jq -r .title <<< "$payload")
-  reason=$(jq -r '"Assistance " + .assistance + ": " + .why + " Evidence: " + .evidence' <<< "$payload")
+  title=$(jq -r '.from.name + ": " + .title' <<< "$payload")
+  reason=$(jq -r '("Assistance " + .assistance + " from " + .from.name + ": " + .why + " Evidence: " + .evidence) | gsub("[()]"; "-") | gsub("[\\r\\n\\t]"; " ")' <<< "$payload")
   if ! "$SCRIPT_DIR/fm-tasks-axi.sh" show "$task" >/dev/null 2>&1; then
     "$SCRIPT_DIR/fm-tasks-axi.sh" add "$task" "$title"
   fi
@@ -294,7 +298,7 @@ case "${1:-}" in
     printf 'source recorded: %s\n' "$rec"
     ;;
   start) [ $# -eq 2 ] || die 'usage: fm-assistance.sh start <name>'; start "$2" ;;
-  propose) [ $# -eq 4 ] || die 'usage: fm-assistance.sh propose <title> <why> <evidence>'; propose "$2" "$3" "$4" ;;
+  propose) [ $# -eq 5 ] || die 'usage: fm-assistance.sh propose <title> <why> <evidence> <from-json>'; propose "$2" "$3" "$4" "$5" ;;
   record) [ $# -eq 2 ] || die 'usage: fm-assistance.sh record <inbox-id>'; record "$2" ;;
   recover)
     [ $# -eq 1 ] || die 'recover accepts no arguments'

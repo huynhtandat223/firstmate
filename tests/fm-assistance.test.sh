@@ -151,18 +151,25 @@ pass 'assistance seed refuses a secondmate home and preserves its identity'
 
 cp "$helper/.fm-assistance-parent" "$TMP_ROOT/parent-binding"
 printf 'parent_home=%s\n' "$parent" >> "$helper/.fm-assistance-parent"
-if FM_HOME="$helper" "$ROOT/bin/fm-assistance.sh" propose bad bad bad > "$TMP_ROOT/binding.out" 2>&1; then fail 'ambiguous parent binding was accepted'; fi
+if FM_HOME="$helper" "$ROOT/bin/fm-assistance.sh" propose bad bad bad '{"name":"Sender","id":"sender-id"}' > "$TMP_ROOT/binding.out" 2>&1; then fail 'ambiguous parent binding was accepted'; fi
 [ ! -e "$parent/state/inbox" ] || fail 'invalid binding wrote a proposal'
 cp "$TMP_ROOT/parent-binding" "$helper/.fm-assistance-parent"
 pass 'proposal uses the shared parent-binding validation'
 
-FM_HOME="$helper" "$ROOT/bin/fm-assistance.sh" propose 'Inspect new report' 'New information needs a decision' 'https://example.test/report' > "$TMP_ROOT/proposal.out"
+if FM_HOME="$helper" "$ROOT/bin/fm-assistance.sh" propose title why evidence > "$TMP_ROOT/no-sender.out" 2>&1; then fail 'proposal without sender accepted'; fi
+[ ! -e "$parent/state/inbox" ] || fail 'missing sender wrote a proposal'
+for sender in '{}' '{"name":" ","id":"id"}' '{"name":"Sender","id":""}'; do
+  if FM_HOME="$helper" "$ROOT/bin/fm-assistance.sh" propose title why evidence "$sender" >/dev/null 2>&1; then fail 'invalid sender accepted'; fi
+done
+FM_HOME="$helper" "$ROOT/bin/fm-assistance.sh" propose 'Inspect new report' 'New information (needs a decision)' 'https://example.test/report(with-parentheses)' '{"name":"Phuong Ngo","id":"sender-id"}' > "$TMP_ROOT/proposal.out"
 [ "$(find "$parent/state/inbox" -name '*.note' | wc -l | tr -d ' ')" = 1 ] || fail 'proposal was not delivered once'
 [ "$(wc -l < "$parent/state/.wake-queue" | tr -d ' ')" = 1 ] || fail 'proposal did not produce exactly one wake'
 note=$(find "$parent/state/inbox" -name '*.note')
 id=${note##*/}; id=${id%.note}
+awk 'body {print} $0 == "--" {body=1}' "$note" | jq -e '.from == {name:"Phuong Ngo",id:"sender-id"}' >/dev/null || fail 'proposal lost sender'
 "$ROOT/bin/fm-assistance.sh" record "$id" > "$TMP_ROOT/record.out"
 "$ROOT/bin/fm-tasks-axi.sh" show "proposal-$id" --full > "$TMP_ROOT/task.out"
+grep -q 'Phuong Ngo: Inspect new report' "$TMP_ROOT/task.out" || fail 'title lost sender'
 grep -q '^  held: yes$' "$TMP_ROOT/task.out" || fail 'proposal was not held for the captain'
 "$ROOT/bin/fm-fleet-snapshot.sh" --json --records-only > "$TMP_ROOT/board.json"
 jq -e --arg id "proposal-$id" '.backlog.records[] | select(.id == $id and .hold_kind == "captain" and .captain_actionable == true)' "$TMP_ROOT/board.json" >/dev/null || fail 'held item is not actionable on the board'
