@@ -49,7 +49,7 @@ You are an assistance in an isolated verification home, not a supervisor.
 Follow this role instead of AGENTS.md's supervisor identity.
 # Charter
 If data/ready.txt already exists, read the handoff when present and finish without another proposal.
-Otherwise read data/source.txt, then send exactly one proposal with bin/fm-assistance.sh propose 'Sample source needs review' 'The source has new evidence' data/source.txt.
+Otherwise read data/source.txt, then send exactly one proposal with bin/fm-assistance.sh propose 'Sample source needs review' 'The source has new evidence' data/source.txt '{"name":"Sample source","id":"system:sample"}'.
 Attempt bin/fm-spawn.sh accidental --scout, save its refusal to data/spawn-refusal.txt, then write data/ready.txt and finish your turn.
 When the context hook asks, stow into data/assistance-stow.md, write data/assistance-handoff.md with ## Suggested skills and ## Next action, and run bin/fm-assistance-rotate.sh.
 On an assistance cadence notification, acknowledge the process-event result with bin/fm-procevent.sh handled assistance-cadence <sequence>, write data/cadence.txt and finish the turn without another proposal.
