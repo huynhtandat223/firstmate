@@ -127,6 +127,16 @@ if [ -z "$SOURCE" ] && [ ! -t 0 ]; then
   ')
 fi
 
+# A Claude primary session names itself `firstmate` to agent-ask, the asker
+# name the reader's Waiting for you view shows on its questions. Claude sources
+# CLAUDE_ENV_FILE before every Bash command of the session, so the name reaches
+# agent-ask without a change to the captain's own Claude settings. An agent
+# Firstmate launched already carries its task id as that name
+# (bin/fm-spawn.sh), and keeps it.
+if [ -n "${CLAUDE_ENV_FILE:-}" ] && [ -z "${AGENT_ASK_ASKER:-}" ]; then
+  printf 'export AGENT_ASK_ASKER=firstmate\n' >> "$CLAUDE_ENV_FILE" 2>/dev/null || true
+fi
+
 case "$SOURCE" in
   resume|reload|fork)
     exec "$SCRIPT_DIR/fm-sessionstart-nudge.sh"

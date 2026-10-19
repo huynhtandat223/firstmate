@@ -229,6 +229,9 @@
 #   exported into the pane and pinned on the launch command below, so no two
 #   agents share one bridge.pid file. bin/fm-teardown.sh stops that session.
 #   A relaunch reuses the same task id and therefore the same session.
+#   Every kind also gets AGENT_ASK_ASKER=<task-id> the same way, the asker
+#   name agent-ask shows on its questions; an id that is not a plain asker
+#   name (a leading `_` or `-`, `..`, or over 64 characters) unsets it.
 #   Only after this isolation check, every fresh ship or scout requires a clean
 #   task worktree. When an origin configuration is detected, spawn fetches it,
 #   resolves the current remote default branch, and resets to its tip. When none
@@ -4781,6 +4784,18 @@ LAUNCH="export COMPACT_ADVISER_DISABLE=1; $LAUNCH"
 # same path, including relaunches of the same task id.
 AXI_SESSION=$(fm_axi_session_name "$ID") || exit 1
 LAUNCH="export CHROME_DEVTOOLS_AXI_SESSION=$AXI_SESSION; $LAUNCH"
+# The asker name agent-ask puts on every question this agent posts, so the
+# reader's Waiting for you view tells one asker from another. It is the task id,
+# set rather than inherited: a pane can inherit the primary session's own
+# `firstmate` name. An id agent-ask would refuse as a name is unset instead, so
+# its questions are still posted. Pinned on the launch command and exported
+# into the pane on the same path as the browser session.
+ASKER_EXPORT="unset AGENT_ASK_ASKER"
+case "$ID" in
+  [A-Za-z0-9]*..*) ;;
+  [A-Za-z0-9]*) [ "${#ID}" -gt 64 ] || ASKER_EXPORT="export AGENT_ASK_ASKER=$ID" ;;
+esac
+LAUNCH="$ASKER_EXPORT; $LAUNCH"
 if [ -z "$SPAWN_TRACEPARENT" ] && [ "$RELAUNCH" -eq 1 ]; then
   LAUNCH="unset TRACEPARENT; $LAUNCH"
 fi
@@ -4830,6 +4845,7 @@ fi
 # Every kind gets a browser session (ship, scout, and secondmate alike), on the
 # same pre-launch channel as GOTMPDIR above.
 spawn_send_text_line "$T" "export CHROME_DEVTOOLS_AXI_SESSION=$AXI_SESSION"
+spawn_send_text_line "$T" "$ASKER_EXPORT"
 # Send through the exact channel that already ships GOTMPDIR, so every backend
 # and harness - ship, scout, and secondmate - gets it before launch. Skipped
 # entirely when trace context is off.
