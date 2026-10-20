@@ -3743,6 +3743,21 @@ test_verify_gate_force_does_not_skip() {
   pass "--force does not skip the verification record"
 }
 
+test_verify_gate_refuses_a_promoted_user_visible_scout() {
+  local case_dir rc
+  case_dir=$(make_case verify-promoted)
+  write_meta "$case_dir" no-mistakes scout
+  wt_commit "$case_dir" "fix the thing"
+  add_fork_with_pushed_branch "$case_dir"
+  mkdir -p "$case_dir/data/task-x1"
+  printf '# Task\n## Captain'"'"'s intent\nx\n\n## Firstmate spec\ny\n' > "$case_dir/data/task-x1/brief.md"
+  FM_HOME="$case_dir" FM_STATE_OVERRIDE="$case_dir/state" FM_DATA_OVERRIDE="$case_dir/data" \
+    "$ROOT/bin/fm-promote.sh" task-x1 --mode local-only --yolo off --surface user-visible >/dev/null 2>&1 \
+    || fail "verify-promoted: promotion failed"
+  expect_verify_refusal "$case_dir" "verify-promoted" 'verification record missing'
+  pass "a promoted user-visible scout is refused without verify.md"
+}
+
 test_verify_gate_allows_complete_record() {
   local case_dir rc
   case_dir=$(verify_gate_case verify-complete)
@@ -3864,3 +3879,4 @@ test_verify_gate_refuses_without_approval
 test_verify_gate_force_does_not_skip
 test_verify_gate_allows_complete_record
 test_verify_gate_ignores_internal_surface
+test_verify_gate_refuses_a_promoted_user_visible_scout
