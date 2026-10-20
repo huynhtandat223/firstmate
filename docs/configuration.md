@@ -882,6 +882,7 @@ A profile supplies the name, charter, harness/model/effort, source/recipe pairs,
 Event-driven and self-delivery homes skip the cadence hook.
 An event-driven home receives untrusted source records through the assistance command's `source-event` path, which writes the parent home's steering inbox.
 Captain-word steering remains separate from source evidence; a source record grants no owner authority.
+The built-in `deploy-verify` process-event source ([`bin/fm-procevent-deploy-verify.sh`](../bin/fm-procevent-deploy-verify.sh)) delivers a project's verify asks to a named assistance as such source records; its header owns the ask format, the ledger under `data/deploy-verify/`, and its environment.
 
 Assistance profiles support `claude`, `pi`, and `agy` on Herdr.
 Pi and AGY require `trigger_mode: "event-driven"` or `"self"`; cadence, including the default mode, is refused because only Claude arms the cadence hook.
