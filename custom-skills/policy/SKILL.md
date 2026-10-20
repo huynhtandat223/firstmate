@@ -14,17 +14,15 @@ It names exact vendored Matt documents and does not copy their procedures.
 ## Role and capability boundaries
 
 Use the explicit `role=<name>` marker in the brief as authoritative.
-Recognised roles are `driver`, `navigator`, `worker`, and `firstmate`.
+Recognised roles are `worker` and `firstmate`.
 If the marker is absent or unknown, resolve the role before loading a capability.
 
 The role controls the role-allowed capability set and communication boundary.
 
-- `driver` may use this policy and the implementation, test, and review capabilities named by its brief.
-- `navigator` may use this policy, the review capability, and exact evidence capabilities named by its brief.
 - `worker` may use this policy and only the capability named by its delivery path.
 - `firstmate` may use this policy and the ordinary Firstmate lifecycle owners.
 
-A `driver` or `worker` may also use the verification capability when it verifies expected behavior or claims a task done.
+A `worker` may also use the verification capability when it verifies expected behavior or claims a task done.
 Any role may use an interview or crystallization capability when the captain asks for it in that session.
 
 A role may use a capability only when its trigger is active.
@@ -41,11 +39,9 @@ Load only the exact file named by the first matching trigger, when the trigger o
 | The captain asks to capture glossary or ADR decisions during grilling | `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/grill-with-docs/SKILL.md`, then its exact domain-modeling companion |
 | The captain explicitly asks to crystallize a spec | `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/to-spec/SKILL.md` |
 | The captain explicitly asks to crystallize dependency-aware tickets | `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/to-tickets/SKILL.md` |
-| A paired brief carries `role=driver` | `/home/dathuynh/codes/firstmate/custom-skills/paired-review/driver/SKILL.md` |
-| A paired brief carries `role=navigator` | `/home/dathuynh/codes/firstmate/custom-skills/paired-review/navigator/SKILL.md`, then `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/code-review/SKILL.md` |
 | An implementation worker in `cfw-modules` builds or changes a business page, a component definition, a primitive or a design token | `.agents/skills/cfw-frontend-development/SKILL.md` in that checkout |
 | Verification of a task's expected behavior begins, or a completion claim is about to be made | `/home/dathuynh/codes/firstmate/custom-skills/classical-testing/SKILL.md` |
-| A review or navigator task is opened | `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/code-review/SKILL.md` |
+| A review task is opened | `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/code-review/SKILL.md` |
 | A diagnosis task is opened | `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/diagnosing-bugs/SKILL.md` |
 
 The vendored bytes under `custom-skills/matt/` are immutable.
@@ -58,4 +54,4 @@ Matt capabilities are read only on their trigger, by exact absolute path.
 Do not preload the catalog, copy Matt procedures into another document, or substitute a similarly named installed skill.
 
 The captain owns product and engineering contract decisions and unresolved choices.
-Workers report through Firstmate, except a paired driver and navigator may coordinate through their Herdr role-agent channel and preserve material reasoning in their durable shared history under the paired-review contract.
+Workers report through Firstmate.

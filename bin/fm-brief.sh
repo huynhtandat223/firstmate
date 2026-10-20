@@ -390,8 +390,6 @@ case "$KIND:$MODE" in
       "For review work, load $REVIEW_SKILL.")
     ;;
 esac
-REQUIRED_SKILLS_SECTION=$(printf '%s\n%s' "$REQUIRED_SKILLS_SECTION" \
-  'For paired roles, the paired-review runtime section below names the role-specific instructions.')
 
 RULE7_SHIP=
 if [ "$MODE" = no-mistakes ]; then
