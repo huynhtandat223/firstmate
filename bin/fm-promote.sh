@@ -24,7 +24,10 @@
 # read the scout's report (AGENTS.md section 7); data/projects.md holds the
 # captain's standing posture as context, and this script never looks it up.
 # no-mistakes-prod-only is a registry policy rather than a task mode and is refused.
-# Usage: fm-promote.sh <task-id> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off>
+# --surface <user-visible|internal> is optional, validated like bin/fm-spawn.sh's
+# and recorded in the meta (internal drops any earlier value); user-visible adds
+# the done-gate wording bin/fm-dod-lib.sh owns. Any other -- option is refused.
+# Usage: fm-promote.sh <task-id> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--surface <user-visible|internal>]
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -54,6 +57,8 @@ MODE=
 YOLO=
 MODE_SET=0
 YOLO_SET=0
+SURFACE=
+SURFACE_SET=0
 POS=()
 want_value=
 for a in "$@"; do
@@ -64,6 +69,7 @@ for a in "$@"; do
     case "$want_value" in
       mode) MODE=$a; MODE_SET=1 ;;
       yolo) YOLO=$a; YOLO_SET=1 ;;
+      surface) SURFACE=$a; SURFACE_SET=1 ;;
     esac
     want_value=
     continue
@@ -73,6 +79,9 @@ for a in "$@"; do
     --mode=*) MODE=${a#--mode=}; MODE_SET=1 ;;
     --yolo) want_value=yolo ;;
     --yolo=*) YOLO=${a#--yolo=}; YOLO_SET=1 ;;
+    --surface) want_value=surface ;;
+    --surface=*) SURFACE=${a#--surface=}; SURFACE_SET=1 ;;
+    --*) echo "error: unknown option $a" >&2; exit 1 ;;
     *) POS+=("$a") ;;
   esac
 done
@@ -97,6 +106,11 @@ case "$YOLO" in
   on|off) ;;
   *) echo "error: --yolo must be on or off (got '$YOLO')" >&2; exit 1 ;;
 esac
+case "$SURFACE" in
+  ''|user-visible|internal) ;;
+  *) echo "error: --surface must be user-visible or internal (got '$SURFACE')" >&2; exit 1 ;;
+esac
+[ "$SURFACE_SET" -eq 0 ] || [ -n "$SURFACE" ] || { echo "error: --surface requires a non-empty value" >&2; exit 1; }
 
 ID=${POS[0]}
 fm_task_id_creation_valid "$ID" || { echo "error: invalid task id" >&2; exit 2; }
@@ -205,7 +219,7 @@ EOF
     printf '%s\n' "$PROMOTION_ASK_USER_BLOCK"
   fi
   printf '\n'
-  fm_dod_block "$MODE" "$ID"
+  fm_dod_block "$MODE" "$ID" "$SURFACE"
 }
 mkdir -p "$DATA/$ID"
 [ ! -d "$INSTRUCTIONS" ] || { echo "error: ship instructions path is a directory: $INSTRUCTIONS" >&2; exit 1; }
@@ -258,11 +272,12 @@ fi
 BRIEF_REPLACEMENT=
 
 TMP="$STATE/.$ID.meta.promote.${BASHPID:-$$}"
-grep -v -e '^kind=' -e '^mode=' -e '^yolo=' "$META" > "$TMP"
+grep -v -e '^kind=' -e '^mode=' -e '^yolo=' -e '^surface=' "$META" > "$TMP"
 {
   echo "kind=ship"
   echo "mode=$MODE"
   echo "yolo=$YOLO"
+  [ "$SURFACE" != user-visible ] || echo "surface=user-visible"
 } >> "$TMP"
 if ! fm_backlog_atomic_transition publish "$TMP" "$META" "task record" "$STATE"; then
   rm -f -- "$TMP"

@@ -274,6 +274,44 @@ test_promote_requires_and_records_the_delivery_contract() {
 
 # A symlink at state/<id>.meta is the containment hazard the shared publisher
 # refuses: promotion must not rewrite the symlink target in place.
+# --surface on promotion: recorded in the task record, rendered into the ship
+# instructions through bin/fm-dod-lib.sh, validated, and unknown -- flags refused
+# instead of dropped.
+test_promote_records_and_renders_the_surface() {
+  local home meta out status
+  home="$TMP_ROOT/promote-surface/home"
+  mkdir -p "$home/state"
+  meta="$home/state/promote-s1.meta"
+  write_brief "$home" promote-s1
+  printf 'window=fm-promote-s1\nkind=scout\nworktree=/tmp/wt\n' > "$meta"
+
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" promote-s1 --mode direct-PR --yolo off --surface nope 2>&1)
+  status=$?
+  [ "$status" -ne 0 ] || fail "promotion with an unknown surface should exit non-zero"
+  assert_contains "$out" "--surface must be user-visible or internal" "promote surface refusal text"
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" promote-s1 --mode direct-PR --yolo off --bogus 2>&1)
+  status=$?
+  [ "$status" -ne 0 ] || fail "promotion with an unknown flag should exit non-zero"
+  assert_contains "$out" "unknown option --bogus" "promote unknown-flag refusal text"
+  assert_grep 'kind=scout' "$meta" "refused promotion still changed the task record"
+
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" promote-s1 --mode direct-PR --yolo off --surface user-visible 2>&1)
+  expect_code 0 "$?" "promotion with --surface user-visible should succeed"$'\n'"$out"
+  assert_grep 'surface=user-visible' "$meta" "promotion did not record the surface"
+  assert_grep 'Verification pending is not done' "$home/data/promote-s1/ship-instructions.md" \
+    "promoted ship instructions lack the done-gate wording"
+  assert_grep 'Verification pending is not done' "$home/data/promote-s1/brief.md" \
+    "promoted brief lacks the done-gate wording"
+
+  mkdir -p "$home/data/promote-s2"
+  write_brief "$home" promote-s2
+  printf 'window=fm-promote-s2\nkind=scout\nworktree=/tmp/wt\nsurface=user-visible\n' > "$home/state/promote-s2.meta"
+  FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" promote-s2 --mode direct-PR --yolo off --surface internal >/dev/null 2>&1 \
+    || fail "promotion with --surface internal should succeed"
+  assert_no_grep 'surface=user-visible' "$home/state/promote-s2.meta" "promotion left a stale user-visible surface"
+  pass "fm-promote: --surface is validated, recorded, and rendered; unknown flags are refused"
+}
+
 test_promote_refuses_a_symlinked_task_record() {
   local home meta target original out status leftover
   home="$TMP_ROOT/promote-symlink/home"
@@ -889,6 +927,7 @@ test_spawn_refuses_a_brief_mode_mismatch
 test_spawn_notices_a_rigor_downgrade_against_the_registry
 test_scout_records_no_delivery_posture
 test_promote_requires_and_records_the_delivery_contract
+test_promote_records_and_renders_the_surface
 test_promote_refuses_a_symlinked_task_record
 test_promotion_delivers_the_real_definition_of_done
 test_project_mode_maps_the_conditional_policy
