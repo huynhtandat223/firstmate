@@ -3666,6 +3666,113 @@ EOF
   pass "the run abort and the leaked-process reap both complete before the destructive worktree return"
 }
 
+# Done gate (bin/fm-verify-gate-lib.sh): a surface=user-visible ship task is
+# refused until data/<id>/verify.md is complete; --force never skips it.
+verify_gate_case() {  # <name> -> prints case dir with landed work and user-visible meta
+  local case_dir
+  case_dir=$(make_case "$1")
+  write_meta "$case_dir" local-only ship
+  printf '%s\n' 'surface=user-visible' >> "$case_dir/state/task-x1.meta"
+  wt_commit "$case_dir" "fix the thing"
+  add_fork_with_pushed_branch "$case_dir"
+  mkdir -p "$case_dir/data/task-x1"
+  printf '%s\n' "$case_dir"
+}
+
+write_verify() {  # <case-dir> <status> <evidence> <approved:yes|no>
+  local case_dir=$1 status=$2 evidence=$3 approved=$4 f
+  f="$case_dir/data/task-x1/verify.md"
+  printf '%s\n' 'surface: user-visible' '## Acceptance' \
+    "- A1 | the page shows the new button | pass | evidence: https://example.test/shot" \
+    "- A2 | the button saves | $status | evidence: $evidence" > "$f"
+  [ "$approved" != yes ] || printf '%s\n' 'approved: firstmate 1792486840' >> "$f"
+}
+
+expect_verify_refusal() {  # <case-dir> <label> <stderr-pattern> [teardown args...]
+  local case_dir=$1 label=$2 pattern=$3 rc
+  shift 3
+  set +e
+  run_teardown "$case_dir" "$@" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "$label: teardown must refuse"
+  assert_grep 'REFUSED: task task-x1 is surface=user-visible' "$case_dir/stderr" "$label: refusal text"
+  assert_grep "$pattern" "$case_dir/stderr" "$label: refusal must name the missing line"
+  [ -e "$case_dir/state/task-x1.meta" ] || fail "$label: refusal removed the task record"
+  [ -d "$case_dir/wt" ] || fail "$label: refusal removed the worktree"
+}
+
+test_verify_gate_refuses_without_record() {
+  local case_dir
+  case_dir=$(verify_gate_case verify-none)
+  rm -rf "$case_dir/data/task-x1"
+  expect_verify_refusal "$case_dir" "verify-none" 'verification record missing'
+  pass "user-visible task with no verify.md is refused"
+}
+
+test_verify_gate_refuses_pending_line() {
+  local case_dir
+  case_dir=$(verify_gate_case verify-pending)
+  write_verify "$case_dir" pending - yes
+  expect_verify_refusal "$case_dir" "verify-pending" "A2 is 'pending', not pass"
+  pass "user-visible task with a pending acceptance line is refused"
+}
+
+test_verify_gate_refuses_missing_evidence_path() {
+  local case_dir
+  case_dir=$(verify_gate_case verify-evidence)
+  write_verify "$case_dir" pass "$case_dir/no-such-shot.png" yes
+  expect_verify_refusal "$case_dir" "verify-evidence" 'A2 evidence path does not exist'
+  pass "user-visible task whose evidence path is missing is refused"
+}
+
+test_verify_gate_refuses_without_approval() {
+  local case_dir
+  case_dir=$(verify_gate_case verify-approval)
+  : > "$case_dir/shot.png"
+  write_verify "$case_dir" pass "$case_dir/shot.png" no
+  expect_verify_refusal "$case_dir" "verify-approval" "missing 'approved: firstmate <epoch>' line"
+  pass "user-visible task with no approved line is refused"
+}
+
+test_verify_gate_force_does_not_skip() {
+  local case_dir
+  case_dir=$(verify_gate_case verify-force)
+  write_verify "$case_dir" pending - yes
+  expect_verify_refusal "$case_dir" "verify-force" "A2 is 'pending', not pass" --force
+  pass "--force does not skip the verification record"
+}
+
+test_verify_gate_allows_complete_record() {
+  local case_dir rc
+  case_dir=$(verify_gate_case verify-complete)
+  : > "$case_dir/shot.png"
+  write_verify "$case_dir" pass "$case_dir/shot.png" yes
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "verify-complete: teardown should succeed with a complete record"
+  ! grep -q REFUSED "$case_dir/stderr" || fail "verify-complete: printed a REFUSED line"
+  [ ! -e "$case_dir/state/task-x1.meta" ] || fail "verify-complete: task record was left behind"
+  pass "user-visible task with a complete verify.md is torn down"
+}
+
+test_verify_gate_ignores_internal_surface() {
+  local case_dir rc
+  case_dir=$(make_case verify-internal)
+  write_meta "$case_dir" local-only ship
+  wt_commit "$case_dir" "fix the thing"
+  add_fork_with_pushed_branch "$case_dir"
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "verify-internal: a task with no surface must tear down as before"
+  ! grep -q REFUSED "$case_dir/stderr" || fail "verify-internal: printed a REFUSED line"
+  pass "task with no surface (internal) is torn down with no verify.md"
+}
+
 test_local_only_fork_remote_allows
 test_teardown_closes_the_backlog_item_itself
 test_teardown_manual_backend_leaves_the_backlog_to_the_operator
@@ -3750,3 +3857,10 @@ test_process_spawned_during_grace_is_reaped_on_later_pass
 test_persistent_scan_refuses_after_bounded_retries
 test_process_exit_during_identity_lookup_does_not_refuse
 test_run_abort_precedes_process_reap_precedes_worktree_removal
+test_verify_gate_refuses_without_record
+test_verify_gate_refuses_pending_line
+test_verify_gate_refuses_missing_evidence_path
+test_verify_gate_refuses_without_approval
+test_verify_gate_force_does_not_skip
+test_verify_gate_allows_complete_record
+test_verify_gate_ignores_internal_surface

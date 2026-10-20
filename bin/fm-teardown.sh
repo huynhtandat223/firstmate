@@ -161,6 +161,9 @@
 # leased home releases its durable treehouse lease so the pool slot is freed,
 # never left leased forever. If the treehouse return fails, teardown leaves the
 # leased home and state in place instead of hiding a still-held lease.
+# A ship task recorded with surface=user-visible (bin/fm-spawn.sh --surface) is
+# also refused until its verification record is complete; bin/fm-verify-gate-lib.sh
+# owns the record format and the check, and --force never skips it.
 # Usage: fm-teardown.sh <task-id> [--force] [--legacy-record]
 #   --force skips ordinary-task dirty and landed-work checks, skips scout report
 #   checks, and discards secondmate child work for kind=secondmate. Only use it
@@ -302,6 +305,8 @@ SUB_HOME_PARENT_MARKER=".fm-secondmate-parent"
 . "$SCRIPT_DIR/fm-pending-reply-lib.sh"
 # shellcheck source=bin/fm-nm-run-lib.sh
 . "$SCRIPT_DIR/fm-nm-run-lib.sh"
+# shellcheck source=bin/fm-verify-gate-lib.sh
+. "$SCRIPT_DIR/fm-verify-gate-lib.sh"
 if [ "$#" -lt 1 ] || ! fm_task_id_path_safe "$1"; then
   echo "error: invalid teardown request" >&2
   exit 2
@@ -1019,6 +1024,18 @@ elif [ "$TREEHOUSE_SLOT_LOCK_REQUIRED" = 1 ]; then
 fi
 MODE=$(grep '^mode=' "$META" | cut -d= -f2- || true)
 [ -n "$MODE" ] || MODE=no-mistakes
+
+# Done gate (bin/fm-verify-gate-lib.sh): a user-visible ship task is cleaned up
+# only once firstmate's verification record is complete. --force never skips it.
+if [ "$KIND" = ship ] && [ "$(fm_meta_get "$META" surface)" = user-visible ]; then
+  if ! fm_verify_gate_check "$DATA" "$ID" "$FM_HOME" 2>"$STATE/.$ID.verify-gate.$$"; then
+    echo "REFUSED: task $ID is surface=user-visible and $DATA/$ID/verify.md is not complete; nothing was changed. --force does not skip verification." >&2
+    cat "$STATE/.$ID.verify-gate.$$" >&2
+    rm -f "$STATE/.$ID.verify-gate.$$"
+    exit 1
+  fi
+  rm -f "$STATE/.$ID.verify-gate.$$"
+fi
 
 # A record accepted as a legacy incarnation (no spawn_gen, --legacy-record
 # given) may be torn down only when its recorded endpoint is confidently gone

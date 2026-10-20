@@ -209,6 +209,39 @@ exit 0;
 PERL
 }
 
+# surface=user-visible adds the done-gate wording from bin/fm-dod-lib.sh; an
+# absent or internal surface leaves the brief byte-identical, and a bad value or
+# a scout use is refused rather than dropped.
+test_surface_user_visible_adds_done_gate_wording() {
+  local home mode id out status
+  home="$TMP_ROOT/surface-home"
+  mkdir -p "$home/data"
+  for mode in no-mistakes direct-PR local-only; do
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "surf-plain-$mode" some-proj --mode "$mode" >/dev/null 2>&1 \
+      || fail "surface: plain $mode brief should scaffold"
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "surf-internal-$mode" some-proj --mode "$mode" --surface internal >/dev/null 2>&1 \
+      || fail "surface: internal $mode brief should scaffold"
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "surf-visible-$mode" some-proj --mode "$mode" --surface user-visible >/dev/null 2>&1 \
+      || fail "surface: user-visible $mode brief should scaffold"
+    sed 's/surf-internal-/surf-plain-/g' "$home/data/surf-internal-$mode/brief.md" > "$home/internal-$mode.norm"
+    cmp -s "$home/data/surf-plain-$mode/brief.md" "$home/internal-$mode.norm" \
+      || fail "surface: --surface internal changed the $mode brief"
+    assert_no_grep "Verification pending is not done" "$home/data/surf-plain-$mode/brief.md" \
+      "surface: plain $mode brief carries the done-gate wording"
+    assert_grep "data/surf-visible-$mode/verify.md" "$home/data/surf-visible-$mode/brief.md" \
+      "surface: user-visible $mode brief does not name its verification record"
+    assert_grep "Verification pending is not done" "$home/data/surf-visible-$mode/brief.md" \
+      "surface: user-visible $mode brief does not say pending is not done"
+  done
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" surf-bad some-proj --mode direct-PR --surface nope 2>&1); status=$?
+  [ "$status" -ne 0 ] || fail "surface: an unknown surface should be refused"
+  assert_contains "$out" "--surface must be user-visible or internal" "surface: unknown value refusal text"
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" surf-scout some-proj --scout --surface user-visible 2>&1); status=$?
+  [ "$status" -ne 0 ] || fail "surface: a scout brief should refuse --surface"
+  assert_contains "$out" "--surface applies only to ship briefs" "surface: scout refusal text"
+  pass "fm-brief.sh: --surface user-visible adds the done-gate wording and internal stays unchanged"
+}
+
 test_help_includes_entire_header() {
   local help
   help=$("$ROOT/bin/fm-brief.sh" --help)
@@ -1176,3 +1209,4 @@ test_required_skills_and_mode_specific_prose
 test_scout_lavish_line_follows_presentation_floor
 test_review_brief_requirement
 test_ci_receipt_requirement
+test_surface_user_visible_adds_done_gate_wording

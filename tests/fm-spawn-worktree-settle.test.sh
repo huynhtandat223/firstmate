@@ -104,6 +104,7 @@ EOF
 
 run_settle_spawn() {
   local id=$1
+  shift
   FM_ROOT_OVERRIDE='' FM_HOME="$HOME_DIR" \
     FM_STATE_OVERRIDE="$HOME_DIR/state" FM_DATA_OVERRIDE="$HOME_DIR/data" \
     FM_PROJECTS_OVERRIDE="$HOME_DIR/projects" FM_CONFIG_OVERRIDE="$HOME_DIR/config" \
@@ -111,7 +112,7 @@ run_settle_spawn() {
     FM_FAKE_PANE_PATH="$WT_DIR" FM_FAKE_PANE_STALE="$STALE_DIR" \
     FM_FAKE_PANE_STALE_READS="$STALE_READS" FM_FAKE_PANE_COUNTFILE="$COUNTFILE" \
     PATH="$FAKEBIN_DIR:$PATH" \
-    "$SPAWN" "$id" "$PROJ_DIR" --mode no-mistakes --yolo off 2>&1
+    "$SPAWN" "$id" "$PROJ_DIR" --mode no-mistakes --yolo off "$@" 2>&1
 }
 
 # A single stale first read (the exact incident) must not be accepted: the
@@ -152,6 +153,34 @@ test_already_settled_pane_costs_one_confirm_read() {
   reads=$(cat "$COUNTFILE")
   [ "$reads" -eq 2 ] || fail "already-settled pane took $reads reads to confirm - expected the first read plus one confirmation"
   pass "an already-settled pane confirms on the next read, not a whole extra cycle"
+}
+
+# --surface is recorded in state/<id>.meta (bin/fm-spawn.sh); absent records nothing
+# and so reads as internal. A bad value or a scout use is refused before any launch.
+test_surface_is_recorded_in_meta() {
+  local rec id out status
+  id=settle-surface-visible-z5
+  rec=$(make_settle_case settle-surface-visible "$id" 0)
+  read_settle_record "$rec"
+  out=$(run_settle_spawn "$id" --surface user-visible)
+  expect_code 0 "$?" "spawn with --surface user-visible should succeed"$'\n'"$out"
+  assert_grep 'surface=user-visible' "$HOME_DIR/state/$id.meta" "meta did not record surface=user-visible"
+
+  id=settle-surface-absent-z6
+  rec=$(make_settle_case settle-surface-absent "$id" 0)
+  read_settle_record "$rec"
+  out=$(run_settle_spawn "$id")
+  expect_code 0 "$?" "spawn without --surface should succeed"$'\n'"$out"
+  assert_no_grep 'surface=' "$HOME_DIR/state/$id.meta" "meta recorded a surface nobody asked for"
+
+  id=settle-surface-bad-z7
+  rec=$(make_settle_case settle-surface-bad "$id" 0)
+  read_settle_record "$rec"
+  out=$(run_settle_spawn "$id" --surface nope); status=$?
+  [ "$status" -ne 0 ] || fail "an unknown --surface should be refused"
+  assert_contains "$out" "--surface must be user-visible or internal" "unknown surface refusal text"
+  assert_absent "$HOME_DIR/state/$id.meta" "a refused spawn still wrote a task record"
+  pass "--surface is recorded in meta, absent records nothing, and a bad value is refused"
 }
 
 # make_primary_case <name> <id> <stale_reads> builds the linked-home shape: the
@@ -225,5 +254,6 @@ test_single_stale_first_read_is_not_accepted
 test_already_settled_pane_costs_one_confirm_read
 test_transient_primary_checkout_is_not_accepted
 test_primary_checkout_that_never_settles_fails_at_the_deadline
+test_surface_is_recorded_in_meta
 
 echo "# all fm-spawn-worktree-settle tests passed"

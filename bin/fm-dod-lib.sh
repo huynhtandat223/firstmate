@@ -5,8 +5,8 @@
 # receives. Both paths must hand the worker the same contract: a promoted
 # no-mistakes worker that never received the ask-user escalation rule or the
 # `--yes` ban is the exact delivery hole this single owner exists to close.
-# fm_dod_block <no-mistakes|direct-PR|local-only> <task-id> prints the block on
-# stdout with no trailing blank line. The caller validates the mode; an unknown
+# fm_dod_block <no-mistakes|direct-PR|local-only> <task-id> [<surface>] prints the
+# block on stdout with no trailing blank line. The caller validates the mode; an unknown
 # mode is refused rather than silently rendered as the pipeline contract.
 # The block opens with the fixed machine-readable "Delivery contract: mode=<mode>"
 # line that bin/fm-spawn.sh checks a ship brief against.
@@ -240,7 +240,7 @@ fm_ask_user_escalation_block() {  # <data-dir> <task-id>
 EOF
 }
 
-fm_dod_block() {  # <mode> <task-id>
+fm_dod_block_mode() {  # <mode> <task-id>
   local mode=$1 id=$2
   case "$mode" in
     direct-PR)
@@ -328,4 +328,19 @@ EOF
       echo "error: fm_dod_block: unknown delivery mode '$mode'" >&2
       return 1 ;;
   esac
+}
+
+# fm_dod_block <mode> <task-id> [<surface>] prints the mode block, then for
+# surface=user-visible the done-gate wording; an absent or internal surface adds
+# nothing, so internal briefs stay byte-identical. The record format and the
+# teardown check are owned by bin/fm-verify-gate-lib.sh.
+fm_dod_block() {  # <mode> <task-id> [<surface>]
+  local mode=$1 id=$2 surface=${3:-internal}
+  fm_dod_block_mode "$mode" "$id" || return 1
+  if [ "$surface" = user-visible ]; then
+    printf '%s\n' \
+      "This task changes a user-visible surface, so its definition of done includes firstmate's verification record data/$id/verify.md with every acceptance line passed on the real surface and approved." \
+      "Verification pending is not done: do not report the task finished on a merged PR or green CI alone." \
+      "Firstmate cannot clean up this task until that record is complete."
+  fi
 }
