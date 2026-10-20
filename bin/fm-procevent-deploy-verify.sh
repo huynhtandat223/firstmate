@@ -25,6 +25,8 @@
 #              skip to record, a first GitHub failure, or a recovery to clear.
 #              A skipped, cancelled or failed deploy asks nothing; the next green
 #              deploy carries its commits.
+#              The first poll only sets the cursor to the newest finished run; it never
+#              asks about history.
 # autohandle   Send each ask as an fm-assistance-mentions.v1 record through
 #              `fm-assistance.sh source-event <assistance>`, record it in
 #              data/deploy-verify/ledger.jsonl, then advance the cursor and
