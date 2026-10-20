@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Spawn a direct report: a crewmate in a treehouse or Orca worktree, or a
 # secondmate in its isolated firstmate home.
-# Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--branch-prefix <prefix>] [--base-branch <branch>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] [--herdr-resume-lock-wait]
+# Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--surface <user-visible|internal>] [--branch-prefix <prefix>] [--base-branch <branch>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] [--herdr-resume-lock-wait]
 #        fm-spawn.sh <task-id> <project-dir> --scout [--base-branch <branch>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] [--herdr-resume-lock-wait]
 #        fm-spawn.sh <task-id> [<firstmate-home>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] --secondmate
 #        fm-spawn.sh <id> <assistance-home> --assistance --harness claude --backend herdr [--workdir <abs-dir>]
@@ -13,6 +13,9 @@
 #   launch still loads no setting source, so the project's settings, hooks, MCP
 #   servers and skills never run; the charter has the agent read the project's
 #   CLAUDE.md and AGENTS.md itself, as data.
+#   --surface <user-visible|internal> is an optional ship-only input recorded as
+#   surface=<value> in state/<id>.meta; absent means internal. bin/fm-teardown.sh
+#   owns what a user-visible task must prove before cleanup.
 #   --mode and --yolo are this task's delivery contract, REQUIRED for every ship
 #   spawn and refused on --scout and --secondmate spawns. Firstmate resolves both
 #   per task at intake (AGENTS.md section 7); data/projects.md holds the captain's
@@ -828,6 +831,7 @@ BACKEND_ARG=
 MODE=
 YOLO=
 BRANCH_PREFIX=fm/
+SURFACE=
 TRACEPARENT_ARG=
 WORKDIR_ARG=
 HARNESS_SET=0
@@ -841,6 +845,7 @@ BASE_BRANCH=
 BASE_BRANCH_SET=0
 UPSTREAM_CONSENT=
 UPSTREAM_CONSENT_SET=0
+SURFACE_SET=0
 TRACEPARENT_SET=0
 WORKDIR_SET=0
 RELAUNCH=0
@@ -893,6 +898,10 @@ for a in "$@"; do
     upstream-consent)
       UPSTREAM_CONSENT=$a
       UPSTREAM_CONSENT_SET=1
+      ;;
+    surface)
+      SURFACE=$a
+      SURFACE_SET=1
       ;;
     traceparent)
       TRACEPARENT_ARG=$a
@@ -974,6 +983,11 @@ for a in "$@"; do
     UPSTREAM_CONSENT=${a#--upstream-consent=}
     UPSTREAM_CONSENT_SET=1
     ;;
+  --surface) want_value=surface ;;
+  --surface=*)
+    SURFACE=${a#--surface=}
+    SURFACE_SET=1
+    ;;
   --traceparent) want_value=traceparent ;;
   --traceparent=*)
     TRACEPARENT_ARG=${a#--traceparent=}
@@ -1017,6 +1031,10 @@ done
 }
 [ "$UPSTREAM_CONSENT_SET" -eq 0 ] || [ -n "$UPSTREAM_CONSENT" ] || {
   echo "error: --upstream-consent requires a non-empty <host>/<owner>/<repo> value" >&2
+  exit 1
+}
+[ "$SURFACE_SET" -eq 0 ] || [ -n "$SURFACE" ] || {
+  echo "error: --surface requires a non-empty value" >&2
   exit 1
 }
 [ "$TRACEPARENT_SET" -eq 0 ] || [ -n "$TRACEPARENT_ARG" ] || {
@@ -1091,6 +1109,10 @@ if [ "$RELAUNCH" -eq 1 ]; then
     echo "error: --relaunch reuses the task's recorded upstream consent; --upstream-consent cannot override it" >&2
     exit 1
   }
+  [ "$SURFACE_SET" -eq 0 ] || {
+    echo "error: --relaunch reuses the task's recorded surface; --surface cannot override it" >&2
+    exit 1
+  }
 else
   # Delivery contract (AGENTS.md section 7). A ship task's mode and yolo are
   # firstmate's per-task decision, so they are required and closed-set validated
@@ -1134,6 +1156,13 @@ else
       }
       UPSTREAM_CONSENT=$(fm_role_scope_norm "$UPSTREAM_CONSENT")
     fi
+    case "$SURFACE" in
+    '' | user-visible | internal) ;;
+    *)
+      echo "error: --surface must be user-visible or internal (got '$SURFACE')" >&2
+      exit 1
+      ;;
+    esac
   else
     [ "$MODE_SET" -eq 0 ] || {
       echo "error: --mode applies only to ship spawns; a scout delivers a report and a secondmate records its own fixed posture" >&2
@@ -1153,6 +1182,10 @@ else
     }
     [ "$UPSTREAM_CONSENT_SET" -eq 0 ] || {
       echo "error: --upstream-consent applies only to ship spawns; a scout publishes nothing and a secondmate records no delivery contract" >&2
+      exit 1
+    }
+    [ "$SURFACE_SET" -eq 0 ] || {
+      echo "error: --surface applies only to ship spawns; a scout delivers a report and a secondmate has no user-visible surface" >&2
       exit 1
     }
   fi
@@ -1607,6 +1640,7 @@ spawn_abort_cleanup() {
             [ -z "${MODE:-}" ] || echo "mode=$MODE"
             [ -z "${YOLO:-}" ] || echo "yolo=$YOLO"
             [ -z "${BRANCH:-}" ] || echo "branch=$BRANCH"
+            [ -z "${SURFACE:-}" ] || echo "surface=$SURFACE"
             echo "tasktmp=${TASK_TMP:-}"
             echo "model=${MODEL:-default}"
             echo "effort=${EFFORT:-default}"
@@ -1864,6 +1898,7 @@ if [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart" ] && case "$idpart" in *
   [ "$BRANCH_PREFIX_SET" -eq 0 ] || shared_args+=(--branch-prefix "$BRANCH_PREFIX")
   [ "$BASE_BRANCH_SET" -eq 0 ] || shared_args+=(--base-branch "$BASE_BRANCH")
   [ "$HERDR_RESUME_LOCK_WAIT" -eq 0 ] || shared_args+=(--herdr-resume-lock-wait)
+  [ "$SURFACE_SET" -eq 0 ] || shared_args+=(--surface "$SURFACE")
   for pair in "${POS[@]}"; do
     case "$pair" in
     *=*) : ;;
@@ -5928,6 +5963,7 @@ preserve_relaunch_meta() {
   [ -z "$MODE" ] || echo "mode=$MODE"
   [ -z "$YOLO" ] || echo "yolo=$YOLO"
   [ -z "${BRANCH:-}" ] || echo "branch=$BRANCH"
+  [ -z "$SURFACE" ] || echo "surface=$SURFACE"
   echo "tasktmp=$TASK_TMP"
   [ -z "$BASE_BRANCH" ] || echo "base_branch=$BASE_BRANCH"
   [ -z "$UPSTREAM_CONSENT" ] || echo "upstream_consent=$UPSTREAM_CONSENT"

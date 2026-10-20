@@ -6,7 +6,7 @@
 # receives. Both paths must hand the worker the same contract: a promoted
 # no-mistakes worker that never received the ask-user escalation rule or the
 # `--yes` ban is the exact delivery hole this single owner exists to close.
-# fm_dod_block <no-mistakes|direct-PR|local-only> <task-id> [branch] [<forge>]
+# fm_dod_block <no-mistakes|direct-PR|local-only> <task-id> [branch] [<forge>] [<base>] [<consent>] [<surface>]
 # prints the block on stdout with no trailing blank line. The caller validates the
 # mode; an unknown mode is refused rather than silently rendered as the pipeline
 # contract.
@@ -448,7 +448,7 @@ There is no pull request, no \`gh-axi\` call, and no forge CI result to report: 
 EOF
 }
 
-fm_dod_block() {  # <mode> <task-id> [branch] [<forge>] [<base>] [<consent>]
+fm_dod_block_mode() {  # <mode> <task-id> [branch] [<forge>] [<base>] [<consent>]
   local mode=$1 id=$2 forge=${4:-none} base=${5:-} consent=${6:-}
   local branch=${3:-fm/$id} pr_base='' nm_base='' base_q contract_forge='' contract_consent='' forge_cli=gh-axi draft_check adapter
   fm_forge_valid_for_mode "$forge" "$mode" fm_dod_block || return 1
@@ -915,4 +915,19 @@ fm_dod_accept_ship_done() {  # <kind> <mode> <worktree> <project> <line> [<state
   fi
   printf '%s\n' "named head $sha is unreachable outside the worker copy"
   return 1
+}
+
+# fm_dod_block <mode> <task-id> [branch] [<forge>] [<base>] [<consent>] [<surface>]
+# prints the mode block, then for surface=user-visible the done-gate wording; an
+# absent or internal surface adds nothing, so internal briefs stay byte-identical.
+# The record format and the teardown check are owned by bin/fm-verify-gate-lib.sh.
+fm_dod_block() {
+  local id=$2 surface=${7:-internal}
+  fm_dod_block_mode "${@:1:6}" || return 1
+  if [ "$surface" = user-visible ]; then
+    printf '%s\n' \
+      "This task changes a user-visible surface, so its definition of done includes firstmate's verification record data/$id/verify.md with every acceptance line passed on the real surface and approved." \
+      "Verification pending is not done: do not report the task finished on a merged PR or green CI alone." \
+      "Firstmate cannot clean up this task until that record is complete."
+  fi
 }
