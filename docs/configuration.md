@@ -115,6 +115,8 @@ Untracked files and directories whose names begin with `scratchpad` are also git
 
 - `bin/fm-spawn.sh` owns the base task-metadata fields it emits, while the runtime-backend section below owns backend-specific fields and selector interpretation.
 
+- The optional `surface=user-visible` field marks a ship task whose cleanup waits for the verification record that `bin/fm-verify-gate-lib.sh` owns; an absent field means `internal`.
+
 - `bin/fm-contributions.sh` owns durable published-contribution records under each task, observation bounds, equivalent triage-label configuration, and the authenticated contribution check.
 
 - The producing PR and Relay helpers own the fields they append, [`bin/fm-classify-lib.sh`](../bin/fm-classify-lib.sh) owns status-event vocabulary, optional emission-time syntax, and legacy unknown-time handling, and `bin/fm-crew-state.sh` owns current-state reconciliation.

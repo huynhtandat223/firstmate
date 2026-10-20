@@ -39,11 +39,14 @@
 # binding and bin/fm-dod-lib.sh owns what it changes for the worker, including
 # the refusal of a forge on local-only. A forge=external project is refused
 # outright, because its push guard is installed only by a ship spawn.
-# Usage: fm-promote.sh <task-id> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--branch-prefix <prefix>] [--upstream-consent <host>/<owner>/<repo>]
+# Usage: fm-promote.sh <task-id> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--branch-prefix <prefix>] [--upstream-consent <host>/<owner>/<repo>] [--surface <user-visible|internal>]
 # --upstream-consent records the captain's one-off approval for this task to
 # publish to firstmate's own upstream repository; promotion applies the same
 # self-repository publication gate as bin/fm-spawn.sh (bin/fm-role-lib.sh), so
 # a promoted scout cannot gain authority a fresh ship spawn would be refused.
+# --surface <user-visible|internal> is optional, validated like bin/fm-spawn.sh's
+# and recorded in the meta (internal drops any earlier value); user-visible adds
+# the done-gate wording bin/fm-dod-lib.sh owns. Any other -- option is refused.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -80,6 +83,8 @@ YOLO_SET=0
 FORGE=none
 UPSTREAM_CONSENT=
 UPSTREAM_CONSENT_SET=0
+SURFACE=
+SURFACE_SET=0
 POS=()
 want_value=
 for a in "$@"; do
@@ -92,6 +97,7 @@ for a in "$@"; do
       yolo) YOLO=$a; YOLO_SET=1 ;;
       branch-prefix) BRANCH_PREFIX=$a ;;
       upstream-consent) UPSTREAM_CONSENT=$a; UPSTREAM_CONSENT_SET=1 ;;
+      surface) SURFACE=$a; SURFACE_SET=1 ;;
     esac
     want_value=
     continue
@@ -105,6 +111,9 @@ for a in "$@"; do
     --branch-prefix=*) BRANCH_PREFIX=${a#--branch-prefix=} ;;
     --upstream-consent) want_value="upstream-consent" ;;
     --upstream-consent=*) UPSTREAM_CONSENT=${a#--upstream-consent=}; UPSTREAM_CONSENT_SET=1 ;;
+    --surface) want_value=surface ;;
+    --surface=*) SURFACE=${a#--surface=}; SURFACE_SET=1 ;;
+    --*) echo "error: unknown option $a" >&2; exit 1 ;;
     *) POS+=("$a") ;;
   esac
 done
@@ -164,6 +173,11 @@ refuse_impossible_forge_posture() {
   return 0
 }
 refuse_impossible_forge_posture || exit 1
+case "$SURFACE" in
+  ''|user-visible|internal) ;;
+  *) echo "error: --surface must be user-visible or internal (got '$SURFACE')" >&2; exit 1 ;;
+esac
+[ "$SURFACE_SET" -eq 0 ] || [ -n "$SURFACE" ] || { echo "error: --surface requires a non-empty value" >&2; exit 1; }
 
 ID=${POS[0]}
 fm_task_id_creation_valid "$ID" || { echo "error: invalid task id" >&2; exit 2; }
@@ -320,7 +334,7 @@ EOF
     printf '%s\n' "$PROMOTION_ASK_USER_BLOCK"
   fi
   printf '\n'
-  fm_dod_block "$MODE" "$ID" "$BRANCH" "$FORGE" "$BASE_BRANCH" "$UPSTREAM_CONSENT"
+  fm_dod_block "$MODE" "$ID" "$BRANCH" "$FORGE" "$BASE_BRANCH" "$UPSTREAM_CONSENT" "$SURFACE"
 }
 mkdir -p "$DATA/$ID"
 [ ! -d "$INSTRUCTIONS" ] || { echo "error: ship instructions path is a directory: $INSTRUCTIONS" >&2; exit 1; }
@@ -373,13 +387,14 @@ fi
 BRIEF_REPLACEMENT=
 
 TMP="$STATE/.$ID.meta.promote.${BASHPID:-$$}"
-grep -v -e '^kind=' -e '^mode=' -e '^yolo=' -e '^branch=' -e '^upstream_consent=' "$META" > "$TMP"
+grep -v -e '^kind=' -e '^mode=' -e '^yolo=' -e '^branch=' -e '^upstream_consent=' -e '^surface=' "$META" > "$TMP"
 {
   echo "kind=ship"
   echo "mode=$MODE"
   echo "yolo=$YOLO"
   echo "branch=$BRANCH"
   [ -z "$UPSTREAM_CONSENT" ] || echo "upstream_consent=$UPSTREAM_CONSENT"
+  [ "$SURFACE" != user-visible ] || echo "surface=user-visible"
 } >> "$TMP"
 if ! fm_backlog_atomic_transition publish "$TMP" "$META" "task record" "$STATE"; then
   rm -f -- "$TMP"
