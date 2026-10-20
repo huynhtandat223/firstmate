@@ -493,18 +493,6 @@
       "audience": "agent-runtime"
     },
     {
-      "path": "custom-skills/orchestrator/PROGRAMME.md",
-      "audience": "agent-runtime"
-    },
-    {
-      "path": "custom-skills/orchestrator/ROUTING.md",
-      "audience": "agent-runtime"
-    },
-    {
-      "path": "custom-skills/orchestrator/SKILL.md",
-      "audience": "agent-runtime"
-    },
-    {
       "path": "custom-skills/paired-review/SKILL.md",
       "audience": "agent-runtime"
     },
@@ -517,15 +505,7 @@
       "audience": "agent-runtime"
     },
     {
-      "path": "custom-skills/planner/SKILL.md",
-      "audience": "agent-runtime"
-    },
-    {
       "path": "custom-skills/policy/SKILL.md",
-      "audience": "agent-runtime"
-    },
-    {
-      "path": "custom-skills/program-orchestration/SKILL.md",
       "audience": "agent-runtime"
     },
     {
