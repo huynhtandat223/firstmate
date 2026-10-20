@@ -898,7 +898,7 @@ for a in "$@"; do
     upstream-consent)
       UPSTREAM_CONSENT=$a
       UPSTREAM_CONSENT_SET=1
-    ;;
+      ;;
     surface)
       SURFACE=$a
       SURFACE_SET=1
