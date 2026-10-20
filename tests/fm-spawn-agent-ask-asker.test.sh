@@ -93,6 +93,8 @@ test_secondmate() {
   printf '# Firstmate\n' > "$sm/AGENTS.md"
   printf 'sm-asker\n' > "$sm/.fm-secondmate-home"
   printf 'charter\n' > "$sm/data/charter.md"
+  printf '%s\n' 'projects/' 'state/' 'data/' 'config/' '.no-mistakes/' > "$sm/.gitignore"
+  git -C "$sm" init -q -b main
   out=$(run_case_spawn sm-asker "$sm" --secondmate)
   status=$?
   expect_code 0 "$status" "secondmate spawn should succeed: $out"

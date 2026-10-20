@@ -4,7 +4,6 @@ set -eu
 # shellcheck source=tests/fixtures.sh
 . "$(dirname "${BASH_SOURCE[0]}")/fixtures.sh"
 tmp=$(fm_test_tmproot fm-handoff-threshold-spawn)
-trap 'rm -rf "$tmp"' EXIT
 fakebin=$(fm_test_make_spawn_fakebin "$tmp/fake" pi)
 home="$tmp/home"
 fm_test_spawn_home "$home" pi

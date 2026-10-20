@@ -1415,7 +1415,7 @@ test_required_skills_and_mode_specific_prose() {
     HOME="$empty_home" FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" repo --mode "$mode" >/dev/null 2>&1 \
       || fail "$mode brief scaffold failed"
     brief="$home/data/$id/brief.md"
-    assert_no_grep "shared \`no-mistakes\` daemon" "$brief" "$mode brief must not contain the no-mistakes daemon rule"
+    assert_no_grep "The \`no-mistakes\` daemon" "$brief" "$mode brief must not contain the no-mistakes daemon rule"
     assert_grep "# Required skills and instructions" "$brief" "$mode brief missing required skills"
     assert_grep "custom-skills/policy/SKILL.md" "$brief" "$mode brief lost the policy skill"
     assert_grep "custom-skills/classical-testing/SKILL.md" "$brief" "$mode brief lost classical-testing"
@@ -1425,7 +1425,7 @@ test_required_skills_and_mode_specific_prose() {
   HOME="$empty_home" FM_HOME="$home" "$ROOT/bin/fm-brief.sh" scout repo --scout >/dev/null 2>&1 \
     || fail "scout brief scaffold failed"
   brief="$home/data/scout/brief.md"
-  assert_no_grep "shared \`no-mistakes\` daemon" "$brief" "scout brief must not contain the no-mistakes daemon rule"
+  assert_no_grep "The \`no-mistakes\` daemon" "$brief" "scout brief must not contain the no-mistakes daemon rule"
   assert_grep "# Required skills and instructions" "$brief" "scout brief missing required skills"
   assert_grep "custom-skills/policy/SKILL.md" "$brief" "scout brief lost the policy skill"
   assert_grep "custom-skills/classical-testing/SKILL.md" "$brief" "scout brief lost classical-testing"
@@ -1434,7 +1434,7 @@ test_required_skills_and_mode_specific_prose() {
   HOME="$empty_home" FM_HOME="$home" "$ROOT/bin/fm-brief.sh" nomistakes repo --mode no-mistakes >/dev/null 2>&1 \
     || fail "no-mistakes brief scaffold failed"
   brief="$home/data/nomistakes/brief.md"
-  assert_grep "shared \`no-mistakes\` daemon" "$brief" "no-mistakes brief lost rule 7"
+  assert_grep "The \`no-mistakes\` daemon" "$brief" "no-mistakes brief lost rule 7"
   assert_grep "Firstmate will then instruct you to run /no-mistakes" "$brief" "no-mistakes brief lost its DoD"
   assert_grep "custom-skills/policy/SKILL.md" "$brief" "no-mistakes brief lost the policy skill"
   assert_grep "custom-skills/classical-testing/SKILL.md" "$brief" "no-mistakes brief lost classical-testing"
@@ -1775,20 +1775,29 @@ test_crewmate_scaffolds_forbid_pool_administration() {
   # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
   assert_grep 'blocked [at=<epoch>]: {what you need}' "$brief" "scout brief gave the prohibition no exit"
 
-  # One shared string, not two copies: the emitted rule must be byte-identical
-  # across the ship and scout scaffolds so a later edit cannot fix one and miss
-  # the other.
-  ship_rule=$(awk '/^7\. Never administer/,/^$/' "$home/data/brief-pool-no-mistakes/brief.md")
+  # One shared builder, not two copies: the emitted rule must be byte-identical
+  # across the ship and scout scaffolds of the same pipeline posture, so a later
+  # edit cannot fix one and miss the other. Only a no-mistakes brief adds the
+  # daemon item, because only it drives the pipeline.
+  ship_rule=$(awk '/^7\. Never administer/,/^$/' "$home/data/brief-pool-direct-PR/brief.md")
   scout_rule=$(awk '/^7\. Never administer/,/^$/' "$brief")
   [ -n "$ship_rule" ] || fail "ship brief emitted no shared-infrastructure rule to compare"
   [ "$ship_rule" = "$scout_rule" ] \
     || fail "ship and scout shared-infrastructure rules have drifted apart"
+  # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+  assert_no_grep 'The `no-mistakes` daemon' "$brief" "scout brief carried the no-mistakes daemon item"
 
-  # The daemon half of the rule survived the fold.
-  assert_grep "no-mistakes" "$brief" "scout brief lost the shared no-mistakes daemon rule"
+  # The daemon item reaches the brief that drives the pipeline.
+  brief="$home/data/brief-pool-no-mistakes/brief.md"
+  # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+  assert_grep 'The `no-mistakes` daemon' "$brief" "no-mistakes brief lost the shared no-mistakes daemon item"
   # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
   assert_grep 'blocked [at=<epoch>]: {the daemon error}' "$brief" \
-    "scout brief lost the daemon-error reporting instruction"
+    "no-mistakes brief lost the daemon-error reporting instruction"
+  # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+  [ "$(awk '/^7\. Never administer/,/^$/' "$brief" | grep -v -e '^   - The `no-mistakes` daemon' -e '^     ' )" \
+    = "$(printf '%s\n' "$scout_rule" | grep -v -e '^     ')" ] \
+    || fail "the no-mistakes rule differs from the shared rule beyond its daemon item"
 
   # A secondmate runs its own home and legitimately allocates and returns slots
   # for its own crewmates, so the crewmate prohibition must NOT reach its charter.
