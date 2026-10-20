@@ -3758,6 +3758,26 @@ test_verify_gate_refuses_a_promoted_user_visible_scout() {
   pass "a promoted user-visible scout is refused without verify.md"
 }
 
+test_verify_gate_refuses_acceptance_line_outside_section() {
+  local case_dir
+  case_dir=$(verify_gate_case verify-outside)
+  : > "$case_dir/shot.png"
+  write_verify "$case_dir" pass "$case_dir/shot.png" yes
+  printf '%s\n' '## Notes' '- A3 | hidden line | pending | evidence: -' >> "$case_dir/data/task-x1/verify.md"
+  expect_verify_refusal "$case_dir" "verify-outside" "acceptance line outside '## Acceptance'"
+  pass "an acceptance line outside the Acceptance section is refused"
+}
+
+test_verify_gate_refuses_approval_before_acceptance() {
+  local case_dir
+  case_dir=$(verify_gate_case verify-early-approval)
+  : > "$case_dir/shot.png"
+  printf '%s\n' 'surface: user-visible' 'approved: firstmate 1792486840' '## Acceptance' \
+    "- A1 | the page shows the new button | pass | evidence: $case_dir/shot.png" > "$case_dir/data/task-x1/verify.md"
+  expect_verify_refusal "$case_dir" "verify-early-approval" "approved line must come after the last acceptance line"
+  pass "an approved line placed before the acceptance lines is refused"
+}
+
 test_verify_gate_allows_complete_record() {
   local case_dir rc
   case_dir=$(verify_gate_case verify-complete)
@@ -3880,3 +3900,5 @@ test_verify_gate_force_does_not_skip
 test_verify_gate_allows_complete_record
 test_verify_gate_ignores_internal_surface
 test_verify_gate_refuses_a_promoted_user_visible_scout
+test_verify_gate_refuses_acceptance_line_outside_section
+test_verify_gate_refuses_approval_before_acceptance

@@ -13,7 +13,8 @@
 # fm_verify_gate_problems <data-dir> <task-id> <base-dir> prints one problem per
 # line on stdout and returns 1 when the record is missing or incomplete; it prints
 # nothing and returns 0 when every acceptance line is pass with evidence and an
-# approved line is present. A relative evidence path resolves against <base-dir>.
+# approved line follows the last acceptance line. An acceptance-shaped line
+# outside '## Acceptance' is a problem, never skipped. A relative evidence path resolves against <base-dir>.
 # The check reads the record only; it never generates or changes evidence.
 
 fm_verify_gate_problems() {  # <data-dir> <task-id> <base-dir>
@@ -33,13 +34,21 @@ fm_verify_gate_problems() {  # <data-dir> <task-id> <base-dir>
       'approved: firstmate '*)
         case "${line#approved: firstmate }" in
           ''|*[!0-9]*) echo "approved line needs a numeric epoch: $line" ;;
-          *) approved=1 ;;
+          *)
+            if [ "$n" -gt 0 ]; then approved=1
+            else echo "approved line must come after the last acceptance line: $line"; fi ;;
         esac
         continue ;;
     esac
-    [ "$in_acc" -eq 1 ] || continue
+    if [ "$in_acc" -eq 0 ]; then
+      case "$line" in
+        '- A'[0-9]*' | '*) echo "acceptance line outside '## Acceptance': $line" ;;
+      esac
+      continue
+    fi
     case "$line" in '- '*) ;; *) continue ;; esac
     n=$((n + 1))
+    approved=0
     rid=$(printf '%s' "${line#- }" | awk -F' [|] ' '{print $1}')
     rstatus=$(printf '%s' "${line#- }" | awk -F' [|] ' '{print $(NF-1)}')
     revidence=$(printf '%s' "${line#- }" | awk -F' [|] ' '{print $NF}')
