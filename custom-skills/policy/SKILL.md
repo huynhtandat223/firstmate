@@ -36,8 +36,8 @@ Load only the exact file named by the first matching trigger, when the trigger o
 
 | Trigger | Exact capability |
 | --- | --- |
-| The captain asks for an interview, design decision, or frontier round | `/home/dathuynh/codes/firstmate/custom-skills/matt/productivity/grilling/SKILL.md` |
 | The captain explicitly chooses the plain interview form | `/home/dathuynh/codes/firstmate/custom-skills/matt/productivity/grill-me/SKILL.md` |
+| The captain asks for an interview, design decision, or frontier round | `/home/dathuynh/codes/firstmate/custom-skills/matt/productivity/grilling/SKILL.md` |
 | The captain asks to capture glossary or ADR decisions during grilling | `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/grill-with-docs/SKILL.md`, then its exact domain-modeling companion |
 | The captain explicitly asks to crystallize a spec | `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/to-spec/SKILL.md` |
 | The captain explicitly asks to crystallize dependency-aware tickets | `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/to-tickets/SKILL.md` |
