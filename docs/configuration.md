@@ -649,6 +649,25 @@ With it present, ship and scout briefs gain the `# Waiting` section and the fore
 With the file absent, generated briefs omit the waiting section and the no-poll inbox line, the drive text backgrounds the call, recovery sends during an open decision, and a fire-and-forget steer is not owed a retry ring.
 The flag is a home-local preference and is not inherited by secondmate homes.
 
+## Wait-over alarm (config/wait-over-minutes)
+
+The optional local, gitignored `config/wait-over-minutes` file sets how long a worker's wait may run before the watcher wakes firstmate about it.
+It holds one integer from 1 to 1440, or `off`.
+An absent file means 45 minutes, and `off` raises no wait-over wake at all.
+An unreadable or malformed file falls back to 45 and wakes once with `check: config/wait-over-minutes unreadable, using 45`; a valid file clears that record.
+
+Why 45: the prompt cache measured on Claude worker transcripts still hits after idle gaps of up to 57 minutes and misses from 62 minutes, and the next turn after a miss rewrites 93k to 553k tokens of context.
+A worker that sits in a `paused:`, `blocked:` or `needs-decision:` wait for an hour therefore pays the full rewrite on its next turn.
+Nothing else names that line: `blocked:` and `needs-decision:` surface once when written, a declared pause is rechecked every `FM_PAUSE_RESURFACE_SECS`, and the wedge ladder absorbs declared waits on purpose.
+
+For each ship or scout task whose newest status line has one of those three verbs, the watcher appends one `check: wait-over <task> <m>m: <verb>: <note>` wake (note trimmed to 160 characters) once the wait reaches the limit.
+The wait starts at the later of that line's `[at=]` stamp (the status file's mtime when the line has no stamp) and the task's `turn-ended` mtime.
+The `progress` marker is not counted, because it is not yet measured whether it moves while a worker sleeps in one blocking shell command, and counting it could hide the alarm for the commonest `paused:` wait.
+`state/.wait-over-<task>` records the wait that was reported, so the same wait never wakes again; a newer status line or completed turn starts a new wait that can wake after its own limit, and teardown removes the marker.
+The alarm adds to the pause recheck, the `until` recheck, the wedge ladder and the first-sight surfacing, and replaces none of them.
+It skips assistances and secondmates, stops no worker, and starts no handoff; the wake only tells firstmate to clear the condition or hand the worker off.
+The file is a home-local preference and is not inherited by secondmate homes.
+
 ## No-mistakes pipeline spend (config/pipeline-spend)
 
 The optional local, gitignored `config/pipeline-spend` presence flag opts this home into recording per-task no-mistakes pipeline spend in `data/pipeline-spend.jsonl` during teardown.

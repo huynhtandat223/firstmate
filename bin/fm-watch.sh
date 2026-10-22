@@ -1062,6 +1062,123 @@ EOF
   return 0
 }
 
+# A paused, blocked or needs-decision wait that runs past the prompt cache's
+# life makes the worker's next turn rewrite its whole context (measured: a cache
+# hit up to 57 minutes idle, a miss from 62, a rewrite of 93k-553k tokens). The
+# existing rules do not name that line: blocked: and needs-decision: surface
+# once when written, a declared pause rechecks every FM_PAUSE_RESURFACE_SECS,
+# and the wedge ladder absorbs declared waits on purpose. This tick adds one
+# `check: wait-over <task> <m>m: <verb>: <note>` wake per wait and replaces none
+# of them. A wait starts at the later of the newest status line's [at=] stamp
+# (the status file's mtime when the line has no stamp) and the task's turn-ended
+# mtime; the progress marker is deliberately left out, because whether it moves
+# while a worker sleeps in one shell command is not measured yet and counting it
+# could hide the alarm for the commonest paused: wait. state/.wait-over-<task>
+# records the wait it reported (status line byte offset, stamp, start), so the
+# same wait never wakes twice and a newer line or turn starts a new one.
+# Ship and scout workers only: assistance cadence belongs to that home and a
+# secondmate's idle pane is healthy by design. config/wait-over-minutes
+# (docs/configuration.md) sets the limit.
+WAIT_OVER_DEFAULT_MINUTES=45
+
+# Resolve the limit into WAIT_OVER_LIMIT (minutes, or "off"). A malformed file
+# falls back to the default and wakes once per episode of malformation.
+wait_over_limit_resolve() {
+  local f="$CONFIG/wait-over-minutes" marker="$STATE/.wait-over-config-bad" raw reason queued
+  WAIT_OVER_LIMIT=$WAIT_OVER_DEFAULT_MINUTES
+  if [ ! -e "$f" ] && [ ! -L "$f" ]; then
+    rm -f "$marker"
+    return 0
+  fi
+  if [ -f "$f" ] && [ -r "$f" ] && raw=$(cat "$f" 2>/dev/null); then
+    raw=${raw//[[:space:]]/}
+    case "$raw" in
+      off)
+        WAIT_OVER_LIMIT=off
+        rm -f "$marker"
+        return 0
+        ;;
+      ''|*[!0-9]*|0*) ;;
+      *)
+        if [ "${#raw}" -le 4 ] && [ "$raw" -le 1440 ]; then
+          WAIT_OVER_LIMIT=$raw
+          rm -f "$marker"
+          return 0
+        fi
+        ;;
+    esac
+  fi
+  [ ! -e "$marker" ] || return 0
+  reason="check: config/wait-over-minutes unreadable, using $WAIT_OVER_DEFAULT_MINUTES"
+  queued=$(fm_wake_queued_keys check)
+  if ! printf '%s\n' "$queued" | grep -Fx wait-over-config >/dev/null 2>&1; then
+    fm_wake_append check wait-over-config "$reason" || return 1
+  fi
+  printf '1\n' > "$marker" || return 1
+  wake "$reason"
+}
+
+wait_over_tick() {
+  local meta task kind status marker row offset line verb note stamp stamp_id start turn now elapsed
+  local reason key queued current
+  wait_over_limit_resolve || return 1
+  [ "$WAIT_OVER_LIMIT" != off ] || return 0
+  for meta in "$STATE"/*.meta; do
+    [ -e "$meta" ] || continue
+    task=${meta##*/}
+    task=${task%.meta}
+    case "$task" in ''|*[!A-Za-z0-9._-]*) continue ;; esac
+    kind=$(fm_meta_get "$meta" kind)
+    case "$kind" in ship|scout|'') ;; *) continue ;; esac
+    status="$STATE/$task.status"
+    marker="$STATE/.wait-over-$task"
+    [ -f "$status" ] && [ ! -L "$status" ] || continue
+    # The newest non-blank line and the byte offset where it starts.
+    row=$(grep -b -v '^[[:space:]]*$' "$status" 2>/dev/null | tail -n 1) || row=
+    if [ -z "$row" ]; then
+      rm -f "$marker"
+      continue
+    fi
+    offset=${row%%:*}
+    line=${row#*:}
+    status_line_verb "$line" verb
+    case "$verb" in
+      paused|blocked|needs-decision) ;;
+      *)
+        rm -f "$marker"
+        continue
+        ;;
+    esac
+    if stamp=$(status_line_at_epoch "$line"); then
+      stamp_id=$stamp
+    else
+      stamp=$(stat_mtime "$status") || continue
+      stamp_id=-
+    fi
+    start=$stamp
+    turn=$(stat_mtime "$STATE/$task.turn-ended") || turn=
+    case "$turn" in ''|*[!0-9]*) ;; *) [ "$turn" -le "$start" ] || start=$turn ;; esac
+    fm_epoch_seconds_to now
+    elapsed=$((now - start))
+    [ "$elapsed" -ge $((WAIT_OVER_LIMIT * 60)) ] || continue
+    current="$offset $stamp_id $start"
+    [ "$(cat "$marker" 2>/dev/null || true)" != "$current" ] || continue
+    note=$(status_line_note "$line")
+    note=${note:0:160}
+    note=${note%"${note##*[![:space:]]}"}
+    reason="check: wait-over $task $((elapsed / 60))m: $verb: $note"
+    key="wait-over-$task-$offset-$start"
+    queued=$(fm_wake_queued_keys check)
+    if ! printf '%s\n' "$queued" | grep -Fx "$key" >/dev/null 2>&1; then
+      fm_wake_append check "$key" "$reason" || return 1
+    fi
+    printf '%s\n' "$current" > "$marker.tmp" && mv -f "$marker.tmp" "$marker" || return 1
+    triage_log "wait-over: $task has waited $((elapsed / 60))m under $verb"
+    wake "$reason"
+  done
+  return 0
+}
+
 # The ordinary-supervision half of the secondmate liveness guarantee, paired
 # with bin/fm-bootstrap.sh's session-start sweep over the shared library in
 # bin/fm-secondmate-liveness-lib.sh (which owns the state contract, the remote
@@ -2931,6 +3048,12 @@ while :; do
   # the parent without consuming or rewriting the receiving home's record.
   secondmate_wake_stall_tick || {
     echo "watcher: secondmate wake-loop observation failed" >&2
+    exit 1
+  }
+
+  # A ship or scout wait that outlives the prompt cache wakes once per wait.
+  wait_over_tick || {
+    echo "watcher: wait-over observation failed" >&2
     exit 1
   }
 
