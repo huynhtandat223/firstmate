@@ -232,6 +232,10 @@ test_surface_user_visible_adds_done_gate_wording() {
       "surface: user-visible $mode brief does not name its verification record"
     assert_grep "Verification pending is not done" "$home/data/surf-visible-$mode/brief.md" \
       "surface: user-visible $mode brief does not say pending is not done"
+    assert_grep "backlog row stays open as verification pending" "$home/data/surf-visible-$mode/brief.md" \
+      "surface: user-visible $mode brief does not say the row stays open as verification pending"
+    assert_no_grep "cannot clean up this task" "$home/data/surf-visible-$mode/brief.md" \
+      "surface: user-visible $mode brief still says cleanup is refused"
   done
   out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" surf-bad some-proj --mode direct-PR --surface nope 2>&1); status=$?
   [ "$status" -ne 0 ] || fail "surface: an unknown surface should be refused"
