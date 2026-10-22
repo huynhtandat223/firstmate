@@ -1465,7 +1465,9 @@ command_answers() {
       if { [ -z "$release_flag" ] && [ "$state" = "done" ] \
           && closed_answer_replay_mode_compatible "$recorded_mode" "$body"; } \
         || { [ "$release_flag" = --release ] && [ "$state" != "done" ] \
-          && [ "$hold_kind" != captain ] && [ "$recorded_mode" = released ]; }; then
+          && [ "$hold_kind" != captain ] && [ "$recorded_mode" = released ]; } \
+        || { [ "$state" != "done" ] && [ "$hold_kind" = external ] && verify_pending_marked "$id" \
+          && case "$recorded_mode:$release_flag" in answered:|routed:|released:--release) true ;; *) false ;; esac; }; then
         occurrence=$(resolution_record_count "$body")
         case "$recorded_mode" in
           repaired) publish_parent_resolution_then_retire "$id" "$occurrence" "answered (repaired)" ;;

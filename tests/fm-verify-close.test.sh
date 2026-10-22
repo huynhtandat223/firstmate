@@ -208,6 +208,22 @@ test_an_unrelated_body_line_without_the_marker_closes_normally() {
   pass "a body line with the same text but no teardown marker does not hold a captain call"
 }
 
+test_a_repeated_keyed_answer_for_a_verification_pending_row_is_not_skipped() {
+  local home out
+  home=$(make_home keyed-retry)
+  captain_row "$home"
+  write_verify "$home" pending
+  out=$(printf '%s\tblue\t\t\n' "$ID" | FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" "$ROOT/bin/fm-captain-hold.sh" answers --source "fixture" 2>&1) \
+    || fail "the first keyed answer failed: $out"
+  case "$out" in *"closed: $ID"*) ;; *) fail "the first keyed answer was not accepted: $out" ;; esac
+  out=$(printf '%s\tblue\t\t\n' "$ID" | FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" "$ROOT/bin/fm-captain-hold.sh" answers --source "fixture" 2>&1) \
+    || fail "the repeated keyed answer was skipped: $out"
+  case "$out" in *"closed: $ID"*) ;; *) fail "the repeated keyed answer was not reported closed: $out" ;; esac
+  [ "$(field "$home" state)" != "done" ] && [ "$(field "$home" hold_kind)" = external ] \
+    || fail "the repeated keyed answer changed the row: $(show "$home")"
+  pass "a repeated keyed answer for a verification-pending row is an idempotent close, not a skip"
+}
+
 test_releasing_a_verification_pending_captain_call_keeps_it_held() {
   local home
   home=$(make_home release-pending)
@@ -298,3 +314,4 @@ test_closing_is_one_mutation_and_never_leaves_an_unheld_open_row
 test_teardown_holds_the_row_before_it_leaves_in_flight
 test_a_body_edit_cannot_turn_a_verification_pending_call_into_done
 test_an_unrelated_body_line_without_the_marker_closes_normally
+test_a_repeated_keyed_answer_for_a_verification_pending_row_is_not_skipped
