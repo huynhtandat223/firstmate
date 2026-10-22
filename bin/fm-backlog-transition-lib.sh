@@ -684,7 +684,8 @@ fm_backlog_verify_items_decode() {  # <encoded-items>
 }
 
 # data/<id>/verify-pending: written when teardown chooses verification pending, removed when the
-# row is closed (bin/fm-verify-close.sh, or an answer to a captain call whose record is complete).
+# row is closed (a normal teardown close, bin/fm-verify-close.sh, or an answer to a captain call
+# whose record is complete).
 # bin/fm-captain-hold.sh decides from it, never from the body.
 fm_backlog_verify_marker_write() {  # <data-dir> <id>
   local dir
@@ -696,6 +697,18 @@ fm_backlog_verify_marker_write() {  # <data-dir> <id>
     FM_BACKLOG_TRANSITION_ERROR="cannot record the verification-pending marker for $2"
     return 1
   fi
+}
+
+fm_backlog_verify_marker_remove() {  # <data-dir> <id>
+  local dir
+  if ! dir=$(fm_backlog_data_absolute "$1"); then
+    FM_BACKLOG_TRANSITION_ERROR="data directory cannot be resolved: $1"
+    return 1
+  fi
+  rm -f -- "$dir/$2/verify-pending" || {
+    FM_BACKLOG_TRANSITION_ERROR="cannot remove the verification-pending marker for $2"
+    return 1
+  }
 }
 
 # A landed task whose verification record is incomplete: the work record is gone and the
@@ -931,6 +944,8 @@ fm_backlog_close_transition() {
   shift 5
   [ -z "$meta" ] || fm_backlog_record_remove "$meta" "task record" "$state" || return 1
   fm_backlog_done "$data" "$id" "$@" || return 1
+  # A failed or interrupted verification-pending attempt may have left its marker; the row is Done now.
+  fm_backlog_verify_marker_remove "$data" "$id" || return 1
   fm_backlog_record_remove "$marker" "pending-close record" "$state"
 }
 

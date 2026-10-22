@@ -5387,6 +5387,8 @@ test_verify_gate_allows_complete_record() {
   case_dir=$(verify_gate_case verify-complete)
   : > "$case_dir/shot.png"
   write_verify "$case_dir" pass "$case_dir/shot.png" yes
+  # An earlier attempt that chose verification pending and then failed left its marker behind.
+  printf 'verification pending\n' > "$case_dir/data/task-x1/verify-pending"
   run_verify_teardown "$case_dir"
   expect_code 0 "$VERIFY_RC" "verify-complete: teardown should succeed with a complete record"
   ! grep -q REFUSED "$case_dir/stderr" || fail "verify-complete: printed a REFUSED line"
