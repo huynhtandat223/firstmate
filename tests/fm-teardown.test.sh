@@ -5254,6 +5254,7 @@ expect_verify_hold() {  # <case-dir> <label> <missing-item-pattern> [teardown ar
     *) fail "$label: the hold is '$hold', want an external hold naming '$pattern'" ;;
   esac
   assert_grep 'local main' "$case_dir/data/backlog.md" "$label: the deliverable was not recorded on the row"
+  [ -f "$case_dir/data/task-x1/verify-pending" ] || fail "$label: teardown left no verification-pending marker"
   assert_grep 'stays open, held: verification pending' "$case_dir/stdout" "$label: the report does not say the row is held"
   assert_grep 'bin/fm-verify-close.sh task-x1' "$case_dir/stdout" "$label: the report does not name the close command"
 }
@@ -5377,6 +5378,7 @@ test_verify_gate_keeps_a_captain_hold_and_notes_the_gap() {
     *"Verification pending: A2 is 'pending', not pass"*) ;;
     *) fail "verify-captain: the row body lacks the Verification pending line: $body" ;;
   esac
+  [ -f "$case_dir/data/task-x1/verify-pending" ] || fail "verify-captain: teardown left no verification-pending marker"
   pass "an open captain call keeps its hold and gains a Verification pending line"
 }
 
@@ -5391,6 +5393,7 @@ test_verify_gate_allows_complete_record() {
   [ ! -e "$case_dir/state/task-x1.meta" ] || fail "verify-complete: task record was left behind"
   [ "$(backlog_row_state "$case_dir")" = "done" ] || fail "verify-complete: the row is '$(backlog_row_state "$case_dir")', want done"
   [ "$(backlog_hold "$case_dir")" = '|' ] || fail "verify-complete: the done row is held"
+  [ ! -e "$case_dir/data/task-x1/verify-pending" ] || fail "verify-complete: a complete record left a verification-pending marker"
   assert_grep 'is closed in' "$case_dir/stdout" "verify-complete: the report does not say the row is closed"
   pass "user-visible task with a complete verify.md is torn down and its row moves to Done"
 }

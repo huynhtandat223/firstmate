@@ -683,6 +683,21 @@ fm_backlog_verify_items_decode() {  # <encoded-items>
     print $out;'
 }
 
+# data/<id>/verify-pending: written when teardown chooses verification pending, removed when the
+# row is closed (bin/fm-verify-close.sh, or an answer to a captain call whose record is complete).
+# bin/fm-captain-hold.sh decides from it, never from the body.
+fm_backlog_verify_marker_write() {  # <data-dir> <id>
+  local dir
+  if ! dir=$(fm_backlog_data_absolute "$1"); then
+    FM_BACKLOG_TRANSITION_ERROR="data directory cannot be resolved: $1"
+    return 1
+  fi
+  if ! mkdir -p "$dir/$2" || ! printf 'verification pending\n' > "$dir/$2/verify-pending"; then
+    FM_BACKLOG_TRANSITION_ERROR="cannot record the verification-pending marker for $2"
+    return 1
+  fi
+}
+
 # A landed task whose verification record is incomplete: the work record is gone and the
 # row stays open. Hold it as external first, with a "verification pending" reason naming the
 # missing items, then retain its deliverable like a captain-held row; the reopen keeps the
@@ -701,6 +716,9 @@ fm_backlog_verify_pending() {  # <data-dir> <id> <encoded-items> [flag...]
     FM_BACKLOG_TRANSITION_ERROR=$FM_BACKLOG_ROW_ERROR
     return 1
   fi
+  # The marker is the structured proof that teardown chose verification pending; the body line
+  # below is only a note for people, because a body is rewritten freely.
+  fm_backlog_verify_marker_write "$data" "$id" || return 1
   # Hold before the reopen inside retain, so the row is never Queued and unheld: tasks-axi keeps
   # a hold across reopen.
   if [ "$FM_BACKLOG_ROW_HOLD_KIND" != captain ]; then

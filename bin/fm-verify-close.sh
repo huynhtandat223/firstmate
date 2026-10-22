@@ -68,4 +68,5 @@ fi
 if ! fm_backlog_done "$DATA" "$ID"; then
   refuse "could not move $ID to Done ($FM_BACKLOG_TRANSITION_ERROR); it stays held as verification pending."
 fi
+rm -f -- "$DATA/$ID/verify-pending"
 echo "Backlog: $ID is Done. Its verification record is complete."

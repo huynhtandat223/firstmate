@@ -130,13 +130,19 @@ test_a_row_not_held_for_verification_is_refused_and_unchanged() {
 # A landed task that was an open captain call keeps its captain hold and gains a
 # "Verification pending:" body line at teardown. Answering or releasing that call must
 # resolve it without moving an unverified task to Done.
-captain_row() {  # <home>: a captain-held row with the teardown body line
-  local home=$1 body
+captain_row() {  # <home> [marker 1|0] [body-line 1|0]: a captain-held row as teardown leaves it
+  local home=$1 marker=${2:-1} line=${3:-1} body
   add_row "$home" 'which colour should the button be' captain
   body=$(mktemp "$TMP_ROOT/body.XXXXXX")
-  printf '%s\n' 'Verification pending: A2 is '"'"'pending'"'"', not pass' > "$body"
+  if [ "$line" = 1 ]; then
+    printf '%s\n' 'Verification pending: A2 is '"'"'pending'"'"', not pass' > "$body"
+  else
+    printf '%s\n' 'The captain call on the button colour.' > "$body"
+  fi
   tasks-axi update "$ID" --body-file "$body" --file "$home/data/backlog.md" >/dev/null
   rm -f "$body"
+  mkdir -p "$home/data/$ID"
+  if [ "$marker" = 1 ]; then printf 'verification pending\n' > "$home/data/$ID/verify-pending"; fi
 }
 
 run_answer() {  # <home> [--release]: output in $ANSWER_OUT, status in $ANSWER_RC
@@ -180,6 +186,28 @@ test_answering_a_verification_pending_captain_call_keeps_it_open() {
   pass "answering a verification-pending captain call keeps the row open and held until the record is complete"
 }
 
+# Firstmate rewrites task bodies routinely, so the body line is a note and never the proof.
+test_a_body_edit_cannot_turn_a_verification_pending_call_into_done() {
+  local home
+  home=$(make_home body-edited)
+  captain_row "$home" 1 0
+  write_verify "$home" pending
+  run_answer "$home"
+  check_pending_after_answer "$home" edited-body
+  pass "a captain call stays held for verification when its body line was edited away"
+}
+
+test_an_unrelated_body_line_without_the_marker_closes_normally() {
+  local home
+  home=$(make_home no-marker)
+  captain_row "$home" 0 1
+  write_verify "$home" pending
+  run_answer "$home"
+  [ "$ANSWER_RC" = 0 ] || fail "no marker: the answer failed: $ANSWER_OUT"
+  [ "$(field "$home" state)" = "done" ] || fail "no marker: an unrelated body line held the call (state '$(field "$home" state)')"
+  pass "a body line with the same text but no teardown marker does not hold a captain call"
+}
+
 test_releasing_a_verification_pending_captain_call_keeps_it_held() {
   local home
   home=$(make_home release-pending)
@@ -220,11 +248,13 @@ test_closing_is_one_mutation_and_never_leaves_an_unheld_open_row() {
   home=$(make_home one-mutation)
   add_row "$home" 'verification pending: A2 is pending, not pass'
   write_verify "$home" pass
+  printf 'verification pending\n' > "$home/data/$ID/verify-pending"
   : > "$log"
   shim_tasks_axi "$log"
   run_close "$home"
   PATH=$saved
   [ "$CLOSE_RC" = 0 ] || fail "a complete record was refused: $CLOSE_OUT"
+  [ ! -e "$home/data/$ID/verify-pending" ] || fail "closing left the verification-pending marker"
   grep -qx 'done' "$log" || fail "the close never ran tasks-axi done: $(tr '\n' ' ' < "$log")"
   ! grep -qx 'unhold' "$log" || fail "the close lifted the hold before done: $(tr '\n' ' ' < "$log")"
   pass "closing a verification-pending row is one done mutation, with no unheld open interval"
@@ -254,6 +284,7 @@ test_teardown_holds_the_row_before_it_leaves_in_flight() {
     || fail "the row was reopened before it was held: $(tr '\n' ' ' < "$log")"
   [ "$(field "$home" held)" = yes ] && [ "$(field "$home" hold_kind)" = external ] && [ "$(field "$home" state)" = queued ] \
     || fail "the row did not end held as external and queued: $(show "$home")"
+  [ -f "$home/data/$ID/verify-pending" ] || fail "teardown left no verification-pending marker"
   pass "teardown holds the row before it reopens it, so it is never queued and unheld"
 }
 
@@ -265,3 +296,5 @@ test_releasing_a_verification_pending_captain_call_keeps_it_held
 test_answering_with_a_complete_record_closes_the_row
 test_closing_is_one_mutation_and_never_leaves_an_unheld_open_row
 test_teardown_holds_the_row_before_it_leaves_in_flight
+test_a_body_edit_cannot_turn_a_verification_pending_call_into_done
+test_an_unrelated_body_line_without_the_marker_closes_normally

@@ -67,8 +67,8 @@
 # ordering. An exact retry also completes unfinished ordering normalization and
 # is idempotent only when its requested close mode
 # matches the newest record; a changed decision or a mode mismatch is rejected.
-# A call that bin/fm-teardown.sh kept open for an incomplete verification record (its body carries
-# a "Verification pending:" line) is resolved the same way, but the row then stays open and held
+# A call that bin/fm-teardown.sh kept open for an incomplete verification record (the marker
+# data/<id>/verify-pending, written by teardown) is resolved the same way, but the row then stays open and held
 # as external "verification pending" instead of closing or unholding; only bin/fm-verify-close.sh
 # moves it to Done, once the record is complete.
 # A re-held task may record a new answer on top. On a task already closed outside this script,
@@ -1079,16 +1079,23 @@ apply_pending_retained_artifact() {  # <task-id>
   esac
 }
 
-# Sets VERIFY_PENDING_ITEMS and returns 0 when <task-id> is a landed user-visible task that
-# bin/fm-teardown.sh left as an open captain call (its body carries the "Verification pending:"
-# line) and whose verification record is still incomplete. Answering that call resolves the
-# call only; the row stays open until bin/fm-verify-close.sh sees a complete record.
+# The structured proof that bin/fm-teardown.sh held this task for verification: the marker
+# data/<id>/verify-pending (bin/fm-backlog-transition-lib.sh writes it). The body line teardown
+# also leaves is a note for people and is never read here, because bodies are rewritten freely.
+# 0 present, 1 absent; an unsafe marker refuses.
+verify_pending_marked() {  # <task-id>
+  local marker="$DATA/$1/verify-pending"
+  [ -e "$marker" ] || [ -L "$marker" ] || return 1
+  [ -f "$marker" ] && [ ! -L "$marker" ] || fail "the verification-pending marker is unsafe: $marker"
+}
+
+# Sets VERIFY_PENDING_ITEMS and returns 0 when <task-id> carries the marker and its verification
+# record is still incomplete. Answering that call resolves the call only; the row stays open until
+# bin/fm-verify-close.sh sees a complete record. A complete record returns 1, so the call closes.
 verify_pending_open() {  # <task-id>
-  local id=$1 body problems
+  local id=$1 problems
   VERIFY_PENDING_ITEMS=
-  task_show "$id" || return 1
-  body=$(decode_shown_value "$(show_field "$TASK_SHOW_OUTPUT" body)") || return 1
-  case $'\n'"$body" in *$'\n'"Verification pending: "*) ;; *) return 1 ;; esac
+  verify_pending_marked "$id" || return 1
   problems=$(fm_verify_gate_problems "$DATA" "$id" "$FM_HOME") || true
   [ -n "$problems" ] || return 1
   VERIFY_PENDING_ITEMS=$(printf '%s\n' "$problems" | awk '{ printf "%s%s", sep, $0; sep = "; " }')
@@ -1098,10 +1105,12 @@ close_answered() {  # <task-id> <release-0-or-1>
   if verify_pending_open "$1"; then
     tasks_axi hold "$1" --reason "$(fm_hold_reason_encode "verification pending: $VERIFY_PENDING_ITEMS")" --kind external >/dev/null
   elif [ "$2" = 1 ]; then
-    tasks_axi unhold "$1" >/dev/null
+    tasks_axi unhold "$1" >/dev/null || return 1
+    rm -f -- "$DATA/$1/verify-pending"
   else
     apply_pending_retained_artifact "$1" || return 1
-    tasks_axi "done" "$1" "${RETAINED_CLOSE_ARGS[@]+"${RETAINED_CLOSE_ARGS[@]}"}" >/dev/null
+    tasks_axi "done" "$1" "${RETAINED_CLOSE_ARGS[@]+"${RETAINED_CLOSE_ARGS[@]}"}" >/dev/null || return 1
+    rm -f -- "$DATA/$1/verify-pending"
   fi
 }
 
@@ -1128,7 +1137,7 @@ remove_interrupted_answer_stamp() {  # <task-id>
 }
 
 command_answer() {
-  local id=${1:-} decision_file='' release=0 show state hold_kind body outcome recorded_mode occurrence hold_reason
+  local id=${1:-} decision_file='' release=0 show state hold_kind body outcome recorded_mode occurrence
   [ "$#" -ge 1 ] || { usage >&2; exit 2; }
   shift
   while [ "$#" -gt 0 ]; do
@@ -1229,10 +1238,9 @@ command_answer() {
 
   # A call resolved while its verification record was incomplete leaves the row open and
   # held as verification pending (close_answered): an exact retry is a no-op.
-  hold_reason=$(fm_backlog_verify_items_decode "$(show_field_value "$show" hold_reason)" 2>/dev/null || true)
   if [ "$hold_kind" = external ] && body_has_resolution_record "$body" \
     && [ "$(recorded_decision_digest "$body" || true)" = "$DECISION_DIGEST" ] \
-    && [ "${hold_reason#verification pending: }" != "$hold_reason" ]; then
+    && verify_pending_marked "$id"; then
     recorded_mode=$(recorded_resolution_mode "$body" || true)
     case "$recorded_mode:$release" in
       released:1|answered:0|routed:0) ;;
