@@ -13,6 +13,7 @@ Start with the directory layout, then use the setting reference for the behavior
 | Backlog, preferences, and memory | [Backlog backend](#backlog-backend-taskstoml--configbacklog-backend), [captain preferences](#captain-preferences-datacaptainmd--datacaptain-sharedmd), [external memory tiers](#external-memory-tiers-memory-layering-section), and [startup memory budget](#startup-memory-budget-configstartup-memory-budget) |
 | Supervision and presentation | [Pi supervision branch](#pi-supervision-branch), [supervision host](#supervision-host-configsupervision-host), and [Calm preference](#calm-preference-configcalm) |
 | Persistent secondmates | [Secondmate routes](#secondmate-routes-datasecondmatesmd) |
+| Review rounds for worker PRs | [PR review rounds](#pr-review-rounds-configpr-reviewjson) |
 | Per-run overrides and tuning | [Environment variables](#environment-variables) |
 
 ## FM_HOME
@@ -825,6 +826,32 @@ The flag is per home and is not inherited by secondmate homes, because stow cade
 Only the file's presence is read, so its contents are ignored; remove it to return to the default contract on the next pass.
 
 The skill text owns the marker spelling, the tick order, and the reinforcement rule.
+
+## PR review rounds (config/pr-review.json)
+
+The built-in `pr-review` process-event source ([`bin/fm-procevent-pr-review.sh`](../bin/fm-procevent-pr-review.sh)) starts a review round for each new head of an open `fm/<task>` pull request.
+A round asks the Reviewer assistance and a ChatGPT reader about that exact head, labels each finding by whether the PR's diff caused it, and wakes firstmate once with both results.
+The script header owns the result format, the finding labels, the ledger under `data/pr-review/`, and its environment; `bin/fm-procevent.sh` owns arming and acknowledgement.
+Firstmate still verifies every finding and gives the verdict; the source never merges and never changes a PR.
+
+`config/pr-review.json` is a local, gitignored file.
+A missing file, or `enabled` other than `true`, means the source reads no GitHub data, asks no one, and writes no ledger line.
+The first poll after it is enabled records each open PR's head as a baseline, so only later heads are rounds.
+
+| Field | Meaning | Default |
+| --- | --- | --- |
+| `enabled` | Turns the source on. | off |
+| `repos` | Repositories to poll, each as `owner/name`. | none |
+| `max_rounds` | Rounds per PR; a later head asks no one and wakes once with "round cap reached". | 3 |
+| `poll_seconds` | Least time between two GitHub polls. | 60 |
+| `settle_seconds` | Time a head must stay the head before it counts, so an amend and push is one round. | 120 |
+| `reviewer_timeout_seconds` | How long a round waits for the Reviewer's report. A later report wakes once more. | 1800 |
+| `reviewer.assistance` | The assistance that receives the ask. | `reviewer` |
+| `reader.command` | Executable run as `<command> <chat-url> <prompt-file> <answer-file>`, one round at a time. | none |
+| `reader.project_url` | Where a task with no `data/<task>/reader-session.md` opens its first chat. | none |
+
+The Reviewer's profile owns what it does with an ask: it writes `data/reviews/<record basename without .json>.md` in its home and then acknowledges the record, and it does not `propose` for these asks.
+`fm-procevent-pr-review.sh summary [--since <iso-time>]` prints the rounds, findings by label, push-to-answer times, timeouts, and failures from the ledger.
 
 ## Secondmate routes (data/secondmates.md)
 
