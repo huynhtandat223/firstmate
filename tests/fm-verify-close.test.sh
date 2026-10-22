@@ -127,6 +127,83 @@ test_a_row_not_held_for_verification_is_refused_and_unchanged() {
   pass "a Done, unheld, captain-held or otherwise held row is refused and left unchanged"
 }
 
+# A landed task that was an open captain call keeps its captain hold and gains a
+# "Verification pending:" body line at teardown. Answering or releasing that call must
+# resolve it without moving an unverified task to Done.
+captain_row() {  # <home>: a captain-held row with the teardown body line
+  local home=$1 body
+  add_row "$home" 'which colour should the button be' captain
+  body=$(mktemp "$TMP_ROOT/body.XXXXXX")
+  printf '%s\n' 'Verification pending: A2 is '"'"'pending'"'"', not pass' > "$body"
+  tasks-axi update "$ID" --body-file "$body" --file "$home/data/backlog.md" >/dev/null
+  rm -f "$body"
+}
+
+run_answer() {  # <home> [--release]: output in $ANSWER_OUT, status in $ANSWER_RC
+  local home=$1
+  shift
+  printf 'blue\n' > "$home/decision.txt"
+  ANSWER_RC=0
+  ANSWER_OUT=$(FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" "$ROOT/bin/fm-captain-hold.sh" answer "$ID" \
+    --decision-file "$home/decision.txt" "$@" 2>&1) || ANSWER_RC=$?
+}
+
+check_pending_after_answer() {  # <home> <label>
+  local home=$1 label=$2
+  [ "$ANSWER_RC" = 0 ] || fail "$label: the answer failed: $ANSWER_OUT"
+  [ "$(field "$home" state)" != "done" ] || fail "$label: an unverified task reached Done"
+  [ "$(field "$home" held)" = yes ] || fail "$label: the open row is not held"
+  [ "$(field "$home" hold_kind)" = external ] || fail "$label: the hold is '$(field "$home" hold_kind)', want external"
+  case "$(printf '%s' "$(field "$home" hold_reason)" | sed 's/^fm-hold-v1://' | perl -MMIME::Base64 -e 'print decode_base64(<STDIN>)')" in
+    "verification pending: "*"A2 is 'pending', not pass"*) ;;
+    *) fail "$label: the hold reason does not name the missing items: $(field "$home" hold_reason)" ;;
+  esac
+}
+
+test_answering_a_verification_pending_captain_call_keeps_it_open() {
+  local home before
+  home=$(make_home answer-pending)
+  captain_row "$home"
+  write_verify "$home" pending
+  run_answer "$home"
+  check_pending_after_answer "$home" answer
+  case "$(show "$home")" in *"Captain decision"*|*"blue"*) ;; *) fail "answer: the decision was not recorded on the row" ;; esac
+  before=$(show "$home")
+  run_answer "$home"
+  [ "$ANSWER_RC" = 0 ] || fail "answer: an exact retry failed: $ANSWER_OUT"
+  [ "$(show "$home")" = "$before" ] || fail "answer: an exact retry changed the row"
+  run_close "$home"
+  [ "$CLOSE_RC" != 0 ] || fail "answer: the close helper accepted an incomplete record"
+  write_verify "$home" pass
+  run_close "$home"
+  [ "$CLOSE_RC" = 0 ] && [ "$(field "$home" state)" = "done" ] || fail "answer: a complete record did not close the row: $CLOSE_OUT"
+  pass "answering a verification-pending captain call keeps the row open and held until the record is complete"
+}
+
+test_releasing_a_verification_pending_captain_call_keeps_it_held() {
+  local home
+  home=$(make_home release-pending)
+  captain_row "$home"
+  write_verify "$home" pending
+  run_answer "$home" --release
+  check_pending_after_answer "$home" release
+  pass "releasing a verification-pending captain call holds it as verification pending"
+}
+
+test_answering_with_a_complete_record_closes_the_row() {
+  local home
+  home=$(make_home answer-complete)
+  captain_row "$home"
+  write_verify "$home" pass
+  run_answer "$home"
+  [ "$ANSWER_RC" = 0 ] || fail "a complete record: the answer failed: $ANSWER_OUT"
+  [ "$(field "$home" state)" = "done" ] || fail "a complete record: the row is '$(field "$home" state)', want done"
+  pass "answering with a complete record closes the row as before"
+}
+
 test_complete_record_lifts_the_hold_and_closes_the_row
 test_incomplete_record_refuses_lists_problems_and_refreshes_the_reason
 test_a_row_not_held_for_verification_is_refused_and_unchanged
+test_answering_a_verification_pending_captain_call_keeps_it_open
+test_releasing_a_verification_pending_captain_call_keeps_it_held
+test_answering_with_a_complete_record_closes_the_row

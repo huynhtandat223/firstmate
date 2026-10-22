@@ -67,6 +67,10 @@
 # ordering. An exact retry also completes unfinished ordering normalization and
 # is idempotent only when its requested close mode
 # matches the newest record; a changed decision or a mode mismatch is rejected.
+# A call that bin/fm-teardown.sh kept open for an incomplete verification record (its body carries
+# a "Verification pending:" line) is resolved the same way, but the row then stays open and held
+# as external "verification pending" instead of closing or unholding; only bin/fm-verify-close.sh
+# moves it to Done, once the record is complete.
 # A re-held task may record a new answer on top. On a task already closed outside this script,
 # `answer` records the missing resolution block (the old `repair` path) only
 # when the task still carries the captain-hold provenance tasks-axi preserves
@@ -234,6 +238,9 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 # shellcheck source=bin/fm-hold-reason-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-hold-reason-lib.sh"
+# shellcheck source=bin/fm-verify-gate-lib.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/fm-verify-gate-lib.sh"
 # shellcheck source=bin/fm-parent-channel-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-parent-channel-lib.sh"
@@ -1072,8 +1079,25 @@ apply_pending_retained_artifact() {  # <task-id>
   esac
 }
 
+# Sets VERIFY_PENDING_ITEMS and returns 0 when <task-id> is a landed user-visible task that
+# bin/fm-teardown.sh left as an open captain call (its body carries the "Verification pending:"
+# line) and whose verification record is still incomplete. Answering that call resolves the
+# call only; the row stays open until bin/fm-verify-close.sh sees a complete record.
+verify_pending_open() {  # <task-id>
+  local id=$1 body problems
+  VERIFY_PENDING_ITEMS=
+  task_show "$id" || return 1
+  body=$(decode_shown_value "$(show_field "$TASK_SHOW_OUTPUT" body)") || return 1
+  case $'\n'"$body" in *$'\n'"Verification pending: "*) ;; *) return 1 ;; esac
+  problems=$(fm_verify_gate_problems "$DATA" "$id" "$FM_HOME") || true
+  [ -n "$problems" ] || return 1
+  VERIFY_PENDING_ITEMS=$(printf '%s\n' "$problems" | awk '{ printf "%s%s", sep, $0; sep = "; " }')
+}
+
 close_answered() {  # <task-id> <release-0-or-1>
-  if [ "$2" = 1 ]; then
+  if verify_pending_open "$1"; then
+    tasks_axi hold "$1" --reason "$(fm_hold_reason_encode "verification pending: $VERIFY_PENDING_ITEMS")" --kind external >/dev/null
+  elif [ "$2" = 1 ]; then
     tasks_axi unhold "$1" >/dev/null
   else
     apply_pending_retained_artifact "$1" || return 1
@@ -1104,7 +1128,7 @@ remove_interrupted_answer_stamp() {  # <task-id>
 }
 
 command_answer() {
-  local id=${1:-} decision_file='' release=0 show state hold_kind body outcome recorded_mode occurrence
+  local id=${1:-} decision_file='' release=0 show state hold_kind body outcome recorded_mode occurrence hold_reason
   [ "$#" -ge 1 ] || { usage >&2; exit 2; }
   shift
   while [ "$#" -gt 0 ]; do
@@ -1199,6 +1223,23 @@ command_answer() {
     body_has_resolution_record "$(show_field "$show" body)" \
       || fail "captain-held task $id did not retain its durable resolution record"
     publish_parent_resolution_then_retire "$id" "$occurrence" "$outcome"
+    printf '%s: %s\n' "$outcome" "$id"
+    return 0
+  fi
+
+  # A call resolved while its verification record was incomplete leaves the row open and
+  # held as verification pending (close_answered): an exact retry is a no-op.
+  hold_reason=$(fm_backlog_verify_items_decode "$(show_field_value "$show" hold_reason)" 2>/dev/null || true)
+  if [ "$hold_kind" = external ] && body_has_resolution_record "$body" \
+    && [ "$(recorded_decision_digest "$body" || true)" = "$DECISION_DIGEST" ] \
+    && [ "${hold_reason#verification pending: }" != "$hold_reason" ]; then
+    recorded_mode=$(recorded_resolution_mode "$body" || true)
+    case "$recorded_mode:$release" in
+      released:1|answered:0|routed:0) ;;
+      *) fail "task $id records this resolution with mode ${recorded_mode:-unknown}; retry with the matching flag" ;;
+    esac
+    remove_interrupted_answer_stamp "$id"
+    publish_parent_resolution_then_retire "$id" $((occurrence - 1)) "$outcome"
     printf '%s: %s\n' "$outcome" "$id"
     return 0
   fi
