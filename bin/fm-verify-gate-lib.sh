@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Single owner of the user-visible done gate: the verification record
-# data/<task-id>/verify.md that bin/fm-teardown.sh requires before it cleans up a
-# ship task recorded with surface=user-visible (bin/fm-spawn.sh --surface).
-# Sourced by bin/fm-teardown.sh. The wording a worker reads lives in
-# bin/fm-dod-lib.sh.
+# data/<task-id>/verify.md that a ship task recorded with surface=user-visible
+# (bin/fm-spawn.sh --surface) needs before its backlog row moves to Done.
+# bin/fm-teardown.sh cleans such a task up either way: with an incomplete record it
+# leaves the row open and held as external ("verification pending: <missing items>"),
+# and bin/fm-verify-close.sh moves the row to Done once the record is complete.
+# Sourced by both. The wording a worker reads lives in bin/fm-dod-lib.sh.
 # Record format, written by firstmate:
 #   surface: user-visible
 #   ## Acceptance

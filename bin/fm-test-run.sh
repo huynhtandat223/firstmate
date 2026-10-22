@@ -395,7 +395,7 @@ family_for_basename() {
     fm-spawn-compact-adviser-disable.test.sh|\
     fm-spawn-compact-adviser-disable-remote.test.sh|fm-spawn-agent-ask-asker.test.sh|\
     fm-project-capacity.test.sh|\
-    fm-teardown-endpoint-safety.test.sh)
+    fm-teardown-endpoint-safety.test.sh|fm-verify-close.test.sh)
       printf '%s\n' backend-dispatch
       ;;
     fm-check-unregister.test.sh|fm-pipeline-spend.test.sh|fm-pr-check-security.test.sh|\
@@ -885,6 +885,7 @@ tests/fm-turnend-foreign-owner-arm-fix.test.sh 5575
 tests/fm-turnend-guard.test.sh 34727
 tests/fm-update.test.sh 11894
 tests/fm-vendor-auth-probe.test.sh 43278
+tests/fm-verify-close.test.sh 4000
 tests/fm-voice-relay.test.sh 28917
 tests/fm-wake-daemon-lifecycle-e2e.test.sh 7345
 tests/fm-wake-drain-open-decisions-cursor.test.sh 47677

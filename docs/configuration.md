@@ -116,7 +116,8 @@ Untracked files and directories whose names begin with `scratchpad` are also git
 
 - `bin/fm-spawn.sh` owns the base task-metadata fields it emits, while the runtime-backend section below owns backend-specific fields and selector interpretation.
 
-- The optional `surface=user-visible` field marks a ship task whose cleanup waits for the verification record that `bin/fm-verify-gate-lib.sh` owns; an absent field means `internal`.
+- The optional `surface=user-visible` field marks a ship task whose backlog row moves to Done only once the verification record that `bin/fm-verify-gate-lib.sh` owns is complete; an absent field means `internal`.
+  Cleanup of a landed task never waits for that record: with an incomplete record, `bin/fm-teardown.sh` leaves the row open and held as external with the reason `verification pending: <missing items>`, and `bin/fm-verify-close.sh <task-id>` moves it to Done once the record is complete.
 
 - `bin/fm-contributions.sh` owns durable published-contribution records under each task, observation bounds, equivalent triage-label configuration, and the authenticated contribution check.
 
