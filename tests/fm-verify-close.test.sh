@@ -206,7 +206,11 @@ shim_tasks_axi() {  # <log>: prepends the shim dir to PATH
   local log=$1 real
   real=$(command -v tasks-axi)
   mkdir -p "$TMP_ROOT/shim"
-  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$1" >> %q\nexec %q "$@"\n' "$log" "$real" > "$TMP_ROOT/shim/tasks-axi"
+  cat > "$TMP_ROOT/shim/tasks-axi" <<SHIM
+#!/usr/bin/env bash
+printf '%s\\n' "\$1" >> $(printf '%q' "$log")
+exec $(printf '%q' "$real") "\$@"
+SHIM
   chmod +x "$TMP_ROOT/shim/tasks-axi"
   PATH="$TMP_ROOT/shim:$PATH"
 }
