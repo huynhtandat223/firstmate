@@ -316,7 +316,7 @@ family_for_basename() {
     fm-mail.test.sh|fm-mail-check.test.sh|\
     fm-turnend-foreign-owner-arm-fix.test.sh|\
     fm-wake-queue.test.sh|fm-watch-arm.test.sh|fm-watch-checkpoint.test.sh|fm-watch-recovery-loop.test.sh|\
-    fm-watch-triage.test.sh|fm-task-inbox.test.sh|\
+    fm-watch-triage.test.sh|fm-watch-wait-over.test.sh|fm-task-inbox.test.sh|\
     fm-watcher-lock.test.sh|fm-inactive-reconcile.test.sh)
       printf '%s\n' watcher-wake-lock
       ;;
@@ -395,7 +395,7 @@ family_for_basename() {
     fm-spawn-compact-adviser-disable.test.sh|\
     fm-spawn-compact-adviser-disable-remote.test.sh|fm-spawn-agent-ask-asker.test.sh|\
     fm-project-capacity.test.sh|\
-    fm-teardown-endpoint-safety.test.sh)
+    fm-teardown-endpoint-safety.test.sh|fm-verify-close.test.sh)
       printf '%s\n' backend-dispatch
       ;;
     fm-check-unregister.test.sh|fm-pipeline-spend.test.sh|fm-pr-check-security.test.sh|\
@@ -427,7 +427,7 @@ family_for_basename() {
     fm-extension-binding.test.sh|fm-gitignore-config.test.sh|\
     fm-no-mistakes-required.test.sh|fm-peek-remote.test.sh|\
     fm-pending-reply.test.sh|fm-pi-branch-extension.test.sh|\
-    fm-procevent-deploy-verify.test.sh|fm-procevent-quota.test.sh|fm-procevent-when.test.sh|\
+    fm-procevent-deploy-verify.test.sh|fm-procevent-pr-review.test.sh|fm-procevent-quota.test.sh|fm-procevent-when.test.sh|\
     fm-procevent.test.sh|\
     fm-live-gate.test.sh|\
     fm-project-origin.test.sh|fm-public-followup.test.sh|fm-quota-choose.test.sh|\
@@ -809,6 +809,7 @@ tests/fm-pr-reviewers.test.sh 157
 tests/fm-pr-state-live-e2e.test.sh 47
 tests/fm-pr-state.test.sh 525
 tests/fm-procevent-deploy-verify.test.sh 13300
+tests/fm-procevent-pr-review.test.sh 31000
 tests/fm-procevent-quota.test.sh 2459
 tests/fm-procevent-when.test.sh 25674
 tests/fm-procevent.test.sh 292297
@@ -884,6 +885,7 @@ tests/fm-turnend-foreign-owner-arm-fix.test.sh 5575
 tests/fm-turnend-guard.test.sh 34727
 tests/fm-update.test.sh 11894
 tests/fm-vendor-auth-probe.test.sh 43278
+tests/fm-verify-close.test.sh 4000
 tests/fm-voice-relay.test.sh 28917
 tests/fm-wake-daemon-lifecycle-e2e.test.sh 7345
 tests/fm-wake-drain-open-decisions-cursor.test.sh 47677
@@ -895,6 +897,7 @@ tests/fm-watch-arm.test.sh 113076
 tests/fm-watch-checkpoint.test.sh 11234
 tests/fm-watch-recovery-loop.test.sh 59092
 tests/fm-watch-triage.test.sh 1074843
+tests/fm-watch-wait-over.test.sh 40000
 tests/fm-watcher-lock.test.sh 72022
 tests/fm-worker-account-live-e2e.test.sh 3179
 tests/fm-worker-account.test.sh 37445
@@ -1532,6 +1535,13 @@ families_for_changed_path() {
       ;;
     bin/fm-procevent-deploy-verify.sh)
       printf '%s\n' "__script__:fm-procevent-deploy-verify.test.sh"
+      ;;
+    bin/fm-procevent-pr-review.sh)
+      printf '%s\n' "__script__:fm-procevent-pr-review.test.sh"
+      ;;
+    bin/fm-procevent-ask-lib.sh)
+      printf '%s\n' "__script__:fm-procevent-deploy-verify.test.sh"
+      printf '%s\n' "__script__:fm-procevent-pr-review.test.sh"
       ;;
     bin/fm-quota-choose.sh)
       printf '%s\n' "__script__:fm-quota-choose.test.sh"

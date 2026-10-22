@@ -1836,6 +1836,38 @@ test_completion_fails_loudly_and_records_the_close_it_still_owes() {
   pass "completion refuses to report success while its item is still open, and records what it owes"
 }
 
+# A user-visible task with an incomplete verification record is cleaned up, and its row is
+# retained and held, never closed: the hold failing after the record is gone leaves a
+# `mode=verify-pending` pending-close record that the next session start replays as the
+# same retention plus hold.
+test_interrupted_verify_pending_cleanup_replays_the_hold_never_a_close() {
+  local case_dir home id marker out rc=0 show
+  id=atomic-verify-pending-b21
+  case_dir=$(make_home verify-pending-replay)
+  home=$(home_of "$case_dir")
+  add_item "$case_dir" "$id"
+  start_item "$case_dir" "$id"
+  write_task_meta "$case_dir" "$id" ship local-only "spawn_gen=spawn-verify-pending" "surface=user-visible"
+  marker="$home/state/$id.backlog-close"
+  break_verb "$case_dir" hold
+
+  out=$(run_teardown "$case_dir" "$id") || rc=$?
+  [ "$rc" -ne 0 ] || fail "teardown reported success while the hold could not be written: $out"
+  assert_present "$marker" "teardown lost the verify-pending record it still owes"
+  grep -qx 'mode=verify-pending' "$marker" || fail "the pending record does not carry mode=verify-pending: $(cat "$marker")"
+  [ "$(row_state "$case_dir" "$id")" != "done" ] || fail "an interrupted verify-pending teardown closed the row"
+
+  rm -f "$case_dir/fakebin/tasks-axi"
+  out=$(run_bootstrap "$case_dir")
+  show=$(tasks-axi show "$id" --file "$(backlog_of "$case_dir")" 2>/dev/null)
+  [ "$(row_state "$case_dir" "$id")" = queued ] || fail "replay did not leave the row open: $(row_state "$case_dir" "$id"): $out"
+  printf '%s\n' "$show" | grep -q '^  hold_kind: external' || fail "replay did not hold the row as external: $show"
+  printf '%s\n' "$show" | grep -q 'fm-hold-v1:' || fail "replay did not record the encoded reason: $show"
+  assert_absent "$marker" "replay retained the pending record"
+  assert_absent "$home/state/$id.meta" "replay retained the task record"
+  pass "an interrupted verify-pending cleanup replays a retention plus hold, never a close"
+}
+
 test_interrupted_destructive_cleanup_leaves_a_recoverable_close() {
   local case_dir home id marker out rc=0
   id=atomic-close-destructive-interrupt-b8
@@ -3115,6 +3147,7 @@ test_control_character_data_path_is_refused_before_cleanup
 test_completion_preserves_records_when_meta_removal_fails
 test_completion_fails_loudly_and_records_the_close_it_still_owes
 test_interrupted_destructive_cleanup_leaves_a_recoverable_close
+test_interrupted_verify_pending_cleanup_replays_the_hold_never_a_close
 test_completion_refuses_a_close_target_symlinked_to_a_directory
 test_completion_fails_when_its_close_marker_cannot_be_removed
 test_recovery_retries_when_a_close_marker_cannot_be_removed

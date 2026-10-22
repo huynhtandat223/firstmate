@@ -689,6 +689,8 @@ test_local_only_fork_remote_allows() {
   # The supervision branch's bounded per-task outcome cache is a footprint of
   # the retired task, not a record anything reads after it is gone.
   printf 'fm-branch-outcome-index-v1\t5\t0\t-\n' > "$case_dir/state/.task-x1.branch-outcome-index"
+  # The watcher's wait-over marker (bin/fm-watch.sh wait_over_tick) is the same kind of footprint.
+  printf '0 100 100\n' > "$case_dir/state/.wait-over-task-x1"
 
   set +e
   run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
@@ -699,6 +701,8 @@ test_local_only_fork_remote_allows() {
   ! grep -q REFUSED "$case_dir/stderr" || fail "fork-allow: teardown printed a REFUSED line"
   [ ! -e "$case_dir/state/.task-x1.branch-outcome-index" ] \
     || fail "fork-allow: teardown left the task's branch outcome index behind"
+  [ ! -e "$case_dir/state/.wait-over-task-x1" ] \
+    || fail "fork-allow: teardown left the task's wait-over marker behind"
   # The supervision branch reports the teardown it just performed AFTER the
   # task's records are gone (bin/fm-branch-prompt.sh); that report must be
   # stored, must publish its ready sequence, and must not recreate the index.
@@ -5185,9 +5189,11 @@ test_missing_adapter_sibling_refuses_before_cleanup
 test_forced_child_missing_adapter_sibling_refuses_before_cleanup
 test_forced_secondmate_own_missing_adapter_sibling_refuses_before_child_cleanup
 test_retained_sources_still_reach_the_ordinary_refusal
-# Done gate (bin/fm-verify-gate-lib.sh): a surface=user-visible ship task is
-# refused until data/<id>/verify.md is complete; --force never skips it.
-verify_gate_case() {  # <name> -> prints case dir with landed work and user-visible meta
+# Done gate (bin/fm-verify-gate-lib.sh): cleanup of a landed surface=user-visible ship task
+# runs as usual, and an incomplete data/<id>/verify.md only keeps its backlog row out of Done:
+# the row stays open and is held as external with a "verification pending" reason. --force
+# never moves it to Done, and unlanded work still refuses with nothing changed.
+verify_gate_case() {  # <name> -> prints case dir: landed work, user-visible meta, a real row In flight
   local case_dir
   case_dir=$(make_case "$1")
   write_meta "$case_dir" local-only ship
@@ -5195,6 +5201,7 @@ verify_gate_case() {  # <name> -> prints case dir with landed work and user-visi
   wt_commit "$case_dir" "fix the thing"
   add_fork_with_pushed_branch "$case_dir"
   mkdir -p "$case_dir/data/task-x1"
+  seed_backlog_in_flight "$case_dir"
   printf '%s\n' "$case_dir"
 }
 
@@ -5207,63 +5214,94 @@ write_verify() {  # <case-dir> <status> <evidence> <approved:yes|no>
   [ "$approved" != yes ] || printf '%s\n' 'approved: firstmate 1792486840' >> "$f"
 }
 
-expect_verify_refusal() {  # <case-dir> <label> <stderr-pattern> [teardown args...]
-  local case_dir=$1 label=$2 pattern=$3 rc
-  shift 3
-  set +e
-  run_teardown "$case_dir" "$@" > "$case_dir/stdout" 2> "$case_dir/stderr"
-  rc=$?
-  set -e
-  expect_code 1 "$rc" "$label: teardown must refuse"
-  assert_grep 'REFUSED: task task-x1 is surface=user-visible' "$case_dir/stderr" "$label: refusal text"
-  assert_grep "$pattern" "$case_dir/stderr" "$label: refusal must name the missing line"
-  [ -e "$case_dir/state/task-x1.meta" ] || fail "$label: refusal removed the task record"
-  [ -d "$case_dir/wt" ] || fail "$label: refusal removed the worktree"
+# "<hold_kind>|<decoded hold reason>" of task-x1's backlog row.
+backlog_hold() {  # <case-dir>
+  local out kind raw
+  out=$(tasks-axi show task-x1 --file "$1/data/backlog.md" 2>/dev/null)
+  kind=$(printf '%s\n' "$out" | sed -n 's/^  hold_kind: *//p' | head -1 | tr -d '"')
+  raw=$(printf '%s\n' "$out" | sed -n 's/^  hold_reason: *//p' | head -1 | tr -d '"')
+  [ "$kind" != - ] || kind=
+  [ "$raw" != - ] || raw=
+  case "$raw" in
+    fm-hold-v1:*) raw=$(printf '%s' "${raw#fm-hold-v1:}" | perl -MMIME::Base64 -e 'print decode_base64(<STDIN>)') ;;
+  esac
+  printf '%s|%s\n' "$kind" "$raw"
 }
 
-test_verify_gate_refuses_without_record() {
+run_verify_teardown() {  # <case-dir> [teardown args...]: sets VERIFY_RC; output in stdout and stderr
+  local case_dir=$1
+  shift
+  set +e
+  run_teardown "$case_dir" "$@" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  VERIFY_RC=$?
+  set -e
+}
+
+# Cleanup ran, and the row is open and held, not Done.
+expect_verify_hold() {  # <case-dir> <label> <missing-item-pattern> [teardown args...]
+  local case_dir=$1 label=$2 pattern=$3 hold
+  shift 3
+  run_verify_teardown "$case_dir" "$@"
+  expect_code 0 "$VERIFY_RC" "$label: teardown must clean up a landed task"
+  ! grep -q REFUSED "$case_dir/stderr" || fail "$label: printed a REFUSED line"
+  [ ! -e "$case_dir/state/task-x1.meta" ] || fail "$label: the task record was left behind"
+  assert_absent "$case_dir/state/task-x1.backlog-close" "$label: the pending-close record was left behind"
+  [ "$(backlog_row_state "$case_dir")" = queued ] \
+    || fail "$label: the row is '$(backlog_row_state "$case_dir")', want queued (open, not done)"
+  hold=$(backlog_hold "$case_dir")
+  case "$hold" in
+    "external|verification pending: "*"$pattern"*) ;;
+    *) fail "$label: the hold is '$hold', want an external hold naming '$pattern'" ;;
+  esac
+  assert_grep 'local main' "$case_dir/data/backlog.md" "$label: the deliverable was not recorded on the row"
+  [ -f "$case_dir/data/task-x1/verify-pending" ] || fail "$label: teardown left no verification-pending marker"
+  assert_grep 'stays open, held: verification pending' "$case_dir/stdout" "$label: the report does not say the row is held"
+  assert_grep 'bin/fm-verify-close.sh task-x1' "$case_dir/stdout" "$label: the report does not name the close command"
+}
+
+test_verify_gate_holds_without_record() {
   local case_dir
   case_dir=$(verify_gate_case verify-none)
   rm -rf "$case_dir/data/task-x1"
-  expect_verify_refusal "$case_dir" "verify-none" 'verification record missing'
-  pass "user-visible task with no verify.md is refused"
+  expect_verify_hold "$case_dir" "verify-none" 'verification record missing'
+  pass "user-visible task with no verify.md is cleaned up and its row held"
 }
 
-test_verify_gate_refuses_pending_line() {
+test_verify_gate_holds_pending_line() {
   local case_dir
   case_dir=$(verify_gate_case verify-pending)
   write_verify "$case_dir" pending - yes
-  expect_verify_refusal "$case_dir" "verify-pending" "A2 is 'pending', not pass"
-  pass "user-visible task with a pending acceptance line is refused"
+  expect_verify_hold "$case_dir" "verify-pending" "A2 is 'pending', not pass"
+  pass "user-visible task with a pending acceptance line is cleaned up and its row held"
 }
 
-test_verify_gate_refuses_missing_evidence_path() {
+test_verify_gate_holds_missing_evidence_path() {
   local case_dir
   case_dir=$(verify_gate_case verify-evidence)
   write_verify "$case_dir" pass "$case_dir/no-such-shot.png" yes
-  expect_verify_refusal "$case_dir" "verify-evidence" 'A2 evidence path does not exist'
-  pass "user-visible task whose evidence path is missing is refused"
+  expect_verify_hold "$case_dir" "verify-evidence" 'A2 evidence path does not exist'
+  pass "user-visible task whose evidence path is missing is cleaned up and its row held"
 }
 
-test_verify_gate_refuses_without_approval() {
+test_verify_gate_holds_without_approval() {
   local case_dir
   case_dir=$(verify_gate_case verify-approval)
   : > "$case_dir/shot.png"
   write_verify "$case_dir" pass "$case_dir/shot.png" no
-  expect_verify_refusal "$case_dir" "verify-approval" "missing 'approved: firstmate <epoch>' line"
-  pass "user-visible task with no approved line is refused"
+  expect_verify_hold "$case_dir" "verify-approval" "missing 'approved: firstmate <epoch>' line"
+  pass "user-visible task with no approved line is cleaned up and its row held"
 }
 
-test_verify_gate_force_does_not_skip() {
+test_verify_gate_force_never_marks_done() {
   local case_dir
   case_dir=$(verify_gate_case verify-force)
   write_verify "$case_dir" pending - yes
-  expect_verify_refusal "$case_dir" "verify-force" "A2 is 'pending', not pass" --force
-  pass "--force does not skip the verification record"
+  expect_verify_hold "$case_dir" "verify-force" "A2 is 'pending', not pass" --force
+  pass "--force cleans up but never moves an unverified row to Done"
 }
 
-test_verify_gate_refuses_a_promoted_user_visible_scout() {
-  local case_dir rc
+test_verify_gate_holds_a_promoted_user_visible_scout() {
+  local case_dir
   case_dir=$(make_case verify-promoted)
   write_meta "$case_dir" no-mistakes scout
   wt_commit "$case_dir" "fix the thing"
@@ -5273,43 +5311,93 @@ test_verify_gate_refuses_a_promoted_user_visible_scout() {
   FM_HOME="$case_dir" FM_STATE_OVERRIDE="$case_dir/state" FM_DATA_OVERRIDE="$case_dir/data" \
     "$ROOT/bin/fm-promote.sh" task-x1 --mode local-only --yolo off --surface user-visible >/dev/null 2>&1 \
     || fail "verify-promoted: promotion failed"
-  expect_verify_refusal "$case_dir" "verify-promoted" 'verification record missing'
-  pass "a promoted user-visible scout is refused without verify.md"
+  seed_backlog_in_flight "$case_dir"
+  expect_verify_hold "$case_dir" "verify-promoted" 'verification record missing'
+  pass "a promoted user-visible scout is cleaned up and its row held without verify.md"
 }
 
-test_verify_gate_refuses_acceptance_line_outside_section() {
+test_verify_gate_holds_acceptance_line_outside_section() {
   local case_dir
   case_dir=$(verify_gate_case verify-outside)
   : > "$case_dir/shot.png"
   write_verify "$case_dir" pass "$case_dir/shot.png" yes
   printf '%s\n' '## Notes' '- A3 | hidden line | pending | evidence: -' >> "$case_dir/data/task-x1/verify.md"
-  expect_verify_refusal "$case_dir" "verify-outside" "acceptance line outside '## Acceptance'"
-  pass "an acceptance line outside the Acceptance section is refused"
+  expect_verify_hold "$case_dir" "verify-outside" "acceptance line outside '## Acceptance'"
+  pass "an acceptance line outside the Acceptance section holds the row"
 }
 
-test_verify_gate_refuses_approval_before_acceptance() {
+test_verify_gate_holds_approval_before_acceptance() {
   local case_dir
   case_dir=$(verify_gate_case verify-early-approval)
   : > "$case_dir/shot.png"
   printf '%s\n' 'surface: user-visible' 'approved: firstmate 1792486840' '## Acceptance' \
     "- A1 | the page shows the new button | pass | evidence: $case_dir/shot.png" > "$case_dir/data/task-x1/verify.md"
-  expect_verify_refusal "$case_dir" "verify-early-approval" "approved line must come after the last acceptance line"
-  pass "an approved line placed before the acceptance lines is refused"
+  expect_verify_hold "$case_dir" "verify-early-approval" "approved line must come after the last acceptance line"
+  pass "an approved line placed before the acceptance lines holds the row"
+}
+
+test_verify_gate_joins_every_missing_item() {
+  local case_dir
+  case_dir=$(verify_gate_case verify-joined)
+  write_verify "$case_dir" pending - no
+  expect_verify_hold "$case_dir" "verify-joined" "A2 is 'pending', not pass; missing 'approved: firstmate <epoch>' line"
+  pass "the hold reason names every missing line, joined with '; '"
+}
+
+test_verify_gate_unlanded_work_still_refuses() {
+  local case_dir
+  case_dir=$(make_case verify-unlanded)
+  write_meta "$case_dir" local-only ship
+  printf '%s\n' 'surface=user-visible' >> "$case_dir/state/task-x1.meta"
+  wt_commit "$case_dir" "unlanded work"
+  mkdir -p "$case_dir/data/task-x1"
+  seed_backlog_in_flight "$case_dir"
+  write_verify "$case_dir" pending - yes
+  run_verify_teardown "$case_dir"
+  expect_code 1 "$VERIFY_RC" "verify-unlanded: unlanded work must refuse"
+  [ -e "$case_dir/state/task-x1.meta" ] || fail "verify-unlanded: the refusal removed the task record"
+  [ -d "$case_dir/wt" ] || fail "verify-unlanded: the refusal removed the worktree"
+  [ "$(backlog_row_state "$case_dir")" = in_flight ] || fail "verify-unlanded: the refusal changed the row"
+  [ "$(backlog_hold "$case_dir")" = '|' ] || fail "verify-unlanded: the refusal held the row"
+  pass "unlanded work refuses with nothing changed, whatever the state of verify.md"
+}
+
+test_verify_gate_keeps_a_captain_hold_and_notes_the_gap() {
+  local case_dir body
+  case_dir=$(verify_gate_case verify-captain)
+  tasks-axi hold task-x1 --reason "captain decision pending" --kind captain \
+    --file "$case_dir/data/backlog.md" >/dev/null
+  write_verify "$case_dir" pending - yes
+  run_verify_teardown "$case_dir"
+  expect_code 0 "$VERIFY_RC" "verify-captain: teardown should clean up"
+  [ ! -e "$case_dir/state/task-x1.meta" ] || fail "verify-captain: the task record was left behind"
+  [ "$(backlog_hold "$case_dir")" = 'captain|captain decision pending' ] \
+    || fail "verify-captain: the captain hold changed: $(backlog_hold "$case_dir")"
+  body=$(tasks-axi show task-x1 --file "$case_dir/data/backlog.md" --full 2>/dev/null)
+  case "$body" in
+    *"Verification pending: A2 is 'pending', not pass"*) ;;
+    *) fail "verify-captain: the row body lacks the Verification pending line: $body" ;;
+  esac
+  [ -f "$case_dir/data/task-x1/verify-pending" ] || fail "verify-captain: teardown left no verification-pending marker"
+  pass "an open captain call keeps its hold and gains a Verification pending line"
 }
 
 test_verify_gate_allows_complete_record() {
-  local case_dir rc
+  local case_dir
   case_dir=$(verify_gate_case verify-complete)
   : > "$case_dir/shot.png"
   write_verify "$case_dir" pass "$case_dir/shot.png" yes
-  set +e
-  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
-  rc=$?
-  set -e
-  expect_code 0 "$rc" "verify-complete: teardown should succeed with a complete record"
+  # An earlier attempt that chose verification pending and then failed left its marker behind.
+  printf 'verification pending\n' > "$case_dir/data/task-x1/verify-pending"
+  run_verify_teardown "$case_dir"
+  expect_code 0 "$VERIFY_RC" "verify-complete: teardown should succeed with a complete record"
   ! grep -q REFUSED "$case_dir/stderr" || fail "verify-complete: printed a REFUSED line"
   [ ! -e "$case_dir/state/task-x1.meta" ] || fail "verify-complete: task record was left behind"
-  pass "user-visible task with a complete verify.md is torn down"
+  [ "$(backlog_row_state "$case_dir")" = "done" ] || fail "verify-complete: the row is '$(backlog_row_state "$case_dir")', want done"
+  [ "$(backlog_hold "$case_dir")" = '|' ] || fail "verify-complete: the done row is held"
+  [ ! -e "$case_dir/data/task-x1/verify-pending" ] || fail "verify-complete: a complete record left a verification-pending marker"
+  assert_grep 'is closed in' "$case_dir/stdout" "verify-complete: the report does not say the row is closed"
+  pass "user-visible task with a complete verify.md is torn down and its row moves to Done"
 }
 
 test_verify_gate_ignores_internal_surface() {
@@ -5446,13 +5534,16 @@ test_process_spawned_during_grace_is_reaped_on_later_pass
 test_persistent_scan_refuses_after_bounded_retries
 test_process_exit_during_identity_lookup_does_not_refuse
 test_run_abort_precedes_process_reap_precedes_worktree_removal
-test_verify_gate_refuses_without_record
-test_verify_gate_refuses_pending_line
-test_verify_gate_refuses_missing_evidence_path
-test_verify_gate_refuses_without_approval
-test_verify_gate_force_does_not_skip
+test_verify_gate_holds_without_record
+test_verify_gate_holds_pending_line
+test_verify_gate_holds_missing_evidence_path
+test_verify_gate_holds_without_approval
+test_verify_gate_force_never_marks_done
 test_verify_gate_allows_complete_record
 test_verify_gate_ignores_internal_surface
-test_verify_gate_refuses_a_promoted_user_visible_scout
-test_verify_gate_refuses_acceptance_line_outside_section
-test_verify_gate_refuses_approval_before_acceptance
+test_verify_gate_holds_a_promoted_user_visible_scout
+test_verify_gate_holds_acceptance_line_outside_section
+test_verify_gate_holds_approval_before_acceptance
+test_verify_gate_joins_every_missing_item
+test_verify_gate_unlanded_work_still_refuses
+test_verify_gate_keeps_a_captain_hold_and_notes_the_gap

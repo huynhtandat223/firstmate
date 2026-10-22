@@ -67,6 +67,10 @@
 # ordering. An exact retry also completes unfinished ordering normalization and
 # is idempotent only when its requested close mode
 # matches the newest record; a changed decision or a mode mismatch is rejected.
+# A call that bin/fm-teardown.sh kept open for an incomplete verification record (the marker
+# data/<id>/verify-pending, written by teardown) is resolved the same way, but the row then stays open and held
+# as external "verification pending" instead of closing or unholding; only bin/fm-verify-close.sh
+# moves it to Done, once the record is complete.
 # A re-held task may record a new answer on top. On a task already closed outside this script,
 # `answer` records the missing resolution block (the old `repair` path) only
 # when the task still carries the captain-hold provenance tasks-axi preserves
@@ -234,6 +238,9 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 # shellcheck source=bin/fm-hold-reason-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-hold-reason-lib.sh"
+# shellcheck source=bin/fm-verify-gate-lib.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/fm-verify-gate-lib.sh"
 # shellcheck source=bin/fm-parent-channel-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-parent-channel-lib.sh"
@@ -1072,12 +1079,38 @@ apply_pending_retained_artifact() {  # <task-id>
   esac
 }
 
+# The structured proof that bin/fm-teardown.sh held this task for verification: the marker
+# data/<id>/verify-pending (bin/fm-backlog-transition-lib.sh writes it). The body line teardown
+# also leaves is a note for people and is never read here, because bodies are rewritten freely.
+# 0 present, 1 absent; an unsafe marker refuses.
+verify_pending_marked() {  # <task-id>
+  local marker="$DATA/$1/verify-pending"
+  [ -e "$marker" ] || [ -L "$marker" ] || return 1
+  [ -f "$marker" ] && [ ! -L "$marker" ] || fail "the verification-pending marker is unsafe: $marker"
+}
+
+# Sets VERIFY_PENDING_ITEMS and returns 0 when <task-id> carries the marker and its verification
+# record is still incomplete. Answering that call resolves the call only; the row stays open until
+# bin/fm-verify-close.sh sees a complete record. A complete record returns 1, so the call closes.
+verify_pending_open() {  # <task-id>
+  local id=$1 problems
+  VERIFY_PENDING_ITEMS=
+  verify_pending_marked "$id" || return 1
+  problems=$(fm_verify_gate_problems "$DATA" "$id" "$FM_HOME") || true
+  [ -n "$problems" ] || return 1
+  VERIFY_PENDING_ITEMS=$(printf '%s\n' "$problems" | awk '{ printf "%s%s", sep, $0; sep = "; " }')
+}
+
 close_answered() {  # <task-id> <release-0-or-1>
-  if [ "$2" = 1 ]; then
-    tasks_axi unhold "$1" >/dev/null
+  if verify_pending_open "$1"; then
+    tasks_axi hold "$1" --reason "$(fm_hold_reason_encode "verification pending: $VERIFY_PENDING_ITEMS")" --kind external >/dev/null
+  elif [ "$2" = 1 ]; then
+    tasks_axi unhold "$1" >/dev/null || return 1
+    rm -f -- "$DATA/$1/verify-pending"
   else
     apply_pending_retained_artifact "$1" || return 1
-    tasks_axi "done" "$1" "${RETAINED_CLOSE_ARGS[@]+"${RETAINED_CLOSE_ARGS[@]}"}" >/dev/null
+    tasks_axi "done" "$1" "${RETAINED_CLOSE_ARGS[@]+"${RETAINED_CLOSE_ARGS[@]}"}" >/dev/null || return 1
+    rm -f -- "$DATA/$1/verify-pending"
   fi
 }
 
@@ -1199,6 +1232,22 @@ command_answer() {
     body_has_resolution_record "$(show_field "$show" body)" \
       || fail "captain-held task $id did not retain its durable resolution record"
     publish_parent_resolution_then_retire "$id" "$occurrence" "$outcome"
+    printf '%s: %s\n' "$outcome" "$id"
+    return 0
+  fi
+
+  # A call resolved while its verification record was incomplete leaves the row open and
+  # held as verification pending (close_answered): an exact retry is a no-op.
+  if [ "$hold_kind" = external ] && body_has_resolution_record "$body" \
+    && [ "$(recorded_decision_digest "$body" || true)" = "$DECISION_DIGEST" ] \
+    && verify_pending_marked "$id"; then
+    recorded_mode=$(recorded_resolution_mode "$body" || true)
+    case "$recorded_mode:$release" in
+      released:1|answered:0|routed:0) ;;
+      *) fail "task $id records this resolution with mode ${recorded_mode:-unknown}; retry with the matching flag" ;;
+    esac
+    remove_interrupted_answer_stamp "$id"
+    publish_parent_resolution_then_retire "$id" $((occurrence - 1)) "$outcome"
     printf '%s: %s\n' "$outcome" "$id"
     return 0
   fi
@@ -1416,7 +1465,9 @@ command_answers() {
       if { [ -z "$release_flag" ] && [ "$state" = "done" ] \
           && closed_answer_replay_mode_compatible "$recorded_mode" "$body"; } \
         || { [ "$release_flag" = --release ] && [ "$state" != "done" ] \
-          && [ "$hold_kind" != captain ] && [ "$recorded_mode" = released ]; }; then
+          && [ "$hold_kind" != captain ] && [ "$recorded_mode" = released ]; } \
+        || { [ "$state" != "done" ] && [ "$hold_kind" = external ] && verify_pending_marked "$id" \
+          && case "$recorded_mode:$release_flag" in answered:|routed:|released:--release) true ;; *) false ;; esac; }; then
         occurrence=$(resolution_record_count "$body")
         case "$recorded_mode" in
           repaired) publish_parent_resolution_then_retire "$id" "$occurrence" "answered (repaired)" ;;

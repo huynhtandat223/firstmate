@@ -197,9 +197,12 @@
 # leased home releases its durable treehouse lease so the pool slot is freed,
 # never left leased forever. If the treehouse return fails, teardown leaves the
 # leased home and state in place instead of hiding a still-held lease.
-# A ship task recorded with surface=user-visible (bin/fm-spawn.sh --surface) is
-# also refused until its verification record is complete; bin/fm-verify-gate-lib.sh
-# owns the record format and the check, and --force never skips it.
+# A ship task recorded with surface=user-visible (bin/fm-spawn.sh --surface) is cleaned
+# up like any landed task, and an incomplete verification record only keeps its backlog
+# row out of Done: the row stays open and is held as external with the reason
+# "verification pending: <missing items>", and bin/fm-verify-close.sh moves it to Done once
+# data/<id>/verify.md is complete. bin/fm-verify-gate-lib.sh owns the record format and the
+# check; --force never moves an unverified row to Done, and unlanded work still refuses.
 # Usage: fm-teardown.sh <task-id> [--force] [--legacy-record]
 #   --force skips ordinary-task dirty and landed-work checks, skips scout report
 #   checks, and discards secondmate child work for kind=secondmate. Only use it
@@ -1208,16 +1211,21 @@ MODE=$(grep '^mode=' "$META" | cut -d= -f2- || true)
 [ -n "$MODE" ] || MODE=no-mistakes
 BASE_BRANCH=$(grep '^base_branch=' "$META" | cut -d= -f2- || true)
 
-# Done gate (bin/fm-verify-gate-lib.sh): a user-visible ship task is cleaned up
-# only once firstmate's verification record is complete. --force never skips it.
+# Done gate (bin/fm-verify-gate-lib.sh): cleanup of a user-visible ship task never waits for
+# firstmate's verification record, only its move to Done does. The missing items are read
+# here, before any destructive step, and carried by the backlog transition chosen below.
+# --force never changes that: it authorizes discarding work, never an unverified Done.
+TEARDOWN_VERIFY_ITEMS=
 if [ "$KIND" = ship ] && [ "$(fm_meta_get "$META" surface)" = user-visible ]; then
-  if ! fm_verify_gate_check "$DATA" "$ID" "$FM_HOME" 2>"$STATE/.$ID.verify-gate.$$"; then
-    echo "REFUSED: task $ID is surface=user-visible and $DATA/$ID/verify.md is not complete; nothing was changed. --force does not skip verification." >&2
-    cat "$STATE/.$ID.verify-gate.$$" >&2
-    rm -f "$STATE/.$ID.verify-gate.$$"
-    exit 1
-  fi
-  rm -f "$STATE/.$ID.verify-gate.$$"
+  TEARDOWN_VERIFY_ITEMS=$(fm_verify_gate_problems "$DATA" "$ID" "$FM_HOME" | awk '{ printf "%s%s", sep, $0; sep = "; " }') || TEARDOWN_VERIFY_ITEMS=
+fi
+
+# An incomplete verification record keeps the row out of Done: the verify-pending transition
+# retains the row like a captain call and holds it, and an open captain call keeps its own hold.
+TEARDOWN_VERIFY_ENC=
+if [ "$TEARDOWN_BACKLOG_APPLIES" = 1 ] && [ -n "$TEARDOWN_VERIFY_ITEMS" ]; then
+  TEARDOWN_BACKLOG_TRANSITION='verify-pending'
+  TEARDOWN_VERIFY_ENC=$(fm_hold_reason_encode "$TEARDOWN_VERIFY_ITEMS")
 fi
 
 # A record accepted as a legacy incarnation (no spawn_gen, and either
@@ -1732,12 +1740,22 @@ backlog_refresh_reminder() {
   else
     backlog_display="${DATA%/}/backlog.md"
   fi
-  if [ "$BACKLOG_CLOSED" = 1 ] && [ "$BACKLOG_TRANSITION" = retain ]; then
+  if [ "$BACKLOG_CLOSED" = 1 ] && [ "$BACKLOG_TRANSITION" = verify-pending ]; then
+    if [ "${TEARDOWN_CAPTAIN_OPEN_STATUS:-1}" = 0 ]; then
+      printf '%s\n' "Backlog: $ID stays open in $backlog_display, still held for the captain, with a verification pending note: $TEARDOWN_VERIFY_ITEMS. Close it with bin/fm-verify-close.sh $ID once $DATA/$ID/verify.md is complete and the captain's call is answered."
+    else
+      printf '%s\n' "Backlog: $ID stays open, held: verification pending: $TEARDOWN_VERIFY_ITEMS. Close it with bin/fm-verify-close.sh $ID once $DATA/$ID/verify.md is complete."
+    fi
+  elif [ "$BACKLOG_CLOSED" = 1 ] && [ "$BACKLOG_TRANSITION" = retain ]; then
     printf '%s\n' "Backlog: $ID stays open in $backlog_display, still held for the captain with its deliverable recorded. Relay the question and close it only with bin/fm-captain-hold.sh answer."
   elif [ "$BACKLOG_CLOSED" = 1 ]; then
     printf '%s\n' "Backlog: $ID is closed in $backlog_display. Run bin/fm-tasks-axi.sh ready for dependency-cleared candidates, check date gates, and dispatch only work whose blockers are gone and date is due."
   else
-    printf '%s\n' "Backlog: $ID just finished ($BACKLOG_SKIP_REASON). Update $backlog_display - move $ID to Done, keep Done to the 10 most recent, then re-scan Queued and dispatch only work whose blockers are gone and date is due."
+    if [ -n "${TEARDOWN_VERIFY_ITEMS:-}" ]; then
+      printf '%s\n' "Backlog: $ID just finished ($BACKLOG_SKIP_REASON). Update $backlog_display - hold $ID as verification pending ($TEARDOWN_VERIFY_ITEMS) and move it to Done only once $DATA/$ID/verify.md is complete, keep Done to the 10 most recent, then re-scan Queued and dispatch only work whose blockers are gone and date is due."
+    else
+      printf '%s\n' "Backlog: $ID just finished ($BACKLOG_SKIP_REASON). Update $backlog_display - move $ID to Done, keep Done to the 10 most recent, then re-scan Queued and dispatch only work whose blockers are gone and date is due."
+    fi
   fi
 }
 
@@ -3425,7 +3443,7 @@ cleanup_firstmate_home_children() {
       "$sub_state/$child_id.cursor-session" "$sub_state/$child_id.reconcile-nudged" \
       "$sub_state/$child_id.claude-settings.json" "$sub_state/$child_id.devin-config.json" \
       "$sub_state/$child_id.polytoken-busy.sh" \
-      "$sub_state/.$child_id.branch-outcome-index"
+      "$sub_state/.$child_id.branch-outcome-index" "$sub_state/.wait-over-$child_id"
     chmod u+w "$sub_state/$child_id.git-hooks" 2>/dev/null || true
     rm -rf "$sub_state/$child_id.git-hooks" "$sub_state/$child_id.push-guard" \
       "$sub_state/$child_id.polytoken-config" \
@@ -3593,7 +3611,11 @@ fi
 BACKLOG_CLOSED=0
 BACKLOG_TRANSITION=$TEARDOWN_BACKLOG_TRANSITION
 BACKLOG_TRANSITION_FLAGS=()
-[ "$BACKLOG_TRANSITION" = close ] || BACKLOG_TRANSITION_FLAGS=(--retain)
+case "$BACKLOG_TRANSITION" in
+  close) ;;
+  verify-pending) BACKLOG_TRANSITION_FLAGS=(--verify-pending "$TEARDOWN_VERIFY_ENC") ;;
+  *) BACKLOG_TRANSITION_FLAGS=(--retain) ;;
+esac
 BACKLOG_SKIP_REASON=
 if [ "$TEARDOWN_BACKLOG_APPLIES" = 1 ]; then
   backlog_done_args || {
@@ -3930,7 +3952,7 @@ rm -f "$STATE/$ID.turn-ended" "$STATE/$ID.progress" \
   "$STATE/$ID.reconcile-nudged" "$STATE/$ID.gemini-settings.json" \
   "$STATE/$ID.claude-settings.json" "$STATE/$ID.devin-config.json" \
   "$STATE/$ID.polytoken-busy.sh" \
-  "$STATE/.$ID.branch-outcome-index" \
+  "$STATE/.$ID.branch-outcome-index" "$STATE/.wait-over-$ID" \
   "$STATE/.secondmate-relaunch-$ID" "$STATE/.secondmate-relaunch-bound-$ID"
 # The steering inbox (bin/fm-task-inbox-lib.sh) is runtime state for the
 # retired endpoint; teardown only runs after landing is confirmed, so any
@@ -3966,10 +3988,12 @@ fi
 if [ "$BACKLOG_CLOSED" = 1 ]; then
   BACKLOG_CLOSE_MARKER=$(fm_backlog_close_marker_path "$STATE" "$ID") || exit 1
   if ! fm_backlog_atomic_transition "$BACKLOG_TRANSITION" "$STATE/$ID.meta" "$BACKLOG_CLOSE_MARKER" \
-      "$DATA" "$ID" "$STATE" "${BACKLOG_DONE_ARGS[@]+"${BACKLOG_DONE_ARGS[@]}"}"; then
+      "$DATA" "$ID" "$STATE" ${TEARDOWN_VERIFY_ENC:+"$TEARDOWN_VERIFY_ENC"} "${BACKLOG_DONE_ARGS[@]+"${BACKLOG_DONE_ARGS[@]}"}"; then
     fm_lock_release "$META_LOCK"
     META_LOCK_HELD=0
-    if [ "$BACKLOG_TRANSITION" = retain ]; then
+    if [ "$BACKLOG_TRANSITION" = verify-pending ]; then
+      echo "error: $ID's endpoint and local copy are cleaned up, but its backlog item could not be held as verification pending atomically ($FM_BACKLOG_TRANSITION_ERROR); the pending hold is recorded and the next session start retries it" >&2
+    elif [ "$BACKLOG_TRANSITION" = retain ]; then
       echo "error: $ID's endpoint and local copy are cleaned up, but its captain-held backlog item could not be returned to Queued atomically ($FM_BACKLOG_TRANSITION_ERROR); the pending retention is recorded and the next session start retries it" >&2
     else
       echo "error: $ID's endpoint and local copy are cleaned up, but its backlog item could not be closed atomically ($FM_BACKLOG_TRANSITION_ERROR); the pending close is recorded and the next session start retries it" >&2

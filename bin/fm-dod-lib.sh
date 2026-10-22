@@ -920,7 +920,8 @@ fm_dod_accept_ship_done() {  # <kind> <mode> <worktree> <project> <line> [<state
 # fm_dod_block <mode> <task-id> [branch] [<forge>] [<base>] [<consent>] [<surface>]
 # prints the mode block, then for surface=user-visible the done-gate wording; an
 # absent or internal surface adds nothing, so internal briefs stay byte-identical.
-# The record format and the teardown check are owned by bin/fm-verify-gate-lib.sh.
+# The record format and the teardown treatment of an incomplete record (cleanup runs, the
+# backlog row stays open as verification pending) are owned by bin/fm-verify-gate-lib.sh.
 fm_dod_block() {
   local id=$2 surface=${7:-internal}
   fm_dod_block_mode "${@:1:6}" || return 1
@@ -928,6 +929,6 @@ fm_dod_block() {
     printf '%s\n' \
       "This task changes a user-visible surface, so its definition of done includes firstmate's verification record data/$id/verify.md with every acceptance line passed on the real surface and approved." \
       "Verification pending is not done: do not report the task finished on a merged PR or green CI alone." \
-      "Firstmate cannot clean up this task until that record is complete."
+      "Firstmate cleans the task up after it lands; its backlog row stays open as verification pending until that record is complete."
   fi
 }

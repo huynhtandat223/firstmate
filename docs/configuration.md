@@ -13,6 +13,7 @@ Start with the directory layout, then use the setting reference for the behavior
 | Backlog, preferences, and memory | [Backlog backend](#backlog-backend-taskstoml--configbacklog-backend), [captain preferences](#captain-preferences-datacaptainmd--datacaptain-sharedmd), [external memory tiers](#external-memory-tiers-memory-layering-section), and [startup memory budget](#startup-memory-budget-configstartup-memory-budget) |
 | Supervision and presentation | [Pi supervision branch](#pi-supervision-branch), [supervision host](#supervision-host-configsupervision-host), and [Calm preference](#calm-preference-configcalm) |
 | Persistent secondmates | [Secondmate routes](#secondmate-routes-datasecondmatesmd) |
+| Review rounds for worker PRs | [PR review rounds](#pr-review-rounds-configpr-reviewjson) |
 | Per-run overrides and tuning | [Environment variables](#environment-variables) |
 
 ## FM_HOME
@@ -115,7 +116,8 @@ Untracked files and directories whose names begin with `scratchpad` are also git
 
 - `bin/fm-spawn.sh` owns the base task-metadata fields it emits, while the runtime-backend section below owns backend-specific fields and selector interpretation.
 
-- The optional `surface=user-visible` field marks a ship task whose cleanup waits for the verification record that `bin/fm-verify-gate-lib.sh` owns; an absent field means `internal`.
+- The optional `surface=user-visible` field marks a ship task whose backlog row moves to Done only once the verification record that `bin/fm-verify-gate-lib.sh` owns is complete; an absent field means `internal`.
+  Cleanup of a landed task never waits for that record: with an incomplete record, `bin/fm-teardown.sh` leaves the row open and held as external with the reason `verification pending: <missing items>`, and `bin/fm-verify-close.sh <task-id>` moves it to Done once the record is complete.
 
 - `bin/fm-contributions.sh` owns durable published-contribution records under each task, observation bounds, equivalent triage-label configuration, and the authenticated contribution check.
 
@@ -647,6 +649,25 @@ With it present, ship and scout briefs gain the `# Waiting` section and the fore
 With the file absent, generated briefs omit the waiting section and the no-poll inbox line, the drive text backgrounds the call, recovery sends during an open decision, and a fire-and-forget steer is not owed a retry ring.
 The flag is a home-local preference and is not inherited by secondmate homes.
 
+## Wait-over alarm (config/wait-over-minutes)
+
+The optional local, gitignored `config/wait-over-minutes` file sets how long a worker's wait may run before the watcher wakes firstmate about it.
+It holds one integer from 1 to 1440, or `off`.
+An absent file means 45 minutes, and `off` raises no wait-over wake at all.
+An unreadable or malformed file falls back to 45 and wakes once with `check: config/wait-over-minutes unreadable, using 45`; a valid file clears that record.
+
+Why 45: the prompt cache measured on Claude worker transcripts still hits after idle gaps of up to 57 minutes and misses from 62 minutes, and the next turn after a miss rewrites 93k to 553k tokens of context.
+A worker that sits in a `paused:`, `blocked:` or `needs-decision:` wait for an hour therefore pays the full rewrite on its next turn.
+Nothing else names that line: `blocked:` and `needs-decision:` surface once when written, a declared pause is rechecked every `FM_PAUSE_RESURFACE_SECS`, and the wedge ladder absorbs declared waits on purpose.
+
+For each ship or scout task whose newest status line has one of those three verbs, the watcher appends one `check: wait-over <task> <m>m: <verb>: <note>` wake (note trimmed to 160 characters) once the wait reaches the limit.
+The wait starts at the later of that line's `[at=]` stamp (the status file's mtime when the line has no stamp) and the task's `turn-ended` mtime.
+The `progress` marker is not counted, because it is not yet measured whether it moves while a worker sleeps in one blocking shell command, and counting it could hide the alarm for the commonest `paused:` wait.
+`state/.wait-over-<task>` records the wait that was reported, so the same wait never wakes again; a newer status line or completed turn starts a new wait that can wake after its own limit, and teardown removes the marker.
+The alarm adds to the pause recheck, the `until` recheck, the wedge ladder and the first-sight surfacing, and replaces none of them.
+It skips assistances and secondmates, stops no worker, and starts no handoff; the wake only tells firstmate to clear the condition or hand the worker off.
+The file is a home-local preference and is not inherited by secondmate homes.
+
 ## No-mistakes pipeline spend (config/pipeline-spend)
 
 The optional local, gitignored `config/pipeline-spend` presence flag opts this home into recording per-task no-mistakes pipeline spend in `data/pipeline-spend.jsonl` during teardown.
@@ -825,6 +846,34 @@ The flag is per home and is not inherited by secondmate homes, because stow cade
 Only the file's presence is read, so its contents are ignored; remove it to return to the default contract on the next pass.
 
 The skill text owns the marker spelling, the tick order, and the reinforcement rule.
+
+## PR review rounds (config/pr-review.json)
+
+The built-in `pr-review` process-event source ([`bin/fm-procevent-pr-review.sh`](../bin/fm-procevent-pr-review.sh)) starts a review round for each new head of an open `fm/<task>` pull request.
+A round asks the Reviewer assistance and a ChatGPT reader about that exact head, labels each finding by whether the PR's diff caused it, and wakes firstmate once with both results.
+The script header owns the result format, the finding labels, the ledger under `data/pr-review/`, and its environment; `bin/fm-procevent.sh` owns arming and acknowledgement.
+Firstmate still verifies every finding and gives the verdict; the source never merges and never changes a PR.
+
+`config/pr-review.json` is a local, gitignored file.
+A missing file, or `enabled` other than `true`, means the source reads no GitHub data, asks no one, and writes no ledger line.
+The first poll after it is enabled records each open PR's head as a baseline, so only later heads are rounds.
+Turning it off forgets that mark, so heads pushed while it was off get a fresh baseline too.
+
+| Field | Meaning | Default |
+| --- | --- | --- |
+| `enabled` | Turns the source on. | off |
+| `repos` | Repositories to poll, each as `owner/name`. | none |
+| `max_rounds` | Rounds per PR; a later head asks no one and wakes once with "round cap reached". | 3 |
+| `poll_seconds` | Least time between two GitHub polls. | 60 |
+| `settle_seconds` | Time a head must stay the head before it counts, so an amend and push is one round. | 120 |
+| `reviewer_timeout_seconds` | How long a round waits for the Reviewer's report. A later report wakes once more. | 1800 |
+| `reviewer.assistance` | The assistance that receives the ask. | `reviewer` |
+| `reader.command` | Executable run as `<command> <chat-url> <prompt-file> <answer-file>`, one round at a time. | none |
+| `reader.timeout_seconds` | How long one reader run may take before it is stopped and its status is `failed: timeout`. | 1500 |
+| `reader.project_url` | Where a task with no `data/<task>/reader-session.md` opens its first chat. | none |
+
+The Reviewer's profile owns what it does with an ask: it writes `data/reviews/<record basename without .json>.md` in its home and then acknowledges the record, and it does not `propose` for these asks.
+`fm-procevent-pr-review.sh summary [--since <iso-time>]` prints the rounds, findings by label, commit-to-answer times (the time from the head commit to each answer), timeouts, and failures from the ledger.
 
 ## Secondmate routes (data/secondmates.md)
 

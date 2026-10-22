@@ -1213,8 +1213,31 @@ EOF
   pass "home-summary excludes kind=secondmate from unowned_current and terminal_in_flight"
 }
 
+test_verification_pending_row_is_held_not_a_captain_call() {
+  local home fakebin out reason
+  home=$(make_home verify-pending-row)
+  mkdir -p "$home/data"
+  reason="fm-hold-v1:$(printf '%s' "verification pending: A2 is 'pending', not pass" | perl -MMIME::Base64=encode_base64 -0777 -ne 'print encode_base64($_, "")')"
+  cat > "$home/data/backlog.md" <<BACKLOG
+## In flight
+
+## Queued
+- [ ] landed-ui - Landed UI change, not yet verified (repo: sample) (kind: ship) (hold: $reason) (hold-kind: external)
+
+## Done
+BACKLOG
+  fakebin=$(make_fakebin "$home")
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_DATA_OVERRIDE="$home/data" "$SNAPSHOT" --json)
+  printf '%s' "$out" | jq -e '
+    ([.backlog.records[] | select(.id == "landed-ui")][0] | .hold_kind == "external" and .captain_actionable == false)
+      and ([.backlog.records[] | select(.id == "landed-ui")][0].hold_reason | tostring | contains("verification pending"))
+  ' >/dev/null || fail "a verification pending row must show as held with its reason and not be a captain call: $out"
+  pass "a verification pending row appears held with its reason and is not a captain call"
+}
+
 test_records_only_skips_backend_reads
 test_empty_fleet_json
+test_verification_pending_row_is_held_not_a_captain_call
 test_fixture_snapshot_json
 test_home_summary_excludes_secondmate_from_child_inventory
 test_undated_captain_hold_phrasing_and_aging

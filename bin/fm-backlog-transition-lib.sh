@@ -78,6 +78,10 @@ FM_BACKLOG_CLOSE_REPLAY_RESULT=
 # library does not source fm-tasks-axi-lib.sh does not apply.
 # shellcheck source=bin/fm-timeout-lib.sh disable=SC1091
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-timeout-lib.sh"
+# fm-hold-reason-lib.sh owns the reversible encoding of a hold reason; the verify-pending
+# transition stores its missing items in that form.
+# shellcheck source=bin/fm-hold-reason-lib.sh disable=SC1091
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-hold-reason-lib.sh"
 # fm-pr-lib.sh owns which URL is a Gerrit change or a GitLab merge request. It
 # is functions and empty globals only, so it is sourced once rather than
 # re-initialising a caller's parsed identity.
@@ -555,6 +559,68 @@ fm_backlog_row_artifact_supported() {
   esac
 }
 
+# Append one line at the end of a task body unless the body already holds it. The body is
+# rewritten through tasks-axi, so the row keeps every other field.
+fm_backlog_body_append_line() {  # <data-dir> <id> <line>
+  local authorized_data=$1 id=$2 line=$3 data out command_status body new_body tmp
+  if ! data=$(fm_backlog_data_absolute "$1"); then
+    FM_BACKLOG_TRANSITION_ERROR="data directory cannot be resolved: $1"
+    return 1
+  fi
+  FM_BACKLOG_TRANSITION_ERROR=
+  out=$(fm_backlog_row_show "$data" "$id" --full)
+  command_status=$?
+  [ "$command_status" -ne 124 ] || FM_BACKLOG_ROW_SHOW_WEDGED=1
+  if [ "$command_status" -ne 0 ]; then
+    FM_BACKLOG_TRANSITION_ERROR=$(printf '%s\n' "$out" | sed -n '1p')
+    [ -n "$FM_BACKLOG_TRANSITION_ERROR" ] \
+      || FM_BACKLOG_TRANSITION_ERROR="tasks-axi show $id failed with no output"
+    return "$command_status"
+  fi
+  # The leading quote selects a JSON-encoded bare string, which is exactly the
+  # value an older JSON::PP rejects unless allow_nonref is asked for, so the
+  # decoder below requests it rather than inheriting the local default. It then
+  # writes bytes, because printing the decoded characters to a stream with no
+  # :raw layer emits a codepoint at or below U+00FF as one latin-1 byte and
+  # silently corrupts the body this rewrites.
+  body=$(printf '%s\n' "$out" | sed -n 's/^  body: //p' | head -1 \
+    | LC_ALL=C perl -MJSON::PP -e '
+      local $/;
+      my $shown = <STDIN>;
+      $shown =~ s/\s+\z//;
+      exit 0 if $shown eq "" || $shown eq "-";
+      my $value = $shown =~ /\A"/
+        ? JSON::PP->new->utf8->allow_nonref->decode($shown) : $shown;
+      binmode STDOUT, ":raw";
+      utf8::encode($value) if utf8::is_utf8($value);
+      print $value unless $value eq "-";
+    ') || {
+    FM_BACKLOG_TRANSITION_ERROR="could not decode the task body of $id"
+    return 1
+  }
+  case $'\n'"$body"$'\n' in
+    *$'\n'"$line"$'\n'*) ;;
+    *)
+      new_body=$line
+      [ -z "$body" ] || new_body=$(printf '%s\n\n%s' "$body" "$line")
+      tmp=$(umask 077; mktemp "${TMPDIR:-/tmp}/fm-backlog-retain-body.XXXXXX") || {
+        FM_BACKLOG_TRANSITION_ERROR="cannot stage the deliverable for $id"
+        return 1
+      }
+      if ! printf '%s\n' "$new_body" > "$tmp"; then
+        rm -f -- "$tmp"
+        FM_BACKLOG_TRANSITION_ERROR="cannot stage the deliverable for $id"
+        return 1
+      fi
+      if ! fm_backlog_mutate "$authorized_data" update "$id" --body-file "$tmp"; then
+        rm -f -- "$tmp"
+        return 1
+      fi
+      rm -f -- "$tmp"
+      ;;
+  esac
+}
+
 # Keep a captain-held row open across the removal of the work record that
 # discovered it: record the finished work's deliverable as one line at the end
 # of the task body (a line already present is left alone), preserve supported
@@ -593,63 +659,88 @@ fm_backlog_retain() {  # <data-dir> <id> [flag...]
     previous_arg=$arg
   done
   if [ -n "$deliverable" ]; then
-    out=$(fm_backlog_row_show "$data" "$id" --full)
-    command_status=$?
-    [ "$command_status" -ne 124 ] || FM_BACKLOG_ROW_SHOW_WEDGED=1
-    if [ "$command_status" -ne 0 ]; then
-      FM_BACKLOG_TRANSITION_ERROR=$(printf '%s\n' "$out" | sed -n '1p')
-      [ -n "$FM_BACKLOG_TRANSITION_ERROR" ] \
-        || FM_BACKLOG_TRANSITION_ERROR="tasks-axi show $id failed with no output"
-      return "$command_status"
-    fi
-    # The leading quote selects a JSON-encoded bare string, which is exactly the
-    # value an older JSON::PP rejects unless allow_nonref is asked for, so the
-    # decoder below requests it rather than inheriting the local default. It then
-    # writes bytes, because printing the decoded characters to a stream with no
-    # :raw layer emits a codepoint at or below U+00FF as one latin-1 byte and
-    # silently corrupts the body this rewrites.
-    body=$(printf '%s\n' "$out" | sed -n 's/^  body: //p' | head -1 \
-      | LC_ALL=C perl -MJSON::PP -e '
-        local $/;
-        my $shown = <STDIN>;
-        $shown =~ s/\s+\z//;
-        exit 0 if $shown eq "" || $shown eq "-";
-        my $value = $shown =~ /\A"/
-          ? JSON::PP->new->utf8->allow_nonref->decode($shown) : $shown;
-        binmode STDOUT, ":raw";
-        utf8::encode($value) if utf8::is_utf8($value);
-        print $value unless $value eq "-";
-      ') || {
-      FM_BACKLOG_TRANSITION_ERROR="could not decode the task body of $id"
-      return 1
-    }
-    line="Deliverable of the finished work: $deliverable"
-    case $'\n'"$body"$'\n' in
-      *$'\n'"$line"$'\n'*) ;;
-      *)
-        new_body=$line
-        [ -z "$body" ] || new_body=$(printf '%s\n\n%s' "$body" "$line")
-        tmp=$(umask 077; mktemp "${TMPDIR:-/tmp}/fm-backlog-retain-body.XXXXXX") || {
-          FM_BACKLOG_TRANSITION_ERROR="cannot stage the deliverable for $id"
-          return 1
-        }
-        if ! printf '%s\n' "$new_body" > "$tmp"; then
-          rm -f -- "$tmp"
-          FM_BACKLOG_TRANSITION_ERROR="cannot stage the deliverable for $id"
-          return 1
-        fi
-        if ! fm_backlog_mutate "$authorized_data" update "$id" --body-file "$tmp"; then
-          rm -f -- "$tmp"
-          return 1
-        fi
-        rm -f -- "$tmp"
-        ;;
-    esac
+    fm_backlog_body_append_line "$authorized_data" "$id" "Deliverable of the finished work: $deliverable" || return $?
   fi
   if [ "${#row_args[@]}" -gt 0 ]; then
     fm_backlog_mutate "$authorized_data" update "$id" "${row_args[@]}" || return 1
   fi
   fm_backlog_mutate "$authorized_data" reopen "$id"
+}
+
+# The decoded missing items of a verify-pending record: the argument is the stored form
+# (fm_hold_reason_encode output), and the result is the plain text it carries.
+fm_backlog_verify_items_decode() {  # <encoded-items>
+  case "$1" in
+    fm-hold-v1:?*) ;;
+    *) return 1 ;;
+  esac
+  printf '%s' "${1#fm-hold-v1:}" | perl -MMIME::Base64=decode_base64 -e '
+    my $in = do { local $/; <STDIN> };
+    exit 1 unless $in =~ /\A[A-Za-z0-9+\/]+={0,2}\z/;
+    my $out = decode_base64($in);
+    exit 1 if $out =~ /[\x00-\x08\x0b-\x1f\x7f]/;
+    binmode STDOUT, ":raw";
+    print $out;'
+}
+
+# data/<id>/verify-pending: written when teardown chooses verification pending, removed when the
+# row is closed (a normal teardown close, bin/fm-verify-close.sh, or an answer to a captain call
+# whose record is complete).
+# bin/fm-captain-hold.sh decides from it, never from the body.
+fm_backlog_verify_marker_write() {  # <data-dir> <id>
+  local dir
+  if ! dir=$(fm_backlog_data_absolute "$1"); then
+    FM_BACKLOG_TRANSITION_ERROR="data directory cannot be resolved: $1"
+    return 1
+  fi
+  if ! mkdir -p "$dir/$2" || ! printf 'verification pending\n' > "$dir/$2/verify-pending"; then
+    FM_BACKLOG_TRANSITION_ERROR="cannot record the verification-pending marker for $2"
+    return 1
+  fi
+}
+
+fm_backlog_verify_marker_remove() {  # <data-dir> <id>
+  local dir
+  if ! dir=$(fm_backlog_data_absolute "$1"); then
+    FM_BACKLOG_TRANSITION_ERROR="data directory cannot be resolved: $1"
+    return 1
+  fi
+  rm -f -- "$dir/$2/verify-pending" || {
+    FM_BACKLOG_TRANSITION_ERROR="cannot remove the verification-pending marker for $2"
+    return 1
+  }
+}
+
+# A landed task whose verification record is incomplete: the work record is gone and the
+# row stays open. Hold it as external first, with a "verification pending" reason naming the
+# missing items, then retain its deliverable like a captain-held row; the reopen keeps the
+# hold, so the row is never queued and unheld. It stays out of ready and out of the captain's
+# calls, and only bin/fm-verify-close.sh moves it to Done. A row that is already an open
+# captain call keeps that hold and gains a body line instead: the captain's call wins, as it
+# does for a plain retain.
+fm_backlog_verify_pending() {  # <data-dir> <id> <encoded-items> [flag...]
+  local data=$1 id=$2 encoded=$3 items
+  shift 3
+  if ! items=$(fm_backlog_verify_items_decode "$encoded"); then
+    FM_BACKLOG_TRANSITION_ERROR="the missing verification items of $id could not be decoded"
+    return 1
+  fi
+  if ! fm_backlog_row_probe "$data" "$id"; then
+    FM_BACKLOG_TRANSITION_ERROR=$FM_BACKLOG_ROW_ERROR
+    return 1
+  fi
+  # The marker is the structured proof that teardown chose verification pending; the body line
+  # below is only a note for people, because a body is rewritten freely.
+  fm_backlog_verify_marker_write "$data" "$id" || return 1
+  # Hold before the reopen inside retain, so the row is never Queued and unheld: tasks-axi keeps
+  # a hold across reopen.
+  if [ "$FM_BACKLOG_ROW_HOLD_KIND" != captain ]; then
+    fm_backlog_mutate "$data" hold "$id" --reason "$(fm_hold_reason_encode "verification pending: $items")" --kind external || return 1
+  fi
+  fm_backlog_retain "$data" "$id" "$@" || return 1
+  if [ "$FM_BACKLOG_ROW_HOLD_KIND" = captain ]; then
+    fm_backlog_body_append_line "$data" "$id" "Verification pending: $items"
+  fi
 }
 
 fm_backlog_canonical_existing() {
@@ -853,6 +944,8 @@ fm_backlog_close_transition() {
   shift 5
   [ -z "$meta" ] || fm_backlog_record_remove "$meta" "task record" "$state" || return 1
   fm_backlog_done "$data" "$id" "$@" || return 1
+  # A failed or interrupted verification-pending attempt may have left its marker; the row is Done now.
+  fm_backlog_verify_marker_remove "$data" "$id" || return 1
   fm_backlog_record_remove "$marker" "pending-close record" "$state"
 }
 
@@ -866,6 +959,17 @@ fm_backlog_retain_transition() {
   fm_backlog_record_remove "$marker" "pending-close record" "$state"
 }
 
+# The verification-pending twin of the retain transition: same record, same ordering.
+fm_backlog_verify_pending_transition() {  # <meta> <marker> <data> <id> <state> <encoded-items> [flag...]
+  local meta=$1 marker=$2 data=$3 id=$4 state=$5 encoded=$6
+  shift 6
+  # Before the task record goes: a record written before the marker existed replays into it too.
+  fm_backlog_verify_marker_write "$data" "$id" || return 1
+  [ -z "$meta" ] || fm_backlog_record_remove "$meta" "task record" "$state" || return 1
+  fm_backlog_verify_pending "$data" "$id" "$encoded" "$@" || return 1
+  fm_backlog_record_remove "$marker" "pending-close record" "$state"
+}
+
 fm_backlog_atomic_transition() {
   local operation=$1
   shift
@@ -876,6 +980,7 @@ fm_backlog_atomic_transition() {
     rollback) fm_backlog_dispatch_rollback "$@" ;;
     close) fm_backlog_close_transition "$@" ;;
     retain) fm_backlog_retain_transition "$@" ;;
+    verify-pending) fm_backlog_verify_pending_transition "$@" ;;
     *) FM_BACKLOG_TRANSITION_ERROR="unknown backlog atomic transition $operation"; return 2 ;;
   esac
 }
@@ -889,13 +994,14 @@ fm_backlog_close_marker_validate() {  # <marker-path> <authorized-data-dir> <exp
   local id='' data='' marker_spawn_gen='' cleanup_incomplete=0 mode=close line raw_bytes arg_value
   local url_tail url_authority url_path url_host url_port host_rest host_label host_valid
   local percent_tail percent_valid
-  local id_count=0 data_count=0 spawn_gen_count=0 cleanup_incomplete_count=0 mode_count=0
+  local id_count=0 data_count=0 spawn_gen_count=0 cleanup_incomplete_count=0 mode_count=0 verify='' verify_count=0
   local args=()
   FM_BACKLOG_CLOSE_VALIDATED_ID=
   FM_BACKLOG_CLOSE_VALIDATED_DATA=
   FM_BACKLOG_CLOSE_VALIDATED_SPAWN_GEN=
   FM_BACKLOG_CLOSE_VALIDATED_CLEANUP_INCOMPLETE=0
   FM_BACKLOG_CLOSE_VALIDATED_MODE=close
+  FM_BACKLOG_CLOSE_VALIDATED_VERIFY=
   FM_BACKLOG_CLOSE_VALIDATED_ARGS=()
   fm_backlog_record_present "$marker" "pending-close record" "$state" || return 1
   raw_bytes=$(fm_backlog_bytes_of_file "$marker" 2>/dev/null) || {
@@ -913,6 +1019,7 @@ fm_backlog_close_marker_validate() {  # <marker-path> <authorized-data-dir> <exp
       spawn_gen=*) marker_spawn_gen=${line#spawn_gen=}; spawn_gen_count=$((spawn_gen_count + 1)) ;;
       cleanup_incomplete=*) cleanup_incomplete=${line#cleanup_incomplete=}; cleanup_incomplete_count=$((cleanup_incomplete_count + 1)) ;;
       mode=*) mode=${line#mode=}; mode_count=$((mode_count + 1)) ;;
+      verify=*) verify=${line#verify=}; verify_count=$((verify_count + 1)) ;;
       arg=*) args+=("${line#arg=}") ;;
       *) FM_BACKLOG_TRANSITION_ERROR="unreadable pending-close record $marker"; return 1 ;;
     esac
@@ -923,11 +1030,22 @@ fm_backlog_close_marker_validate() {  # <marker-path> <authorized-data-dir> <exp
   fi
   case "$mode" in
     close|retain) ;;
+    verify-pending) ;;
     *)
       FM_BACKLOG_TRANSITION_ERROR="invalid transition mode in pending-close record $marker"
       return 1
       ;;
   esac
+  # The missing verification items travel in the record, and only in a verify-pending one.
+  if [ "$mode" = verify-pending ]; then
+    if [ "$verify_count" -ne 1 ] || ! fm_backlog_verify_items_decode "$verify" >/dev/null; then
+      FM_BACKLOG_TRANSITION_ERROR="invalid verification items in pending-close record $marker"
+      return 1
+    fi
+  elif [ "$verify_count" -ne 0 ]; then
+    FM_BACKLOG_TRANSITION_ERROR="unexpected verification items in pending-close record $marker"
+    return 1
+  fi
   case "$id" in
     ''|.*|*[!A-Za-z0-9._-]*)
       FM_BACKLOG_TRANSITION_ERROR="invalid task identity in pending-close record $marker"
@@ -1053,15 +1171,17 @@ fm_backlog_close_marker_validate() {  # <marker-path> <authorized-data-dir> <exp
   FM_BACKLOG_CLOSE_VALIDATED_SPAWN_GEN=$marker_spawn_gen
   FM_BACKLOG_CLOSE_VALIDATED_CLEANUP_INCOMPLETE=$cleanup_incomplete
   FM_BACKLOG_CLOSE_VALIDATED_MODE=$mode
+  FM_BACKLOG_CLOSE_VALIDATED_VERIFY=$verify
   FM_BACKLOG_CLOSE_VALIDATED_ARGS=("${args[@]+"${args[@]}"}")
 }
 
-# A leading `--retain` flag records the captain-held transition (`mode=retain`)
-# instead of a close; the remaining flags are the same completion links either
-# transition records.
-fm_backlog_close_marker_stage() {  # <temporary-path> <id> <data-dir> <spawn-gen> <state-dir> <cleanup-incomplete: 0|1> [--retain] [flag...]
+# A leading `--retain` flag records the captain-held transition (`mode=retain`) and a
+# leading `--verify-pending <encoded-items>` the verification-pending one (`mode=verify-pending`
+# with a `verify=` line) instead of a close; the remaining flags are the same completion
+# links every transition records.
+fm_backlog_close_marker_stage() {  # <temporary-path> <id> <data-dir> <spawn-gen> <state-dir> <cleanup-incomplete: 0|1> [--retain | --verify-pending <encoded-items>] [flag...]
   local tmp=$1 id=$2 data spawn_gen=$4 state=$5 cleanup_incomplete=$6 arg previous_arg=''
-  local mode=close serialized_args=()
+  local mode=close verify='' serialized_args=()
   data=$(fm_backlog_data_absolute "$3") || {
     FM_BACKLOG_TRANSITION_ERROR="data directory cannot be resolved: $3"
     return 1
@@ -1079,6 +1199,10 @@ fm_backlog_close_marker_stage() {  # <temporary-path> <id> <data-dir> <spawn-gen
   if [ "${1:-}" = --retain ]; then
     mode=retain
     shift
+  elif [ "${1:-}" = --verify-pending ]; then
+    mode='verify-pending'
+    verify=${2:-}
+    shift 2 || { rm -f "$tmp"; FM_BACKLOG_TRANSITION_ERROR="--verify-pending needs its encoded items"; return 1; }
   fi
   for arg in "$@"; do
     if [ "$previous_arg" = --note ] && [ "$arg" = "local main" ]; then
@@ -1094,6 +1218,7 @@ fm_backlog_close_marker_stage() {  # <temporary-path> <id> <data-dir> <spawn-gen
     printf 'spawn_gen=%s\n' "$spawn_gen"
     printf 'cleanup_incomplete=%s\n' "$cleanup_incomplete"
     [ "$mode" = close ] || printf 'mode=%s\n' "$mode"
+    [ "$mode" != verify-pending ] || printf 'verify=%s\n' "$verify"
     for arg in "${serialized_args[@]+"${serialized_args[@]}"}"; do
       printf 'arg=%s\n' "$arg"
     done
@@ -1107,6 +1232,11 @@ fm_backlog_close_marker_write() {  # <state-dir> <id> <data-dir> <spawn-gen> [fl
   local state=$1 id=$2 data=$3 spawn_gen=$4 marker tmp
   fm_backlog_directory_present "$state" "state directory" || return 1
   shift 4
+  # The verification-pending marker is durable before the record that promises the transition, so
+  # a crash between the record and the transition never leaves a captain answer able to reach Done.
+  if [ "${1:-}" = --verify-pending ]; then
+    fm_backlog_verify_marker_write "$data" "$id" || return 1
+  fi
   marker=$(fm_backlog_close_marker_path "$state" "$id") || return 1
   tmp="$state/.$id.backlog-close.${BASHPID:-$$}"
   fm_backlog_close_marker_stage "$tmp" "$id" "$data" "$spawn_gen" "$state" 0 "$@" || return 1
@@ -1140,7 +1270,7 @@ fm_backlog_close_marker_clear() {  # <state-dir> <id>
 fm_backlog_close_marker_replay() {  # <state-dir> <marker-path> <authorized-data-dir>
   local state=$1 marker=$2 marker_name expected_id
   local id data marker_spawn_gen meta meta_spawn_gen row_state cleanup_incomplete mode
-  local args=() mode_flags=()
+  local args=() mode_flags=() verify=
   FM_BACKLOG_CLOSE_REPLAY_RESULT=noop
   fm_backlog_directory_present "$state" "state directory" || return 1
   [ -e "$marker" ] || [ -L "$marker" ] || return 0
@@ -1155,7 +1285,11 @@ fm_backlog_close_marker_replay() {  # <state-dir> <marker-path> <authorized-data
   marker_spawn_gen=$FM_BACKLOG_CLOSE_VALIDATED_SPAWN_GEN
   cleanup_incomplete=$FM_BACKLOG_CLOSE_VALIDATED_CLEANUP_INCOMPLETE
   mode=$FM_BACKLOG_CLOSE_VALIDATED_MODE
-  [ "$mode" = close ] || mode_flags=(--retain)
+  verify=$FM_BACKLOG_CLOSE_VALIDATED_VERIFY
+  case "$mode" in
+    retain) mode_flags=(--retain) ;;
+    verify-pending) mode_flags=(--verify-pending "$verify") ;;
+  esac
   args=("${FM_BACKLOG_CLOSE_VALIDATED_ARGS[@]+"${FM_BACKLOG_CLOSE_VALIDATED_ARGS[@]}"}")
   if [ "${args[0]-}" = --note ]; then
     args[1]="local main"
@@ -1182,7 +1316,7 @@ fm_backlog_close_marker_replay() {  # <state-dir> <marker-path> <authorized-data
   fi
   if fm_backlog_row_probe "$data" "$id"; then
     row_state=$FM_BACKLOG_ROW_STATE
-    if [ "${row_state%% *}" != "done" ] && [ "$FM_BACKLOG_ROW_HOLD_KIND" = captain ]; then
+    if [ "$mode" = close ] && [ "${row_state%% *}" != "done" ] && [ "$FM_BACKLOG_ROW_HOLD_KIND" = captain ]; then
       mode=retain
     fi
   else
@@ -1194,9 +1328,9 @@ fm_backlog_close_marker_replay() {  # <state-dir> <marker-path> <authorized-data
   fi
   case "$row_state" in
     done\ *)
-      if [ "$mode" = retain ]; then
-        # The captain's answer closed the row before this replay; the retained
-        # transition owes it nothing more than retiring the record.
+      if [ "$mode" != close ]; then
+        # The row was closed before this replay (a captain's answer, for a retained
+        # row); the retained transition owes it nothing more than retiring the record.
         fm_backlog_close_marker_remove "$marker" "$state" || return 1
         FM_BACKLOG_CLOSE_REPLAY_RESULT=answered
         return 0
@@ -1219,8 +1353,8 @@ fm_backlog_close_marker_replay() {  # <state-dir> <marker-path> <authorized-data
       ;;
   esac
   if fm_backlog_atomic_transition "$mode" '' "$marker" "$data" "$id" "$state" \
-      "${args[@]+"${args[@]}"}"; then
-    if [ "$mode" = retain ]; then
+      ${verify:+"$verify"} "${args[@]+"${args[@]}"}"; then
+    if [ "$mode" != close ]; then
       if [ "$cleanup_incomplete" = 1 ]; then
         FM_BACKLOG_CLOSE_REPLAY_RESULT=retained_incomplete
       else

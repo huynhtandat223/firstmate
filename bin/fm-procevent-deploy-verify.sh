@@ -76,30 +76,16 @@ SOURCE_ID=deploy-verify
 . "$SCRIPT_DIR/fm-procevent-lib.sh"
 # shellcheck source=bin/fm-secondmate-registry-lib.sh
 . "$SCRIPT_DIR/fm-secondmate-registry-lib.sh"
+# shellcheck source=bin/fm-procevent-ask-lib.sh
+. "$SCRIPT_DIR/fm-procevent-ask-lib.sh"
 
 die() { printf 'error: %s\n' "$*" >&2; exit 2; }
 
-# ---- GitHub reads ----------------------------------------------------------
-
 READ_ERROR_FILE="$DATA/.read-error"
 READ_ERROR=
-gh_read() {  # <api-path>: the answer on stdout; a failure leaves its reason in READ_ERROR_FILE
-  local out
-  if ! out=$("$GH" api "$1" 2>/dev/null) || [ -z "$out" ]; then
-    printf 'GitHub could not be read: %s\n' "${1%%\?*}" > "$READ_ERROR_FILE"
-    return 1
-  fi
-  printf '%s\n' "$out"
-}
 
-# ---- ledger and cursor -----------------------------------------------------
+# ---- ledger and cursor (ledger_test, ledger_append: bin/fm-procevent-ask-lib.sh) ----
 
-ledger_test() {  # <jq-boolean-expression> [jq args...]
-  local expr=$1
-  shift
-  [ -s "$LEDGER" ] || return 1
-  jq -se "$@" "any(.[]; $expr)" "$LEDGER" >/dev/null 2>&1
-}
 # shellcheck disable=SC2016 # jq variables, not shell
 ledger_has_key() { ledger_test '(.type == "ask" or .type == "draft-skip") and .key == $k' --arg k "$1"; }
 # shellcheck disable=SC2016 # jq variables, not shell
@@ -107,7 +93,6 @@ ledger_pr_final() {  # <pr-url> <task>: asked in a deploy round or skipped alrea
   ledger_test '.task == $t and ((.type == "ask" and .round == "deploy" and (.prs | index($p))) or (.type == "skip" and .pr == $p))' \
     --arg p "$1" --arg t "$2"
 }
-ledger_append() { printf '%s\n' "$1" >> "$LEDGER"; }
 
 state_put() {  # <cursor-run> <last-green-sha>
   jq -cn --argjson r "$1" --arg s "$2" '{cursor_run: $r, last_green_sha: $s}' > "$CURSOR.tmp" \
@@ -343,16 +328,6 @@ emit_result() {  # <error-or-empty> <recovered 0|1>
      cursor: (if $run == "" or ($asks | length) + ($skips | length) == 0 then null else {cursor_run: ($run | tonumber), last_green_sha: $sha} end)}'
 }
 
-throttle() {
-  local last now wait_for
-  [ -f "$LAST_POLL" ] || return 0
-  last=$(<"$LAST_POLL")
-  case "$last" in ''|*[!0-9]*) return 0 ;; esac
-  now=$(date +%s)
-  wait_for=$((POLL_SECONDS - (now - last)))
-  [ "$wait_for" -le 0 ] || sleep "$wait_for"
-}
-
 cmd_wait() {
   local rc previous
   command -v jq >/dev/null 2>&1 || die 'jq is required'
@@ -396,47 +371,14 @@ cmd_wait() {
 
 # ---- delivery --------------------------------------------------------------
 
-DELIVER_ERROR=
 deliver_ask() {  # <ask-json>
-  local ask=$1 home record digest base content pending_dir err key out
-  key=$(jq -r .key <<<"$ask")
-  if ! home=$(secondmate_registry_field "$FM_HOME/data/assistances.md" "$ASSISTANCE" home 2>/dev/null) || [ -z "$home" ]; then
-    DELIVER_ERROR="Tester ask not delivered: assistance $ASSISTANCE is not registered"
-    return 1
-  fi
+  local ask=$1 content record
   content=$(jq -c 'del(.arrival, .key) + {schema: "fm-tester-verify.v1"} | {schema, round, task, issue, issue_url, prs, sha, run, head, pushed, lines}
     | with_entries(select(.value != null))' <<<"$ask")
-  record=$(jq -cn --arg id "$key" --argjson at "$(jq -r .arrival <<<"$ask")" --arg c "$content" \
+  record=$(jq -cn --arg id "$(jq -r .key <<<"$ask")" --argjson at "$(jq -r .arrival <<<"$ask")" --arg c "$content" \
     '{schema: "fm-assistance-mentions.v1", messages: [{id: $id, arrival: $at, content: $c}]}')
-  digest=$(jq -c '.messages | map([.id, .arrival])' <<<"$record" | sha256sum | cut -d' ' -f1)
-  base="$digest.json"
-  pending_dir="$home/data/pending-mentions"
-  if ! mkdir -p "$pending_dir" 2>/dev/null \
-    || ! printf '%s\n' "$record" > "$pending_dir/.$base.tmp" 2>/dev/null \
-    || ! mv -f "$pending_dir/.$base.tmp" "$pending_dir/$base" 2>/dev/null; then
-    rm -f "$pending_dir/.$base.tmp" 2>/dev/null
-    DELIVER_ERROR="Tester ask not delivered: the Tester pending record could not be written"
-    return 1
-  fi
-  if ! out=$(FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-assistance.sh" source-event "$ASSISTANCE" "$base" 2>&1); then
-    rm -f "$pending_dir/$base"
-    err=$(printf '%s\n' "$out" | grep -m1 '^error:' | cut -c1-160)
-    DELIVER_ERROR="Tester ask not delivered: ${err:-source-event refused}"
-    return 1
-  fi
-  ledger_append "$(jq -c --arg r "$base" --argjson at "$(date +%s)" 'del(.arrival) + {type: "ask", record: $r, at: $at}' <<<"$ask")"
-}
-
-mark_handled() {  # <sequence>: this result and every older unacknowledged one
-  local seq=$1 pending s
-  while IFS= read -r pending; do
-    [ -n "$pending" ] || continue
-    s=${pending%.result}
-    s=${s##*.}
-    case "$s" in ''|*[!0-9]*) continue ;; esac
-    [ "$s" -le "$seq" ] || continue
-    "$SCRIPT_DIR/fm-procevent.sh" handled "$SOURCE_ID" "$s" >/dev/null 2>&1 || true
-  done < <(fm_procevent_pending "$STATE" | grep "/$SOURCE_ID\\.")
+  deliver_record Tester "$ASSISTANCE" "$record" || return 1
+  ledger_append "$(jq -c --arg r "$DELIVER_BASE" --argjson at "$(date +%s)" 'del(.arrival) + {type: "ask", record: $r, at: $at}' <<<"$ask")"
 }
 
 cmd_autohandle() {  # <source-id> <sequence> <result-file>
