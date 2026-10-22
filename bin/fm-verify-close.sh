@@ -9,7 +9,7 @@
 #   - The row must be open and held with a "verification pending:" reason, and that hold must be
 #     external. A Done row, an unheld row, a captain hold or any other hold is refused unchanged.
 #   - A complete record (bin/fm-verify-gate-lib.sh owns the check; nothing here parses verify.md)
-#     lifts the hold and runs `tasks-axi done`. The PR link teardown recorded stays on the row.
+#     runs `tasks-axi done`, which closes the held row and clears its hold in one mutation. The PR link teardown recorded stays on the row.
 #   - An incomplete record is refused: the missing items are printed and the hold reason is
 #     refreshed to them, so the row never shows a stale snapshot.
 # Exit 0 only when the row moved to Done. Environment: FM_HOME, FM_DATA_OVERRIDE.
@@ -63,10 +63,9 @@ if [ -n "$problems" ]; then
   exit 1
 fi
 
-fm_backlog_mutate "$DATA" unhold "$ID" || refuse "could not lift the hold on $ID ($FM_BACKLOG_TRANSITION_ERROR)"
+# One mutation: tasks-axi done on a held row closes it and clears the hold, so the row is never
+# open and unheld.
 if ! fm_backlog_done "$DATA" "$ID"; then
-  err=$FM_BACKLOG_TRANSITION_ERROR
-  fm_backlog_mutate "$DATA" hold "$ID" --reason "$(fm_hold_reason_encode "${reason}")" --kind external >/dev/null 2>&1 || true
-  refuse "could not move $ID to Done ($err); it stays held as verification pending."
+  refuse "could not move $ID to Done ($FM_BACKLOG_TRANSITION_ERROR); it stays held as verification pending."
 fi
 echo "Backlog: $ID is Done. Its verification record is complete."

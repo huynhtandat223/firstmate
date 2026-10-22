@@ -684,11 +684,12 @@ fm_backlog_verify_items_decode() {  # <encoded-items>
 }
 
 # A landed task whose verification record is incomplete: the work record is gone and the
-# row stays open. Retain its deliverable like a captain-held row, then hold it as external
-# with a "verification pending" reason naming the missing items, so it stays out of ready
-# and out of the captain's calls and only bin/fm-verify-close.sh moves it to Done. A row
-# that is already an open captain call keeps that hold and gains a body line instead:
-# the captain's call wins, as it does for a plain retain.
+# row stays open. Hold it as external first, with a "verification pending" reason naming the
+# missing items, then retain its deliverable like a captain-held row; the reopen keeps the
+# hold, so the row is never queued and unheld. It stays out of ready and out of the captain's
+# calls, and only bin/fm-verify-close.sh moves it to Done. A row that is already an open
+# captain call keeps that hold and gains a body line instead: the captain's call wins, as it
+# does for a plain retain.
 fm_backlog_verify_pending() {  # <data-dir> <id> <encoded-items> [flag...]
   local data=$1 id=$2 encoded=$3 items
   shift 3
@@ -696,15 +697,18 @@ fm_backlog_verify_pending() {  # <data-dir> <id> <encoded-items> [flag...]
     FM_BACKLOG_TRANSITION_ERROR="the missing verification items of $id could not be decoded"
     return 1
   fi
-  fm_backlog_retain "$data" "$id" "$@" || return 1
   if ! fm_backlog_row_probe "$data" "$id"; then
     FM_BACKLOG_TRANSITION_ERROR=$FM_BACKLOG_ROW_ERROR
     return 1
   fi
+  # Hold before the reopen inside retain, so the row is never Queued and unheld: tasks-axi keeps
+  # a hold across reopen.
+  if [ "$FM_BACKLOG_ROW_HOLD_KIND" != captain ]; then
+    fm_backlog_mutate "$data" hold "$id" --reason "$(fm_hold_reason_encode "verification pending: $items")" --kind external || return 1
+  fi
+  fm_backlog_retain "$data" "$id" "$@" || return 1
   if [ "$FM_BACKLOG_ROW_HOLD_KIND" = captain ]; then
     fm_backlog_body_append_line "$data" "$id" "Verification pending: $items"
-  else
-    fm_backlog_mutate "$data" hold "$id" --reason "$(fm_hold_reason_encode "verification pending: $items")" --kind external
   fi
 }
 

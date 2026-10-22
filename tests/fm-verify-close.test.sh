@@ -201,9 +201,63 @@ test_answering_with_a_complete_record_closes_the_row() {
   pass "answering with a complete record closes the row as before"
 }
 
+# A tasks-axi shim that logs each call, then runs the real one.
+shim_tasks_axi() {  # <log>: prepends the shim dir to PATH
+  local log=$1 real
+  real=$(command -v tasks-axi)
+  mkdir -p "$TMP_ROOT/shim"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$1" >> %q\nexec %q "$@"\n' "$log" "$real" > "$TMP_ROOT/shim/tasks-axi"
+  chmod +x "$TMP_ROOT/shim/tasks-axi"
+  PATH="$TMP_ROOT/shim:$PATH"
+}
+
+test_closing_is_one_mutation_and_never_leaves_an_unheld_open_row() {
+  local home log="$TMP_ROOT/close-calls.log" saved=$PATH
+  home=$(make_home one-mutation)
+  add_row "$home" 'verification pending: A2 is pending, not pass'
+  write_verify "$home" pass
+  : > "$log"
+  shim_tasks_axi "$log"
+  run_close "$home"
+  PATH=$saved
+  [ "$CLOSE_RC" = 0 ] || fail "a complete record was refused: $CLOSE_OUT"
+  grep -qx 'done' "$log" || fail "the close never ran tasks-axi done: $(tr '\n' ' ' < "$log")"
+  ! grep -qx 'unhold' "$log" || fail "the close lifted the hold before done: $(tr '\n' ' ' < "$log")"
+  pass "closing a verification-pending row is one done mutation, with no unheld open interval"
+}
+
+test_teardown_holds_the_row_before_it_leaves_in_flight() {
+  local home log="$TMP_ROOT/hold-calls.log" saved=$PATH hold_line reopen_line
+  home=$(make_home hold-first)
+  tasks-axi add "$ID" "landed UI change" --kind ship --file "$home/data/backlog.md" >/dev/null
+  tasks-axi start "$ID" --file "$home/data/backlog.md" >/dev/null
+  : > "$log"
+  shim_tasks_axi "$log"
+  (
+    cd "$home" || exit 1
+    # shellcheck source=bin/fm-tasks-axi-lib.sh
+    . "$ROOT/bin/fm-tasks-axi-lib.sh"
+    # shellcheck source=bin/fm-backlog-transition-lib.sh
+    . "$ROOT/bin/fm-backlog-transition-lib.sh"
+    # shellcheck source=bin/fm-hold-reason-lib.sh
+    . "$ROOT/bin/fm-hold-reason-lib.sh"
+    fm_backlog_verify_pending "$home/data" "$ID" "$(encode "A2 is pending, not pass")" --pr "$PR"
+  ) || fail "fm_backlog_verify_pending failed"
+  PATH=$saved
+  hold_line=$(grep -nx 'hold' "$log" | head -1 | cut -d: -f1)
+  reopen_line=$(grep -nx 'reopen' "$log" | head -1 | cut -d: -f1)
+  [ -n "$hold_line" ] && [ -n "$reopen_line" ] && [ "$hold_line" -lt "$reopen_line" ] \
+    || fail "the row was reopened before it was held: $(tr '\n' ' ' < "$log")"
+  [ "$(field "$home" held)" = yes ] && [ "$(field "$home" hold_kind)" = external ] && [ "$(field "$home" state)" = queued ] \
+    || fail "the row did not end held as external and queued: $(show "$home")"
+  pass "teardown holds the row before it reopens it, so it is never queued and unheld"
+}
+
 test_complete_record_lifts_the_hold_and_closes_the_row
 test_incomplete_record_refuses_lists_problems_and_refreshes_the_reason
 test_a_row_not_held_for_verification_is_refused_and_unchanged
 test_answering_a_verification_pending_captain_call_keeps_it_open
 test_releasing_a_verification_pending_captain_call_keeps_it_held
 test_answering_with_a_complete_record_closes_the_row
+test_closing_is_one_mutation_and_never_leaves_an_unheld_open_row
+test_teardown_holds_the_row_before_it_leaves_in_flight
