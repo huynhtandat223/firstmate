@@ -873,7 +873,7 @@ Turning it off forgets that mark, so heads pushed while it was off get a fresh b
 | `reader.project_url` | Where a task with no `data/<task>/reader-session.md` opens its first chat. | none |
 
 The Reviewer's profile owns what it does with an ask: it writes `data/reviews/<record basename without .json>.md` in its home and then acknowledges the record, and it does not `propose` for these asks.
-`fm-procevent-pr-review.sh summary [--since <iso-time>]` prints the rounds, findings by label, push-to-answer times, timeouts, and failures from the ledger.
+`fm-procevent-pr-review.sh summary [--since <iso-time>]` prints the rounds, findings by label, commit-to-answer times (the time from the head commit to each answer), timeouts, and failures from the ledger.
 
 ## Secondmate routes (data/secondmates.md)
 

@@ -443,31 +443,31 @@ scenario_readertimeout() {
     || { echo "reader timeout: $LAST_RESULT"; return 1; }
 }
 
-# P7: the summary reads the ledger: rounds, findings by label, push-to-answer time, timeouts, failures.
+# P7: the summary reads the ledger: rounds, findings by label, commit-to-answer time, timeouts, failures.
 scenario_summary() {
   new_lab "$1"
   mkdir -p "$H/data/pr-review"
   local url="$RURL/pull/7" l="$H/data/pr-review/ledger.jsonl"
   {
     jq -cn --arg repo "$REPO" '{type: "baseline", repo: $repo, pr: 7, head: "aaa", at: 1792000000}'
-    jq -cn --arg repo "$REPO" '{type: "round", repo: $repo, pr: 7, task: "alpha", head: "bbb", round: 1, at: 1792000500, pushed: 1792000100,
+    jq -cn --arg repo "$REPO" '{type: "round", repo: $repo, pr: 7, task: "alpha", head: "bbb", round: 1, at: 1792000500, committed: 1792000100,
       reviewer: {record: "r1.json", status: "answered", report: "x", at: 1792000400, labels: {"in-scope": 2, "out-of-scope (pre-existing)": 1, "unlocated": 0, "unchecked": 0}},
       reader: {status: "answered", answer: "y", at: 1792000250, labels: {"in-scope": 1, "out-of-scope (pre-existing)": 0, "unlocated": 1, "unchecked": 0}}}'
-    jq -cn --arg repo "$REPO" '{type: "round", repo: $repo, pr: 7, task: "alpha", head: "ccc", round: 2, at: 1792003000, pushed: 1792001000,
+    jq -cn --arg repo "$REPO" '{type: "round", repo: $repo, pr: 7, task: "alpha", head: "ccc", round: 2, at: 1792003000, committed: 1792001000,
       reviewer: {record: "r2.json", status: "timeout", report: null, at: null, labels: {}},
       reader: {status: "failed: CHAT NOT FOUND: x", answer: null, at: null, labels: {}}}'
     jq -cn --arg repo "$REPO" '{type: "late", repo: $repo, pr: 7, head: "ccc", round: 2, at: 1792003600, report: "x", labels: {"in-scope": 1}}'
   jq -cn --arg repo "$REPO" '{type: "cap", repo: $repo, pr: 7, head: "ddd", at: 1792004000}'
-    jq -cn --arg repo "$REPO" '{type: "round", repo: $repo, pr: 8, task: "beta", head: "eee", round: 1, at: 1792009000, pushed: 1792008900,
+    jq -cn --arg repo "$REPO" '{type: "round", repo: $repo, pr: 8, task: "beta", head: "eee", round: 1, at: 1792009000, committed: 1792008900,
       reviewer: {record: "r3.json", status: "answered", report: "x", at: 1792008950, labels: {"in-scope": 3}},
       reader: {status: "answered", answer: "y", at: 1792008960, labels: {}}}'
   } >> "$l"
   local out
   out=$("$BIN/fm-procevent-pr-review.sh" summary 2>&1) || { echo "summary failed: $out"; return 1; }
   case "$out" in *"$url"*) ;; *) echo "no PR 7 section: $out"; return 1 ;; esac
-  printf '%s\n' "$out" | grep -q 'reviewer: rounds 2, findings in-scope 3, out-of-scope (pre-existing) 1, unlocated 0, unchecked 0, push-to-answer 300s/2600s, timeouts 1, failures 0' \
+  printf '%s\n' "$out" | grep -q 'reviewer: rounds 2, findings in-scope 3, out-of-scope (pre-existing) 1, unlocated 0, unchecked 0, commit-to-answer 300s/2600s, timeouts 1, failures 0' \
     || { echo "reviewer line for PR 7: $out"; return 1; }
-  printf '%s\n' "$out" | grep -q 'reader: rounds 2, findings in-scope 1, out-of-scope (pre-existing) 0, unlocated 1, unchecked 0, push-to-answer 150s, timeouts 0, failures 1' \
+  printf '%s\n' "$out" | grep -q 'reader: rounds 2, findings in-scope 1, out-of-scope (pre-existing) 0, unlocated 1, unchecked 0, commit-to-answer 150s, timeouts 0, failures 1' \
     || { echo "reader line for PR 7: $out"; return 1; }
   printf '%s\n' "$out" | grep -q 'round cap reached: 1' || { echo "cap line: $out"; return 1; }
   out=$("$BIN/fm-procevent-pr-review.sh" summary --since 2026-10-22T00:00:00Z 2>&1)
@@ -549,8 +549,8 @@ mutate 'a repeated GitHub failure stays quiet' failures \
   's/if \[ "\$previous" != "\$READ_ERROR" \]; then/if true; then/'
 mutate 'a recovery closes the old failure' failures \
   's/rm -f "\$LAST_ERROR"\n      mark_errors_handled "\$seq"/rm -f "\$LAST_ERROR"/'
-mutate 'push-to-answer time' summary \
-  's/\\\(\.\[\$who\]\.at - \.pushed\)s/\\(.[\$who].at + .pushed)s/'
+mutate 'commit-to-answer time' summary \
+  's/\\\(\.\[\$who\]\.at - \.committed\)s/\\(.[\$who].at + .committed)s/'
 mutate 'a deletion at the end of a file anchors to its last line' eof \
   's/function eof_anchor\(\) \{ if \(lastminus/function eof_anchor() { if (0 \&\& lastminus/'
 mutate 'a deleted file has no head side' eof \

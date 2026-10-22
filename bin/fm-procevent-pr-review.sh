@@ -61,7 +61,7 @@
 # Ledger lines (data/pr-review/ledger.jsonl):
 #   {type:"baseline", repo, pr, head, at}
 #   {type:"skip", repo, pr, reason:"no-task", at}
-#   {type:"round", repo, pr, task, head, round, at, pushed,
+#   {type:"round", repo, pr, task, head, round, at, committed,
 #      reviewer:{record, status, report, at, labels}, reader:{status, answer, at, labels}}
 #   {type:"late", repo, pr, head, round, at, report, labels}
 #   {type:"cap", repo, pr, head, at}
@@ -315,7 +315,7 @@ reviewer_content() {  # <task> <pr-url> <head> <merge-base> <round>
 
 # Exit 2: GitHub could not be read (READ_ERROR_FILE says what).
 start_round() {  # <repo> <pr> <pr-url> <task> <head> <base-ref> <round>
-  local repo=$1 n=$2 url=$3 task=$4 head=$5 base=$6 round=$7 cmp merge_base pushed started key f content record
+  local repo=$1 n=$2 url=$3 task=$4 head=$5 base=$6 round=$7 cmp merge_base committed started key f content record
   cmp=$(gh_read "repos/$repo/compare/$base...$head") || return 2
   merge_base=$(jq -r '.merge_base_commit.sha // empty' <<<"$cmp")
   if [ -z "$merge_base" ]; then
@@ -323,16 +323,16 @@ start_round() {  # <repo> <pr> <pr-url> <task> <head> <base-ref> <round>
     return 2
   fi
   started=$(now)
-  pushed=$(jq -r '.commits[-1].commit.committer.date // empty | fromdateiso8601? // empty' <<<"$cmp" 2>/dev/null)
-  [ -n "$pushed" ] || pushed=$started
+  committed=$(jq -r '.commits[-1].commit.committer.date // empty | fromdateiso8601? // empty' <<<"$cmp" 2>/dev/null)
+  [ -n "$committed" ] || committed=$started
   key=$(key_of "$repo" "$n" "$head")
   f="$OPEN/$key.round.json"
   mkdir -p "$OPEN" "$FM_HOME/data/$task"
   jq -c '{files: [.files[]? | {filename, status, patch: (.patch // null)}]}' <<<"$cmp" > "$OPEN/$key.compare.json"
   reader_prompt "$url" "$head" "$merge_base" "$round" > "$FM_HOME/data/$task/reader-prompt-${head:0:8}.txt"
   jq -cn --arg repo "$repo" --argjson pr "$n" --arg url "$url" --arg task "$task" --arg head "$head" --arg mb "$merge_base" \
-    --argjson round "$round" --argjson started "$started" --argjson pushed "$pushed" --arg a "$ASSISTANCE" \
-    '{repo: $repo, pr: $pr, pr_url: $url, task: $task, head: $head, merge_base: $mb, round: $round, started: $started, pushed: $pushed,
+    --argjson round "$round" --argjson started "$started" --argjson committed "$committed" --arg a "$ASSISTANCE" \
+    '{repo: $repo, pr: $pr, pr_url: $url, task: $task, head: $head, merge_base: $mb, round: $round, started: $started, committed: $committed,
       reviewer: {assistance: $a, record: null, status: "pending", report: null, at: null, findings: [], pre_existing: [], labels: {}},
       reader: {status: "pending", answer: null, at: null, findings: [], pre_existing: [], labels: {}}}' > "$f"
   content=$(reviewer_content "$task" "$url" "$head" "$merge_base" "$round")
@@ -657,7 +657,7 @@ cmd_autohandle() {  # <source-id> <sequence> <result-file>
       ;;
     round)
             ledger_test '.type == "round" and .repo == $r and .pr == $n and .head == $h' --arg r "$repo" --argjson n "$n" --arg h "$head" \
-        || ledger_append "$(jq -c --argjson at "$(now)" '{type: "round", repo, pr, task, head, round, at: $at, pushed,
+        || ledger_append "$(jq -c --argjson at "$(now)" '{type: "round", repo, pr, task, head, round, at: $at, committed,
              reviewer: {record: .reviewer.record, status: .reviewer.status, report: .reviewer.report, at: .reviewer.at, labels: .reviewer.labels},
              reader: {status: .reader.status, answer: .reader.answer, at: .reader.at, labels: .reader.labels}}' "$result")"
       key=$(key_of "$repo" "$n" "$head")
@@ -697,11 +697,11 @@ cmd_summary() {
   [ -s "$LEDGER" ] || { echo 'no rounds recorded'; return 0; }
   jq -rs --argjson since "$since" '
     def cnt($rs; $who; $l): [$rs[] | (.[$who].labels // {})[$l] // 0] | add // 0;
-    def times($rs; $who): [$rs[] | select(.[$who].at != null and .pushed != null) | "\(.[$who].at - .pushed)s"] | join("/");
+    def times($rs; $who): [$rs[] | select(.[$who].at != null and .committed != null) | "\(.[$who].at - .committed)s"] | join("/");
     def part($rs; $who):
       "  \($who): rounds \($rs | length), findings "
       + (["in-scope", "out-of-scope (pre-existing)", "unlocated", "unchecked"] | map("\(.) \(cnt($rs; $who; .))") | join(", "))
-      + ", push-to-answer " + (times($rs; $who) | if . == "" then "none" else . end)
+      + ", commit-to-answer " + (times($rs; $who) | if . == "" then "none" else . end)
       + ", timeouts \([$rs[] | select(.[$who].status == "timeout")] | length)"
       + ", failures \([$rs[] | select((.[$who].status | tostring) | startswith("failed"))] | length)";
     . as $all
