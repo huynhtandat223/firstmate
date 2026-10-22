@@ -197,7 +197,7 @@ test_each_wait_verb_fires() {
 
 test_other_verbs_and_kinds_raise_nothing() {
   local verb kind dir state out result
-  for verb in working done failed captain-held handoff-needed resolved weirdword; do
+  for verb in working "done" failed captain-held handoff-needed resolved weirdword; do
     dir=$(make_case "wo-other-$verb"); state="$dir/state"; out="$dir/watch.out"
     make_task "$state" worker1 ship "$(stamped "$verb" 120 'old news')"
     result=$(run_watcher "$dir")

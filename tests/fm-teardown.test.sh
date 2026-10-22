@@ -5389,7 +5389,7 @@ test_verify_gate_allows_complete_record() {
   expect_code 0 "$VERIFY_RC" "verify-complete: teardown should succeed with a complete record"
   ! grep -q REFUSED "$case_dir/stderr" || fail "verify-complete: printed a REFUSED line"
   [ ! -e "$case_dir/state/task-x1.meta" ] || fail "verify-complete: task record was left behind"
-  [ "$(backlog_row_state "$case_dir")" = done ] || fail "verify-complete: the row is '$(backlog_row_state "$case_dir")', want done"
+  [ "$(backlog_row_state "$case_dir")" = "done" ] || fail "verify-complete: the row is '$(backlog_row_state "$case_dir")', want done"
   [ "$(backlog_hold "$case_dir")" = '|' ] || fail "verify-complete: the done row is held"
   assert_grep 'is closed in' "$case_dir/stdout" "verify-complete: the report does not say the row is closed"
   pass "user-visible task with a complete verify.md is torn down and its row moves to Done"

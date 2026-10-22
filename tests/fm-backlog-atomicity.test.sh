@@ -1855,7 +1855,7 @@ test_interrupted_verify_pending_cleanup_replays_the_hold_never_a_close() {
   [ "$rc" -ne 0 ] || fail "teardown reported success while the hold could not be written: $out"
   assert_present "$marker" "teardown lost the verify-pending record it still owes"
   grep -qx 'mode=verify-pending' "$marker" || fail "the pending record does not carry mode=verify-pending: $(cat "$marker")"
-  [ "$(row_state "$case_dir" "$id")" != done ] || fail "an interrupted verify-pending teardown closed the row"
+  [ "$(row_state "$case_dir" "$id")" != "done" ] || fail "an interrupted verify-pending teardown closed the row"
 
   rm -f "$case_dir/fakebin/tasks-axi"
   out=$(run_bootstrap "$case_dir")
