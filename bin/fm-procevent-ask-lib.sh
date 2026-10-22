@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2034 # DELIVER_ERROR and DELIVER_BASE are read by the sourcing adapter
 # Shared by the built-in process-event adapters that send assistances their source records
 # (bin/fm-procevent-deploy-verify.sh, bin/fm-procevent-pr-review.sh): one GitHub read, one
 # JSONL ledger, one poll throttle, one delivery of an fm-assistance-mentions.v1 record, and
@@ -65,9 +66,7 @@ mark_handled() {
   done < <(fm_procevent_pending "$STATE" | grep "/$SOURCE_ID\\.")
 }
 
-# shellcheck disable=SC2034 # both are read by the sourcing adapter
 DELIVER_ERROR=
-# shellcheck disable=SC2034
 DELIVER_BASE=
 deliver_record() {
   local label=$1 assistance=$2 record=$3 home digest base pending_dir err out
