@@ -417,11 +417,15 @@ scenario_recovery() {
   export FAKE_GH_FAIL=1
   advance 60; cycle
   jq -e '.kind == "error"' <<<"$LAST_RESULT" >/dev/null || { echo 'no second error result'; return 1; }
+  local second_error=$SEQ
   reviewer_answers h2 || return 1
   unset FAKE_GH_FAIL
   advance 60; cycle
   jq -e '.kind == "round"' <<<"$LAST_RESULT" >/dev/null || { echo 'the round did not finish'; return 1; }
   local second_round=$SEQ
+  # The poll that read GitHub again ended the failure episode, so that error result is closed; the round is not.
+  [ -e "$H/state/procevent-inbox/pr-review.$second_error.handled" ] || { echo 'the error result stayed open after a round ended the failure'; return 1; }
+  [ ! -e "$H/state/procevent-inbox/pr-review.$second_round.handled" ] || { echo 'the round was acknowledged with the error'; return 1; }
   cycle
   [ ! -e "$H/state/procevent-inbox/pr-review.$second_round.handled" ] || { echo 'a later pass acknowledged the round'; return 1; }
   [ "$CYCLE_AUTO" = none ] || { echo 'a recovery followed the round'; return 1; }
@@ -559,8 +563,10 @@ mutate 'open rounds finish while GitHub fails' pollfail \
   's/2\) POLL_FAILED=1 ;; 10\) return 0 ;; esac/2) return 2 ;; 10) return 0 ;; esac/'
 mutate 'a recovery closes only error results' recovery \
   's/mark_errors_handled "\$seq"/mark_handled "\$seq"/'
+mutate 'a round that ends a failure episode closes its error results' recovery \
+  's/\[ -z "\$previous" \] \|\| mark_errors_handled 999999999999/:/'
 mutate 'a poll that reads GitHub ends the failure episode' recovery \
-  's/\[ "\$POLL_FAILED" -eq 1 \] \|\| rm -f "\$LAST_ERROR"/:/'
+  's/if \[ "\$POLL_FAILED" -eq 0 \]; then\n          rm -f "\$LAST_ERROR"/if false; then\n          rm -f "\$LAST_ERROR"/'
 mutate 'a reader that never answers is stopped' readertimeout \
   's/if \[ "\$rc" -eq 124 \]; then/if false; then/'
 mutate 'a late report joins its round in the summary' summary \

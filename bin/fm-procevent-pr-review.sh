@@ -594,8 +594,12 @@ cmd_wait() {
     [ ! -f "$LAST_ERROR" ] || previous=$(<"$LAST_ERROR")
     case "$rc" in
       0)
-        # A poll that read GitHub ends the failure episode, so the same reason is announced again later.
-        [ "$POLL_FAILED" -eq 1 ] || rm -f "$LAST_ERROR"
+        # A poll that read GitHub ends the failure episode, so the same reason is announced again later,
+        # and the error results of that episode are closed here: no recovery result follows a round.
+        if [ "$POLL_FAILED" -eq 0 ]; then
+          rm -f "$LAST_ERROR"
+          [ -z "$previous" ] || mark_errors_handled 999999999999
+        fi
         printf '%s\n' "$EMIT"
         return 0
         ;;
