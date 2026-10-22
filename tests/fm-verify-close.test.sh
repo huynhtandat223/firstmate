@@ -224,6 +224,31 @@ test_a_repeated_keyed_answer_for_a_verification_pending_row_is_not_skipped() {
   pass "a repeated keyed answer for a verification-pending row is an idempotent close, not a skip"
 }
 
+# Teardown publishes its pending-close record before the transition runs. A crash between the two
+# leaves the record and the live row; a captain answer in that window must not reach Done.
+test_a_crash_after_the_pending_close_record_does_not_bypass_verification() {
+  local home
+  home=$(make_home crash-window)
+  captain_row "$home" 0 0
+  write_verify "$home" pending
+  mkdir -p "$home/state"
+  (
+    cd "$home" || exit 1
+    # shellcheck source=bin/fm-tasks-axi-lib.sh
+    . "$ROOT/bin/fm-tasks-axi-lib.sh"
+    # shellcheck source=bin/fm-backlog-transition-lib.sh
+    . "$ROOT/bin/fm-backlog-transition-lib.sh"
+    # shellcheck source=bin/fm-hold-reason-lib.sh
+    . "$ROOT/bin/fm-hold-reason-lib.sh"
+    fm_backlog_close_marker_write "$home/state" "$ID" "$home/data" 1792000000-1 \
+      --verify-pending "$(fm_hold_reason_encode "A2 is pending, not pass")" --pr "$PR"
+  ) || fail "the pending-close record could not be published"
+  [ -f "$home/state/$ID.backlog-close" ] || fail "the pending-close record is missing"
+  run_answer "$home"
+  check_pending_after_answer "$home" crash-window
+  pass "a captain answer between the pending-close record and the transition keeps the row held"
+}
+
 test_releasing_a_verification_pending_captain_call_keeps_it_held() {
   local home
   home=$(make_home release-pending)
@@ -315,3 +340,4 @@ test_teardown_holds_the_row_before_it_leaves_in_flight
 test_a_body_edit_cannot_turn_a_verification_pending_call_into_done
 test_an_unrelated_body_line_without_the_marker_closes_normally
 test_a_repeated_keyed_answer_for_a_verification_pending_row_is_not_skipped
+test_a_crash_after_the_pending_close_record_does_not_bypass_verification

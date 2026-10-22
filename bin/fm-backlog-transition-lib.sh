@@ -948,6 +948,8 @@ fm_backlog_retain_transition() {
 fm_backlog_verify_pending_transition() {  # <meta> <marker> <data> <id> <state> <encoded-items> [flag...]
   local meta=$1 marker=$2 data=$3 id=$4 state=$5 encoded=$6
   shift 6
+  # Before the task record goes: a record written before the marker existed replays into it too.
+  fm_backlog_verify_marker_write "$data" "$id" || return 1
   [ -z "$meta" ] || fm_backlog_record_remove "$meta" "task record" "$state" || return 1
   fm_backlog_verify_pending "$data" "$id" "$encoded" "$@" || return 1
   fm_backlog_record_remove "$marker" "pending-close record" "$state"
@@ -1215,6 +1217,11 @@ fm_backlog_close_marker_write() {  # <state-dir> <id> <data-dir> <spawn-gen> [fl
   local state=$1 id=$2 data=$3 spawn_gen=$4 marker tmp
   fm_backlog_directory_present "$state" "state directory" || return 1
   shift 4
+  # The verification-pending marker is durable before the record that promises the transition, so
+  # a crash between the record and the transition never leaves a captain answer able to reach Done.
+  if [ "${1:-}" = --verify-pending ]; then
+    fm_backlog_verify_marker_write "$data" "$id" || return 1
+  fi
   marker=$(fm_backlog_close_marker_path "$state" "$id") || return 1
   tmp="$state/.$id.backlog-close.${BASHPID:-$$}"
   fm_backlog_close_marker_stage "$tmp" "$id" "$data" "$spawn_gen" "$state" 0 "$@" || return 1
