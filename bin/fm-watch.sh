@@ -1091,7 +1091,8 @@ wait_over_limit_resolve() {
     return 0
   fi
   if [ -f "$f" ] && [ -r "$f" ] && raw=$(cat "$f" 2>/dev/null); then
-    raw=${raw//[[:space:]]/}
+    raw=${raw#"${raw%%[![:space:]]*}"}
+    raw=${raw%"${raw##*[![:space:]]}"}
     case "$raw" in
       off)
         WAIT_OVER_LIMIT=off

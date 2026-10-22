@@ -336,6 +336,25 @@ test_malformed_config_falls_back_and_wakes_once() {
   pass "a malformed limit falls back to 45 and wakes about the file once"
 }
 
+# Only leading and trailing whitespace is trimmed; "3 0" must not become 30.
+test_embedded_whitespace_is_malformed() {
+  local dir state out result
+  dir=$(make_case wo-cfg-embedded); state="$dir/state"; out="$dir/watch.out"
+  mkdir -p "$dir/config"
+  printf '3 0\n' > "$dir/config/wait-over-minutes"
+  make_task "$state" worker1 ship "$(stamped paused 35 'thirty-five minutes')"
+  result=$(run_watcher "$dir" "FM_CONFIG_OVERRIDE=$dir/config")
+  [ "$result" = woke ] || fail "an embedded-space limit raised no wake"
+  grep -Fx 'check: config/wait-over-minutes unreadable, using 45' "$out" >/dev/null \
+    || fail "an embedded-space limit was not malformed: $(cat "$out")"
+  : > "$out"
+  printf '  30 \n' > "$dir/config/wait-over-minutes"
+  result=$(run_watcher "$dir" "FM_CONFIG_OVERRIDE=$dir/config")
+  [ "$result" = woke ] || fail "a padded 30 raised no wake at 35 minutes"
+  grep -E '^check: wait-over worker1 3[56]m: paused:' "$out" >/dev/null || fail "a padded 30 did not set the limit to 30: $(cat "$out")"
+  pass "embedded whitespace in the limit is malformed, and surrounding whitespace is trimmed"
+}
+
 test_fires_once_for_one_wait
 test_under_the_limit_is_quiet
 test_each_wait_verb_fires
@@ -347,3 +366,4 @@ test_unstamped_line_uses_the_status_file_mtime
 test_note_is_trimmed_to_160_characters
 test_config_values
 test_malformed_config_falls_back_and_wakes_once
+test_embedded_whitespace_is_malformed
