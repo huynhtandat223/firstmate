@@ -55,6 +55,7 @@ new_lab() {  # <bin-dir>: a firstmate home with a registered Reviewer, a fake re
 #!/usr/bin/env bash
 # The fake reader: <chat-url> <prompt-file> <answer-file>. FAKE_READER_FAIL names a failure line.
 printf '%s\n' "$1" >> "$FAKE_READER_LOG"
+[ -z "${FAKE_READER_SLEEP:-}" ] || sleep "$FAKE_READER_SLEEP"
 [ -z "${FAKE_READER_FAIL:-}" ] || { echo "$FAKE_READER_FAIL"; exit 1; }
 inner=$(jq -Rs . < "$FAKE_READER_ANSWER")
 outer=$(printf '%s' "$inner" | jq -Rs .)
@@ -64,7 +65,7 @@ SH
   default_reader_answer
   export FAKE_READER_LOG="$LAB/reader.log" FAKE_READER_ANSWER="$LAB/reader-answer.txt"
   : > "$FAKE_READER_LOG"
-  unset FAKE_READER_FAIL FAKE_READER_CHAT FAKE_GH_FAIL FAKE_GH_FORBID
+  unset FAKE_READER_FAIL FAKE_READER_CHAT FAKE_READER_SLEEP FAKE_GH_FAIL FAKE_GH_FORBID
   write_config
   export FM_HOME="$H" FAKE_GH_DIR="$GHD" FM_PR_REVIEW_ONCE=1 FM_PR_REVIEW_NOW=$NOW
 }
@@ -235,6 +236,8 @@ scenario_scope() {
   [ "$(jq -r '.reader.findings | map(.label) | join(",")' <<<"$LAST_RESULT")" = 'in-scope,out-of-scope (pre-existing)' ] || { echo "reader labels: $(jq -c '.reader.findings' <<<"$LAST_RESULT")"; return 1; }
   [ "$(jq -r '.reviewer.pre_existing | length' <<<"$LAST_RESULT")" = 1 ] || { echo 'the PRE-EXISTING line was dropped'; return 1; }
   jq -e '.reviewer.findings[0] | .path == "a.txt" and .line == 11 and .severity == "blocking"' <<<"$LAST_RESULT" >/dev/null || { echo 'finding fields'; return 1; }
+  jq -e '.reviewer.findings[5] | .path == null and .severity == "note" and .text == "the whole module is unclear | fix: split it"' <<<"$LAST_RESULT" >/dev/null \
+    || { echo "unlocated finding lost its text: $(jq -c '.reviewer.findings[5]' <<<"$LAST_RESULT")"; return 1; }
   grep -q 'auto: 2 findings, 1 in scope' "$H/data/alpha/reader-session.md" || { echo 'reader-session line lacks the counts'; cat "$H/data/alpha/reader-session.md"; return 1; }
 }
 
@@ -344,6 +347,98 @@ scenario_disabled() {
   [ "$(inbox_count)" = 1 ] && [ "$(reader_calls)" = 1 ] || { echo 'the first later head was not a round'; return 1; }
 }
 
+# A pure deletion at the end of a file anchors to the last line the head still has; a deleted file
+# has no head side, so any line named in it is the diff's own.
+scenario_eof() {
+  new_lab "$1"
+  baseline 7 fm/alpha h0
+  local files report
+  files=$(jq -cn '[{filename: "x.txt", status: "modified", patch: "@@ -5,3 +5,1 @@\n line5\n-gone6\n-gone7"},
+    {filename: "gone.txt", status: "removed", patch: "@@ -1,2 +0,0 @@\n-a\n-b"}]')
+  report=$'FINDING note x.txt:5 the file now ends early | fix: restore the tail\nFINDING note x.txt:3 above the hunk | fix: none\nFINDING note gone.txt:1 the caller still reads it | fix: update it\nFINDING note gone.txt:2 same | fix: update it'
+  start_round 7 fm/alpha h1 "$files"
+  finish_round h1 "$report" || return 1
+  [ "$(jq -r '.reviewer.findings | map(.label) | join(",")' <<<"$LAST_RESULT")" = "in-scope,out-of-scope (pre-existing),in-scope,in-scope" ] \
+    || { echo "labels: $(jq -c '.reviewer.findings | map(.label)' <<<"$LAST_RESULT")"; return 1; }
+}
+
+# P6 again: heads pushed while the source was off are not rounds after it is enabled again.
+scenario_reenable() {
+  new_lab "$1"
+  baseline 7 fm/alpha h0
+  set_config '.enabled = false'
+  fx_pulls 7:fm/alpha:h1; fx_compare h1
+  cycle
+  advance 300
+  set_config '.enabled = true'
+  cycle; advance 130; cycle
+  [ "$(ledger_count ".type == \"baseline\" and .head == \"$(sha h1)\"")" = 1 ] || { echo 'the head pushed while off got no fresh baseline'; ledger; return 1; }
+  [ "$(inbox_count)" = 0 ] && [ "$(reader_calls)" = 0 ] || { echo 'a head pushed while off became a round'; return 1; }
+  start_round 7 fm/alpha h2
+  [ "$(inbox_count)" = 1 ] && [ "$(reader_calls)" = 1 ] || { echo 'the first head after the baseline was not a round'; return 1; }
+}
+
+# Rounds already open finish and time out while GitHub cannot be read; the failure is then announced once.
+scenario_pollfail() {
+  new_lab "$1"
+  baseline 7 fm/alpha h0
+  start_round 7 fm/alpha h1
+  export FAKE_GH_FAIL=1
+  reviewer_answers h1 || return 1
+  advance 60; cycle
+  jq -e '.kind == "round" and .reviewer.status == "answered"' <<<"$LAST_RESULT" >/dev/null || { echo "round not finished while GitHub failed: ${LAST_RESULT:-none}"; return 1; }
+  cycle
+  jq -e '.kind == "error"' <<<"$LAST_RESULT" >/dev/null || { echo "GitHub failure not announced after the round: ${LAST_RESULT:-none}"; return 1; }
+  unset FAKE_GH_FAIL
+  start_round 7 fm/alpha h2
+  export FAKE_GH_FAIL=1
+  advance 1900; cycle
+  jq -e '.kind == "round" and .reviewer.status == "timeout"' <<<"$LAST_RESULT" >/dev/null || { echo "round not timed out while GitHub failed: ${LAST_RESULT:-none}"; return 1; }
+}
+
+# A recovery closes the GitHub failures and nothing else: a round still waiting for firstmate stays open.
+scenario_recovery() {
+  new_lab "$1"
+  baseline 7 fm/alpha h0
+  start_round 7 fm/alpha h1
+  finish_round h1 || return 1
+  local round_seq=$SEQ
+  jq -e '.kind == "round"' <<<"$LAST_RESULT" >/dev/null || { echo 'no round result'; return 1; }
+  export FAKE_GH_FAIL=1
+  advance 60; cycle
+  local error_seq=$SEQ
+  jq -e '.kind == "error"' <<<"$LAST_RESULT" >/dev/null || { echo 'no error result'; return 1; }
+  unset FAKE_GH_FAIL
+  advance 60; cycle
+  [ -e "$H/state/procevent-inbox/pr-review.$error_seq.handled" ] || { echo 'the error result stayed open after recovery'; return 1; }
+  [ ! -e "$H/state/procevent-inbox/pr-review.$round_seq.handled" ] || { echo 'the recovery acknowledged a round nobody handled'; return 1; }
+  # error, then a round that finishes on the first poll that reads GitHub, then quiet: no recovery may follow.
+  start_round 7 fm/alpha h2
+  export FAKE_GH_FAIL=1
+  advance 60; cycle
+  jq -e '.kind == "error"' <<<"$LAST_RESULT" >/dev/null || { echo 'no second error result'; return 1; }
+  reviewer_answers h2 || return 1
+  unset FAKE_GH_FAIL
+  advance 60; cycle
+  jq -e '.kind == "round"' <<<"$LAST_RESULT" >/dev/null || { echo 'the round did not finish'; return 1; }
+  local second_round=$SEQ
+  cycle
+  [ ! -e "$H/state/procevent-inbox/pr-review.$second_round.handled" ] || { echo 'a later pass acknowledged the round'; return 1; }
+  [ "$CYCLE_AUTO" = none ] || { echo 'a recovery followed the round'; return 1; }
+}
+
+# A reader that never answers is stopped after reader.timeout_seconds and the round goes on without it.
+scenario_readertimeout() {
+  new_lab "$1"
+  baseline 7 fm/alpha h0
+  set_config '.reader.timeout_seconds = 1'
+  export FAKE_READER_SLEEP=30
+  start_round 7 fm/alpha h1
+  finish_round h1 || return 1
+  jq -e '.kind == "round" and .reviewer.status == "answered" and (.reader.status | startswith("failed: timeout"))' <<<"$LAST_RESULT" >/dev/null \
+    || { echo "reader timeout: $LAST_RESULT"; return 1; }
+}
+
 # P7: the summary reads the ledger: rounds, findings by label, push-to-answer time, timeouts, failures.
 scenario_summary() {
   new_lab "$1"
@@ -357,7 +452,8 @@ scenario_summary() {
     jq -cn --arg repo "$REPO" '{type: "round", repo: $repo, pr: 7, task: "alpha", head: "ccc", round: 2, at: 1792003000, pushed: 1792001000,
       reviewer: {record: "r2.json", status: "timeout", report: null, at: null, labels: {}},
       reader: {status: "failed: CHAT NOT FOUND: x", answer: null, at: null, labels: {}}}'
-    jq -cn --arg repo "$REPO" '{type: "cap", repo: $repo, pr: 7, head: "ddd", at: 1792004000}'
+    jq -cn --arg repo "$REPO" '{type: "late", repo: $repo, pr: 7, head: "ccc", round: 2, at: 1792003600, report: "x", labels: {"in-scope": 1}}'
+  jq -cn --arg repo "$REPO" '{type: "cap", repo: $repo, pr: 7, head: "ddd", at: 1792004000}'
     jq -cn --arg repo "$REPO" '{type: "round", repo: $repo, pr: 8, task: "beta", head: "eee", round: 1, at: 1792009000, pushed: 1792008900,
       reviewer: {record: "r3.json", status: "answered", report: "x", at: 1792008950, labels: {"in-scope": 3}},
       reader: {status: "answered", answer: "y", at: 1792008960, labels: {}}}'
@@ -365,7 +461,7 @@ scenario_summary() {
   local out
   out=$("$BIN/fm-procevent-pr-review.sh" summary 2>&1) || { echo "summary failed: $out"; return 1; }
   case "$out" in *"$url"*) ;; *) echo "no PR 7 section: $out"; return 1 ;; esac
-  printf '%s\n' "$out" | grep -q 'reviewer: rounds 2, findings in-scope 2, out-of-scope (pre-existing) 1, unlocated 0, unchecked 0, push-to-answer 300s, timeouts 1, failures 0' \
+  printf '%s\n' "$out" | grep -q 'reviewer: rounds 2, findings in-scope 3, out-of-scope (pre-existing) 1, unlocated 0, unchecked 0, push-to-answer 300s/2600s, timeouts 1, failures 0' \
     || { echo "reviewer line for PR 7: $out"; return 1; }
   printf '%s\n' "$out" | grep -q 'reader: rounds 2, findings in-scope 1, out-of-scope (pre-existing) 0, unlocated 1, unchecked 0, push-to-answer 150s, timeouts 0, failures 1' \
     || { echo "reader line for PR 7: $out"; return 1; }
@@ -390,7 +486,7 @@ scenario_runner() {
     || { echo 'want exactly one wake row'; cat "$H/state/.wake-queue" 2>&1; return 1; }
 }
 
-SCENARIOS=${FM_PR_REVIEW_TEST_SCENARIOS:-rounds scope ask failures disabled summary runner}
+SCENARIOS=${FM_PR_REVIEW_TEST_SCENARIOS:-rounds scope eof ask failures pollfail recovery disabled reenable readertimeout summary runner}
 
 # ---- real adapter -----------------------------------------------------------
 
@@ -430,9 +526,9 @@ mutate 'enabled false reads nothing' disabled \
 mutate 'a branch that is not fm/<task> is skipped' rounds \
   's/case "\$ref" in fm\/\*\) task=\$\{ref#fm\/\} ;; esac/task=\${ref##*\/}/'
 mutate 'a pure deletion counts as a changed line' scope \
-  's/\/\^-\/ \{ if \(h >= a \+ 0 && h <= b \+ 0\) hit = 1; next \}/\/^-\/ { next }/'
+  's/\/\^-\/ \{ if \(h >= a \+ 0 && h <= b \+ 0\) hit = 1; lastminus = 1; next \}/\/^-\/ { lastminus = 1; next }/'
 mutate 'a context line is not a changed line' scope \
-  's/\{ h\+\+ \}\n        END/{ h++; if (h - 1 >= a + 0 \&\& h - 1 <= b + 0) hit = 1 }\n        END/'
+  's/\{ h\+\+; lastminus = 0 \}\n        END/{ h++; lastminus = 0; if (h - 1 >= a + 0 \&\& h - 1 <= b + 0) hit = 1 }\n        END/'
 mutate 'a file with no patch is unchecked' scope \
   's/nopatch\) echo unchecked ;;/nopatch) echo "\$LABEL_OUT" ;;/'
 mutate 'a finding with no location is unlocated' scope \
@@ -448,7 +544,25 @@ mutate 'the Reviewer times out' failures \
 mutate 'a repeated GitHub failure stays quiet' failures \
   's/if \[ "\$previous" != "\$READ_ERROR" \]; then/if true; then/'
 mutate 'a recovery closes the old failure' failures \
-  's/rm -f "\$LAST_ERROR"\n      mark_handled "\$seq"/rm -f "\$LAST_ERROR"/'
+  's/rm -f "\$LAST_ERROR"\n      mark_errors_handled "\$seq"/rm -f "\$LAST_ERROR"/'
 mutate 'push-to-answer time' summary \
   's/\\\(\.\[\$who\]\.at - \.pushed\)s/\\(.[\$who].at + .pushed)s/'
+mutate 'a deletion at the end of a file anchors to its last line' eof \
+  's/function eof_anchor\(\) \{ if \(lastminus/function eof_anchor() { if (0 \&\& lastminus/'
+mutate 'a deleted file has no head side' eof \
+  's/if \(h == 0\) hit = 1/if (0) hit = 1/'
+mutate 'finding fields keep empty parts' scope \
+  's/IFS=\$.\\037. read -r kind/IFS=\$\x27\\t\x27 read -r kind/'
+mutate 'off forgets the first-poll marks' reenable \
+  's/state_edit .del\(\.started\) \| del\(\.heads\). *$/:/m'
+mutate 'open rounds finish while GitHub fails' pollfail \
+  's/2\) POLL_FAILED=1 ;; 10\) return 0 ;; esac/2) return 2 ;; 10) return 0 ;; esac/'
+mutate 'a recovery closes only error results' recovery \
+  's/mark_errors_handled "\$seq"/mark_handled "\$seq"/'
+mutate 'a poll that reads GitHub ends the failure episode' recovery \
+  's/\[ "\$POLL_FAILED" -eq 1 \] \|\| rm -f "\$LAST_ERROR"/:/'
+mutate 'a reader that never answers is stopped' readertimeout \
+  's/if \[ "\$rc" -eq 124 \]; then/if false; then/'
+mutate 'a late report joins its round in the summary' summary \
+  's/else \.reviewer \|= \(\. \+ \{labels: \$l\.labels, at: \$l\.at\}\) end/else . end/'
 pass 'every guarded behavior has a red mutation proof'

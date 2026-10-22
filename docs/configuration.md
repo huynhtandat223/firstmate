@@ -837,6 +837,7 @@ Firstmate still verifies every finding and gives the verdict; the source never m
 `config/pr-review.json` is a local, gitignored file.
 A missing file, or `enabled` other than `true`, means the source reads no GitHub data, asks no one, and writes no ledger line.
 The first poll after it is enabled records each open PR's head as a baseline, so only later heads are rounds.
+Turning it off forgets that mark, so heads pushed while it was off get a fresh baseline too.
 
 | Field | Meaning | Default |
 | --- | --- | --- |
@@ -848,6 +849,7 @@ The first poll after it is enabled records each open PR's head as a baseline, so
 | `reviewer_timeout_seconds` | How long a round waits for the Reviewer's report. A later report wakes once more. | 1800 |
 | `reviewer.assistance` | The assistance that receives the ask. | `reviewer` |
 | `reader.command` | Executable run as `<command> <chat-url> <prompt-file> <answer-file>`, one round at a time. | none |
+| `reader.timeout_seconds` | How long one reader run may take before it is stopped and its status is `failed: timeout`. | 1500 |
 | `reader.project_url` | Where a task with no `data/<task>/reader-session.md` opens its first chat. | none |
 
 The Reviewer's profile owns what it does with an ask: it writes `data/reviews/<record basename without .json>.md` in its home and then acknowledges the record, and it does not `propose` for these asks.

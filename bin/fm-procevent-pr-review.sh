@@ -32,6 +32,9 @@
 #              of kind "cap". A Reviewer report that comes after its timeout returns one more
 #              result of kind "late". An unreadable GitHub returns one result of kind "error";
 #              the same reason stays quiet until a poll succeeds, then a "recovery" result.
+#              Rounds already open still finish and time out while GitHub cannot be read.
+#              A reader run that passes reader.timeout_seconds (default 1500) is stopped and its
+#              status is "failed: timeout".
 # The Reviewer's report is data/reviews/<record basename without .json>.md in its home (the
 #              name with .json kept is read too), written before it acknowledges the record
 #              with `fm-assistance.sh acknowledge-source`. The report counts as given once it
@@ -49,7 +52,7 @@
 # autohandle   Apply a captured result after the runner has captured it: write its ledger line and
 #              close its round. A round, late or cap result stays unacknowledged: that is the wake.
 #              An error result stays unacknowledged too. A recovery result clears the error and
-#              acknowledges every older result. Firstmate acknowledges the rest with
+#              acknowledges itself and the older error results, never a round. Firstmate acknowledges the rest with
 #              `fm-procevent.sh handled pr-review <sequence>` after it has verified the findings.
 # silent       Exit 0 for a recovery result only.
 # self-announcing, relisten
@@ -113,6 +116,7 @@ REVIEWER_TIMEOUT=1800
 ASSISTANCE=reviewer
 READER_CMD=
 READER_URL=
+READER_TIMEOUT=1500
 
 cfg_num() {  # <field> <default>
   local v
@@ -133,6 +137,8 @@ load_config() {
   ASSISTANCE=$(jq -r '.reviewer.assistance // "reviewer"' "$CONFIG")
   READER_CMD=$(jq -r '.reader.command // ""' "$CONFIG")
   READER_URL=$(jq -r '.reader.project_url // ""' "$CONFIG")
+  READER_TIMEOUT=$(jq -r '.reader.timeout_seconds // empty' "$CONFIG" 2>/dev/null)
+  case "$READER_TIMEOUT" in ''|*[!0-9]*|0) READER_TIMEOUT=1500 ;; esac
 }
 
 # ---- state and ledger queries ----------------------------------------------
@@ -186,10 +192,11 @@ answer_text() {  # <answer-file>
   printf '%s\n' "$t"
 }
 
-# One tab-separated row per FINDING line (F, severity, path, first line, last line, text) and per
-# line kept under a PRE-EXISTING heading (P, text).
+# One row per FINDING line (F, severity, path, first line, last line, text) and per line kept under a
+# PRE-EXISTING heading (P, text). Fields are split by the unit separator (octal 037), which is not
+# whitespace, so an empty path or line field stays a field and the text is never shifted.
 extract_rows() {
-  tr '\t' ' ' | awk '
+  tr '\t\037' '  ' | awk '
     function trim(s) { gsub(/^ +| +$/, "", s); return s }
     BEGIN { pre = 0 }
     {
@@ -217,11 +224,11 @@ extract_rows() {
           if (range ~ /(-|–)/) { le = range; sub(/^[0-9]+(-|–)/, "", le) }
           rest = trim(substr(rest, length(tok) + 1))
         }
-        printf "F\t%s\t%s\t%s\t%s\t%s\n", sev, path, ls, le, rest
+        printf "F\037%s\037%s\037%s\037%s\037%s\n", sev, path, ls, le, rest
         next
       }
       if (line ~ /^PRE-EXISTING/) { pre = 1; next }
-      if (pre && line != "") printf "P\t%s\n", line
+      if (pre && line != "") printf "P\037%s\n", line
     }'
 }
 
@@ -238,20 +245,24 @@ label_for() {  # <compare-file> <path> <first-line> <last-line>
             patch=$(jq -r --arg p "$path" '[.files[] | select(.filename == $p)] | first | .patch' "$cmpf")
       if printf '%s\n' "$patch" | awk -v a="$ls" -v b="$le" '
         BEGIN { if (b + 0 < a + 0) { t = a; a = b; b = t } }
+        # A hunk that ends in a deletion ends the file: anchor it to the last line the head still has.
+        function eof_anchor() { if (lastminus && h - 1 >= a + 0 && h - 1 <= b + 0) hit = 1; lastminus = 0 }
         /^@@/ {
+          eof_anchor()
           s = $0; sub(/^@@ -[0-9]+(,[0-9]+)? \+/, "", s)
           c = s; sub(/[^0-9].*/, "", c)
           d = 1
           if (s ~ /^[0-9]+,[0-9]+/) { d = s; sub(/^[0-9]+,/, "", d); sub(/[^0-9].*/, "", d) }
           h = c + 0
+          if (h == 0) hit = 1   # the whole file is deleted: there is no head side to point at
           if (d + 0 == 0) h = h + 1
           next
         }
-        /^\+/ { if (h >= a + 0 && h <= b + 0) hit = 1; h++; next }
-        /^-/ { if (h >= a + 0 && h <= b + 0) hit = 1; next }
+        /^\+/ { if (h >= a + 0 && h <= b + 0) hit = 1; h++; lastminus = 0; next }
+        /^-/ { if (h >= a + 0 && h <= b + 0) hit = 1; lastminus = 1; next }
         /^\\/ { next }
-        { h++ }
-        END { exit !hit }'; then
+        { h++; lastminus = 0 }
+        END { eof_anchor(); exit !hit }'; then
         echo "$LABEL_IN"
       else
         echo "$LABEL_OUT"
@@ -263,7 +274,7 @@ label_for() {  # <compare-file> <path> <first-line> <last-line>
 # {findings:[...], pre_existing:[...], labels:{...}} for an answer text.
 scan_findings() {  # <text-file> <compare-file>
   local text=$1 cmpf=$2 kind sev path ls le rest label findings='[]' pre='[]'
-  while IFS=$'\t' read -r kind sev path ls le rest; do
+  while IFS=$'\037' read -r kind sev path ls le rest; do
     case "$kind" in
       F)
         label=$(label_for "$cmpf" "$path" "$ls" "$le")
@@ -347,9 +358,38 @@ reviewer_report() {  # <record-basename>: the report path once the Reviewer has 
   return 1
 }
 
+# Run a command with its output in <outfile>; stop it with TERM, then KILL, after <seconds>.
+# Exit 124 means it was stopped. (`timeout` is not on every platform firstmate runs on.)
+run_with_timeout() {  # <seconds> <outfile> <command> [args...]
+  local secs=$1 outf=$2 pid wd rc flag
+  shift 2
+  flag="$outf.timeout"
+  rm -f "$flag"
+  "$@" > "$outf" 2>&1 &
+  pid=$!
+  {
+    sp=
+    trap 'kill "$sp" 2>/dev/null; exit 0' TERM
+    sleep "$secs" & sp=$!
+    wait "$sp" || exit 0
+    : > "$flag"
+    kill -TERM "$pid" 2>/dev/null
+    sleep 10 & sp=$!
+    wait "$sp" || exit 0
+    kill -KILL "$pid" 2>/dev/null
+  } &
+  wd=$!
+  wait "$pid"
+  rc=$?
+  kill "$wd" 2>/dev/null
+  wait "$wd" 2>/dev/null
+  [ ! -e "$flag" ] || { rm -f "$flag"; return 124; }
+  return "$rc"
+}
+
 # The reader's turn for one open round. A failure is a status, never a retry.
 run_reader() {  # <open-file>
-  local f=$1 task head round n head8 session chat newchat=0 answer prompt rel out rc reason text scan in_scope count first
+  local f=$1 task head round n head8 session chat newchat=0 answer prompt rel out outf rc reason text scan in_scope count first
   task=$(jq -r .task "$f"); head=$(jq -r .head "$f"); round=$(jq -r .round "$f"); n=$(jq -r .pr "$f")
   head8=${head:0:8}
   session="$FM_HOME/data/$task/reader-session.md"
@@ -365,9 +405,14 @@ run_reader() {  # <open-file>
     reason='failed: no chat in reader-session.md and no reader.project_url'
   else
     rm -f "$answer"
-    out=$("$READER_CMD" "$chat" "$prompt" "$answer" 2>&1)
+    outf=$(mktemp "${TMPDIR:-/tmp}/fm-pr-review-reader.XXXXXX") || return 1
+    run_with_timeout "$READER_TIMEOUT" "$outf" "$READER_CMD" "$chat" "$prompt" "$answer"
     rc=$?
-    if [ "$rc" -ne 0 ] || [ ! -s "$answer" ]; then
+    out=$(cat "$outf")
+    rm -f "$outf"
+    if [ "$rc" -eq 124 ]; then
+      reason="failed: timeout after ${READER_TIMEOUT}s"
+    elif [ "$rc" -ne 0 ] || [ ! -s "$answer" ]; then
       reason=$(printf '%s\n' "$out" | grep -m1 -E 'FAILED|NOT FOUND' || printf '%s\n' "$out" | grep -m1 . || true)
       reason="failed: ${reason:-reader exited $rc}"
       reason=${reason:0:200}
@@ -496,13 +541,17 @@ poll_late() {
   return 0
 }
 
-# One pass. Exit 0: EMIT holds a result. Exit 1: nothing is due. Exit 2: GitHub unreadable.
+# One pass. Exit 0: EMIT holds a result. Exit 1: nothing is due. Exit 2: GitHub unreadable and
+# nothing else is due. POLL_FAILED says whether this pass could read GitHub.
+POLL_FAILED=0
 pass() {
   local rc f
   EMIT=
+  POLL_FAILED=0
   poll_prs
   rc=$?
-  case "$rc" in 2) return 2 ;; 10) return 0 ;; esac
+  case "$rc" in 2) POLL_FAILED=1 ;; 10) return 0 ;; esac
+  # Rounds already open finish and time out even when GitHub cannot be read.
   # The reader runs one round at a time, because the rounds share one Chrome.
   for f in "$OPEN"/*.round.json; do
     [ -f "$f" ] || continue
@@ -519,6 +568,7 @@ pass() {
   poll_late
   rc=$?
   [ "$rc" -eq 10 ] && return 0
+  [ "$POLL_FAILED" -eq 0 ] || return 2
   return 1
 }
 
@@ -529,6 +579,8 @@ cmd_wait() {
   command -v jq >/dev/null 2>&1 || die 'jq is required'
   while :; do
     if ! load_config; then
+      # Off forgets the first-poll marks: heads pushed meanwhile get a fresh baseline when it is on again.
+      [ ! -s "$CURSOR" ] || state_edit 'del(.started) | del(.heads)'
       [ "${FM_PR_REVIEW_ONCE:-0}" != 1 ] || return 1
       sleep "${FM_PR_REVIEW_IDLE_SECONDS:-60}"
       continue
@@ -542,6 +594,8 @@ cmd_wait() {
     [ ! -f "$LAST_ERROR" ] || previous=$(<"$LAST_ERROR")
     case "$rc" in
       0)
+        # A poll that read GitHub ends the failure episode, so the same reason is announced again later.
+        [ "$POLL_FAILED" -eq 1 ] || rm -f "$LAST_ERROR"
         printf '%s\n' "$EMIT"
         return 0
         ;;
@@ -569,6 +623,20 @@ cmd_wait() {
 
 # ---- autohandle, silent, classify ----------------------------------------------
 
+# A recovery closes itself and the older error results. A round, late or cap result waits for firstmate.
+mark_errors_handled() {  # <sequence>
+  local seq=$1 pending s
+  while IFS= read -r pending; do
+    [ -n "$pending" ] || continue
+    s=${pending%.result}
+    s=${s##*.}
+    case "$s" in ''|*[!0-9]*) continue ;; esac
+    [ "$s" -le "$seq" ] || continue
+    jq -e '.kind == "error" or .kind == "recovery"' "$pending" >/dev/null 2>&1 || continue
+    "$SCRIPT_DIR/fm-procevent.sh" handled "$SOURCE_ID" "$s" >/dev/null 2>&1 || true
+  done < <(fm_procevent_pending "$STATE" | grep "/$SOURCE_ID\.")
+}
+
 cmd_autohandle() {  # <source-id> <sequence> <result-file>
   local sid=${1:-} seq=${2:-} result=${3:-} kind key repo n head
   [ "$sid" = "$SOURCE_ID" ] && [ -f "$result" ] || return 1
@@ -580,7 +648,7 @@ cmd_autohandle() {  # <source-id> <sequence> <result-file>
   case "$kind" in
     recovery)
       rm -f "$LAST_ERROR"
-      mark_handled "$seq"
+      mark_errors_handled "$seq"
       return 0
       ;;
     round)
@@ -632,7 +700,11 @@ cmd_summary() {
       + ", push-to-answer " + (times($rs; $who) | if . == "" then "none" else . end)
       + ", timeouts \([$rs[] | select(.[$who].status == "timeout")] | length)"
       + ", failures \([$rs[] | select((.[$who].status | tostring) | startswith("failed"))] | length)";
-    [.[] | select(.at >= $since and (.type == "round" or .type == "cap"))] | group_by([.repo, .pr]) | .[]
+    . as $all
+    | def late($r): first($all[] | select(.type == "late" and .repo == $r.repo and .pr == $r.pr and .head == $r.head)) // null;
+    [.[] | select(.at >= $since and (.type == "round" or .type == "cap"))
+      | if .type == "round" then (late(.) as $l | if $l == null then . else .reviewer |= (. + {labels: $l.labels, at: $l.at}) end) else . end]
+    | group_by([.repo, .pr]) | .[]
     | . as $g | [$g[] | select(.type == "round")] as $rs | [$g[] | select(.type == "cap")] as $caps
     | "PR https://github.com/\($g[0].repo)/pull/\($g[0].pr) (task \($rs[0].task // "?")): \($rs | length) rounds",
       part($rs; "reviewer"), part($rs; "reader"),
