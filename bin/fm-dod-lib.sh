@@ -450,7 +450,7 @@ EOF
 
 fm_dod_block_mode() {  # <mode> <task-id> [branch] [<forge>] [<base>] [<consent>]
   local mode=$1 id=$2 forge=${4:-none} base=${5:-} consent=${6:-}
-  local branch=${3:-fm/$id} pr_base='' nm_base='' base_q contract_forge='' contract_consent='' forge_cli=gh-axi draft_check adapter
+  local branch=${3:-fm/$id} pr_base='' nm_base='' base_q contract_forge='' contract_consent='' forge_cli=gh-axi draft_check adapter ci_wait='' ci_base
   fm_forge_valid_for_mode "$forge" "$mode" fm_dod_block || return 1
   fm_base_branch_valid "$base" "$mode" "$forge" fm_dod_block || return 1
   if [ -n "$consent" ]; then
@@ -470,6 +470,25 @@ fm_dod_block_mode() {  # <mode> <task-id> [branch] [<forge>] [<base>] [<consent>
     printf -v base_q '%q' "$base"
     pr_base=", against the base branch \`$base\` (\`--base $base_q\`), not the repository default"
     nm_base="This task's base branch is \`$base\`, not the repository default: pass \`--base-branch $base_q\` on every \`no-mistakes axi run\` that starts a run, so the pipeline rebases onto, opens its PR against, and watches CI for that branch.
+"
+  fi
+  if [ "$forge_cli" = gh-axi ] && [ "$forge" != gerrit ]; then
+    ci_base='the repository default branch'
+    if [ -n "$base" ]; then ci_base="the base branch \`$base\`"; fi
+    IFS= read -r -d '' ci_wait <<EOF || true
+Before any CI wait or a \`paused:\` line for CI, read the PR with \`gh-axi api /repos/<owner>/<repo>/pulls/<number>\` and inspect \`mergeable_state\`, \`mergeable\`, and the exact head SHA \`head.sha\`; then use \`gh-axi run list --repo <owner>/<repo> --commit <head.sha>\`, taking <owner>/<repo> from the PR URL, to confirm a workflow run exists for that exact head.
+Use \`gh-axi pr checks <number> --repo <owner>/<repo>\` to confirm the run is one of the PR's own checks; an unrelated run on the same SHA does not count.
+If mergeability is UNKNOWN (\`mergeable\` is null), read again once because GitHub computes it lazily.
+EOF
+    if [ "$mode" = direct-PR ]; then
+      ci_wait="$ci_wait
+If CONFLICTING (\`mergeable\` is false), merge $ci_base into your branch and push without force, then repeat the read before waiting; GitHub starts no CI run for a conflicting head."
+    elif [ "$mode" = no-mistakes ]; then
+      ci_wait="$ci_wait
+Apply this check before reattaching to a pipeline drive call still in its ci step; if CONFLICTING (\`mergeable\` is false), append \`blocked [at=<epoch>]:\` with the read and report instead of waiting or changing the branch outside the pipeline."
+    fi
+    ci_wait="$ci_wait
+If no workflow run exists for the head a minute after the push, append \`blocked [at=<epoch>]: no CI run for <sha>\` with the read; never wait on a run that does not exist.
 "
   fi
   case "$mode:$forge" in
@@ -562,7 +581,7 @@ Before you report done, read the PR back from the forge and confirm it is not a 
 A draft cannot be merged, so a done report on one leaves the merge unasked.
 Link the task's issue in the PR body with \`Closes #n\` when it finishes the issue, or \`Part of #n\` for an earlier step.
 The PR body must contain a \`## Review brief\` section with 3-5 sentences in ASD-STE100 Simplified Technical English, using the repository's own terms: what changed, why, where to check it, and the risk.
-The harness receipt is the PR's own completed green CI run on the exact head; report its run URL and head SHA.
+${ci_wait}The harness receipt is the PR's own completed green CI run on the exact head; report its run URL and head SHA.
 Locally run only tests that cover your change and its real-path proof; run the full owner gate locally only to debug a red CI case.
 Before you append \`done:\`, run \`review-rulesets\` on your own exact head as part of finishing the work, in parallel with CI and never gated on it - the review reads the diff, not the run.
 Keep Standards and Spec as separate axes, apply \`classical-testing\` to whether the proof is real, and apply \`writing-for-agents\` to every changed agent-facing document.
@@ -609,7 +628,7 @@ Firstmate will then instruct you to run /no-mistakes to validate and ship a PR.
 That first \`done:\` is the handoff that starts the pipeline, which owns the push; it is not a request to push from this copy.
 Link the task's issue in the PR body with \`Closes #n\` when it finishes the issue, or \`Part of #n\` for an earlier step.
 The PR body must contain a \`## Review brief\` section with 3-5 sentences in ASD-STE100 Simplified Technical English, using the repository's own terms: what changed, why, where to check it, and the risk.
-The harness receipt is the PR's own completed green CI run on the exact head; report its run URL and head SHA.
+${ci_wait}The harness receipt is the PR's own completed green CI run on the exact head; report its run URL and head SHA.
 Locally run only tests that cover your change and its real-path proof; run the full owner gate locally only to debug a red CI case.
 ${nm_base}
 EOF

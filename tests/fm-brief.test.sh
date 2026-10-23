@@ -65,6 +65,42 @@ test_ci_receipt_requirement() {
   pass 'CI receipt for PR modes; local receipt for local-only'
 }
 
+test_ci_wait_prerequisites() {
+  local mode id file step receipt
+  for mode in direct-PR no-mistakes local-only forgejo; do
+    id="ci-wait-$mode"
+    if [ "$mode" = forgejo ]; then
+      FM_HOME="$BRIEF_HOME" "$ROOT/bin/fm-brief.sh" "$id" firstmate --mode direct-PR --forge forgejo >/dev/null
+    else
+      FM_HOME="$BRIEF_HOME" "$ROOT/bin/fm-brief.sh" "$id" firstmate --mode "$mode" >/dev/null
+    fi
+    file="$BRIEF_HOME/data/$id/brief.md"
+    case "$mode" in
+      direct-PR|no-mistakes)
+        step=$(grep -n 'Before any CI wait' "$file" | cut -d: -f1)
+        receipt=$(grep -n "The harness receipt is the PR's own" "$file" | cut -d: -f1)
+        [ -n "$step" ] && [ "$step" -lt "$receipt" ] || fail "$mode lacks CI prerequisite before receipt"
+        grep -q 'mergeable.*exact head SHA.*head.sha.*run list --repo <owner>/<repo> --commit <head.sha>.*from the PR URL' "$file" || fail "$mode lacks exact-head mergeable and run read"
+        grep -q "pr checks <number> --repo <owner>/<repo>.*PR's own checks; an unrelated run on the same SHA does not count" "$file" || fail "$mode accepts unrelated runs"
+        grep -q 'UNKNOWN.*read again once' "$file" || fail "$mode lacks bounded UNKNOWN retry"
+        # shellcheck disable=SC2016 # Assert literal generated Markdown.
+        grep -q 'Before any CI wait or a `paused:` line' "$file" || fail "$mode lacks paused prerequisite"
+        grep -q 'a minute after the push.*blocked.*no CI run for <sha>.*never wait' "$file" || fail "$mode lacks no-run report"
+        if [ "$mode" = direct-PR ]; then
+          grep -q 'CONFLICTING.*merge the repository default branch into your branch and push without force.*repeat the read' "$file" || fail 'direct-PR lacks merge-and-push repair'
+        else
+          grep -q 'before reattaching.*ci step.*CONFLICTING.*blocked.*report instead of waiting or changing the branch outside the pipeline' "$file" || fail 'no-mistakes lacks report-only CI repair'
+        fi ;;
+      *)
+        if grep -q 'Before any CI wait' "$file"; then fail "$mode gained GitHub CI prerequisite"; fi ;;
+    esac
+  done
+  FM_HOME="$BRIEF_HOME" "$ROOT/bin/fm-brief.sh" ci-wait-base firstmate --mode direct-PR --base-branch release/ci-proof >/dev/null
+  # shellcheck disable=SC2016 # Assert literal generated Markdown.
+  grep -q 'merge the base branch `release/ci-proof` into your branch and push without force' "$BRIEF_HOME/data/ci-wait-base/brief.md" || fail 'CI repair lost explicit base branch'
+  pass 'CI wait prerequisites precede receipts, repair direct-PR, report pipeline conflicts, and exclude non-GitHub modes'
+}
+
 test_script_parses() {
   local out rc
   out=$(bash -n "$ROOT/bin/fm-brief.sh" 2>&1); rc=$?
@@ -1880,6 +1916,7 @@ test_required_skills_and_mode_specific_prose
 test_scout_lavish_line_follows_presentation_floor
 test_review_brief_requirement
 test_ci_receipt_requirement
+test_ci_wait_prerequisites
 test_inbox_listing_command_is_safe_on_empty_inbox
 test_workers_wait_without_spending_turns
 test_wait_no_turns_absent_keeps_the_previous_brief
