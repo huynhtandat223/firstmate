@@ -80,7 +80,8 @@ test_ci_wait_prerequisites() {
         step=$(grep -n 'Before any CI wait' "$file" | cut -d: -f1)
         receipt=$(grep -n "The harness receipt is the PR's own" "$file" | cut -d: -f1)
         [ -n "$step" ] && [ "$step" -lt "$receipt" ] || fail "$mode lacks CI prerequisite before receipt"
-        grep -q 'mergeable.*exact head SHA.*head.sha.*run list --commit <head.sha>' "$file" || fail "$mode lacks exact-head mergeable and run read"
+        grep -q 'mergeable.*exact head SHA.*head.sha.*run list --repo <owner>/<repo> --commit <head.sha>.*from the PR URL' "$file" || fail "$mode lacks exact-head mergeable and run read"
+        grep -q "pr checks <number> --repo <owner>/<repo>.*PR's own checks; an unrelated run on the same SHA does not count" "$file" || fail "$mode accepts unrelated runs"
         grep -q 'UNKNOWN.*read again once' "$file" || fail "$mode lacks bounded UNKNOWN retry"
         # shellcheck disable=SC2016 # Assert literal generated Markdown.
         grep -q 'Before any CI wait or a `paused:` line' "$file" || fail "$mode lacks paused prerequisite"

@@ -476,7 +476,8 @@ fm_dod_block_mode() {  # <mode> <task-id> [branch] [<forge>] [<base>] [<consent>
     ci_base='the repository default branch'
     if [ -n "$base" ]; then ci_base="the base branch \`$base\`"; fi
     IFS= read -r -d '' ci_wait <<EOF || true
-Before any CI wait or a \`paused:\` line for CI, read the PR with \`gh-axi api /repos/<owner>/<repo>/pulls/<number>\` and inspect \`mergeable_state\`, \`mergeable\`, and the exact head SHA \`head.sha\`; then use \`gh-axi run list --commit <head.sha>\` to confirm a workflow run exists for that exact head.
+Before any CI wait or a \`paused:\` line for CI, read the PR with \`gh-axi api /repos/<owner>/<repo>/pulls/<number>\` and inspect \`mergeable_state\`, \`mergeable\`, and the exact head SHA \`head.sha\`; then use \`gh-axi run list --repo <owner>/<repo> --commit <head.sha>\`, taking <owner>/<repo> from the PR URL, to confirm a workflow run exists for that exact head.
+Use \`gh-axi pr checks <number> --repo <owner>/<repo>\` to confirm the run is one of the PR's own checks; an unrelated run on the same SHA does not count.
 If mergeability is UNKNOWN (\`mergeable\` is null), read again once because GitHub computes it lazily.
 EOF
     if [ "$mode" = direct-PR ]; then
