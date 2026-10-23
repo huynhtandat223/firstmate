@@ -473,14 +473,15 @@ fm_dod_block_mode() {  # <mode> <task-id> [branch] [<forge>] [<base>] [<consent>
 "
   fi
   if [ "$forge_cli" = gh-axi ] && [ "$forge" != gerrit ]; then
-    ci_base=${base:-the repository default branch}
+    ci_base='the repository default branch'
+    if [ -n "$base" ]; then ci_base="the base branch \`$base\`"; fi
     IFS= read -r -d '' ci_wait <<EOF || true
 Before any CI wait or a \`paused:\` line for CI, read the PR with \`gh-axi api /repos/<owner>/<repo>/pulls/<number>\` and inspect \`mergeable_state\`, \`mergeable\`, and the exact head SHA \`head.sha\`; then use \`gh-axi run list --commit <head.sha>\` to confirm a workflow run exists for that exact head.
 If mergeability is UNKNOWN (\`mergeable\` is null), read again once because GitHub computes it lazily.
 EOF
     if [ "$mode" = direct-PR ]; then
       ci_wait="$ci_wait
-If CONFLICTING (\`mergeable\` is false), merge the base branch $ci_base into your branch and push without force, then repeat the read before waiting; GitHub starts no CI run for a conflicting head."
+If CONFLICTING (\`mergeable\` is false), merge $ci_base into your branch and push without force, then repeat the read before waiting; GitHub starts no CI run for a conflicting head."
     elif [ "$mode" = no-mistakes ]; then
       ci_wait="$ci_wait
 Apply this check before reattaching to a pipeline drive call still in its ci step; if CONFLICTING (\`mergeable\` is false), append \`blocked [at=<epoch>]:\` with the read and report instead of waiting or changing the branch outside the pipeline."

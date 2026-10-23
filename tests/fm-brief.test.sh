@@ -86,7 +86,7 @@ test_ci_wait_prerequisites() {
         grep -q 'Before any CI wait or a `paused:` line' "$file" || fail "$mode lacks paused prerequisite"
         grep -q 'a minute after the push.*blocked.*no CI run for <sha>.*never wait' "$file" || fail "$mode lacks no-run report"
         if [ "$mode" = direct-PR ]; then
-          grep -q 'CONFLICTING.*merge the base branch the repository default branch into your branch and push without force.*repeat the read' "$file" || fail 'direct-PR lacks merge-and-push repair'
+          grep -q 'CONFLICTING.*merge the repository default branch into your branch and push without force.*repeat the read' "$file" || fail 'direct-PR lacks merge-and-push repair'
         else
           grep -q 'before reattaching.*ci step.*CONFLICTING.*blocked.*report instead of waiting or changing the branch outside the pipeline' "$file" || fail 'no-mistakes lacks report-only CI repair'
         fi ;;
@@ -95,7 +95,8 @@ test_ci_wait_prerequisites() {
     esac
   done
   FM_HOME="$BRIEF_HOME" "$ROOT/bin/fm-brief.sh" ci-wait-base firstmate --mode direct-PR --base-branch release/ci-proof >/dev/null
-  grep -q 'merge the base branch release/ci-proof into your branch and push without force' "$BRIEF_HOME/data/ci-wait-base/brief.md" || fail 'CI repair lost explicit base branch'
+  # shellcheck disable=SC2016 # Assert literal generated Markdown.
+  grep -q 'merge the base branch `release/ci-proof` into your branch and push without force' "$BRIEF_HOME/data/ci-wait-base/brief.md" || fail 'CI repair lost explicit base branch'
   pass 'CI wait prerequisites precede receipts, repair direct-PR, report pipeline conflicts, and exclude non-GitHub modes'
 }
 
