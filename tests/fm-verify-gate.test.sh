@@ -55,8 +55,14 @@ set_line() {  # <file> <line-prefix> <new-line>
 insert_before() {  # <file> <line-prefix> <new-line>
   awk -v p="$2" -v n="$3" 'index($0, p) == 1 { print n } { print }' "$1" > "$1.new" && mv "$1.new" "$1"
 }
-row() {  # <id> <state> <evidence-field>
-  printf -- '- %s | WHEN a row is read, THE gate SHALL check it. | %s | %s\n' "$1" "$2" "$3"
+row() {  # <id> <state> <evidence-field>: the issue's text for A1, A2 and K3, a stand-in text for any other id
+  local text='WHEN a row is read, THE gate SHALL check it.'
+  case "$1" in
+    A1@*) text='WHEN a user acts, THE page SHALL answer.' ;;
+    A2@*) text='WHEN a user saves, THE page SHALL keep the row.' ;;
+    K3@*) text='WHEN the gate runs, THE gate SHALL refuse.' ;;
+  esac
+  printf -- '- %s | %s | %s | %s\n' "$1" "$text" "$2" "$3"
 }
 
 # ---- cases: each returns 0 when the behavior holds ----------------------------------
@@ -232,6 +238,20 @@ case_internal_scenario_row() {
   passes "$1" "$home"
 }
 
+# A scenario edited after the Tester checked it is not re-verified by an old row: the row's
+# line must be the issue's current text for that id and width.
+case_row_text_differs_from_the_issue() {
+  local home tf
+  home=$(new_home)
+  tf=$(tester "$home")
+  set_line "$tf" '- A1@1440 ' '- A1@1440 | WHEN a user acts, THE page SHALL answer slowly. | pass | evidence: https://example.test/shot'
+  refuses "$1" "$home" "A1@1440 line differs from the issue: Tester 'WHEN a user acts, THE page SHALL answer slowly.', issue 'WHEN a user acts, THE page SHALL answer.'" || return 1
+  [ "$(printf '%s\n' "$OUT" | wc -l | tr -d ' ')" = 1 ] || { echo "more than the one changed row: $OUT"; return 1; }
+  # Surrounding blanks do not count as a difference.
+  set_line "$tf" '- A1@1440 ' '- A1@1440 |   WHEN a user acts, THE page SHALL answer.  | pass | evidence: https://example.test/shot'
+  passes "$1" "$home"
+}
+
 case_malformed_tester_row() {
   local home
   home=$(new_home)
@@ -338,7 +358,7 @@ CASES="pass_and_read_only firstmate_record_missing tester_record_missing no_test
 firstmate_line_one firstmate_issue_line tester_surface tester_issue_line records_name_different_issues
 issue_cannot_be_parsed issue_cannot_be_read issue_without_user_visible_rows row_absent_from_tester_record
 row_not_pass row_without_evidence_field row_pass_without_evidence row_evidence_path row_id_not_in_issue retired_row
-internal_scenario_row malformed_tester_row verified_line_closes_the_record verified_line_missing verified_line_without_head
+internal_scenario_row row_text_differs_from_the_issue malformed_tester_row verified_line_closes_the_record verified_line_missing verified_line_without_head
 deployed_head_is_the_newest_ask deployed_line_without_an_ask approval home_video"
 
 # ---- real gate ------------------------------------------------------------------------
@@ -395,6 +415,7 @@ unsay 'a Tester row id must be in the issue' row_id_not_in_issue '$rid is not a 
 mutate 'a retired row is allowed for a dropped id' retired_row 's/\[ "\$rstate" = retired \] \|\|/false ||/'
 unsay 'a retired row is not a pass for a present id' retired_row '$rid is '"'"'$rstate'"'"', not pass'
 mutate 'only user-visible rows are gate rows' internal_scenario_row 's/--surface all 2>\/dev\/null\) \|\| all_rows=\$rows/--surface user-visible 2>\/dev\/null) || all_rows=\$rows/'
+unsay 'a Tester row carries the issue'"'"'s current text' row_text_differs_from_the_issue '$rid line differs from the issue'
 unsay 'a Tester row is well formed' malformed_tester_row 'malformed Tester row'
 unsay 'the verified line follows the last row' verified_line_closes_the_record "the 'verified: tester' line must come after"
 unsay 'a scenario row outside Scenarios is refused' verified_line_closes_the_record "scenario row outside"

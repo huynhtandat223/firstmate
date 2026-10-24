@@ -25,7 +25,8 @@
 # fm_verify_gate_problems <data-dir> <task-id> <base-dir> prints one problem per line on
 # stdout and returns 1 when there is any; it prints nothing and returns 0 when
 #   - the issue both records name parses, and every row of
-#     `fm-acceptance.mjs rows <issue>` is `pass` with existing evidence in the Tester record,
+#     `fm-acceptance.mjs rows <issue>` is in the Tester record with the issue's current line
+#     text, `pass`, and existing evidence,
 #   - no Tester row names an id outside the issue,
 #   - the Tester's head= equals the sha of the newest deploy-round or replay ask for the task
 #     in <data-dir>/deploy-verify/ledger.jsonl (without an ask: the 'deployed:' line), and
@@ -64,10 +65,21 @@ fm_verify_gate_evidence_problem() {  # <rid> <evidence> <base-dir>
   esac
 }
 
+# The scenario line of a record row `- <id>@<width> | <line> | <state> | evidence: <x>`, trimmed.
+fm_verify_gate_row_text() {  # <row>
+  local t=${1#- }
+  t=${t#* | }
+  t=${t% | *}
+  t=${t% | *}
+  t=${t#"${t%%[![:space:]]*}"}
+  t=${t%"${t##*[![:space:]]}"}
+  printf '%s' "$t"
+}
+
 fm_verify_gate_problems() {  # <data-dir> <task-id> <base-dir>
   local data=$1 id=$2 base=$3 file state tester_home tfile ledger first
   local issue t_issue t_surface approved verified v_epoch v_head deployed ask_sha want_sha
-  local rows all_rows parse rc line rid rstate revidence ev in_scn=0 ln=0 last_row_ln=0 verified_ln
+  local rows all_rows parse rc line rid rstate revidence ev want_text in_scn=0 ln=0 last_row_ln=0 verified_ln
   local bad=0 expected=$'\n' known=$'\n' seen=$'\n'
   state=${FM_STATE_OVERRIDE:-$base/state}
   file="$data/$id/verify.md"
@@ -192,6 +204,10 @@ fm_verify_gate_problems() {  # <data-dir> <task-id> <base-dir>
       case "$expected" in
         *$'\n'"$rid"$'\n'*)
           seen="$seen$rid"$'\n'
+          want_text=$(fm_verify_gate_row_text "$(printf '%s\n' "$rows" | awk -v p="- $rid | " 'index($0, p) == 1 { print; exit }')")
+          if [ "$(fm_verify_gate_row_text "$line")" != "$want_text" ]; then
+            fm_verify_gate_say "$rid line differs from the issue: Tester '$(fm_verify_gate_row_text "$line")', issue '$want_text'"
+          fi
           if [ "$rstate" != pass ]; then
             fm_verify_gate_say "$rid is '$rstate', not pass"
             continue
