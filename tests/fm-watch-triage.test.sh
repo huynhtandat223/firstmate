@@ -4416,7 +4416,7 @@ hold_stale_wakes() {  # <state>
 # inconclusive one. The hold is invisible to the status line in both, so both
 # branches had the same blindness and both are covered.
 test_open_captain_call_bounds_stale_churn() {
-  local spec name line dir state out capture throttle wakes
+  local spec name line dir state out capture throttle
   command -v tasks-axi >/dev/null 2>&1 \
     || { echo "skip: tasks-axi not found (captain-hold stale bound)"; return 0; }
   for spec in \
@@ -4429,40 +4429,35 @@ test_open_captain_call_bounds_stale_churn() {
     state="$dir/state"; out="$dir/watch.out"; capture="$dir/pane.txt"
     throttle="$state/.paused-resurfaced-$(hold_key)"
 
-    # First sight still alarms: the call bounds repetition, never the first look.
-    hold_watch_surface "$dir" "$out" "$capture" 'idle, elapsed 1s' \
-      || fail "[$name] first sight of held work did not surface"
-    wakes=$(hold_stale_wakes "$state")
-    [ "$wakes" -eq 1 ] || fail "[$name] first sight produced $wakes wakes instead of one"
-    ack_stopped_cycle "$state" || fail "[$name] could not acknowledge the first surface"
-
-    # The pane churns while the SAME call stands. Every one of these alarmed.
-    hold_watch_churn "$dir" "$out" "$capture" 'idle, tick' 2 \
+    # The captain already holds this work, so no pane sighting wakes firstmate,
+    # the first included, and no away record is needed for that. The re-surface
+    # window is shortened to one second and the churn outlasts it many times over:
+    # on main every new hash after the window re-alarmed.
+    FM_HOLD_PAUSE_RESURFACE_SECS=1 hold_watch_churn "$dir" "$out" "$capture" 'idle, tick' 3 \
       || fail "[$name] watcher exited during pane churn instead of supervising through it"
-    wakes=$(hold_stale_wakes "$state")
-    [ "$wakes" -eq 0 ] \
-      || fail "[$name] pane churn re-alarmed held work $wakes time(s) inside the re-surface window"
+    [ "$(hold_stale_wakes "$state")" -eq 0 ] \
+      || fail "[$name] held work woke firstmate $(hold_stale_wakes "$state") time(s) with its captain call open"
+    [ ! -e "$throttle" ] || fail "[$name] an absorbed held sighting armed a re-surface cadence"
 
-    # After the window ends, the next new pane hash re-surfaces held work exactly
-    # once, so a forgotten call on a churning pane cannot hide behind the bound.
-    [ -e "$throttle" ] || fail "[$name] the absorbed churn recorded no re-surface cadence to elapse"
+    # An aged marker changes nothing: the bound is absolute, not a throttle.
+    printf 'declared:stale\n' > "$throttle"
     set_mtime "$(( $(date +%s) - 5000 ))" "$throttle"
-    hold_watch_surface "$dir" "$out" "$capture" 'idle, elapsed 9s' \
-      || fail "[$name] held work did not re-surface once its re-surface window elapsed"
-    wakes=$(hold_stale_wakes "$state")
-    [ "$wakes" -eq 1 ] \
-      || fail "[$name] elapsed re-surface window produced $wakes wakes instead of one"
+    FM_HOLD_PAUSE_RESURFACE_SECS=1 hold_watch_churn "$dir" "$out" "$capture" 'idle, later tick' 2 \
+      || fail "[$name] watcher exited during the second churn"
+    [ "$(hold_stale_wakes "$state")" -eq 0 ] \
+      || fail "[$name] an aged re-surface marker woke held work again"
   done
-  pass "work under an open captain call surfaces once, absorbs pane churn, then re-surfaces when the window elapses"
+  pass "work under an open captain call never wakes firstmate as stale, whatever the pane does"
 }
 
 
 
-# The other half of the same bound, and the one that decides whether widening the
-# wait was safe: the identical fixtures with NO hold must keep alarming on every
-# new hash, on both branches.
+# The other half of the same bound: the identical fixtures with NO hold wake
+# exactly once per wait. Pane churn inside the wait is absorbed, and a new status
+# line starts the next wait, whose first stale sighting wakes once more, on both
+# branches.
 test_stale_churn_without_a_captain_call_still_alarms() {
-  local spec name line dir state out capture round wakes
+  local spec name line dir state out capture
   command -v tasks-axi >/dev/null 2>&1 \
     || { echo "skip: tasks-axi not found (unheld stale alarm)"; return 0; }
   for spec in \
@@ -4474,18 +4469,256 @@ test_stale_churn_without_a_captain_call_still_alarms() {
     dir=$(make_hold_home "$name" "$line" nohold) \
       || fail "[$name] could not build an unheld backlog fixture"
     state="$dir/state"; out="$dir/watch.out"; capture="$dir/pane.txt"
-    round=1
-    while [ "$round" -le 2 ]; do
-      hold_watch_surface "$dir" "$out" "$capture" "idle, elapsed ${round}s" \
-        || fail "[$name] an unheld stale window stopped alarming on round $round"
-      wakes=$(hold_stale_wakes "$state")
-      [ "$wakes" -eq 1 ] \
-        || fail "[$name] round $round produced $wakes wakes instead of one"
-      ack_stopped_cycle "$state" || fail "[$name] could not acknowledge round $round"
-      round=$((round + 1))
-    done
+    hold_watch_surface "$dir" "$out" "$capture" 'idle, elapsed 1s' \
+      || fail "[$name] an unheld stale window did not alarm on its first sight"
+    [ "$(hold_stale_wakes "$state")" -eq 1 ] \
+      || fail "[$name] the first sight produced $(hold_stale_wakes "$state") wakes instead of one"
+    ack_stopped_cycle "$state" || fail "[$name] could not acknowledge the first sight"
+
+    hold_watch_churn "$dir" "$out" "$capture" 'idle, tick' 2 \
+      || fail "[$name] the watcher woke for a pane that only redrew: $(cat "$out")"
+    [ "$(hold_stale_wakes "$state")" -eq 0 ] \
+      || fail "[$name] pane churn inside one wait queued $(hold_stale_wakes "$state") more rows"
+
+    printf '%s again\n' "$line" >> "$state/held-merge.status"
+    printf '%s' "$(seen_sig "$state/held-merge.status")" > "$state/.seen-held-merge_status"
+    hold_watch_surface "$dir" "$out" "$capture" 'idle, elapsed 9s' \
+      || fail "[$name] a new status line did not start a new wait"
+    [ "$(hold_stale_wakes "$state")" -eq 1 ] \
+      || fail "[$name] the new wait produced $(hold_stale_wakes "$state") wakes instead of one"
   done
-  pass "a stale window with no open captain call keeps alarming on every new hash"
+  pass "a stale window with no open captain call wakes once per wait and again after a new status line"
+}
+
+
+# --- stale fires once per wait -------------------------------------------------
+# A wait is the pair (the task's reported status signature, its turn-ended
+# marker's mtime), recorded when a stale wake fires. A pane that only redraws (a
+# clock, a token counter, a spinner) starts no new wait; a new status line or a
+# new turn end does. A worker held for the captain, by a `captain-held` status
+# line or an open backlog captain call, gets no stale wake at all. The panes here
+# change hash on every step, which is exactly what used to wake once per hash.
+
+quiet_stale_wakes() {  # <state> <window>
+  awk -F '\t' -v w="$2" '$3 == "stale" && $4 == w { n++ } END { print n + 0 }' \
+    "$1/.wake-queue" 2>/dev/null || echo 0
+}
+
+# A ship worker with no declared wait and no captain hold, one poll short of
+# stale: the pane hash and its stable-count are primed the way the other stale
+# cases prime them, and the status signature is primed so the signal scan does not
+# pre-empt the stale path.
+quiet_task_case() {  # <name> -> case dir
+  local name=$1 dir state window key
+  dir=$(make_case "$name"); state="$dir/state"; window="test:fm-quiet"
+  printf 'window=%s\nkind=ship\nbackend=tmux\n' "$window" > "$state/quiet.meta"
+  printf 'working: implementing\n' > "$state/quiet.status"
+  printf '%s' "$(seen_sig "$state/quiet.status")" > "$state/.seen-quiet_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  printf 'idle prompt 0' > "$dir/pane.txt"
+  printf '%s' "$(hash_text 'idle prompt 0')" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  printf '%s\n' "$dir"
+}
+
+QUIET_WATCH_PID=
+quiet_watch_launch() {  # <dir>
+  local dir=$1
+  PATH="$dir/fakebin:$PATH" FM_FAKE_TMUX_WINDOW=test:fm-quiet FM_FAKE_TMUX_CAPTURE="$dir/pane.txt" \
+    FM_FAKE_CREW_STATE='state: unknown · source: none · no current-state source available' \
+    FM_WATCH_HANDLING_SUCCESSOR=1 \
+    FM_STATE_OVERRIDE="$dir/state" FM_CREW_STATE_BIN="$dir/fakebin/fm-crew-state.sh" \
+    FM_STALE_ESCALATE_SECS=999 FM_PAUSE_RESURFACE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" >> "$dir/watch.out" 2>&1 &
+  QUIET_WATCH_PID=$!
+}
+
+# One sighting that must wake: the pane shows <text>, and the watcher exits.
+quiet_stale_surface() {  # <dir> <pane-text>
+  local dir=$1
+  printf '%s' "$2" > "$dir/pane.txt"
+  quiet_watch_launch "$dir"
+  wait_for_exit "$QUIET_WATCH_PID" 100 || { reap "$QUIET_WATCH_PID"; return 1; }
+  return 0
+}
+
+# <count> successive pane changes through ONE watcher, three poll cycles each: one
+# to see the new hash, one to count it stable and classify it, one to prove the
+# classification held. The watcher must stay in its loop throughout.
+quiet_pane_churn() {  # <dir> <label> <count>
+  local dir=$1 label=$2 count=$3 i=1 c state=$1/state
+  printf '%s 0' "$label" > "$dir/pane.txt"
+  quiet_watch_launch "$dir"
+  while [ "$i" -le "$count" ]; do
+    printf '%s %s' "$label" "$i" > "$dir/pane.txt"
+    c=0
+    while [ "$c" -lt 3 ]; do
+      wait_poll_cycle "$state" "$QUIET_WATCH_PID" 300 \
+        || { reap "$QUIET_WATCH_PID"; return 1; }
+      c=$((c + 1))
+    done
+    i=$((i + 1))
+  done
+  reap "$QUIET_WATCH_PID"
+  return 0
+}
+
+test_stale_fires_once_per_wait_and_again_after_a_new_status_or_turn_end() {
+  local dir state window
+  dir=$(quiet_task_case stale-once-per-wait); state="$dir/state"; window="test:fm-quiet"
+
+  quiet_stale_surface "$dir" 'idle prompt 0' || fail "a quiet worker's first stale did not wake"
+  [ "$(quiet_stale_wakes "$state" "$window")" -eq 1 ] \
+    || fail "the first stale queued $(quiet_stale_wakes "$state" "$window") rows instead of one"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the first stale"
+
+  # Five more pane hashes, with the status file and turn-ended unchanged.
+  quiet_pane_churn "$dir" 'redraw' 5 \
+    || fail "the watcher woke for a pane that only redrew: $(cat "$dir/watch.out")"
+  [ "$(quiet_stale_wakes "$state" "$window")" -eq 0 ] \
+    || fail "a redrawing pane queued $(quiet_stale_wakes "$state" "$window") more stale rows inside one wait"
+
+  # A new status line starts a new wait: exactly one more stale row.
+  printf 'working: next step\n' >> "$state/quiet.status"
+  printf '%s' "$(seen_sig "$state/quiet.status")" > "$state/.seen-quiet_status"
+  quiet_stale_surface "$dir" 'idle after the status line' \
+    || fail "a new status line did not start a new wait"
+  [ "$(quiet_stale_wakes "$state" "$window")" -eq 1 ] \
+    || fail "the new status line's wait queued $(quiet_stale_wakes "$state" "$window") rows instead of one"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the second wait's stale"
+  quiet_pane_churn "$dir" 'second redraw' 3 \
+    || fail "the watcher woke for a redraw inside the second wait: $(cat "$dir/watch.out")"
+  [ "$(quiet_stale_wakes "$state" "$window")" -eq 0 ] \
+    || fail "a redrawing pane queued stale rows inside the second wait"
+
+  # A new turn end starts a third wait.
+  : > "$state/quiet.turn-ended"
+  prime_turnend_seen "$state/quiet.turn-ended"
+  quiet_stale_surface "$dir" 'idle after the turn end' \
+    || fail "a new turn end did not start a new wait"
+  [ "$(quiet_stale_wakes "$state" "$window")" -eq 1 ] \
+    || fail "the new turn end's wait queued $(quiet_stale_wakes "$state" "$window") rows instead of one"
+  pass "stale wakes once per wait, and wakes again only after a new status line or a new turn end"
+}
+
+# The same wait, for a worker whose last status line is captain-relevant: the
+# terminal-looking stale path takes it, and it too wakes once.
+test_terminal_looking_stale_fires_once_per_wait() {
+  local dir state window
+  dir=$(quiet_task_case stale-once-terminal); state="$dir/state"; window="test:fm-quiet"
+  printf 'done: PR https://example.invalid/pull/1 checks green\n' > "$state/quiet.status"
+  printf '%s' "$(seen_sig "$state/quiet.status")" > "$state/.seen-quiet_status"
+
+  quiet_stale_surface "$dir" 'idle prompt 0' || fail "a delivered worker's first stale did not wake"
+  [ "$(quiet_stale_wakes "$state" "$window")" -eq 1 ] \
+    || fail "the first terminal-looking stale queued $(quiet_stale_wakes "$state" "$window") rows instead of one"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the first terminal-looking stale"
+  quiet_pane_churn "$dir" 'redraw' 4 \
+    || fail "the watcher woke for a delivered worker's redrawing pane: $(cat "$dir/watch.out")"
+  [ "$(quiet_stale_wakes "$state" "$window")" -eq 0 ] \
+    || fail "a redrawing delivered pane queued stale rows inside one wait"
+  pass "a terminal-looking stale wakes once per wait too"
+}
+
+# The identical fixture held for the captain never wakes at all - the backlog
+# call or the status line alone is enough - however long the pane churns past the
+# (shortened) re-surface cadence, and with no away record present.
+test_captain_held_worker_raises_no_stale_wake() {
+  local spec name line hold dir state out capture wakes
+  command -v tasks-axi >/dev/null 2>&1 \
+    || { echo "skip: tasks-axi not found (captain-held stale silence)"; return 0; }
+  for spec in \
+    'held-delivery|done: PR https://example.invalid/pull/1 checks green|hold' \
+    'held-worker-line|working: still tidying the branch|hold' \
+    'held-status-line|captain-held [key=merge]: awaiting the captain on the merge|nohold'
+  do
+    name=${spec%%|*}; line=${spec#*|}; hold=${line##*|}; line=${line%|*}
+    dir=$(make_hold_home "$name" "$line" "$hold") \
+      || fail "[$name] could not build a captain-held fixture"
+    state="$dir/state"; out="$dir/watch.out"; capture="$dir/pane.txt"
+    printf 'idle, elapsed 1s\n' > "$capture"
+    FM_HOLD_PAUSE_RESURFACE_SECS=2 hold_watch_churn "$dir" "$out" "$capture" 'idle, tick' 4 \
+      || fail "[$name] the watcher woke while churning a captain-held pane: $(cat "$out")"
+    wakes=$(hold_stale_wakes "$state")
+    [ "$wakes" -eq 0 ] \
+      || fail "[$name] a worker held for the captain queued $wakes stale rows"
+    [ ! -e "$state/.paused-resurfaced-$(hold_key)" ] \
+      || fail "[$name] a worker held for the captain armed a re-surface cadence"
+  done
+  pass "a worker held for the captain, by a backlog call or a status line, raises no stale wake in either posture"
+}
+
+# A paused: line naming `until <t>`: no stale wake before <t> however old the
+# status line is, exactly one when <t> has passed, and no more however long the
+# worker stays quiet afterwards. A dead agent takes the bounded-pause path.
+test_exited_paused_until_wakes_once_when_the_time_passes() {
+  local dir state fakebin out capture_file statusf window key back pid round wakes
+  dir=$(make_case exited-paused-until); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; statusf="$state/waiting.status"
+  window="test:fm-waiting"
+  printf 'idle bare shell after agent exit\n' > "$capture_file"
+  printf 'window=%s\nkind=ship\nharness=grok\nbackend=tmux\n' "$window" > "$state/waiting.meta"
+  printf 'paused: rate limit resets, until %s, then resuming\n' "$(iso_utc_at "$(( $(date +%s) + 7200 ))")" > "$statusf"
+  back=$(( $(date +%s) - 900 ))
+  if [ "$(uname)" = Darwin ]; then touch -mt "$(date -r "$back" '+%Y%m%d%H%M.%S')" "$statusf"
+  else touch -m -d "@$back" "$statusf"; fi
+  printf '%s' "$(seen_sig "$statusf")" > "$state/.seen-waiting_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  printf '%s' "$(hash_text 'idle bare shell after agent exit')" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+
+  # Before <t>, with a status line older than the recheck cadence: no wake.
+  round=1
+  while [ "$round" -le 2 ]; do
+    PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+      FM_FAKE_TMUX_CURRENT_COMMAND=zsh FM_FAKE_CREW_STATE='state: stopped · source: pane · bare shell' \
+      FM_WATCH_HANDLING_SUCCESSOR=1 \
+      FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_PAUSE_RESURFACE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+      FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" >> "$out" &
+    pid=$!
+    wait_poll_cycle "$state" "$pid" || { reap "$pid"; fail "the watcher woke before the declared time (round $round): $(cat "$out")"; }
+    wait_poll_cycle "$state" "$pid" || { reap "$pid"; fail "the watcher woke before the declared time (round $round): $(cat "$out")"; }
+    reap "$pid"
+    round=$((round + 1))
+  done
+  wakes=$(quiet_stale_wakes "$state" "$window")
+  [ "$wakes" -eq 0 ] || fail "a pause with a future declared time queued $wakes stale rows before that time"
+
+  # The declared time passes: exactly one wake.
+  printf 'paused: rate limit resets, until %s, then resuming\n' "$(iso_utc_at "$(( $(date +%s) - 60 ))")" >> "$statusf"
+  printf '%s' "$(seen_sig "$statusf")" > "$state/.seen-waiting_status"
+  printf 'idle bare shell, after the time\n' > "$capture_file"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_FAKE_TMUX_CURRENT_COMMAND=zsh FM_FAKE_CREW_STATE='state: stopped · source: pane · bare shell' \
+    FM_WATCH_HANDLING_SUCCESSOR=1 \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_PAUSE_RESURFACE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" >> "$out" &
+  pid=$!
+  wait_for_exit "$pid" 100 || { reap "$pid"; fail "the watcher did not wake once the declared time passed"; }
+  wakes=$(quiet_stale_wakes "$state" "$window")
+  [ "$wakes" -eq 1 ] || fail "the declared time passing queued $wakes stale rows instead of one"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the declared-time wake"
+
+  # However long it stays quiet afterwards - the recheck cadence long gone - no more.
+  set_mtime "$(( $(date +%s) - 5000 ))" "$state/.paused-resurfaced-$key"
+  round=1
+  while [ "$round" -le 2 ]; do
+    printf 'idle bare shell, later %s\n' "$round" > "$capture_file"
+    PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+      FM_FAKE_TMUX_CURRENT_COMMAND=zsh FM_FAKE_CREW_STATE='state: stopped · source: pane · bare shell' \
+      FM_WATCH_HANDLING_SUCCESSOR=1 \
+      FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_PAUSE_RESURFACE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+      FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" >> "$out" &
+    pid=$!
+    wait_poll_cycle "$state" "$pid" || { reap "$pid"; fail "the watcher woke again after the declared-time wake (round $round): $(cat "$out")"; }
+    wait_poll_cycle "$state" "$pid" || { reap "$pid"; fail "the watcher woke again after the declared-time wake (round $round): $(cat "$out")"; }
+    wait_poll_cycle "$state" "$pid" || { reap "$pid"; fail "the watcher woke again after the declared-time wake (round $round): $(cat "$out")"; }
+    reap "$pid"
+    round=$((round + 1))
+  done
+  wakes=$(quiet_stale_wakes "$state" "$window")
+  [ "$wakes" -eq 0 ] || fail "a pause whose declared time passed queued $wakes more stale rows"
+  pass "a paused worker naming a clearing time wakes once when that time passes, and never before or after"
 }
 
 
@@ -4494,12 +4727,12 @@ test_stale_churn_without_a_captain_call_still_alarms() {
 # append fails, the watcher exits with nothing queued, and the next sighting
 # reads that fresh marker and absorbs the retry. An unwritable queue is the real
 # failure, so it is the one this drives.
-test_failed_wake_append_does_not_arm_the_captain_hold_throttle() {
+test_failed_wake_append_does_not_record_the_wait() {
   local dir state out capture wakes rc
   command -v tasks-axi >/dev/null 2>&1 \
     || { echo "skip: tasks-axi not found (failed wake append)"; return 0; }
-  dir=$(make_hold_home append-failure 'done: PR https://example.invalid/pull/1 checks green' hold) \
-    || fail "could not build a captain-held backlog fixture"
+  dir=$(make_hold_home append-failure 'done: PR https://example.invalid/pull/1 checks green' nohold) \
+    || fail "could not build an unheld backlog fixture"
   state="$dir/state"; out="$dir/watch.out"; capture="$dir/pane.txt"
 
   # A directory where the queue file belongs: every append fails, whatever the
@@ -4515,8 +4748,8 @@ test_failed_wake_append_does_not_arm_the_captain_hold_throttle() {
   rmdir "$state/.wake-queue"
   [ "$rc" -ne 124 ] || fail "the watcher did not exit when its durable queue could not be written"
   [ "$rc" -ne 0 ] || fail "the watcher reported success despite an unwritable durable queue"
-  [ -e "$state/.paused-resurfaced-$(hold_key)" ] \
-    && fail "a wake that never reached the durable queue still armed the re-surface throttle"
+  [ -e "$state/.stale-wait-$(hold_key)" ] \
+    && fail "a wake that never reached the durable queue still recorded its wait"
 
   # The retry must alarm: nothing was ever delivered, so nothing may be absorbed.
   hold_watch_surface "$dir" "$out" "$capture" 'idle, elapsed 2s' \
@@ -4524,50 +4757,8 @@ test_failed_wake_append_does_not_arm_the_captain_hold_throttle() {
   wakes=$(hold_stale_wakes "$state")
   [ "$wakes" -eq 1 ] \
     || fail "the retry after a failed wake append produced $wakes wakes instead of one"
-  pass "a wake that never reached the durable queue arms no re-surface throttle"
+  pass "a wake that never reached the durable queue records no wait"
 }
-
-# The task id is not the captain call. A task can be answered with `--release`
-# and held again as a genuinely different call with NO status append, and binding
-# the throttle to the status-log signature alone let the second call inherit the
-# first one's silence and absorbed its first sight. That is the one alarm this
-# bound must never swallow: a delivery announced twice is noise, but a decision
-# waiting on the captain that is never surfaced is invisible.
-# Measured at base c499f84 this fixture alarms on every sighting, so the
-# suppression was introduced by the bound itself rather than pre-existing.
-test_reheld_captain_call_starts_its_own_resurface_window() {
-  local dir state out capture wakes
-  command -v tasks-axi >/dev/null 2>&1 \
-    || { echo "skip: tasks-axi not found (re-held captain call)"; return 0; }
-  dir=$(make_hold_home reheld-call 'done: PR https://example.invalid/pull/1 checks green' hold) \
-    || fail "could not build a captain-held backlog fixture"
-  state="$dir/state"; out="$dir/watch.out"; capture="$dir/pane.txt"
-
-  hold_watch_surface "$dir" "$out" "$capture" 'idle, elapsed 1s' \
-    || fail "first sight of the first captain call did not surface"
-  ack_stopped_cycle "$state" || fail "could not acknowledge the first call's surface"
-  hold_watch_churn "$dir" "$out" "$capture" 'idle, tick' 1 \
-    || fail "the first call's churn was not absorbed"
-  [ "$(hold_stale_wakes "$state")" -eq 0 ] \
-    || fail "the first call's churn re-alarmed inside its own window"
-
-  # Answer and release, then re-hold: a second, distinct captain call on the same
-  # task id, with no status append, so the status signature cannot tell them apart.
-  printf 'go ahead\n' > "$dir/decision.txt"
-  run_hold "$dir" answer held-merge --decision-file "$dir/decision.txt" --release \
-    || fail "could not record the captain's answer"
-  run_hold "$dir" hold held-merge --reason 'awaiting the captain a second time' \
-    || fail "could not re-hold the task as a second captain call"
-
-  hold_watch_surface "$dir" "$out" "$capture" 'idle, elapsed 3s' \
-    || fail "the second captain call inherited the first call's silence"
-  wakes=$(hold_stale_wakes "$state")
-  [ "$wakes" -eq 1 ] \
-    || fail "the second captain call produced $wakes first wakes instead of one"
-  pass "a released-then-re-held task is a distinct captain call whose first sight still alarms"
-}
-
-
 
 test_secondmate_paused_resurfaces_in_normal_mode() {
   local dir state fakebin out capture_file statusf window key pane_hash sig pid back
@@ -7186,8 +7377,11 @@ test_wedge_threshold_parked_gate_is_off_until_armed
 test_wedge_defer_refuses_a_half_filled_wait_record
 test_open_captain_call_bounds_stale_churn
 test_stale_churn_without_a_captain_call_still_alarms
-test_failed_wake_append_does_not_arm_the_captain_hold_throttle
-test_reheld_captain_call_starts_its_own_resurface_window
+test_failed_wake_append_does_not_record_the_wait
+test_stale_fires_once_per_wait_and_again_after_a_new_status_or_turn_end
+test_terminal_looking_stale_fires_once_per_wait
+test_captain_held_worker_raises_no_stale_wake
+test_exited_paused_until_wakes_once_when_the_time_passes
 test_secondmate_paused_resurfaces_in_normal_mode
 test_secondmate_captain_held_resurfaces_in_normal_mode
 test_secondmate_nonpaused_stale_remains_suppressed
