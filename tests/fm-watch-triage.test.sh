@@ -2813,6 +2813,7 @@ test_exited_declared_pause_is_bounded_but_live_gate_surfaces() {
 test_absorbed_replacement_wait_does_not_inherit_the_old_throttle() {
   local spec name initial replacement expected dir state fakebin out capture_file
   local statusf window key sig back pid wakes
+  # shellcheck disable=SC2041  # one spec left; the loop shape stays for the next
   for spec in \
     'paused-replacement|paused: waiting on validation run one|paused: waiting on validation run two|awaiting external'
   do
@@ -2913,6 +2914,7 @@ parked_watch_round() {  # <state> <fakebin> <out> <capture> <window> <exit|absor
 test_live_declared_wait_churn_honors_the_resurface_throttle() {
   local spec name status_line dir state fakebin out capture_file statusf window key
   local sig round wakes bare text throttle replacement
+  # shellcheck disable=SC2041  # one spec left; the loop shape stays for the next
   for spec in \
     'paused-pipeline-churn|paused: waiting on the validation run to finish'
   do
@@ -7640,9 +7642,11 @@ tc_round_quiet() {  # <dir> [env...]
   shift
   tc_turn_end "$dir"
   tc_watch_launch "$dir" "$@"
-  wait_poll_cycle "$dir/state" "$TC_WATCH_PID" 300 \
-    && wait_poll_cycle "$dir/state" "$TC_WATCH_PID" 300 \
-    || { reap "$TC_WATCH_PID"; return 1; }
+  if ! { wait_poll_cycle "$dir/state" "$TC_WATCH_PID" 300 \
+    && wait_poll_cycle "$dir/state" "$TC_WATCH_PID" 300; }; then
+    reap "$TC_WATCH_PID"
+    return 1
+  fi
   reap "$TC_WATCH_PID"
   return 0
 }
@@ -7692,7 +7696,7 @@ test_turn_end_with_a_valid_working_or_paused_line_wakes_nothing() {
 
 test_turn_end_with_a_wake_verb_wakes_as_before() {
   local verb line dir state
-  for verb in done blocked needs-decision failed handoff-needed; do
+  for verb in 'done' blocked needs-decision failed handoff-needed; do
     case "$verb" in
       done) line='done: PR https://example.invalid/pull/1 head abc123' ;;
       *) line="$verb: the release host is unreachable" ;;
