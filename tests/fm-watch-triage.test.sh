@@ -7897,6 +7897,44 @@ test_turn_end_checker_failure_wakes_firstmate_naming_it() {
   pass "a checker failure wakes firstmate with one row that names the failure"
 }
 
+# The escalation is recorded only once its wake row is durably queued, as a stale
+# wait is: a failed append must not lose the one wake with the pane tail.
+test_failed_wake_append_does_not_lose_the_ping_escalation() {
+  local dir state
+  dir=$(tc_case tc-escalate-append ship); state="$dir/state"
+  tc_round_quiet "$dir" || fail "ping 1 woke the watcher"
+  tc_round_quiet "$dir" || fail "ping 2 woke the watcher"
+  tc_round_quiet "$dir" || fail "ping 3 woke the watcher"
+  tc_pane "$dir" 'last visible line of the pane'
+  rm -f "$state/.wake-queue"
+  mkdir -p "$state/.wake-queue"
+  tc_round_wake "$dir"
+  rmdir "$state/.wake-queue" || fail "the wake queue could not be restored"
+  [ "$(cat "$state/.turnend-pings-tc" 2>/dev/null)" = 3 ] \
+    || fail "an escalation whose wake row was never queued was recorded: $(cat "$state/.turnend-pings-tc" 2>/dev/null)"
+  tc_round_wake "$dir" || fail "the retry after a failed wake append did not wake firstmate"
+  grep -F 'last visible line of the pane' "$state/.wake-queue" >/dev/null \
+    || fail "the retried escalation row did not carry the pane tail: $(cat "$state/.wake-queue" 2>/dev/null)"
+  [ "$(cat "$state/.turnend-pings-tc" 2>/dev/null)" = 4 ] \
+    || fail "the delivered escalation was not recorded: $(cat "$state/.turnend-pings-tc" 2>/dev/null)"
+  pass "a failed wake append does not record the ping escalation, and the retry wakes with the pane tail"
+}
+
+test_turn_end_cursor_write_failure_wakes_firstmate_naming_it() {
+  local dir state spec name line
+  for spec in 'valid|working: still implementing the parser' 'malformed|'; do
+    name=${spec%%|*}; line=${spec#*|}
+    dir=$(tc_case "tc-cursor-$name" ship); state="$dir/state"
+    [ -z "$line" ] || tc_status "$dir" "$line"
+    mkdir -p "$state/.turnend-seen-tc"
+    tc_round_wake "$dir" || fail "[$name] an unwritable turn-end cursor did not wake firstmate"
+    grep -F 'turn-end cursor unwritable' "$state/.wake-queue" >/dev/null \
+      || fail "[$name] the row did not name the cursor failure: $(cat "$state/.wake-queue" 2>/dev/null)"
+    [ "$(tc_pings "$state")" -eq 0 ] || fail "[$name] a ping was sent although the cursor could not be recorded"
+  done
+  pass "an unwritable turn-end cursor wakes firstmate with one row that names the failure"
+}
+
 test_exit_picker_stale_names_the_dialog
 test_exit_picker_wedge_keeps_climbing
 test_quoted_exit_picker_stays_ordinary_stale
@@ -7910,3 +7948,5 @@ test_a_valid_line_after_pings_resets_the_ping_count
 test_turn_ends_after_the_escalation_wake_nothing_until_a_valid_line
 test_turn_end_that_must_not_be_pinged_wakes_at_once_with_the_pane_tail
 test_turn_end_checker_failure_wakes_firstmate_naming_it
+test_failed_wake_append_does_not_lose_the_ping_escalation
+test_turn_end_cursor_write_failure_wakes_firstmate_naming_it

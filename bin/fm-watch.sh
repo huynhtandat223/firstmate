@@ -2409,6 +2409,9 @@ TURNEND_TAIL_LINES=20
 # per-file wake-row suffix carrying the verdict and the pane tail.
 TURNEND_FORCE_FILES=''
 TURNEND_SUFFIXES=''
+# Tasks whose escalation wake is in this batch; each is recorded as escalated
+# only after its wake row is durably queued.
+TURNEND_ESCALATED_TASKS=''
 # Tasks whose turn end carried a valid working or paused line: their .status file
 # in the same batch is not held to the old no-verb working proof.
 TURNEND_OK_TASKS=''
@@ -2549,8 +2552,11 @@ turnend_check_task() {  # <task>
   verdict=${verdict%% *}
   case "$verdict" in
     valid-working|valid-paused|wake-verb)
+      if ! printf '%s' "$size" > "$seenf" 2>/dev/null; then
+        TURNEND_WHY='turn-end cursor unwritable'
+        return 0
+      fi
       rm -f "$pingf"
-      printf '%s' "$size" > "$seenf" 2>/dev/null || true
       TURNEND_VERDICT=$verdict
       return 0
       ;;
@@ -2558,7 +2564,10 @@ turnend_check_task() {  # <task>
   # Missing or malformed: ping up to TURNEND_PING_MAX times per wait, then wake.
   count=$(cat "$pingf" 2>/dev/null || true)
   case "$count" in ''|*[!0-9]*) count=0 ;; esac
-  printf '%s' "$size" > "$seenf" 2>/dev/null || true
+  if ! printf '%s' "$size" > "$seenf" 2>/dev/null; then
+    TURNEND_WHY='turn-end cursor unwritable'
+    return 0
+  fi
   # Once the wake with the pane tail has gone (count past the maximum), the rest
   # of the wait is firstmate's to read: later malformed turn ends wake nothing,
   # and a valid state line resets the wait.
@@ -2567,10 +2576,7 @@ turnend_check_task() {  # <task>
     return 0
   fi
   if [ "$count" -eq "$TURNEND_PING_MAX" ]; then
-    if ! printf '%s' "$((count + 1))" > "$pingf" 2>/dev/null; then
-      TURNEND_WHY='ping bookkeeping unwritable'
-      return 0
-    fi
+    # The escalation is recorded by the caller once its wake row is queued.
     TURNEND_VERDICT=ping-exhausted
     return 0
   fi
@@ -2606,7 +2612,7 @@ turnend_commit_status() {  # <status-file> <signature>
 # triage.
 worker_turn_end_checks() {
   local sf sig f id kind kept='' decided='' dropped_status='' flat suffix
-  TURNEND_FORCE_FILES=''; TURNEND_SUFFIXES=''; TURNEND_OK_TASKS=''
+  TURNEND_FORCE_FILES=''; TURNEND_SUFFIXES=''; TURNEND_OK_TASKS=''; TURNEND_ESCALATED_TASKS=''
   while IFS=$(printf '\t') read -r sf sig f; do
     [ -n "$sf" ] || continue
     case "$f" in
@@ -2634,6 +2640,7 @@ worker_turn_end_checks() {
                     ;;
                   *)
                     TURNEND_FORCE_FILES="$TURNEND_FORCE_FILES $f"
+                    [ "$TURNEND_VERDICT" != ping-exhausted ] || TURNEND_ESCALATED_TASKS="$TURNEND_ESCALATED_TASKS $id"
                     flat=$(printf '%s' "$TURNEND_TAIL" | tr '\n\t' '  ' | cut -c1-1500)
                     suffix="turn-end check $id verdict=$TURNEND_VERDICT${TURNEND_WHY:+ ($TURNEND_WHY)}"
                     [ -z "$flat" ] || suffix="$suffix; pane tail: $flat"
@@ -3634,7 +3641,7 @@ EOF
     # A ship or scout worker's turn end is state-checked here, once per batch,
     # after the grace period so the worker's last status write has landed. The
     # away daemon owns triage while the away record exists and wants every wake.
-    TURNEND_FORCE_FILES=''; TURNEND_SUFFIXES=''; TURNEND_OK_TASKS=''
+    TURNEND_FORCE_FILES=''; TURNEND_SUFFIXES=''; TURNEND_OK_TASKS=''; TURNEND_ESCALATED_TASKS=''
     afk_present || worker_turn_end_checks
   fi
   if [ -n "$pending" ]; then
@@ -3716,6 +3723,9 @@ EOF
       done <<EOF
 $pending
 EOF
+      for id in $TURNEND_ESCALATED_TASKS; do
+        printf '4' > "$STATE/.turnend-pings-$id" 2>/dev/null || true
+      done
       # The wake signature advances for every file in this batch, including one
       # whose span could not be classified: it has now been reported, and this is
       # what bounds an unreadable log to one report per distinct file state. Only
