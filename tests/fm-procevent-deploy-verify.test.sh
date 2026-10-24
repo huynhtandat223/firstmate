@@ -153,7 +153,7 @@ asked() {  # the content of every pending ask, one JSON per line
 scenario_ledger() {
   new_lab "$1"
   backlog_task alpha 11 500; backlog_task alpha 12 500; backlog_task beta 13 600
-  fx_issue 500 A1:user-visible A2:internal; fx_issue 600 A1:user-visible
+  fx_issue 500 V1:user-visible A2:internal; fx_issue 600 E10:user-visible
   fx_runs "1:completed:success:s0" "2:completed:success:s2"
   fx_jobs 2 success
   fx_compare s0 s2 c1 c2 c3
@@ -164,7 +164,7 @@ scenario_ledger() {
   jq -e '(.asks | length) == 2' <<<"$LAST_RESULT" >/dev/null || { echo 'the deploy result is not one ask per task'; return 1; }
   [ "$(ledger_count '.type == "ask"')" = 2 ] || { echo "asks: $(ledger_count '.type == "ask"')"; return 1; }
   [ "$(inbox_count)" = 2 ] || { echo "inbox: $(inbox_count)"; return 1; }
-  [ "$(ledger_count '.type == "ask" and .task == "alpha" and (.prs | length) == 2 and .lines == ["A1"] and .issue == "cfw-modules#500"')" = 1 ] \
+  [ "$(ledger_count '.type == "ask" and .task == "alpha" and (.prs | length) == 2 and .lines == ["V1"] and .issue == "cfw-modules#500"')" = 1 ] \
     || { echo 'task alpha ask is not one ask with both PRs and its one user-visible line'; return 1; }
   # A later green deploy whose range returns PR 11 again.
   fx_runs "1:completed:success:s0" "2:completed:success:s2" "3:completed:success:s3"
@@ -229,14 +229,14 @@ scenario_not_deployed() {
 scenario_draft() {
   new_lab "$1"
   live_task gamma 41
-  fx_issue 900 A1:user-visible:draft A2:user-visible A3:internal:draft
+  fx_issue 900 E10:user-visible:draft A2:user-visible C14:internal:draft
   fx_runs "1:completed:success:s0"
   set_cursor 1 s0
   fx_pr 41 open h1 900
   cycle
   [ "$CYCLE_AUTO" = 0 ] || { echo "autohandle=$CYCLE_AUTO"; return 1; }
   [ "$(ledger_count '.type == "ask" and .round == "draft"')" = 1 ] || { echo "draft asks: $(ledger_count '.type == "ask" and .round == "draft"')"; return 1; }
-  [ "$(ledger_count ".type == \"ask\" and .head == \"$(sha h1)\" and .lines == [\"A1\",\"A3\"] and .task == \"gamma\" and .issue == \"cfw-modules#900\"")" = 1 ] \
+  [ "$(ledger_count ".type == \"ask\" and .head == \"$(sha h1)\" and .lines == [\"E10\",\"C14\"] and .task == \"gamma\" and .issue == \"cfw-modules#900\"")" = 1 ] \
     || { echo 'draft ask does not name the task, issue, head and draft lines'; ledger; return 1; }
   cycle
   [ "$CYCLE_AUTO" = none ] || { echo 'the same head produced a second ask'; return 1; }
