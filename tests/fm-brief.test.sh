@@ -295,6 +295,7 @@ issue_brief_case() {  # <bin-dir>: 0 when --issue renders the issue and the pars
   grep -qF "bin/fm-acceptance.mjs rows $url --surface all" "$file" || { echo 'the section does not name the parser command'; return 1; }
   # The rendered command, run as written against a mixed issue, lists every scenario.
   local cmd mixed="$home/mixed.md" fakegh="$home/gh"
+  # shellcheck disable=SC2016 # the backticks are literal text of the brief
   cmd=$(grep -F 'fm-acceptance.mjs rows' "$file" | sed 's/^List them with `//; s/`;.*$//')
   printf '## Context\n\nx\n\n## Acceptance\n\n- [ ] V1 WHEN a, THE b SHALL c.\n  - surface: user-visible\n- [ ] K1 WHEN d, THE e SHALL f.\n  - surface: internal\n' > "$mixed"
   printf '#!/usr/bin/env bash\njq -Rs "{body: .}" "%s"\n' "$mixed" > "$fakegh"
