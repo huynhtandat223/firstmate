@@ -4283,7 +4283,8 @@ if [ "$RELAUNCH" != 1 ] && [ "$KIND" != secondmate ] && { [ -e "$CONFIG/dispatch
       if [[ $plan_title = \"*\" ]]; then
         plan_title=$(printf '%s' "$plan_title" | jq -r .)
       fi
-      printf 'error: plan gate: %s; link with bin/fm-tasks-axi.sh update %s --title "%s <issue url>"; or %s\n' "$plan_reason" "$ID" "$plan_title" "$plan_fix" >&2
+      printf -v plan_title_arg '%q' "$plan_title <issue url>"
+      printf 'error: plan gate: %s; link with bin/fm-tasks-axi.sh update %s --title %s; or %s\n' "$plan_reason" "$ID" "$plan_title_arg" "$plan_fix" >&2
       exit 1
     fi
     printf 'plan gate: approved %s\n' "$PLAN_ISSUE"

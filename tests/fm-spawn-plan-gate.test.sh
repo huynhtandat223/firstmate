@@ -47,7 +47,10 @@ for label in ${FM_PLAN_TEST_CASES:-approved no-link unapproved changed newest cl
       expect "plan gate: approved $url"
       assert_grep "plan_issue=$url" "$home/state/gate.meta" 'G1 missing plan_issue'
       ;;
-    no-link) expect 'bin/fm-tasks-axi.sh update gate --title "Build <issue url>"' ;;
+    no-link)
+      printf -v expected_title '%q' 'Build <issue url>'
+      expect "bin/fm-tasks-axi.sh update gate --title $expected_title"
+      ;;
     unapproved|changed|newest) expect "bin/fm-plan-approve.sh $url" ;;
     closed) expect closed ;;
     pull) expect not-issue ;;
@@ -165,6 +168,21 @@ for label in exempt-relaunch exempt-secondmate exempt-assistance; do
   printf '%s' "$out" | grep -F 'plan gate:' >/dev/null && fail "$label entered gate"
   pass "$label preserves existing refusal without GitHub"
 done
+
+label=quoted-title
+new_case "$label" ''
+# shellcheck disable=SC2016 # Deliberately literal command substitution tests paste safety.
+title='Build "quoted" $(touch '"$home/injected"')'
+tasks-axi update gate --title "$title" --file "$home/data/backlog.md" >/dev/null
+out=$(spawn)
+command_line=$(printf '%s\n' "$out" | sed -n 's/.*link with \(bin\/fm-tasks-axi.sh update .*\); or .*/\1/p')
+# Execute only the suggested command against a test-owned capture function.
+# The output must preserve one literal title argument and execute no title text.
+bin/fm-tasks-axi.sh() { printf '%s' "$4" > "$home/captured-title"; }
+eval "$command_line"
+[ ! -e "$home/injected" ] || fail 'quoted-title suggestion executed title text'
+[ "$(< "$home/captured-title")" = "$title <issue url>" ] || fail 'suggested command changed title'
+pass 'title repair command is safe to paste'
 
 for label in approve-closed approve-pull approve-url; do
   new_case "$label" "$url"
