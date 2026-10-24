@@ -438,6 +438,8 @@ fm_backlog_row_probe() {  # <data-dir> <id>
   FM_BACKLOG_ROW_RESULT=error
   FM_BACKLOG_ROW_STATE=
   FM_BACKLOG_ROW_HOLD_KIND=
+  FM_BACKLOG_ROW_LINKS=
+  FM_BACKLOG_ROW_TITLE=
   FM_BACKLOG_ROW_ERROR=
   fm_backlog_source_present "$data" "$authorized_data"
   source_status=$?
@@ -471,6 +473,8 @@ fm_backlog_row_probe() {  # <data-dir> <id>
     FM_BACKLOG_ROW_ERROR="tasks-axi show $id returned no state"
     return 1
   fi
+  FM_BACKLOG_ROW_LINKS=$(printf '%s\n' "$out" | sed -n 's/^  links: *//p' | head -1)
+  FM_BACKLOG_ROW_TITLE=$(printf '%s\n' "$out" | sed -n 's/^  title: *//p' | head -1)
   FM_BACKLOG_ROW_RESULT=found
   FM_BACKLOG_ROW_STATE="$state ${held:-no} ${blocked:-no}"
   case "$hold_kind" in

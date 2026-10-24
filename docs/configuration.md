@@ -374,6 +374,24 @@ The primary-authoritative propagation contract, including removal of a mate's lo
 `config/supervision-host` is local to each home and not inherited, because each home's engine and model are its own choice.
 While the home runs the host, main's lease-checked commands also take the per-task lease lock, so a claim by the host's engine cannot race a mutation main already started (`bin/fm-lease-lib.sh`).
 
+## Dispatch plan gate (config/dispatch-plan-gate)
+
+The presence of `config/dispatch-plan-gate` requires a fresh ship or scout to link an approved open GitHub issue through its backlog item's `doc:` links.
+Batch pairs are checked separately.
+Relaunches, secondmates, and assistance launches are exempt; homes without the file retain their existing behavior.
+The gate requires the automatic tasks-axi backlog preflight and refuses when that source is unavailable or manual.
+
+Use `bin/fm-plan-approve.sh <issue url> [--note <text>]` to approve the current issue body.
+The script header owns the approval marker format; `bin/fm-plan-gate-lib.sh` owns URL parsing, hashing, and newest-marker selection.
+A later body edit requires a new approval.
+GitHub read failures stop dispatch; `FM_PLAN_GATE_TIMEOUT_SECS` bounds each read and defaults to 20 seconds.
+An approved launch prints its issue URL and records `plan_issue` in the task record.
+
+On a fresh single ship or scout, `--plan-exception "<captain words>"` skips the issue check and records those words, base64-encoded as `plan_exception`, and in the backlog body.
+The flag requires nonempty words and cannot be used in a batch or with an exempt launch.
+Refusals name the link or approval command and the exception flag.
+The gate is a process check, not an authorship or access-control check.
+
 ## Backlog backend (.tasks.toml / config/backlog-backend)
 
 The tracked `.tasks.toml` pins the default `tasks-axi` markdown backend to `data/backlog.md`, with `done_keep = 10` and an archive at `data/done-archive.md`.
