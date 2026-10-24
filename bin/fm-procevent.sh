@@ -2111,6 +2111,16 @@ cmd_handled() {
   fi
   fm_procevent_mark_handled "$STATE" "$id" "$seq"
   status=$?
+  # A row appended before the marker (publish_result appends whenever the result
+  # is unhandled at that moment) would otherwise stay queued and be drained
+  # again. The source lock is still held, so no publication can append a row for
+  # this result between the marker and this prune.
+  case "$status" in
+    0|1)
+      fm_wake_queue_prune_key "$STATE" check "procevent:$id:$seq" \
+        || printf 'warning: could not prune the queued wake for %s %s; the drain still hides it\n' "$id" "$seq" >&2
+      ;;
+  esac
   if [ "$conclude" -eq 1 ]; then
     if [ "$status" -eq 0 ]; then
       rm -f -- "$(runner_file "$id")"
