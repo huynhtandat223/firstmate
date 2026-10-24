@@ -282,11 +282,26 @@ case_verified_line_closes_the_record() {
   refuses "$1" "$home" "scenario row outside '## Scenarios'"
 }
 
+# The Tester's footer carries the digest of the issue's scenarios as the Tester read them: a
+# scenario edited in a field the rows omit (controls, proof, data, mock, page) is not re-verified
+# by an old record.
+case_acceptance_digest() {
+  local home current body
+  home=$(new_home)
+  current=$(vg_digest)
+  body="$TMP_ROOT/edited.body"
+  sed 's/click Save/click Save twice/' "$TMP_ROOT/gh/issue.body" > "$body"
+  cmp -s "$body" "$TMP_ROOT/gh/issue.body" && { echo 'the edit changed nothing'; return 1; }
+  VG_BODY_FILE=$body refuses "$1" "$home" "Tester acceptance $current is not the issue's current digest $(VG_BODY_FILE=$body vg_digest)" || return 1
+  set_line "$(tester "$home")" 'verified: ' "verified: tester 1000 head=$VG_SHA"
+  refuses "$1" "$home" "Tester verified line has no acceptance=<digest>"
+}
+
 case_verified_line_missing() {
   local home
   home=$(new_home)
   drop "$(tester "$home")" 'verified: '
-  refuses "$1" "$home" "Tester record has no 'verified: tester <epoch> head=<sha>' line"
+  refuses "$1" "$home" "Tester record has no 'verified: tester <epoch> head=<sha> acceptance=<digest>' line"
 }
 
 case_verified_line_without_head() {
@@ -302,7 +317,7 @@ case_deployed_head_is_the_newest_ask() {
   local home old=2222222222222222222222222222222222222222 ledger
   home=$(new_home)
   ledger="$home/data/deploy-verify/ledger.jsonl"
-  set_line "$(tester "$home")" 'verified: ' "verified: tester 1000 head=$old"
+  set_line "$(tester "$home")" 'verified: ' "verified: tester 1000 head=$old acceptance=$(vg_digest)"
   printf '{"type":"ask","round":"deploy","key":"deploy:%s:%s","task":"%s","sha":"%s"}\n' "$TASK" "$old" "$TASK" "$old" > "$ledger"
   passes "$1" "$home" || return 1
   printf '{"type":"ask","round":"deploy","key":"replay:%s:%s","task":"%s","sha":"%s"}\n' "$TASK" "$VG_SHA" "$TASK" "$VG_SHA" >> "$ledger"
@@ -310,7 +325,7 @@ case_deployed_head_is_the_newest_ask() {
   printf '{"type":"ask","round":"draft","key":"draft:%s:1:%s","task":"%s","sha":"%s"}\n' "$TASK" "$old" "$TASK" "$old" >> "$ledger"
   printf '{"type":"ask","round":"deploy","key":"deploy:other:%s","task":"other","sha":"%s"}\n' "$old" "$old" >> "$ledger"
   refuses "$1" "$home" "Tester head $old is not the deployed head $VG_SHA" || return 1
-  set_line "$(tester "$home")" 'verified: ' "verified: tester 1000 head=$VG_SHA"
+  set_line "$(tester "$home")" 'verified: ' "verified: tester 1000 head=$VG_SHA acceptance=$(vg_digest)"
   passes "$1" "$home"
 }
 
@@ -357,7 +372,7 @@ case_home_video() {
     printf '%s\n' 'surface: user-visible' "issue: $VG_ISSUE" '' '## Scenarios'
     printf '%s\n' '- V3@1440 | the Video page lists matching files | pass | evidence: https://example.test/v3' \
       '- V4@1440 | the Video page shows Không tìm thấy | pass | evidence: https://example.test/v4'
-    printf '\nverified: tester 1000 head=%s\n' "$draft"
+    printf '\nverified: tester 1000 head=%s acceptance=%s\n' "$draft" "$(VG_BODY_FILE="$FX/cfw-1616.body" vg_digest)"
   } > "$(tester "$home")"
   VG_BODY_FILE="$FX/cfw-1616.body" refuses "$1" "$home" "Tester head $draft is not the deployed head $VG_SHA" || return 1
   missing=0
@@ -372,7 +387,7 @@ CASES="pass_and_read_only firstmate_record_missing tester_record_missing no_test
 firstmate_line_one firstmate_issue_line tester_surface tester_issue_line records_name_different_issues
 issue_cannot_be_parsed issue_cannot_be_read issue_without_user_visible_rows row_absent_from_tester_record
 row_not_pass row_without_evidence_field row_pass_without_evidence row_evidence_path row_id_not_in_issue retired_row
-retired_row_of_a_present_id_at_another_width internal_scenario_row row_text_differs_from_the_issue malformed_tester_row verified_line_closes_the_record verified_line_missing verified_line_without_head
+retired_row_of_a_present_id_at_another_width internal_scenario_row row_text_differs_from_the_issue malformed_tester_row verified_line_closes_the_record acceptance_digest verified_line_missing verified_line_without_head
 deployed_head_is_the_newest_ask deployed_line_for_an_unwatched_repo approval home_video"
 
 # ---- real gate ------------------------------------------------------------------------
@@ -434,6 +449,8 @@ unsay 'a Tester row carries the issue'"'"'s current text' row_text_differs_from_
 unsay 'a Tester row is well formed' malformed_tester_row 'malformed Tester row'
 unsay 'the verified line follows the last row' verified_line_closes_the_record "the 'verified: tester' line must come after"
 unsay 'a scenario row outside Scenarios is refused' verified_line_closes_the_record "scenario row outside"
+unsay 'the Tester digest is the issue'"'"'s current digest' acceptance_digest 'Tester acceptance '
+unsay 'the verified line carries a digest' acceptance_digest 'Tester verified line has no acceptance='
 unsay 'the verified line is required' verified_line_missing "Tester record has no 'verified: tester"
 unsay 'the verified line names a head' verified_line_without_head 'Tester verified line has no head='
 unsay 'the Tester head is the deployed head' deployed_head_is_the_newest_ask 'Tester head '

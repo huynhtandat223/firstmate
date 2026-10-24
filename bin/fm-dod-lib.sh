@@ -947,7 +947,7 @@ fm_dod_block() {
   fm_dod_block_mode "${@:1:6}" || return 1
   if [ "$surface" = user-visible ]; then
     printf '%s\n' \
-      "This task changes a user-visible surface, so its definition of done includes the Tester's record for the deployed head, with every scenario of the task's issue passed at every width, and firstmate's approval in data/$id/verify.md." \
+      "This task changes a user-visible surface, so its definition of done includes the Tester's record for the deployed head, with every scenario of the task's issue, as the issue reads when the Tester finishes, passed at every width, and firstmate's approval in data/$id/verify.md." \
       "Verification pending is not done: do not report the task finished on a merged PR or green CI alone." \
       "Firstmate cleans the task up after it lands; its backlog row stays open as verification pending until the Tester's record and firstmate's approval are complete."
   fi

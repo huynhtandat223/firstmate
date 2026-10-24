@@ -18,7 +18,8 @@
 #     issue: <url>
 #     ## Scenarios
 #     - <id>@<width> | <line> | pass | evidence: <existing file path or http(s) URL>
-#     verified: tester <epoch> head=<sha>     (after the last row; it covers the rows above it)
+#     verified: tester <epoch> head=<sha> acceptance=<digest>
+#                                     (after the last row; it covers the rows above it)
 # The Tester home is home= in <state>/tester.meta, or FM_TESTER_HOME. A relative evidence
 # path resolves against that home. A row in state `retired` is allowed only for a scenario id
 # the issue no longer has (not for one width of an id it still has); a row for an issue scenario that is not user-visible is ignored.
@@ -28,6 +29,9 @@
 #     `fm-acceptance.mjs rows <issue>` is in the Tester record with the issue's current line
 #     text, `pass`, and existing evidence,
 #   - no Tester row names an id outside the issue,
+#   - the Tester's acceptance= equals `fm-acceptance.mjs digest <issue>`: the digest of the full
+#     scenarios as they read now, so a scenario edited in any field after the Tester read it
+#     is verified again,
 #   - the Tester's head= equals the sha of the newest deploy-round or replay ask for the task
 #     in <data-dir>/deploy-verify/ledger.jsonl (a missing ask refuses), or, for an issue of a repo
 #     deploy-verify does not watch, the 'deployed: <sha>' line of firstmate's record, and
@@ -80,7 +84,7 @@ fm_verify_gate_row_text() {  # <row>
 fm_verify_gate_problems() {  # <data-dir> <task-id> <base-dir>
   local data=$1 id=$2 base=$3 file state tester_home tfile ledger first
   local issue t_issue t_surface approved verified v_epoch v_head want_sha repo
-  local rows all_rows parse rc line rid rstate revidence ev want_text in_scn=0 ln=0 last_row_ln=0 verified_ln
+  local rows all_rows parse rc word v_acc cur_acc line rid rstate revidence ev want_text in_scn=0 ln=0 last_row_ln=0 verified_ln
   local bad=0 expected=$'\n' known=$'\n' known_ids=$'\n' seen=$'\n'
   state=${FM_STATE_OVERRIDE:-$base/state}
   file="$data/$id/verify.md"
@@ -117,12 +121,21 @@ fm_verify_gate_problems() {  # <data-dir> <task-id> <base-dir>
   verified=$(sed -n 's/^verified: tester //p' "$tfile" | tail -n 1)
   v_epoch=${verified%% *}
   v_head=
-  case "$verified" in *' head='*) v_head=${verified##* head=} ;; esac
+  v_acc=
+  for word in $verified; do
+    case "$word" in
+      head=*) v_head=${word#head=} ;;
+      acceptance=*) v_acc=${word#acceptance=} ;;
+    esac
+  done
   case "$v_epoch" in
-    ''|*[!0-9]*) fm_verify_gate_say "Tester record has no 'verified: tester <epoch> head=<sha>' line"; v_epoch= ;;
+    ''|*[!0-9]*) fm_verify_gate_say "Tester record has no 'verified: tester <epoch> head=<sha> acceptance=<digest>' line"; v_epoch= ;;
   esac
   if [ -n "$v_epoch" ] && [ -z "$v_head" ]; then
     fm_verify_gate_say "Tester verified line has no head=<sha>: verified: tester $verified"
+  fi
+  if [ -n "$v_epoch" ] && [ -z "$v_acc" ]; then
+    fm_verify_gate_say "Tester verified line has no acceptance=<digest>: verified: tester $verified"
   fi
 
   # The deployed head. In the repo deploy-verify watches (FM_DEPLOY_VERIFY_REPO, the default of
@@ -172,6 +185,10 @@ fm_verify_gate_problems() {  # <data-dir> <task-id> <base-dir>
       return 1
     fi
     [ -n "$rows" ] || fm_verify_gate_say "issue $issue has no user-visible scenario row"
+    cur_acc=$(node "$FM_VERIFY_GATE_DIR/fm-acceptance.mjs" digest "$issue" 2>/dev/null) || cur_acc=
+    if [ -n "$v_acc" ] && [ "$v_acc" != "$cur_acc" ]; then
+      fm_verify_gate_say "Tester acceptance $v_acc is not the issue's current digest $cur_acc"
+    fi
     all_rows=$(node "$FM_VERIFY_GATE_DIR/fm-acceptance.mjs" rows "$issue" --surface all 2>/dev/null) || all_rows=$rows
     while IFS= read -r line; do
       [ -n "$line" ] || continue

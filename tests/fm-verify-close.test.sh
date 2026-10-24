@@ -101,7 +101,7 @@ test_a_newer_deploy_refuses_the_close_until_the_tester_verifies_again() {
   [ "$CLOSE_RC" != 0 ] || fail "a record for an older deploy closed the row: $CLOSE_OUT"
   case "$CLOSE_OUT" in *"is not the deployed head $newer"*) ;; *) fail "the refusal does not name the deployed head: $CLOSE_OUT" ;; esac
   [ "$(field "$home" state)" = queued ] && [ "$(field "$home" held)" = yes ] || fail "the refused row changed: $(show "$home")"
-  sed -i.bak "s/head=.*/head=$newer/" "$(vg_tester_file "$home" "$ID")"
+  sed -i.bak "s/head=[0-9a-f]*/head=$newer/" "$(vg_tester_file "$home" "$ID")"
   run_close "$home"
   [ "$CLOSE_RC" = 0 ] && [ "$(field "$home" state)" = "done" ] || fail "the re-verified record did not close the row: $CLOSE_OUT"
   pass "a newer deploy refuses the close until the Tester's record names that head"

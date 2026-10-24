@@ -8,7 +8,8 @@
 #                                   exports FM_ACCEPTANCE_GH and VG_BODY_FILE
 # vg_write_records <home> <task>    writes all three for a home laid out as state/ and data/ with
 #                                   the Tester home at <home>/tester; every row passes, the Tester
-#                                   head is the ledger's deploy sha, and firstmate approved later
+#                                   head is the ledger's deploy sha and its digest the issue's, and firstmate approved later
+# vg_digest                         the fixture issue's acceptance digest (fm-acceptance.mjs digest)
 # vg_tester_file <home> <task>      the Tester record's path
 # vg_set_row <home> <task> <id> <state> <evidence-field>
 #                                   rewrites one row of the Tester record, for example A2@390 pending 'evidence: -'
@@ -56,6 +57,8 @@ SH
   export FM_ACCEPTANCE_GH="$dir/gh" VG_BODY_FILE FM_DEPLOY_VERIFY_REPO=o/r
 }
 
+vg_digest() { node "$ROOT/bin/fm-acceptance.mjs" digest "$VG_ISSUE"; }
+
 vg_tester_file() {  # <home> <task>
   printf '%s/tester/data/verify/%s.md\n' "$1" "$2"
 }
@@ -71,7 +74,7 @@ vg_write_records() {  # <home> <task>
   {
     printf '%s\n' 'surface: user-visible' "issue: $VG_ISSUE" '' '## Scenarios'
     node "$ROOT/bin/fm-acceptance.mjs" rows "$VG_ISSUE" | sed 's#| pending | evidence: -$#| pass | evidence: https://example.test/shot#'
-    printf '\nverified: tester 1000 head=%s\n' "$VG_SHA"
+    printf '\nverified: tester 1000 head=%s acceptance=%s\n' "$VG_SHA" "$(vg_digest)"
   } >"$tf"
 }
 
