@@ -1,0 +1,116 @@
+## Parent
+
+huynhtandat223/cfw-modules#1644 (spec).
+
+## What to build
+
+Apply the confirmed placement to Dev 5001, as the plan's section 6 writes it (W0-W6). Use one writer, named by firstmate, with the `cfw-page-definition` wrapper.
+
+1. **W0. Pre-images** in `data/profiles-restructure/pre-<UTC>/` (firstmate's data):
+   - the 5 groups with all their items;
+   - every page row with its `profiles`;
+   - `/api/ui/navigation` and `/api/ui/pages` as served to each of home, dms-titan and admin;
+   - the Home export probe output.
+2. **W1, W2. Delete pages** `page-dev-14458` and `cfw-1598-draft`. W2 only after firstmate confirms no worker writes `cfw-1598-draft`.
+3. **W3. Memberships (`profiles` only):**
+   - `agent.chat.v2` -> [admin];
+   - `firstmate.board` -> [admin];
+   - `github.repository-browser` -> [admin];
+   - `my.english` -> [admin, home] (after Chat);
+   - `coach` -> [home];
+   - `connections` -> [home];
+   - `tv.remote` -> [home].
+4. **W4. Moves and rename:**
+   - My English and Coach to a new group `learning` "Learning";
+   - Repository Browser to a new group `dev-tools` "Dev tools";
+   - rename `agent-workspaces` to "Agents".
+5. **W5. Group PATCHes** with the full item list from a fresh read:
+   - `learning`: order 4; My English 1, Coach (draft) 2.
+   - `dev-tools`: order 1000.
+   - `application`: Video 101, TV remote 102, Home control 103, Inbox 104, Connections 105. Drop `page-dev-14458` and the orphan `home.control.draft` (its page does not exist).
+   - **Each PATCH body comes from a fresh read of that group,** taken right before the write and not from W0. So `home.video-sources`, which phim-native-screen is deleting with its item, is never added back. If its item is still there, leave it to phim-native-screen and report it. Keep, and report, any item added since 2026-10-24, such as #1635's `app`.
+   - `runtime-builder`: drop the `cfw-1598-draft` item.
+6. **W6. Prove A1-A9 and clean up (A11).**
+
+**Undo:**
+- a group: `restore-group --snapshot <W0> --group-id <key>`, or `delete-group` for a group a move created;
+- a membership: PATCH `profiles` back to the pre-image;
+- a deleted page: POST it again from its W0 row, then PATCH its `profiles`.
+
+## Stop lines
+
+- Any key other than the ones listed. In W3 that means `profiles` only; `#1643` owns the content of `my.english` and `agent.chat.v2`.
+- Writing `firstmate.board` while a board worker writes it: firstmate holds the other board writers during W3b.
+- **One writer per row.** `agent.chat.v2` and `my.english` are also written by english-daily-card (#1643). Write their rows (W3a, W3d) only when firstmate says that row is free, and re-read each one right before the write.
+- Re-adding, or deleting, `home.video-sources` or its item: phim-native-screen owns that.
+- Deleting or renaming a page row while a 5001 deploy job runs (`gh run list --repo huynhtandat223/cfw-modules --status in_progress`).
+- A screenshot of a dms-titan page or of the admin menu.
+- Writing any row on Home 5000 (that is A10's ticket).
+
+## Blocked by
+
+None — can start immediately. W2 needs firstmate's confirmation that no worker writes `cfw-1598-draft`; W3b needs firstmate to hold the other board writers.
+
+## Acceptance
+
+- [ ] A1 WHEN the home profile is open at 1440 x 900, THE sidebar SHALL show exactly the groups Application (Video, TV remote, Home control, Inbox, Connections) and Learning (My English, Coach (draft)), in that order and with nothing else.
+  - env/page: Dev 5001 (`http://100.88.10.58:5001`, as `TESTING_DATA.md` names), SysAdmin; the profile is picked by `localStorage['cfw-shadcn.app-profile']` and a reload, the API is called with `X-CFW-App-Profile`; profile home
+  - proof: Click through the sidebar at 1440: screenshot (home is not a company profile), plus `GET /api/ui/navigation` JSON under home.
+  - data: the official rows after W5
+  - mock: none
+  - surface: user-visible
+- [ ] A2 WHEN the home profile is open at 390 x 844 (mobile, touch), THE menu sheet SHALL show the same groups and entries as A1, and `document.documentElement.scrollWidth` SHALL equal `innerWidth`.
+  - env/page: Dev 5001 (`http://100.88.10.58:5001`, as `TESTING_DATA.md` names), SysAdmin; the profile is picked by `localStorage['cfw-shadcn.app-profile']` and a reload, the API is called with `X-CFW-App-Profile`; profile home
+  - proof: Tap Toggle Sidebar at 390; check `data-state=open`, then screenshot the sheet and log `scrollWidth`/`innerWidth`.
+  - data: as A1
+  - mock: none
+  - surface: user-visible
+- [ ] A3 WHEN the dms-titan profile is open at 1440 and at 390, THE menu SHALL show exactly Workspaces (6 entries), Screens (12 entries) and Business (1 entry), with no Application, Agents, Learning or Dev tools heading.
+  - env/page: Dev 5001 (`http://100.88.10.58:5001`, as `TESTING_DATA.md` names), SysAdmin; the profile is picked by `localStorage['cfw-shadcn.app-profile']` and a reload, the API is called with `X-CFW-App-Profile`; profile dms-titan; dms-titan is a company profile, and the admin menu lists DMS entries: their proof is DOM text and JSON, never a screenshot
+  - proof: Open the menu at 1440 and at 390; save its DOM text and the navigation JSON. No screenshot.
+  - data: as A1
+  - mock: none
+  - surface: user-visible
+- [ ] A4 WHEN the admin profile is open at 1440 and at 390, THE menu SHALL show Application, Agents, Workspaces, Learning, Screens, Business and Dev tools in that order, with no DEV-14458, no "1598 draft" and no "Home control draft" entry.
+  - env/page: Dev 5001 (`http://100.88.10.58:5001`, as `TESTING_DATA.md` names), SysAdmin; the profile is picked by `localStorage['cfw-shadcn.app-profile']` and a reload, the API is called with `X-CFW-App-Profile`; profile admin; dms-titan is a company profile, and the admin menu lists DMS entries: their proof is DOM text and JSON, never a screenshot
+  - proof: Open the menu at 1440 and at 390; save its DOM text and the navigation JSON. No screenshot.
+  - data: as A1
+  - mock: none
+  - surface: user-visible
+- [ ] A5 WHEN each menu entry of each profile is opened (tap at 390, click at 1440, with that profile stored), THE page SHALL render with no 404 or "not found" state, and `GET /api/ui/pages/<pageId>` with that profile's header SHALL answer 200.
+  - env/page: Dev 5001 (`http://100.88.10.58:5001`, as `TESTING_DATA.md` names), SysAdmin; the profile is picked by `localStorage['cfw-shadcn.app-profile']` and a reload, the API is called with `X-CFW-App-Profile`; profiles home, dms-titan, admin
+  - proof: One log line per profile × entry: HTTP status and the page title from the DOM. Home entries may be screenshotted; dms-titan and admin are logged as text only.
+  - data: every entry A1-A4 lists
+  - mock: none
+  - surface: user-visible
+- [ ] A6 WHEN `GET /api/ui/navigation/<groupId>` is called for each of the 7 groups under admin, THE answer SHALL be OK with no skipped entry.
+  - env/page: Dev 5001 (`http://100.88.10.58:5001`, as `TESTING_DATA.md` names), SysAdmin; the profile is picked by `localStorage['cfw-shadcn.app-profile']` and a reload, the API is called with `X-CFW-App-Profile`
+  - proof: The 7 JSON answers. This catches a stale item left by W1, W2 or W5, such as `home.control.draft`.
+  - data: groups `application`, `agent-workspaces`, `file-explorer`, `learning`, `runtime-builder`, `business`, `dev-tools`
+  - mock: none
+  - surface: internal
+- [ ] A7 WHEN `GET /api/ui/pages/page-dev-14458` and `/api/ui/pages/cfw-1598-draft` are called under admin, THE answer SHALL be 404, and no group SHALL carry an item with either page id or with `home.control.draft`.
+  - env/page: Dev 5001 (`http://100.88.10.58:5001`, as `TESTING_DATA.md` names), SysAdmin; the profile is picked by `localStorage['cfw-shadcn.app-profile']` and a reload, the API is called with `X-CFW-App-Profile`
+  - proof: JSON of both calls and of every group.
+  - data: the two deleted pages and the orphan item
+  - mock: none
+  - surface: internal
+- [ ] A8 WHEN the plan's section 4 link scan runs again after W5, THE result SHALL show every in-page link served in each profile that serves its source page: Chat's `#my.english` and `#firstmate-board` under admin, the DMS screen links under dms-titan, and the settings links under home and dms-titan.
+  - env/page: Dev 5001 (`http://100.88.10.58:5001`, as `TESTING_DATA.md` names), SysAdmin; the profile is picked by `localStorage['cfw-shadcn.app-profile']` and a reload, the API is called with `X-CFW-App-Profile`
+  - proof: The scan output, saved beside the plan in firstmate's `data/profiles-restructure/`.
+  - data: every page's `compositionJson`
+  - mock: none
+  - surface: internal
+- [ ] A9 WHEN the Home export probe runs after W5, THE result SHALL list no refusal and no machine-bound row beyond the 2026-10-24 baseline, except the three `tv-remote-*` rows (Q5 A).
+  - env/page: Dev 5001 (`http://100.88.10.58:5001`, as `TESTING_DATA.md` names), SysAdmin; the profile is picked by `localStorage['cfw-shadcn.app-profile']` and a reload, the API is called with `X-CFW-App-Profile`; the Home export probe of `home-export-probe-2026-10-24.txt` (`scripts/profile-bundle.py export --profiles home` against 5001, read only)
+  - proof: Diff the probe output against `home-export-probe-2026-10-24.txt`.
+  - data: the home pages after W3
+  - mock: none
+  - surface: internal
+- [ ] A11 WHEN T1 is done, THE W0 pre-images SHALL be kept with the plan, no scratch row SHALL remain (none is created), and every browser session the run opened SHALL be closed; the owner SHALL be told once to set his phone Chrome's 5001 profile to admin, so pushes open the board (F4).
+  - env/page: Dev 5001 (`http://100.88.10.58:5001`, as `TESTING_DATA.md` names), SysAdmin; the profile is picked by `localStorage['cfw-shadcn.app-profile']` and a reload, the API is called with `X-CFW-App-Profile`
+  - proof: A `## Cleanup` section in the record: the pre-image folder listing, the session list, and the note sent to firstmate for the owner.
+  - data: as listed
+  - mock: none
+  - surface: internal
+

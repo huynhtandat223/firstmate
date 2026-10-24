@@ -1,0 +1,237 @@
+## Problem Statement
+
+The owner asked for "cách học tiếng Anh cho người lười như tôi ... kết hợp vừa làm vừa học dễ dàng", and said he is not happy with what was built before.
+- **The learning tools shipped, then went unused.** Coach in the Chat dock (PR 1350), the learning loop (PR 1450, 1466, 1471) and the Study page (PR 1604) all exist.
+- **The data shows no use since the proofs.** On 5001 (read 2026-10-24), `english_phrase` has 13 rows, 4 of them `proof-1445`. The last save or review was on 10-19. `english_mistake` has 3 rows, all proof rows. My English shows two phrases due, unopened.
+- **Why (Q1, decided):** every step needs a trip to a separate draft page (My English), which he opens only on purpose. Nothing reaches him where he already is: his phone and the Chat dock.
+- **His recorded limits:** work replies stay Vietnamese (10-22), scoring is a separate study activity, not done while working (10-15), and Study scoring runs only on the local GPU with no paid service (10-20).
+
+## Solution
+
+One 10-second card a day comes to the owner, with no page to visit.
+- **A weekday push (P1).** At 10:15 on weekdays, one Web Push to his K50 shows one phrase's Vietnamese meaning. A tap opens "Hôm nay" on that phrase: Listen, say or type the English, Show answer, Again or Got it.
+- **The same card in the Chat dock (P1),** above the conversation list until it is done, then one line "Xong hôm nay".
+- **Learning from his own chat with no action (P2).** When he types Vietnamese in the Chat dock, the Coach keeps at most one generic phrase a day: the English he would have needed. The message itself is never kept, and the agent's reply is unchanged.
+- **A weekly Study offer (P4).** On Fridays, after the Study page is verified, the card offers "Nói 3 từ" instead: three of the week's phrases on the Study page, scored by the admin-PC GPU model.
+- **One switch** "Học mỗi ngày" on My English turns the push and the dock card off and on.
+
+### UI pick (the owner, board 6cc45b5b; amendment 114)
+
+The owner combined three of the five references (`cfw-ui-ux-references`; firstmate `data/english-daily-card/refs/candidates.md`):
+- **The card is candidate 2** (21st.dev spaced repetition): a compact header row ("0 xong · N còn lại"), the prompt, a divider, the answer, and grade buttons that show the next interval.
+- **Listen is candidate 4** (Anki mobile concept): a speaker button beside the sentence.
+- **The done line and the switch are candidate 5** (shadcn.io notification streak): the compact "Xong hôm nay" line, and the "Học mỗi ngày" switch row.
+
+His note: "Support common sentences hoặc từ gần nghĩa, trái nghĩa dc ko? đẻ tôi nắm context, và học theo câu thì có vẽ hay hơn? còn record my voice để nghe tôi nói (infra đã có)". Firstmate decided the three points below (Implementation Decisions, "Sentence first, related words, Nghe lại").
+
+## User Stories
+
+1. As the owner, I want one English phrase pushed to my phone on weekdays, so that I learn without remembering to open a page.
+2. As the owner, I want the push to show the phrase's Vietnamese meaning, so that I can try the English before I open it.
+3. As the owner, I want a tap on the push to open that phrase's card, so that the step takes ten seconds.
+4. As the owner, I want the card to fit one phone screen, so that I never scroll.
+5. As the owner, I want to hear the phrase, then say or type it, so that I practise speaking and spelling in one step.
+6. As the owner, I want Again or Got it to schedule the next review, so that the phrase comes back when I need it.
+7. As the owner, I want the same card at the top of the Chat dock, so that I meet it where I already work.
+8. As the owner, I want a finished card to collapse to one line, so that the dock stays a chat.
+9. As the owner, I want no push on a day with nothing due or new, so that the push never becomes noise.
+10. As the owner, I want at most one push a day, so that a rerun never sends twice.
+11. As the owner, I want my Vietnamese work chat to give me one useful phrase a day, so that I learn the English I actually needed.
+12. As the owner, I want my message never stored, and no names, ticket ids or company terms in the phrase, so that work text stays private.
+13. As the owner, I want work replies to stay Vietnamese, so that my work is not slowed.
+14. As the owner, I want English messages to save nothing, so that only my Vietnamese words become phrases.
+15. As the owner, I want one switch to stop everything, so that I can pause learning.
+16. As the owner, I want turning it back on to resume from the next run, so that I do not set it up again.
+17. As the owner, I want a Friday offer to say three of the week's words on Study, so that scoring stays a weekly study activity.
+18. As the owner, I want the Friday offer only after Study is verified, so that I never land on a broken page.
+19. As the owner, I want my card to show only my own phrases, so that old proof rows do not appear.
+20. As the owner, I want the card to show the phrase inside a sentence first, so that I learn it in context.
+21. As the owner, I want near-meaning and opposite words under the answer, so that I know the phrase's neighbours.
+22. As the owner, I want to hear my own take after I say it, so that I can compare my voice with the model.
+23. As the owner, I want my take never stored or sent, so that my voice stays on my phone.
+24. As the operator, I want the picker as a pure tested function, so that a rule change is caught before release.
+25. As the operator, I want the daily job to reuse the red-items push sender and its ledger, so that there is one push path.
+
+## Implementation Decisions
+
+Change points as of `origin/main` 55367f9ec.
+
+**P1, the daily push and card**
+- **New script row `web-push-english-daily`.**
+  - It is a Node sibling of `scripts/web-push/web-push-red-items.mjs` (+ `.sh`). It reuses `sendPush` from `web-push.mjs`, the same VAPID file, the same token file of the `push-sender` user, and `--owner`, `--dry-run`, and 404/410 subscription deletion.
+  - Its ledger is `push_delivery` with `itemKey: english:<YYYY-MM-DD>`, written after the send, as `ledgerRow` does (`web-push-red-items.mjs:194-197`). A row for today means no push. A 409 means sent.
+  - It takes a `--now <iso>` clock argument for proofs (E8).
+- **The picker is one pure exported function** over (phrases, setting, ledger keys, now). It returns `none` or one push:
+  - off switch, or a ledger row today: none;
+  - otherwise a due phrase first (`status` active, `dueAt <= now`, oldest due);
+  - then the newest capture never reviewed (`reviewedAt` empty);
+  - neither: none (E4);
+  - Friday, with the Study offer on: "Nói 3 từ" (P4).
+- **When it sends,** it stamps the picked row `dailyOn = <date>` and pushes:
+  - title "1 câu tiếng Anh hôm nay";
+  - body the row's `meaning`;
+  - one action `{action: "open", title: "Mở thẻ"}`;
+  - `url` the "Hôm nay" page, which `cfw-push-sw.js:178` opens on tap.
+  - It uses no LLM.
+- **Schedule (Q6).** An API Builder script schedule runs the row every 15 minutes, 08:00-18:00 on weekdays, Asia/Ho_Chi_Minh, `ScheduleRunAs` the owner. The row sends once the local time has passed `english_setting.time` (default `10:15`), and the ledger keeps it to one push. So he changes the time in the setting row, never in the cron.
+- **Data (5001 table definition rows, pre-image first).**
+  - `english_phrase` gains `dailyOn` (date) and `weeklyOn` (date).
+  - A new `english_setting` table holds one row per owner: `daily` (bool, default on), `time` (`HH:MM`, default `10:15`) and `weeklyStudy` (bool, default **off**).
+- **Page row `english.today`** (draft "Hôm nay (draft)").
+  - It holds one `review-deck` (`components/review-deck`) bound to `english_phrase` filtered `dailyOn eq {today}`.
+  - It keeps the deck's existing Listen, answer, Show answer and Again/Got it grading, which writes `reviewedAt` and `dueAt`.
+  - When none is left, it shows "Xong hôm nay".
+- **Dock row `agent.chat.v2`** (draft copy).
+  - The same deck sits above the conversation list. When done, it shows one collapsible line "Xong hôm nay". It is hidden when `english_setting.daily` is off.
+  - If the deck's parts cannot draw that collapsed line through `labels`/`slotProps`, add one done-state prop to `review-deck` with a component test.
+- **My English (`my.english`, draft copy):** a switch "Học mỗi ngày" writes `english_setting.daily` (E6).
+
+**P2, one phrase a day from his Vietnamese chat**
+- **The switch.** Add `learnFromSent: { entity, source: "auto-chat" }` to the `coach` prop's `ChatCoachSource` (`layout/chat-coach.tsx:53-106`), beside `chunks` and `mistakes`. This is the "`agent-chat` prop `learnFromSent`" of E5, carried on the coach source the dock row already sets. Absent, nothing changes.
+- **When it runs.** It runs after a message-box send succeeds (`agent-chat.tsx:450`, `pane.prompt`), and only when all three hold:
+  - the text is Vietnamese (the same rule as `coach.py` `vietnamese()`);
+  - no `source eq 'auto-chat'` row was created today (one count query, like `countDue` in `chat-coach-study.ts:58`);
+  - the dock card is on.
+- **What it does.** It asks the coach row with `action: "harvest"`, then writes the answer with `saveStudy` (`chat-coach-study.ts:37`), source `auto-chat`. It never delays, blocks or changes the send, and it shows nothing.
+- **`harvest` in `scripts/english/learn.py`.**
+  - Add it to the `--action` choices (`coach.py:273`) and the dispatch (`learn.py:250-255`).
+  - It returns `{"phrase", "meaning", "example"}` or `null`, and stores nothing.
+  - Its result is refused when any of these hold:
+    - the phrase or example holds a name (`names()`, `learn.py:220`) or a technical term or id (`technical()`, `learn.py:169`);
+    - it holds any run of 4+ words of the message;
+    - the text is not Vietnamese.
+  - It runs on the existing Coach path through 9router, the owner's own subscription (Q7).
+
+**Sentence first, related words, Nghe lại (amendment 114, firstmate's decisions on the owner's note)**
+- **Sentence first (E11).** The card front is the phrase's `example` sentence, with the phrase marked inside it (one `<mark>`, matched case-insensitively), and the Vietnamese `meaning` under it. A phrase with no example shows the phrase alone. The answer side keeps the English phrase. The push text stays the meaning (E1).
+- **Near and opposite words (E12).**
+  - `harvest` also returns up to 2 near-meaning English words or short phrases and at most 1 opposite. Each passes the same `names()`, `technical()` and message-run filters as the phrase, and a filtered word is dropped, never the whole answer.
+  - They are stored in two new `english_phrase` fields: `nearWords` (text, up to 2, comma-separated) and `oppositeWord` (text).
+  - The card shows them under Show answer as "Gần nghĩa" and "Trái nghĩa", each line hidden when its field is empty. Rows from other sources (Coach chunks, video words) leave the fields empty.
+- **Nghe lại (E13).**
+  - After he says the phrase, the card offers "Nghe lại". It plays his own take from the existing voice capture: `VoiceCapture.audio` (`components/shared/voice-capture.ts:3`), the same capture `voice-input` uses.
+  - The take lives in component memory only. It is dropped on the next card, on Got it or Again, and when the page unmounts. Nothing is uploaded and no row is written.
+  - Before he speaks, "Nghe lại" does not show.
+
+**P4, the Friday Study offer**
+- **The picker's Friday branch.**
+  - When it applies: `weeklyStudy` is on and the local day is Friday.
+  - What it does: it stamps three of that week's phrases `weeklyOn = <date>` (reviewed or captured Monday to Friday, newest first) and pushes "Nói 3 từ" to the Study page.
+  - A draft copy of the Study row (PR 1604) reads its phrases `weeklyOn eq {today}`.
+- **Scoring** is the existing admin-PC GPU model. There is no new scoring build.
+- **`weeklyStudy` stays off** until `data/pron-study-build/verify.md` passes. Firstmate then turns it on with one row write.
+
+## Testing Decisions
+
+- **Test behaviour at the highest seam.**
+  - the picker function (Node tests beside `scripts/web-push/test-web-push.mjs`, with the same test kit);
+  - `harvest` (`scripts/english/test_learn.py`, with the model doubled as the existing cases do);
+  - the chat coach hook (the `agent-chat` block tests, as `agent-chat-composing.tests.tsx` doubles the row and the pane).
+- **Each rule has one case that turns red when the rule is removed (E9).** The amendment adds `harvest` cases for at most 2 near-meaning words and at most 1 opposite, each filtered like the phrase, and empty when none fits. It also adds card cases for the marked sentence, hidden empty lines, and no "Nghe lại" before a take. The rules are:
+  - due first, then newest capture, none means no push, one per day, the off switch, the Friday gate;
+  - Vietnamese only, the name, id and company-term filters, and no run of the message kept.
+- **User-visible lines** are proven on Dev 5001 through the HTTPS address at 390 and 1440, with readback, as `TESTING_DATA.md` says. Page rows are proven as drafts before merge. Code lines are proven after the 5001 deploy.
+
+## Out of Scope
+
+- **P3, video listening:** #1576 bilingual subtitles, #1577 listening mode and #1575 word card (line E7) stay on their own tickets. #1575 already writes `english_phrase`, so a word saved there feeds this card with no work here.
+- Any change to `web-push-red-items` behaviour, to work replies (they stay Vietnamese), to the Coach card, or to the Study scoring.
+- A home-screen widget, a second daily push, or any new paid service.
+
+## Further Notes
+
+- **Plan:** firstmate's Planner home `data/plans/english-lazy-plan/plan.html`. Decisions Q1-Q5 (firstmate 108) and Q6-Q7 (firstmate 109); the captain said go on 2026-10-24.
+- **Related:** #1575, #1576, #1577 (P3); #1519 and #1598 (Web Push); #1544 (Study proof boundary).
+- **Probe rows:** this ticket's probe rows are `cfw-1643-probe-1..3`, named by this issue as `TESTING_DATA.md` requires.
+- **E10 scope:** in this ticket, E10 covers only the rows of E1-E6 and E8. E7's rows stay with #1575.
+
+## Stop lines
+
+- Storing any part of a sent message, or a name, ticket id or company term, in any row (`nearWords` and `oppositeWord` included).
+- Uploading, storing or logging his voice take (E13).
+- Changing an official page row before its draft passes, or deleting or renaming a row while a 5001 deploy runs.
+- Screenshotting a company-profile page or the admin menu.
+- Any tap on the K50 other than by the owner; E1 and E8's real take are the owner's.
+- Building P3 here, or any scoring outside the local GPU model.
+
+## Blocked by
+
+None to start the code.
+- **E1 and E4** are proven only after the Web Push verification of #1519 / #1598 (PR 1561, 1601, 1605; verification pending).
+- **E8's Friday offer** is proven only after `data/pron-study-build/verify.md` passes. Until then E8 proves the "unverified keeps the normal card" half and stays open.
+
+## Acceptance
+
+- [ ] E1 WHEN a weekday reaches the set time (10:15 Asia/Ho_Chi_Minh, Q6) and at least one phrase is due or newly captured, THE phone SHALL show exactly one push, "1 câu tiếng Anh hôm nay", whose text is that phrase's Vietnamese meaning, and a tap SHALL open "Hôm nay" on that phrase.
+  - env/page: Dev 5001 through `https://ubuntu-hermes.tail3278eb.ts.net:8443` (a secure context, which Web Push needs), Home profile; script row `web-push-english-daily` with its API Builder schedule; draft page row `english.today`, title "Hôm nay (draft)"; renamed "Hôm nay" when the lines pass
+  - proof: his Redmi K50 in Chrome on that HTTPS address, push permission granted (the #1519 subscription, PR 1561), plus 1440 desktop Chrome for the page parts: screenshot of the push and of the page it opens, with the time; `push_delivery` readback shows one row `english:<date>`.
+  - data: test-owned `english_phrase` rows `cfw-1643-probe-1..3` (one due, one fresh capture, one archived), deleted at the end
+  - mock: none (real push service, real phone)
+  - surface: user-visible
+- [ ] E2 WHEN he opens "Hôm nay", THE page SHALL show one card that fits one 390 screen with no scroll: Listen, a field to say or type the English, Show answer, then Again or Got it; after Got it, THE phrase row SHALL have a new `reviewedAt` and `dueAt`, and THE card SHALL say "Xong hôm nay".
+  - env/page: Dev 5001 through `https://ubuntu-hermes.tail3278eb.ts.net:8443` (a secure context, which Web Push needs), Home profile; draft page row `english.today`, title "Hôm nay (draft)"; renamed "Hôm nay" when the lines pass
+  - proof: At 390 and 1440: open, Listen, type the answer, Show answer, Got it; `scrollHeight` equals `innerHeight` at 390; read the row back through `/api/english_phrase`.
+  - data: test-owned `english_phrase` rows `cfw-1643-probe-1..3` (one due, one fresh capture, one archived), deleted at the end
+  - mock: none
+  - surface: user-visible
+- [ ] E3 WHEN he opens the Chat dock on a day whose card is not done, THE dock SHALL show the same card above the conversation list; after Got it there or on "Hôm nay", THE dock SHALL show one line "Xong hôm nay" that he can collapse, and the conversation list SHALL work as before.
+  - env/page: Dev 5001 through `https://ubuntu-hermes.tail3278eb.ts.net:8443` (a secure context, which Web Push needs), Home profile; draft copy of the dock page row `agent.chat.v2` (the row the Chat dock renders on every page); the official row changes only by the same edit after the proof
+  - proof: At 390 and 1440: open the dock from any Home page, finish the card in the dock, reopen the dock; then open a conversation and send nothing.
+  - data: test-owned `english_phrase` rows `cfw-1643-probe-1..3` (one due, one fresh capture, one archived), deleted at the end
+  - mock: none
+  - surface: user-visible
+- [ ] E4 WHEN the daily job runs a second time the same day, or finds no due and no fresh phrase, THE phone SHALL get no push and no row SHALL change.
+  - env/page: script row `web-push-english-daily` (run-now through `api-builder.schedule-run`)
+  - proof: Run now twice with a due probe (one push, one ledger row); archive the probes and run again (no push, no ledger row). Ledger and phrase readback.
+  - data: test-owned `english_phrase` rows `cfw-1643-probe-1..3` (one due, one fresh capture, one archived), deleted at the end
+  - mock: none
+  - surface: user-visible
+- [ ] E5 WHEN he sends a message in Vietnamese through the Chat dock on a day with no `auto-chat` phrase yet, THE coach SHALL save at most one `english_phrase` row (source `auto-chat`: the English phrase, its Vietnamese meaning, a short generic example) holding no name, ticket id or company term and no part of the message itself; an English message, or a second Vietnamese one that day, SHALL save nothing, and the agent's reply SHALL be unchanged (Vietnamese).
+  - env/page: Dev 5001 through `https://ubuntu-hermes.tail3278eb.ts.net:8443` (a secure context, which Web Push needs), Home profile; draft copy of the dock page row `agent.chat.v2` (the row the Chat dock renders on every page); the official row changes only by the same edit after the proof with the `agent-chat` prop `learnFromSent`; script row `english-coach` action `harvest`
+  - proof: At 390: send two Vietnamese messages to a probe pane and one English one; readback shows one new row; a fixed-string search of each sent message against every `english_phrase` field finds nothing.
+  - data: a probe agent pane the run starts and stops; generic Vietnamese test messages written for the run (no company content)
+  - mock: none
+  - surface: user-visible
+- [ ] E6 WHEN he turns "Học mỗi ngày" off on My English, THE daily job SHALL send nothing and THE dock card SHALL hide; turning it on SHALL restore both from the next run.
+  - env/page: Dev 5001 through `https://ubuntu-hermes.tail3278eb.ts.net:8443` (a secure context, which Web Push needs), Home profile; page row `my.english` (draft copy) and the `english_setting` row it writes
+  - proof: At 390: switch off, run now (no push, no dock card), switch on, run now (push and card). Row readback.
+  - data: test-owned `english_phrase` rows `cfw-1643-probe-1..3` (one due, one fresh capture, one archived), deleted at the end
+  - mock: none
+  - surface: user-visible
+- [ ] E8 WHEN it is the weekly study day (Friday) and the Study page is verified, THE daily card SHALL instead offer "Nói 3 từ": three words from that week's phrases, opening Study with them, scored by the admin-PC local GPU model; on any other day, or while Study is unverified, THE card SHALL stay the normal one.
+  - env/page: Dev 5001 through `https://ubuntu-hermes.tail3278eb.ts.net:8443` (a secure context, which Web Push needs), Home profile; the Study page row from PR 1604 (after `data/pron-study-build/verify.md` passes); script row `web-push-english-daily`
+  - proof: Run now with the clock argument set to a Friday and to a Thursday; at 390 open both pushes. Study uses the fake-microphone boundary of TESTING_DATA.md (#1544), plus one real phone take by the owner.
+  - data: test-owned `english_phrase` rows `cfw-1643-probe-1..3` (one due, one fresh capture, one archived), deleted at the end
+  - mock: fake microphone clips per TESTING_DATA.md (#1544), firstmate-confirmed 2026-10-21
+  - surface: user-visible
+- [ ] E11 WHEN he opens a card (on "Hôm nay" or in the dock), THE front SHALL show the phrase's example sentence with the phrase marked inside it and the Vietnamese meaning under it; a phrase with no example SHALL show the phrase alone with its meaning.
+  - env/page: Dev 5001 through `https://ubuntu-hermes.tail3278eb.ts.net:8443` (a secure context, which Web Push needs), Home profile; draft page row `english.today`, title "Hôm nay (draft)"; renamed "Hôm nay" when the lines pass; draft copy of the dock page row `agent.chat.v2` (the row the Chat dock renders on every page); the official row changes only by the same edit after the proof
+  - proof: At 390 and 1440, on "Hôm nay" and in the dock: screenshot the front of a probe with an example and of one without; the DOM shows the phrase inside a mark element within the sentence.
+  - data: test-owned `english_phrase` rows `cfw-1643-probe-1..3` (one due, one fresh capture, one archived), deleted at the end; probe 1 has an example, probe 2 has none
+  - mock: none
+  - surface: user-visible
+- [ ] E12 WHEN he presses Show answer on a card whose phrase has near-meaning or opposite words, THE card SHALL show them under the answer ("Gần nghĩa", up to 2; "Trái nghĩa", 1); on a phrase with neither, neither line SHALL show; a phrase kept by `harvest` (E5) SHALL carry them in `nearWords` and `oppositeWord` when the coach found any.
+  - env/page: Dev 5001 through `https://ubuntu-hermes.tail3278eb.ts.net:8443` (a secure context, which Web Push needs), Home profile; draft page row `english.today`, title "Hôm nay (draft)"; renamed "Hôm nay" when the lines pass; `english_phrase` fields `nearWords`, `oppositeWord`
+  - proof: At 390 and 1440: Show answer on a probe with both fields set and on one with both empty (screenshots); readback of the E5 harvested row through `/api/english_phrase`.
+  - data: test-owned `english_phrase` rows `cfw-1643-probe-1..3` (one due, one fresh capture, one archived), deleted at the end; probe 1 with `nearWords` and `oppositeWord` set, probe 2 with both empty; the E5 harvested row
+  - mock: none
+  - surface: user-visible
+- [ ] E13 WHEN he has said the phrase on the card, THE card SHALL offer "Nghe lại", which plays his own take from that recording; the take SHALL stay in the page's memory only (no upload, no row, gone on the next card or when he leaves), and before he speaks "Nghe lại" SHALL not show.
+  - env/page: Dev 5001 through `https://ubuntu-hermes.tail3278eb.ts.net:8443` (a secure context, which Web Push needs), Home profile; draft page row `english.today`, title "Hôm nay (draft)"; renamed "Hôm nay" when the lines pass; the existing `voice-capture` audio (`components/shared/voice-capture.ts`)
+  - proof: At 390 on his K50: he says the phrase and taps Nghe lại (his real voice; screen recording or screenshot with the audio playing). At 1440: the same steps with the fake-microphone boundary of TESTING_DATA.md (#1544), pending firstmate's OK for this line. At both: the saved network log holds no request carrying audio, and `english_phrase` readback is unchanged by the take.
+  - data: test-owned `english_phrase` rows `cfw-1643-probe-1..3` (one due, one fresh capture, one archived), deleted at the end
+  - mock: fake microphone at 1440 only (TESTING_DATA.md #1544 boundary; firstmate to confirm for E13); the K50 take is real
+  - surface: user-visible
+- [ ] E9 WHEN the tests run, THE picker (due first, then the newest capture, none means no push, one per day, the weekly study gate, the off switch) and `learn.py harvest` (Vietnamese only, filters for names, ids and company terms, nothing kept from the message; at most 2 near-meaning words and at most 1 opposite word, each passing the same filters, empty when none fits) SHALL be covered, each case red when its rule is removed.
+  - env/page: cfw-modules `scripts/web-push` (Node tests beside `test-web-push.mjs`), `scripts/english/test_learn.py`, the `agent-chat` component tests
+  - proof: Green tests and CI; the PR names the rule behind each case.
+  - data: fixtures
+  - mock: none
+  - surface: internal
+- [ ] E10 WHEN the work is done, THE new page row `english.today` SHALL become official by title rename only; THE official rows `agent.chat.v2`, `my.english` and the Study row SHALL each get the same edit their draft copy proved (pre-image kept), and then those draft copies SHALL be deleted; THE probe rows, probe ledger rows and the probe pane SHALL be deleted; and the old proof rows (`proof-1444`, `proof-1445`) SHALL be archived so his card shows only his own phrases.
+  - env/page: Dev 5001 rows named in E1-E8
+  - proof: Readback lists before and after; the pre-image files; each official row read back and diffed against its proven draft copy (only the id and title differ).
+  - data: as listed
+  - mock: none
+  - surface: internal
+

@@ -1,0 +1,34 @@
+## Parent
+
+#1529 (spec).
+
+## What to build
+
+The Video page plays a YouTube link inside the shared `media-player` component, with YouTube's controls switched off (`controls=0`, `cc_load_policy=1`) and a Media Chrome bar that has no speed, captions, quality or fullscreen control. The scout (#1488 §3.2) measured the native embed: with `controls=1` it gives speed, CC, quality, fullscreen and chapter marks with no code.
+
+- For a YouTube source, `media-player` uses YouTube's own controls and hides the Media Chrome bar. It stops forcing captions on (the transcript sits beside the video), and keeps `rel=0` and the IFrame API.
+- Direct MP4, WebM and HLS sources keep the Media Chrome bar as today.
+- Nothing is ever drawn over the YouTube player (Google's embed terms); new controls sit beside it.
+- `media-player` reports the id and title of the YouTube video now playing, so a page can follow a video started from YouTube's own suggestions (used by ticket 03).
+
+Code in CFW.Shadcn; it reaches the Video page on 5001 after merge and deploy.
+
+## Blocked by
+
+None. It can start now.
+
+## Acceptance
+
+- [ ] A1 WHEN he plays a YouTube video on the Video page, THE player SHALL show YouTube's own controls (play, Settings with Playback speed and Quality, CC, fullscreen, chapter marks on the progress bar) and SHALL NOT show a second control bar under the video.
+  - env/page: 5001 page row `home.video`, title "Video" (official), Home profile; SysAdmin signed in, **Home** chosen in the profile menu; after merge and a green `Deploy Development host (5001)` job
+  - proof: At 1440 and at 390 (`emulate 390x844x2,mobile,touch`): paste the link, press Play, start the video. Open Settings → Playback speed → 0.75 and see the speed take effect; turn CC off, then on. Screenshot each step. Read the player iframe `src`: `controls=1` and no `cc_load_policy=1`.
+  - data: `https://www.youtube.com/watch?v=aircAruvnKk` (uploaded English captions, 12 chapters, embeddable; measured by the scout)
+  - mock: none
+  - surface: user-visible
+- [ ] A2 WHEN he plays a direct HLS or MP4 address, THE player SHALL keep today's control bar (play, seek ±, time, mute, volume) and the transcript from the Captions URL.
+  - env/page: 5001 page row `home.video`, title "Video" (official), Home profile; SysAdmin signed in, **Home** chosen in the profile menu; after merge and a green `Deploy Development host (5001)` job
+  - proof: At 1440 and at 390 (`emulate 390x844x2,mobile,touch`): the page's default address, press Play; the control bar and the transcript lines show as before. Screenshot.
+  - data: Tears of Steel HLS and its WebVTT (the page's default addresses)
+  - mock: none
+  - surface: user-visible
+

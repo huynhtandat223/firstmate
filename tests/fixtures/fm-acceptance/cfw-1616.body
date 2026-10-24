@@ -1,0 +1,137 @@
+## Parent
+
+huynhtandat223/cfw-modules#1619 (spec).
+
+## Revision
+
+This issue was the native Phim screen. Revision 1 is replaced here (firstmate, planner.inbox 083 to 085); its body is kept in the Planner's `data/plans/phim-native-screen/history/`. PR 1618 is closed unmerged, and its tested logic is reused.
+
+## What to do
+
+1. **Write the contract module and its checker** (V2).
+2. **Port the native branch's tested functions** (fea996449, `src/mobile/CFW.Native/src/phim/`) into the AList adapter script with their tests, and fix the search paging (V1). List a folder with `/api/fs/list` paged with `per_page` 200 until a short page, never one call with `per_page` 0 (current AList maps 0 to 200; 089).
+3. **Write the Kodi target script** with its method allowlist and the TV in-use guard (V13, V10).
+4. **Host and rows.** On the 5001 fleet host: one mode-600 secret folder for the AList login, the Kodi login and the TV ADB key (Q1, 090), and `adb` (not installed today). The Kodi target and the guard call the TV at its tailnet name, never the LAN address. Add the 5001 rows `video-source-alist` (`readOnly: true`) and `video-target-kodi`, and the generated table `video_progress`.
+5. **Draft row `home.video-sources` ("Video (draft)").** Copy `home.video` and add the source browser: source picker, Tìm, the folder or meta view, the Thư mục tab (V18: browse from the AList root, subfolders, Back or breadcrumb, a search box), Đang xem, Play, Play trên TV and the now-playing bar. Compose it from existing neutral components with `$pipe`. A missing component is built neutral, and the UI step reuses the Kore pick. Play trên TV calls only the `video-target-kodi` row. Prove V3 to V6, V18 and V9 to V12 at 1440, at 390 and on the K50.
+6. **At the end,** when the owner has the TV free and on the tailnet (V17): measure V7 (phone codecs) and record V8 (whether a direct Kodi call could work, a finding only), both in the PR body.
+7. **After approval:** apply to the official `home.video` (V14), then clean up (V15).
+
+## Stop lines
+
+- A secret would go on the fleet host before the captain's recorded exception names it.
+- Any row on the admin-PC script host (090).
+- Installing or signing in Tailscale on the TV, or accepting its ADB prompt, for the owner.
+- Any TV write beyond `Player.Open`, `Player.Stop` and the guarded pin toggle.
+- A Kodi login on a phone or in a browser, or the page calling Kodi itself (088).
+- A full AList crawl.
+- The page cannot be composed without a feature module.
+
+## Blocked by
+
+None in code. The captain's recorded exception must name each fleet-host secret before it is placed. The live TV lines (V9 to V11, V17) wait for the owner to add the TV to the tailnet; until then Play trên TV says "Không kết nối được TV" (V12).
+
+## Acceptance
+
+- [ ] V1 WHEN the AList adapter answers `search`, THE row SHALL page `/api/fs/search` until a page comes back shorter than `per_page` or empty (never stopping on `total`, which AList sets to the count of the current page), merge the entries directly under each locked root (WebDAV `PROPFIND` Depth 1, one listing per root, never deeper), and answer each item once, folders first, in the contract's item shape.
+  - env/page: cfw-modules host script for the AList adapter and its tests, behind the 5001 script row `video-source-alist` (`readOnly: true`), running on the 5001 fleet host (Q1, 090)
+  - proof: Unit tests with a fake AList: 150 matches whose every page reports `total` equal to its own count return all 150; exactly 100 stops after the empty page 2; a refused locked root is counted, not fatal; dedupe. Each is red when its branch is removed (the native branch's stop-on-total turns the 150 case red). Live: one `search` call for the test title, with its count and time.
+  - data: a test title the owner names (a series with at least 3 episodes in an open AList folder, and one in a locked root); fixtures with made-up names
+  - mock: fake AList in unit tests only; the live call is real
+  - surface: internal
+- [ ] V2 WHEN any source row is called with `catalog`, `search`, `meta`, `stream` or `subtitles`, THE answer SHALL match the one source contract (items; a meta with its videos; streams each holding exactly one of `url`, `ytId`, `embed` or `externalUrl`, plus optional hints), and a contract checker SHALL refuse an answer that does not.
+  - env/page: the contract module and its checker in cfw-modules, used by every source row's tests
+  - proof: Contract tests: the AList adapter's answers pass; a stream with two kinds, an item with no id, and an unknown call are refused. Red when the checker branch is removed.
+  - data: fixtures
+  - mock: none
+  - surface: internal
+- [ ] V3 WHEN SysAdmin picks the AList source, types the test title and presses Tìm, THE Video page SHALL list matching folders and video files within 8 s, folders first, each with its parent path, show "Không tìm thấy" for no match, and never send an AList login or token to the browser.
+  - env/page: Dev 5001 draft page row `home.video-sources` titled "Video (draft)" (a copy of `home.video` with the source browser), Home profile; SysAdmin over `https://ubuntu-hermes.tail3278eb.ts.net:8443`
+  - proof: At 1440, and at 390 (`emulate 390x844x2,mobile,touch`): open Video (draft); search the title and `zzqxv`; screenshot both at each width and on the owner's K50 in the CFW app (WebView of the same page). The saved network log holds only `/api/api-builder/video-source-alist` calls, with no AList address, login or token. Screenshots that show his titles are kept on the admin PC (captain, 076); the verify record on the fleet host cites them by path with times and pass or fail
+  - data: a test title the owner names (a series with at least 3 episodes in an open AList folder, and one in a locked root); the word `zzqxv`
+  - mock: none
+  - surface: user-visible
+- [ ] V4 WHEN he opens a folder (`meta`), THE page SHALL list its direct children only (no sub-folder files mixed in), in natural name order (Tập 2 before Tập 10), each marked Đã xem, Đang xem dở with its time, or Mới, from the progress rows and Kodi.
+  - env/page: Dev 5001 draft page row `home.video-sources` titled "Video (draft)" (a copy of `home.video` with the source browser), Home profile; SysAdmin over `https://ubuntu-hermes.tail3278eb.ts.net:8443`
+  - proof: At 1440, and at 390 (`emulate 390x844x2,mobile,touch`): open Video (draft); open the test series; screenshot at each width and on the owner's K50 in the CFW app (WebView of the same page). Unit tests cover natural order and the direct-children filter (red when removed).
+  - data: a test title the owner names (a series with at least 3 episodes in an open AList folder, and one in a locked root)
+  - mock: none
+  - surface: user-visible
+- [ ] V5 WHEN he presses Play on an episode in an open AList folder, THE Video page player SHALL play the `url` stream the adapter returns (AList's direct link) on the device, and the page SHALL save his position to `video_progress` (keyed by owner, source and item id) at least every 15 s and on pause.
+  - env/page: Dev 5001 draft page row `home.video-sources` titled "Video (draft)" (a copy of `home.video` with the source browser), Home profile; SysAdmin over `https://ubuntu-hermes.tail3278eb.ts.net:8443`; generated table `video_progress` (new, owned per caller)
+  - proof: At 1440, and at 390 (`emulate 390x844x2,mobile,touch`): open Video (draft): Play, wait 30 s, pause; read the row back. The same on the K50.
+  - data: a test title the owner names (a series with at least 3 episodes in an open AList folder, and one in a locked root), an H.264/AAC episode if one exists
+  - mock: none
+  - surface: user-visible
+- [ ] V6 WHEN he plays the same episode again on the phone or the web, THE player SHALL start within 10 s of the saved position, and Đang xem SHALL list the series with its next episode and Tập tiếp theo, which plays the part-watched episode, else the first after the last watched, else the first.
+  - env/page: Dev 5001 draft page row `home.video-sources` titled "Video (draft)" (a copy of `home.video` with the source browser), Home profile; SysAdmin over `https://ubuntu-hermes.tail3278eb.ts.net:8443`
+  - proof: At 1440, and at 390 (`emulate 390x844x2,mobile,touch`): open Video (draft): reload and Play; play episode 1's last minute; Tập tiếp theo plays episode 2. Screenshot Đang xem at each width and on the owner's K50 in the CFW app (WebView of the same page). Unit tests cover the next-episode rule.
+  - data: the V5 episode and the next one
+  - mock: none
+  - surface: user-visible
+- [ ] V7 WHEN the phone plays the owner's real files in the CFW app WebView, THE verify record SHALL list each sample as picture and sound, picture only, or no play; and WHEN a file cannot play (a media error, or no decoded audio after 5 s of play), THE page SHALL say so in plain Vietnamese and offer Play trên TV; the AList adapter SHALL mark such streams `notWebReady` where the codec is known.
+  - env/page: Dev 5001 draft page row `home.video-sources` titled "Video (draft)" (a copy of `home.video` with the source browser), Home profile; SysAdmin over `https://ubuntu-hermes.tail3278eb.ts.net:8443`; the owner's K50 (CFW app WebView, Android Chromium); run at the end of the work, when the owner has the TV free (086)
+  - proof: Measurement table: container, video codec and audio codec (from `ffprobe` on the fleet host) and the K50 result, for at least MKV H.264 + AAC, MKV HEVC, and an AC3, E-AC3 or DTS track. Then the message for one failing file at 1440, at 390 and on the K50. Screenshots that show his titles are kept on the admin PC (captain, 076); the verify record on the fleet host cites them by path with times and pass or fail
+  - data: 4 to 6 of his real files that he names, across those codecs
+  - mock: none
+  - surface: user-visible
+- [ ] V8 WHEN the end-of-work measurement runs, THE verify record SHALL state, as a finding only, whether the 5001 page on the K50 could reach Kodi's JSON-RPC directly (the CORS preflight with Kodi's login on, and mixed content, since the page is HTTPS and Kodi plain HTTP), in the CFW app and in Chrome, with the reason; no direct path is built, and Play trên TV SHALL go only through the `video-target-kodi` row (088).
+  - env/page: The K50 on the home Wi-Fi in the CFW app and in Chrome; `curl -X OPTIONS` to Kodi's `/jsonrpc` on port 8080, from the fleet host over Tailscale; run at the end of the work, when the owner has the TV free (086)
+  - proof: The preflight answer headers, the console line for one unauthenticated `JSONRPC.Ping` typed in the page's console (blocked or allowed; no Kodi login is typed on the device or kept), and the finding sentence in the verify record and the PR body.
+  - data: a harmless `JSONRPC.Ping`
+  - mock: none
+  - surface: internal
+- [ ] V9 WHEN he presses Play trên TV on an episode and the TV is on with Kodi in front and nothing playing, THE TV SHALL start that file within 60 s from Kodi's resume point (the adapter's `kodiPath` hint, Kodi's own WebDAV path), the page SHALL show a now-playing bar with name, time and Dừng, and the series SHALL be pinned in Kodi Favourites as "Đang xem: <folder>" once, however many times he taps.
+  - env/page: Dev 5001 draft page row `home.video-sources` titled "Video (draft)" (a copy of `home.video` with the source browser), Home profile; SysAdmin over `https://ubuntu-hermes.tail3278eb.ts.net:8443`; Sony TV (LAN 192.168.1.15), Kodi 21.3 (FTV), reached from the 5001 fleet host over Tailscale at the TV's tailnet name once the owner adds it (V17), Kodi in front and idle unless the line says otherwise; through the `video-target-kodi` row only
+  - proof: At 1440, and at 390 (`emulate 390x844x2,mobile,touch`): open Video (draft) and on the owner's K50 in the CFW app (WebView of the same page): Play trên TV twice quickly. Readback from the fleet host: `Player.GetItem` names the file, the time moves on, and `Favourites.GetFavourites` holds exactly one pin. Unit tests cover the pin guard and the per-folder queue.
+  - data: a test title the owner names (a series with at least 3 episodes in an open AList folder, and one in a locked root), episode 1
+  - mock: none
+  - surface: user-visible
+- [ ] V10 WHEN he presses Play trên TV while the TV shows another app or Kodi is already playing, THE page SHALL send nothing to the TV and SHALL say "TV đang được dùng" with what is on it.
+  - env/page: Dev 5001 draft page row `home.video-sources` titled "Video (draft)" (a copy of `home.video` with the source browser), Home profile; SysAdmin over `https://ubuntu-hermes.tail3278eb.ts.net:8443`; Sony TV (LAN 192.168.1.15), Kodi 21.3 (FTV), reached from the 5001 fleet host over Tailscale at the TV's tailnet name once the owner adds it (V17), Kodi in front and idle unless the line says otherwise, with YouTube in front for one try and a Kodi video playing for the other
+  - proof: At 1440, and at 390 (`emulate 390x844x2,mobile,touch`): open Video (draft) and on the owner's K50 in the CFW app (WebView of the same page): one try each. Readback before and after: the foreground app (`dumpsys` over the TV ADB from the fleet host) and `Player.GetActivePlayers` are unchanged.
+  - data: YouTube open on the TV; any Kodi video playing (the owner sets these, or the worker over the TV ADB with firstmate's grant)
+  - mock: none
+  - surface: user-visible
+- [ ] V11 WHEN Dừng is pressed and the episode is sent to the TV again, THE TV SHALL go on within 10 s of the stop point, and Đang xem SHALL show the TV position (Kodi keeps it; the page also writes it to `video_progress`).
+  - env/page: Dev 5001 draft page row `home.video-sources` titled "Video (draft)" (a copy of `home.video` with the source browser), Home profile; SysAdmin over `https://ubuntu-hermes.tail3278eb.ts.net:8443`; Sony TV (LAN 192.168.1.15), Kodi 21.3 (FTV), reached from the 5001 fleet host over Tailscale at the TV's tailnet name once the owner adds it (V17), Kodi in front and idle unless the line says otherwise
+  - proof: At 1440, and at 390 (`emulate 390x844x2,mobile,touch`): open Video (draft) and on the owner's K50 in the CFW app (WebView of the same page): play past 2 minutes, Dừng, Play trên TV; times from `Player.GetProperties`; the row read back.
+  - data: the V9 episode
+  - mock: none
+  - surface: user-visible
+- [ ] V12 WHEN the fleet host cannot reach the TV (no TV node on the tailnet yet, the TV off, or Tailscale stopped on it) or Kodi does not answer the `video-target-kodi` row, THE page SHALL say "Không kết nối được TV" with Thử lại on Play trên TV within 10 s, and every other part SHALL keep working: source search, Đang xem and phone play.
+  - env/page: Dev 5001 draft page row `home.video-sources` titled "Video (draft)" (a copy of `home.video` with the source browser), Home profile; SysAdmin over `https://ubuntu-hermes.tail3278eb.ts.net:8443`; first as today (no TV node on the tailnet), then with the TV node added and the TV off
+  - proof: At 1440, and at 390 (`emulate 390x844x2,mobile,touch`): open Video (draft) and on the owner's K50 in the CFW app (WebView of the same page): in each state, Play trên TV and screenshot the message, then search and play a saved episode on the phone. A unit test turns a row error or time-out into the message (red when removed).
+  - data: the V6 series
+  - mock: none
+  - surface: user-visible
+- [ ] V13 WHEN the rows are set up, THE AList login, the Kodi login and the TV ADB key SHALL live only in mode-600 files in one folder on the 5001 fleet host, under the captain's recorded exception (like 9router; Q1, 090); no row, page definition, browser answer or repository file SHALL hold them; the Kodi target SHALL refuse any method outside `Player.Open`, `Player.Stop`, `Player.GetItem`, `Player.GetProperties`, `Player.GetActivePlayers`, `Files.GetSources`, `Files.GetDirectory` and the guarded favourite toggle.
+  - env/page: 5001 rows `video-source-alist` (read) and `video-target-kodi` (command); the secret folder on the fleet host
+  - proof: Row readback (no secret field), `stat` of the secret files, a `grep -c -F -f` value search over the repo diff, the page row and the saved network logs (counts only), and unit tests for the method refusals (red when removed).
+  - data: the owner's logins and the ADB key as files on the fleet host only
+  - mock: fake Kodi in unit tests only
+  - surface: internal
+- [ ] V14 WHEN the draft is approved, THE official `home.video` row SHALL carry the source browser (pre-image saved; stored and served row read back) and keep every existing Video behaviour: a pasted YouTube link and a direct MP4/HLS address with captions still play with the transcript.
+  - env/page: Dev 5001 page row `home.video` (official)
+  - proof: At 1440 and 390: the row's Tears of Steel HLS example plays with its transcript; a YouTube link plays; AList search works. Screenshot each.
+  - data: the row's own Tears of Steel example (CC BY 3.0); one public YouTube link
+  - mock: none
+  - surface: user-visible
+- [ ] V15 WHEN the work is done, THE scratch SHALL be cleaned: the draft row `home.video-sources` deleted; the native leftovers on 5001 (page `phim` "Phim (draft)", navigation group `mobile` with item `phim`) deleted with pre-images; probe progress rows deleted; extra test pins removed from Kodi (his real ones stay); PR 1618 closed unmerged.
+  - env/page: Dev 5001 rows; Kodi Favourites; PR 1618
+  - proof: The verify record's `## Cleanup`: each id with a 404 or empty readback and its pre-image path, `Favourites.GetFavourites`, and the PR state.
+  - data: everything above
+  - mock: none
+  - surface: internal
+- [ ] V17 WHEN the owner has added the TV to the tailnet and allowed the fleet host's ADB key on the TV, THE fleet host SHALL reach Kodi's JSON-RPC (`JSONRPC.Ping`) and the TV ADB (`getprop ro.product.model`) at the TV's tailnet name, and both SHALL answer again after the TV restarts, with no step on the TV.
+  - env/page: The 5001 fleet host and the TV's tailnet node (Tailscale for Android TV, installed and signed in by the owner, set to start with the TV); after V12's first state
+  - proof: From the fleet host: `tailscale status` lists the TV, then the Ping answer and the model string, before and after a TV restart, with times, in the verify record. Kodi and ADB are never called at the LAN address.
+  - data: `JSONRPC.Ping`; `getprop ro.product.model`
+  - mock: none
+  - surface: internal
+- [ ] V18 WHEN the owner opens the Thư mục tab on the Video page, THE tab SHALL browse the AList source from its root: folders and video files (folders first, natural order), open a subfolder, go back up (breadcrumb or Back), and search from a box in the tab as V3 does; an opened folder SHALL keep the V4 marks.
+  - env/page: Dev 5001 draft page row `home.video-sources` titled "Video (draft)" (a copy of `home.video` with the source browser), Home profile; SysAdmin over `https://ubuntu-hermes.tail3278eb.ts.net:8443`, first; then the official `home.video` once V14 applies it
+  - proof: At 1440, and at 390 (`emulate 390x844x2,mobile,touch`): open Video (draft); open the Thư mục tab and use every control with real input at each width: open a folder row, open a subfolder, go back up with Back or the breadcrumb, then type the test title in the tab search box and press Tìm. Screenshot the root, the opened folder with its V4 marks, and the search result at each width. Screenshots that show his titles are kept on the admin PC (captain, 076); the verify record on the fleet host cites them by path with times and pass or fail
+  - data: the owner's AList Drive; a test title the owner names (a series with at least 3 episodes in an open AList folder, and one in a locked root)
+  - mock: none
+  - surface: user-visible
+

@@ -3,9 +3,10 @@
 #
 # GitHub is a fake `gh` that serves recorded API answers from files, so every
 # case is deterministic and no network is used. The Tester is a real assistance
-# home reached through the real `fm-assistance.sh source-event`. Each scenario
-# runs against an adapter copy, so the mutation proofs at the end remove one
-# guard at a time and show the scenario that guards it go red.
+# home reached through the real `fm-assistance.sh source-event`. Issues are read by
+# the real bin/fm-acceptance.mjs. Each scenario runs against an adapter copy, so
+# the mutation proofs at the end remove one guard at a time (in the adapter or the
+# parser) and show the scenario that guards it go red.
 # shellcheck disable=SC2016 # mutation proofs pass literal source patterns to perl
 set -u
 # shellcheck source=tests/lib.sh
@@ -103,6 +104,17 @@ fx_issue() {  # <number> <id:surface[:draft]>...
   local n=$1
   shift
   gh_put "repos/$REPO/issues/$n" "$(jq -cn --arg b "$(issue_body "$@")" '{body: $b}')"
+}
+fx_issue_raw() {  # <number> <body>
+  gh_put "repos/$REPO/issues/$1" "$(jq -cn --arg b "$2" '{body: $b}')"
+}
+# A template-form body (the parser's v1 sections, eight fields per scenario).
+tpl_scenario() {  # <id> <surface> <page> <widths>
+  printf -- '- [ ] %s WHEN a user acts, THE page SHALL answer.\n' "$1"
+  printf '  - page: %s\n  - widths: %s\n  - controls: button "Go"\n  - env: Dev 5001\n  - proof: click Go\n  - data: the probe\n  - mock: none\n  - surface: %s\n' "$3" "$4" "$2"
+}
+tpl_issue_body() {  # <scenarios-text>
+  printf '## Context\n\nWhy.\n\n## Requirements\n\nBuild.\n\n## Definition of done\n\nDone.\n\n## Scenarios\n\n%s\n## Mockup\n\nnone\n\n## Links\n\nnone\n\n## Decisions\n\nnone\n' "$1"
 }
 fx_pr() {  # <number> <state> <head-seed> <issue-number>
   gh_put "repos/$REPO/pulls/$1" "$(jq -cn --arg s "$2" --arg h "$(sha "$3")" --arg b "Part of #$4" '{state: $s, head: {sha: $h}, body: $b}')"
@@ -383,6 +395,100 @@ scenario_runner() {
     || { echo 'want exactly one wake row'; cat "$H/state/.wake-queue" 2>&1; return 1; }
 }
 
+# Every ask carries the parser's rows: one pending row per user-visible scenario
+# and width, for a template issue, a legacy issue, the draft round and a replay.
+scenario_rows() {
+  new_lab "$1"
+  backlog_task alpha 101 500; backlog_task beta 102 501
+  fx_issue_raw 500 "$(tpl_issue_body "$(tpl_scenario V1 user-visible home.video '1440, 390'; tpl_scenario V2 user-visible 'home.video (draft)' 1440; tpl_scenario K3 internal - -)")"
+  fx_issue 501 E10:user-visible A2:internal
+  fx_runs "1:completed:success:s0" "2:completed:success:s2"
+  fx_jobs 2 success
+  fx_compare s0 s2 c1 c2
+  fx_commit_prs c1 101:500; fx_commit_prs c2 102:501
+  set_cursor 1 s0
+  cycle
+  [ "$CYCLE_AUTO" = 0 ] || { echo "autohandle=$CYCLE_AUTO"; return 1; }
+  local line='WHEN a user acts, THE page SHALL answer.' content
+  content=$(asked | jq -c 'select(.task == "alpha")')
+  jq -e --arg l "$line" '.lines == ["V1","V2"] and .rows == [
+      "- V1@1440 | \($l) | pending | evidence: -",
+      "- V1@390 | \($l) | pending | evidence: -",
+      "- V2@1440 | \($l) | pending | evidence: -"]' <<<"$content" >/dev/null || { echo "template ask: $content"; return 1; }
+  content=$(asked | jq -c 'select(.task == "beta")')
+  jq -e --arg l "$line" '.lines == ["E10"] and .rows == ["- E10@1440 | \($l) | pending | evidence: -", "- E10@390 | \($l) | pending | evidence: -"]' <<<"$content" >/dev/null \
+    || { echo "legacy ask: $content"; return 1; }
+  [ "$(ledger_count '.type == "ask" and .task == "alpha" and (.rows | length) == 3')" = 1 ] || { echo 'the ledger ask does not keep its rows'; return 1; }
+  # Draft round: only the draft scenarios, whatever their surface.
+  live_task gamma 103
+  fx_issue 900 E10:user-visible:draft A2:user-visible C14:internal:draft
+  fx_pr 103 open h1 900
+  cycle
+  content=$(asked | jq -c 'select(.round == "draft")')
+  jq -e --arg l "$line" '.lines == ["E10","C14"] and .rows == [
+      "- E10@1440 | \($l) | pending | evidence: -",
+      "- E10@390 | \($l) | pending | evidence: -",
+      "- C14@- | \($l) | pending | evidence: -"]' <<<"$content" >/dev/null || { echo "draft ask: $content"; return 1; }
+}
+
+# An issue the parser refuses is a template-refused skip naming the problems. It
+# wakes firstmate once, asks nobody, and a repeat of the PR stays quiet. A refused
+# draft round is remembered per head. A parser that cannot run is an error result.
+scenario_refused() {
+  new_lab "$1"
+  backlog_task alpha 111 500
+  fx_issue_raw 500 "$(tpl_issue_body "$(tpl_scenario V1 user-visible home.video '1440, 390'; tpl_scenario V1 internal - -)")"
+  fx_runs "1:completed:success:s0" "2:completed:success:s2"
+  fx_jobs 2 success
+  fx_compare s0 s2 c1
+  fx_commit_prs c1 111:500
+  set_cursor 1 s0
+  fm_test_track_procevent_home "$H"
+  "$BIN/fm-procevent-deploy-verify.sh" arm >/dev/null 2>&1 || { echo 'arm failed'; return 1; }
+  local out
+  out=$("$BIN/fm-procevent.sh" start deploy-verify 2>&1)
+  case "$out" in *'not-autohandled: deploy-verify'*) ;; *) echo "runner: $out"; return 1 ;; esac
+  [ "$(grep -c 'procevent deploy-verify deploy-verify' "$H/state/.wake-queue")" = 1 ] || { echo 'the refusal did not wake firstmate once'; return 1; }
+  [ "$(inbox_count)" = 0 ] || { echo "an ask was sent: $(inbox_count)"; return 1; }
+  [ "$(ledger_count '.type == "ask"')" = 0 ] || return 1
+  [ "$(ledger_count '.type == "skip" and .reason == "template-refused" and .task == "alpha" and (.detail | contains("duplicate id"))')" = 1 ] \
+    || { echo 'no template-refused skip naming the duplicate id'; ledger; return 1; }
+  [ "$(jq -r .cursor_run "$H/data/deploy-verify/state.json")" = 2 ] || { echo 'the cursor did not pass the refused deploy'; return 1; }
+  # The same PR in a later deploy neither asks nor wakes again.
+  "$BIN/fm-procevent.sh" handled deploy-verify 1 >/dev/null 2>&1 || return 1
+  : > "$H/state/.wake-queue"
+  fx_runs "1:completed:success:s0" "2:completed:success:s2" "3:completed:success:s3"
+  fx_jobs 3 success
+  fx_compare s2 s3 c4
+  fx_commit_prs c4 111:500
+  "$BIN/fm-procevent.sh" start deploy-verify >/dev/null 2>&1
+  [ ! -s "$H/state/.wake-queue" ] || { echo 'the repeated PR woke firstmate again'; return 1; }
+  [ "$(ledger_count '.type == "skip" and .reason == "template-refused"')" = 1 ] || { echo 'the refusal was recorded twice'; return 1; }
+  # Draft round: one draft-skip per head, no ask.
+  live_task gamma 112
+  fx_pr 112 open h1 500
+  cycle
+  [ "$(ledger_count '.type == "draft-skip" and .reason == "template-refused" and (.detail | contains("duplicate id"))')" = 1 ] || { echo 'the refused draft was not remembered'; ledger; return 1; }
+  [ "$(inbox_count)" = 0 ] || { echo 'a refused draft was asked'; return 1; }
+  # A parser that cannot run is an error result, not a refusal of the issue.
+  new_lab "$1"
+  local pbin="$LAB/pbin"
+  mkdir -p "$pbin"
+  cp "$1"/*.sh "$pbin/"
+  BIN=$pbin
+  backlog_task alpha 113 500
+  fx_issue 500 V1:user-visible
+  fx_runs "1:completed:success:s0" "2:completed:success:s2"
+  fx_jobs 2 success
+  fx_compare s0 s2 c1
+  fx_commit_prs c1 113:500
+  set_cursor 1 s0
+  cycle
+  [ "$CYCLE_AUTO" = 1 ] || { echo "a missing parser autohandle=$CYCLE_AUTO"; return 1; }
+  jq -e '.error | test("acceptance parser could not run")' "$H/state/procevent-inbox/deploy-verify.$SEQ.result" >/dev/null || { echo "no parser error: $(cat "$H/state/procevent-inbox/deploy-verify.$SEQ.result")"; return 1; }
+  [ "$(ledger_count '.type == "skip"')" = 0 ] || { echo 'a missing parser was recorded as a skip'; return 1; }
+}
+
 scenario_replay() {
   new_lab "$1"
   set_cursor 2 s2
@@ -402,7 +508,7 @@ scenario_replay() {
   before=$(ledger)
   dry=$("$BIN/fm-procevent-deploy-verify.sh" replay-skips --dry-run) || return 1
   [ "$before" = "$(ledger)" ] && [ "$(inbox_count)" = 0 ] || return 1
-  jq -se 'length == 1 and .[0].lines == ["V1"] and (.[0].prs | length) == 2' <<<"$dry" >/dev/null || { echo "bad replay plan: $dry"; return 1; }
+  jq -se 'length == 1 and .[0].lines == ["V1"] and (.[0].prs | length) == 2 and (.[0].rows | length) == 2' <<<"$dry" >/dev/null || { echo "bad replay plan: $dry"; return 1; }
   "$BIN/fm-procevent-deploy-verify.sh" replay-skips >/dev/null || return 1
   [ "$(inbox_count)" = 1 ] || return 1
   before=$(ledger)
@@ -450,7 +556,7 @@ scenario_skip_catchup() {
 
 run_scenarios() {  # <bin-dir>
   local s rc=0
-  for s in ledger skips not_deployed draft record failures runner skip_catchup replay; do
+  for s in ledger skips not_deployed draft record failures runner skip_catchup rows refused replay; do
     out=$(scenario_"$s" "$1" 2>&1) || { printf 'scenario %s: %s\n' "$s" "$out"; rc=1; }
   done
   return $rc
@@ -458,7 +564,7 @@ run_scenarios() {  # <bin-dir>
 
 # ---- real adapter -----------------------------------------------------------
 
-for s in ledger skips not_deployed draft record failures runner skip_catchup replay; do
+for s in ledger skips not_deployed draft record failures runner skip_catchup rows refused replay; do
   out=$(scenario_"$s" "$ROOT/bin" 2>&1) || fail "scenario $s failed on the real adapter: $out"
   pass "deploy-verify $s"
 done
@@ -467,9 +573,11 @@ done
 
 MBIN="$TMP_ROOT/mbin"
 mkdir -p "$MBIN"
-cp "$ROOT"/bin/*.sh "$MBIN/"
+cp "$ROOT"/bin/*.sh "$ROOT"/bin/fm-acceptance.mjs "$MBIN/"
 ADAPTER="$MBIN/fm-procevent-deploy-verify.sh"
+PARSER="$MBIN/fm-acceptance.mjs"
 cp "$ADAPTER" "$TMP_ROOT/adapter.orig"
+cp "$PARSER" "$TMP_ROOT/parser.orig"
 
 mutate() {  # <label> <scenario> <perl-substitution>
   cp "$TMP_ROOT/adapter.orig" "$ADAPTER"
@@ -478,6 +586,18 @@ mutate() {  # <label> <scenario> <perl-substitution>
   if out=$(scenario_"$2" "$MBIN" 2>&1); then
     fail "removing the guard '$1' left scenario $2 green"
   fi
+  pass "guard '$1' is needed: scenario $2 goes red without it"
+}
+
+# The same proof against the parser copy, for a guard that lives in bin/fm-acceptance.mjs.
+mutate_parser() {  # <label> <scenario> <perl-substitution>
+  cp "$TMP_ROOT/parser.orig" "$PARSER"
+  perl -0pi -e "$3" "$PARSER"
+  cmp -s "$TMP_ROOT/parser.orig" "$PARSER" && fail "mutation '$1' changed nothing"
+  if out=$(scenario_"$2" "$MBIN" 2>&1); then
+    fail "removing the guard '$1' left scenario $2 green"
+  fi
+  cp "$TMP_ROOT/parser.orig" "$PARSER"
   pass "guard '$1' is needed: scenario $2 goes red without it"
 }
 
@@ -493,10 +613,24 @@ mutate 'replay grouping' replay \
   's/cut -d.\|. -f1 "\$w\/rows" \| sort -u/cut -d"|" -f1 "\$w\/rows"/'
 mutate 'replay idempotency' replay \
   's/ledger_has_key "replay:\$task:\$sha" && continue/:/; s/ledger_test .\.type == "ask" and \.round == "deploy" and \.task == \$t and \(\.prs \| index\(\$p\)\). --arg p "\$pr" --arg t "\$task" && continue/:/'
-mutate 'non-A acceptance ids' ledger \
-  's/\[A-Z\]\+/A/g'
-mutate 'non-A draft ids' draft \
-  's/\[A-Z\]\+/A/g'
+mutate_parser 'non-A acceptance ids' ledger \
+  's/\[A-Z\]\+\[0-9\]\+\)\(\?=/A[0-9]+)(?=/'
+mutate_parser 'non-A draft ids' draft \
+  's/\[A-Z\]\+\[0-9\]\+\)\(\?=/A[0-9]+)(?=/'
+mutate 'the ask carries the rows' rows \
+  's/head, pushed, lines, rows\}/head, pushed, lines}/'
+mutate 'draft rows are the draft scenarios' rows \
+  's/\[ "\$mode" != draft \] \|\| flag=--draft/:/'
+mutate 'a refused issue wakes firstmate' refused \
+  's/ or \.reason == "template-refused"\)/)/'
+mutate 'a refusal names its problems' refused \
+  's/ \+ \(if \$d == "" then \{\} else \{detail: \$d\} end\)//'
+mutate_parser 'the parser refuses a duplicate id' refused \
+  's/seen\.has\(scenario\.id\)/false/'
+mutate 'a parser refusal is a skip' refused \
+  's/if \[ "\$rc" -ne 0 \]; then\n    ISSUE_PROBLEMS/if false; then\n    ISSUE_PROBLEMS/'
+mutate 'a parser that cannot run is an error' refused \
+  's/if ! jq -e .\.schema == "fm-acceptance\.v1". <<<"\$parsed" >\/dev\/null 2>&1; then/if false; then/'
 mutate 'visible skips need attention' skips \
   's/attention_skip "\$result" && return 1/:/g'
 mutate 'ledger: a PR already asked is skipped' ledger \
@@ -514,7 +648,7 @@ mutate 'a run in progress holds the cursor' not_deployed \
 mutate 'draft asks once per head' draft \
   's/ledger_has_key "\$key" && continue//'
 mutate 'draft asks name only the draft lines' draft \
-  's/issue_lines draft/issue_lines visible/'
+  's/read_acceptance draft/read_acceptance visible/'
 mutate 'the catch-up leaves a visible skip pending' skip_catchup \
   's/keep_pending_result\(\) \{ attention_skip "\$1"; \}/keep_pending_result() { return 1; }/'
 mutate 'a repeated failure stays quiet' failures \

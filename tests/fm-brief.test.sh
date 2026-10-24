@@ -282,6 +282,82 @@ test_surface_user_visible_adds_done_gate_wording() {
   pass "fm-brief.sh: --surface user-visible adds the done-gate wording and internal stays unchanged"
 }
 
+# --issue renders the issue URL and the parser command in place of any scenario
+# list, and --check refuses an acceptance id range in the filled brief.
+issue_brief_case() {  # <bin-dir>: 0 when --issue renders the issue and the parser command
+  local bin=$1 home out file url=https://github.com/acme/widgets/issues/163
+  home=$(mktemp -d "$TMP_ROOT/issue-home.XXXXXX")
+  mkdir -p "$home/data"
+  FM_HOME="$home" "$bin/fm-brief.sh" ship-issue some-proj --mode direct-PR --issue "$url" >/dev/null 2>&1 || { echo 'ship brief with --issue did not scaffold'; return 1; }
+  file="$home/data/ship-issue/brief.md"
+  grep -q '^# Acceptance$' "$file" || { echo 'no # Acceptance section'; return 1; }
+  grep -qF "The acceptance for this task is the scenarios of $url." "$file" || { echo 'the section does not name the issue'; return 1; }
+  grep -qF "bin/fm-acceptance.mjs rows $url" "$file" || { echo 'the section does not name the parser command'; return 1; }
+  out=$(FM_HOME="$home" "$bin/fm-brief.sh" ship-plain some-proj --mode direct-PR 2>&1) || { echo "plain brief: $out"; return 1; }
+  grep -q '^# Acceptance$' "$home/data/ship-plain/brief.md" && { echo 'a brief without --issue carries # Acceptance'; return 1; }
+  return 0
+}
+
+check_brief_case() {  # <bin-dir>: 0 when --check refuses every range form and passes a clean brief
+  local bin=$1 home id fill form out
+  home=$(mktemp -d "$TMP_ROOT/check-home.XXXXXX")
+  mkdir -p "$home/data"
+  FM_HOME="$home" "$bin/fm-brief.sh" check-ranges some-proj --mode direct-PR >/dev/null 2>&1 || { echo 'scaffold'; return 1; }
+  FM_HOME="$home" "$bin/fm-brief.sh" --check check-ranges >/dev/null 2>&1 || { echo 'an unfilled brief was refused'; return 1; }
+  id=0
+  for form in "$(printf 'A%s-A%s' 1 15)" "$(printf 'E%s-E%s' 1 6)" "$(printf 'E%s to E%s' 1 6)" "$(printf 'V%s..V%s' 3 9)" "$(printf 'E%s\xe2\x80\x93E%s' 11 13)" "(prove $(printf 'K%s-%s' 3 4))"; do
+    id=$((id + 1))
+    FM_HOME="$home" "$bin/fm-brief.sh" "check-r$id" some-proj --mode direct-PR >/dev/null 2>&1 || { echo 'scaffold'; return 1; }
+    fill="$home/data/check-r$id/brief.md"
+    sed -i "s/{TASK}/Fix the page./; s/{FIRSTMATE_SPEC}/Prove $form at both widths./" "$fill"
+    out=$(FM_HOME="$home" "$bin/fm-brief.sh" --check "check-r$id" 2>&1) && { echo "range '$form' was accepted"; return 1; }
+    case "$out" in *'names an acceptance id range'*'fm-acceptance.mjs rows <issue-url>'*) ;; *) echo "refusal text for '$form': $out"; return 1 ;; esac
+  done
+  FM_HOME="$home" "$bin/fm-brief.sh" clean-brief some-proj --mode direct-PR >/dev/null 2>&1 || { echo 'scaffold'; return 1; }
+  sed -i "s/{TASK}/Fix the page on 2026-10-24./; s/{FIRSTMATE_SPEC}/Use SHA-256 and V3 and E8; list scenarios with the parser. Read 2026-10-24 to 2026-10-25./" "$home/data/clean-brief/brief.md"
+  out=$(FM_HOME="$home" "$bin/fm-brief.sh" --check clean-brief 2>&1) || { echo "a brief with single ids was refused: $out"; return 1; }
+  # Ranges outside # Task are not the brief body: the Definition of done is untouched.
+  FM_HOME="$home" "$bin/fm-brief.sh" --check missing-brief >/dev/null 2>&1 && { echo 'a missing brief passed'; return 1; }
+  return 0
+}
+
+test_issue_names_the_parser_command() {
+  local out
+  out=$(issue_brief_case "$ROOT/bin" 2>&1) || fail "issue: $out"
+  out=$(FM_HOME="$BRIEF_HOME" "$ROOT/bin/fm-brief.sh" issue-bad some-proj --mode direct-PR --issue 'not-a-url' 2>&1) && fail "issue: a bad url was accepted"
+  assert_contains "$out" '--issue must be https://<host>/<owner>/<repo>/issues/<n>' 'issue: bad url refusal text'
+  out=$(FM_HOME="$BRIEF_HOME" "$ROOT/bin/fm-brief.sh" issue-scout some-proj --scout --issue https://github.com/o/r/issues/1 2>&1) && fail "issue: a scout brief accepted --issue"
+  assert_contains "$out" '--issue applies only to ship briefs' 'issue: scout refusal text'
+  pass 'fm-brief.sh: --issue renders the issue and the parser command'
+}
+
+test_check_refuses_acceptance_id_ranges() {
+  local out
+  out=$(check_brief_case "$ROOT/bin" 2>&1) || fail "check: $out"
+  pass 'fm-brief.sh: --check refuses an acceptance id range in the brief body'
+}
+
+# Remove each guard from a copy of the script: the case that guards it goes red.
+test_issue_and_check_guards_are_needed() {
+  local mbin="$TMP_ROOT/mbin-issue" label case_fn pattern
+  mkdir -p "$mbin"
+  cp "$ROOT"/bin/*.sh "$mbin/"
+  while IFS='|' read -r label case_fn pattern; do
+    cp "$ROOT/bin/fm-brief.sh" "$mbin/fm-brief.sh"
+    perl -0pi -e "$pattern" "$mbin/fm-brief.sh"
+    cmp -s "$ROOT/bin/fm-brief.sh" "$mbin/fm-brief.sh" && fail "mutation '$label' changed nothing"
+    if out=$("$case_fn" "$mbin" 2>&1); then
+      fail "removing the guard '$label' left $case_fn green"
+    fi
+  done <<'MUTATIONS'
+--issue renders the acceptance section|issue_brief_case|s/if \[ "\$ISSUE_SET" -eq 1 \]; then\n  ACCEPTANCE_SECTION/if false; then\n  ACCEPTANCE_SECTION/
+--check refuses a range|check_brief_case|s/if \[ -n "\$CHECK_RANGE" \]; then/if false; then/
+--check reads the dash form|check_brief_case|s/\(-\|–\|—\|\\\.\\\.\|/(|/
+--check reads the to form|check_brief_case|s/\|\[\[:space:\]\]to\[\[:space:\]\]\)/)/
+MUTATIONS
+  pass 'fm-brief.sh: the --issue and --check guards each have a red mutation proof'
+}
+
 test_help_includes_entire_header() {
   local help
   help=$("$ROOT/bin/fm-brief.sh" --help)
@@ -1930,3 +2006,6 @@ test_branch_prefix_value_is_validated
 test_branch_prefix_command_is_shell_safe
 test_crewmate_scaffolds_forbid_pool_administration
 test_surface_user_visible_adds_done_gate_wording
+test_issue_names_the_parser_command
+test_check_refuses_acceptance_id_ranges
+test_issue_and_check_guards_are_needed

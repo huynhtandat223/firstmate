@@ -420,7 +420,7 @@ family_for_basename() {
     fm-backend-orca.test.sh)
       printf '%s\n' orca
       ;;
-    fm-branch-supervision.test.sh|fm-busy-adapter-wiring.test.sh|\
+    fm-acceptance.test.sh|fm-branch-supervision.test.sh|fm-busy-adapter-wiring.test.sh|\
     fm-busy-state.test.sh|fm-classify-corr-token.test.sh|\
     fm-claude-stop-autoarm.test.sh|fm-cursor-harness.test.sh|\
     fm-dispatch-resolve.test.sh|\
@@ -526,7 +526,7 @@ portable_parallel_weight_hints() {
   cat <<'EOF'
 tests/fm-arm-pretool-check.test.sh 33778
 tests/fm-backend-herdr.test.sh 36331
-tests/fm-brief.test.sh 10594
+tests/fm-brief.test.sh 13100
 tests/fm-captain-hold-lifecycle.test.sh 343658
 tests/fm-cd-pretool-check.test.sh 16801
 tests/fm-composer-ghost.test.sh 2292
@@ -689,6 +689,7 @@ list_portable_serial() {
 # balance rather than coverage. That doc owns the refresh procedure.
 portable_serial_weight_hints() {
   cat <<'EOF'
+tests/fm-acceptance.test.sh 3200
 tests/fm-afk-contract.test.sh 11101
 tests/fm-afk-inject-e2e.test.sh 41958
 tests/fm-afk-pi-herdr-return-e2e.test.sh 52
@@ -808,7 +809,7 @@ tests/fm-pr-check-security.test.sh 300675
 tests/fm-pr-reviewers.test.sh 157
 tests/fm-pr-state-live-e2e.test.sh 47
 tests/fm-pr-state.test.sh 525
-tests/fm-procevent-deploy-verify.test.sh 13300
+tests/fm-procevent-deploy-verify.test.sh 28400
 tests/fm-procevent-pr-review.test.sh 31000
 tests/fm-procevent-quota.test.sh 2459
 tests/fm-procevent-when.test.sh 25674
@@ -1534,6 +1535,11 @@ families_for_changed_path() {
       printf '%s\n' "__script__:fm-procevent-quota.test.sh"
       ;;
     bin/fm-procevent-deploy-verify.sh)
+      printf '%s\n' "__script__:fm-procevent-deploy-verify.test.sh"
+      ;;
+    bin/fm-acceptance.mjs)
+      # The one acceptance parser; deploy-verify reads every issue through it.
+      printf '%s\n' "__script__:fm-acceptance.test.sh"
       printf '%s\n' "__script__:fm-procevent-deploy-verify.test.sh"
       ;;
     bin/fm-procevent-pr-review.sh)

@@ -14,7 +14,8 @@
 # charters still use a single `{TASK}` charter fill. Firstmate may adjust other
 # sections when the task genuinely deviates (e.g. working an existing external
 # PR instead of shipping a new one).
-# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--branch-prefix <prefix>] [--base-branch <branch>] [--forge <none|gerrit|forgejo|external> [--shape squash]] [--surface <user-visible|internal>] [--herdr-lab]
+# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--branch-prefix <prefix>] [--base-branch <branch>] [--forge <none|gerrit|forgejo|external> [--shape squash]] [--surface <user-visible|internal>] [--issue <issue-url>] [--herdr-lab]
+#        fm-brief.sh --check <task-id>
 #        fm-brief.sh <task-id> <repo-name> --scout [--base-branch <branch>] [--herdr-lab]
 #        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
 #   --scout writes the scout contract instead: the deliverable is a report at
@@ -114,6 +115,15 @@
 # --surface <user-visible|internal> is an optional ship-only input; absent means
 # internal and leaves the brief unchanged. user-visible adds the done-gate wording
 # that bin/fm-dod-lib.sh owns (record: bin/fm-verify-gate-lib.sh).
+# --issue <issue-url> is an optional ship-only input, the task's issue as
+# https://<host>/<owner>/<repo>/issues/<n>. It adds an `# Acceptance` section that
+# names the issue and the command `bin/fm-acceptance.mjs rows <issue-url>`, so the
+# worker reads the scenario list from the one parser and the brief carries no list
+# of its own. Acceptance wording appears in the brief only through this section.
+# --check <task-id> reads data/<task-id>/brief.md after Firstmate filled it and
+# refuses a `# Task` body that names an acceptance id range (capital letters and
+# digits, two of them joined by a dash, `..` or `to`): such a copy drifts from the
+# issue, so name the issue instead. Exit 1 prints the range it found.
 # There is no --yolo flag here. The worker never owns merge decisions, so yolo is
 # a spawn-time and firstmate-side input only (AGENTS.md section 7).
 # Every scaffold's status protocol distinguishes the configured
@@ -230,6 +240,9 @@ PROJECT_DIR=
 PROJECT_DIR_SET=0
 SURFACE=
 SURFACE_SET=0
+ISSUE_URL=
+ISSUE_SET=0
+CHECK=0
 POS=()
 want_value=
 for a in "$@"; do
@@ -246,6 +259,7 @@ for a in "$@"; do
       upstream-consent) UPSTREAM_CONSENT=$a; UPSTREAM_CONSENT_SET=1 ;;
       project) PROJECT_DIR=$a; PROJECT_DIR_SET=1 ;;
       surface) SURFACE=$a; SURFACE_SET=1 ;;
+      issue) ISSUE_URL=$a; ISSUE_SET=1 ;;
       *) echo "error: internal parser state for --$want_value" >&2; exit 1 ;;
     esac
     want_value=
@@ -272,6 +286,9 @@ for a in "$@"; do
     --project=*) PROJECT_DIR=${a#--project=}; PROJECT_DIR_SET=1 ;;
     --surface) want_value=surface ;;
     --surface=*) SURFACE=${a#--surface=}; SURFACE_SET=1 ;;
+    --issue) want_value=issue ;;
+    --issue=*) ISSUE_URL=${a#--issue=}; ISSUE_SET=1 ;;
+    --check) CHECK=1 ;;
     # yolo never reaches the worker: it is firstmate's merge authority, not a
     # brief input. Refuse it loudly so it is never silently dropped here and then
     # believed to have been recorded.
@@ -280,6 +297,22 @@ for a in "$@"; do
   esac
 done
 [ -z "$want_value" ] || { echo "error: --$want_value requires a value" >&2; exit 1; }
+
+# A filled brief may not carry a copy of an issue's acceptance ids: the issue is
+# named and bin/fm-acceptance.mjs lists its scenarios, so the copy cannot drift.
+if [ "$CHECK" -eq 1 ]; then
+  [ "${#POS[@]}" -eq 1 ] || { echo "error: --check takes exactly one task id" >&2; exit 1; }
+  CHECK_BRIEF="$DATA/${POS[0]}/brief.md"
+  [ -f "$CHECK_BRIEF" ] || { echo "error: no brief at $CHECK_BRIEF" >&2; exit 1; }
+  CHECK_RANGE=$(fm_brief_heading_body "$CHECK_BRIEF" "# Task" \
+    | grep -oE '(^|[^A-Za-z0-9])[A-Z]{1,3}[0-9]{1,3}[[:space:]]*(-|–|—|\.\.|[[:space:]]to[[:space:]])[[:space:]]*[A-Z]{0,3}[0-9]{1,3}($|[^A-Za-z0-9])' \
+    | head -1 | sed 's/^[^A-Za-z0-9]//; s/[^A-Za-z0-9]$//') || true
+  if [ -n "$CHECK_RANGE" ]; then
+    echo "error: $CHECK_BRIEF names an acceptance id range ($CHECK_RANGE); name the issue instead and let the worker list its scenarios with $FM_ROOT/bin/fm-acceptance.mjs rows <issue-url> (fm-brief.sh --issue renders that)" >&2
+    exit 1
+  fi
+  exit 0
+fi
 
 # Ship delivery mode is an explicit per-task decision (AGENTS.md section 7). A
 # missing or invalid value stops the scaffold rather than silently defaulting.
@@ -300,6 +333,13 @@ if [ "$KIND" = ship ]; then
     *) echo "error: --surface must be user-visible or internal (got '$SURFACE')" >&2; exit 1 ;;
   esac
   [ "$SURFACE_SET" -eq 0 ] || [ -n "$SURFACE" ] || { echo "error: --surface requires a non-empty value" >&2; exit 1; }
+  if [ "$ISSUE_SET" -eq 1 ] && ! [[ "$ISSUE_URL" =~ ^https://[A-Za-z0-9.-]+/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/issues/[0-9]+$ ]]; then
+    echo "error: --issue must be https://<host>/<owner>/<repo>/issues/<n> (got '$ISSUE_URL')" >&2
+    exit 1
+  fi
+elif [ "$ISSUE_SET" -eq 1 ]; then
+  echo "error: --issue applies only to ship briefs; a scout delivers a report and a secondmate charter has no issue to close" >&2
+  exit 1
 elif [ "$SURFACE_SET" -eq 1 ]; then
   echo "error: --surface applies only to ship briefs; a scout delivers a report and a secondmate charter has no user-visible surface" >&2
   exit 1
@@ -802,12 +842,21 @@ esac
 RULE1=$(fm_ship_rule_one "$MODE" "$ID" "$BRANCH" "$FORGE" "$BASE_BRANCH") || exit 1
 DOD=$(fm_dod_block "$MODE" "$ID" "$BRANCH" "$FORGE" "$BASE_BRANCH" "$UPSTREAM_CONSENT" "$SURFACE") || exit 1
 
+ACCEPTANCE_SECTION=
+if [ "$ISSUE_SET" -eq 1 ]; then
+  ACCEPTANCE_SECTION="# Acceptance
+The acceptance for this task is the scenarios of $ISSUE_URL.
+List them with \`$FM_ROOT/bin/fm-acceptance.mjs rows $ISSUE_URL\`; that output, not any list in this brief, names every scenario and width.
+
+"
+fi
+
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
 
 $TASK_SECTION
 
-$REQUIRED_SKILLS_SECTION
+$ACCEPTANCE_SECTION$REQUIRED_SKILLS_SECTION
 
 $HERDR_SECTION
 
