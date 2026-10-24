@@ -70,6 +70,8 @@
 #   steering inbox. This never rewrites a project's instruction files or a
 #   secondmate's charter.
 #        fm-spawn.sh <task-id> --relaunch [--harness <name>] [--model <name>] [--effort <level>]
+#   --plan-exception <words> records captain words to bypass the dispatch plan gate
+#   on a fresh single ship or scout only (not relaunch or persistent launches).
 #   --relaunch launches a replacement agent for an EXISTING task into that
 #   task's own recorded worktree, reusing its recorded endpoint when that
 #   endpoint still exists, instead of creating either from scratch. It is
@@ -849,6 +851,9 @@ SURFACE_SET=0
 TRACEPARENT_SET=0
 WORKDIR_SET=0
 RELAUNCH=0
+PLAN_EXCEPTION=
+PLAN_EXCEPTION_SET=0
+PLAN_ISSUE=
 # Opt-in only: exact-resume presentation-order lock waits instead of refusing.
 # Absent/unset keeps upstream refuse-on-contention. See header.
 HERDR_RESUME_LOCK_WAIT=0
@@ -907,6 +912,10 @@ for a in "$@"; do
       TRACEPARENT_ARG=$a
       TRACEPARENT_SET=1
       ;;
+    plan-exception)
+      PLAN_EXCEPTION=$a
+      PLAN_EXCEPTION_SET=1
+      ;;
     workdir)
       WORKDIR_ARG=$a
       WORKDIR_SET=1
@@ -936,6 +945,7 @@ for a in "$@"; do
     PERSISTENT_REGISTRY="$DATA/assistances.md"
     SUB_HOME_MARKER=.fm-assistance-home
     ;;
+  --plan-exception) want_value=plan-exception ;;
   --relaunch) RELAUNCH=1 ;;
   --herdr-resume-lock-wait) HERDR_RESUME_LOCK_WAIT=1 ;;
   --harness) want_value=harness ;;
@@ -1075,6 +1085,13 @@ case "$EFFORT" in
   exit 1
   ;;
 esac
+
+if [ "$PLAN_EXCEPTION_SET" = 1 ]; then
+  if [ -z "${PLAN_EXCEPTION//[[:space:]]/}" ] || [ "$RELAUNCH" = 1 ] || [ "$KIND" = secondmate ] || [[ ${POS[0]:-} = *=* ]]; then
+    echo 'error: --plan-exception requires nonempty captain words on a fresh single ship or scout; not a batch, --relaunch, --secondmate or --assistance' >&2
+    exit 1
+  fi
+fi
 
 # --relaunch reuses an existing task's endpoint, worktree, project, and kind,
 # so every axis this block resolves for a fresh spawn instead comes from that
@@ -4231,6 +4248,44 @@ else
   fi
 fi
 
+if [ "$RELAUNCH" != 1 ] && [ "$KIND" != secondmate ] && { [ -e "$CONFIG/dispatch-plan-gate" ] || [ "$PLAN_EXCEPTION_SET" = 1 ]; }; then
+  # shellcheck source=bin/fm-plan-gate-lib.sh
+  . "$SCRIPT_DIR/fm-plan-gate-lib.sh"
+  plan_fix='--plan-exception "<captain words>"'
+  if [ "$BACKLOG_TRANSITION" != 1 ]; then
+    echo "error: plan gate: readable tasks-axi backlog required; link an approved issue or use $plan_fix with a backlog item" >&2
+    exit 1
+  fi
+  if [ "$PLAN_EXCEPTION_SET" = 1 ]; then
+    if ! fm_backlog_body_append_line "$DATA" "$ID" "Plan exception (captain): \"$PLAN_EXCEPTION\""; then
+      echo "error: plan gate: cannot record exception ($FM_BACKLOG_TRANSITION_ERROR); $plan_fix" >&2
+      exit 1
+    fi
+    printf 'plan gate: EXCEPTION "%s"\n' "$PLAN_EXCEPTION"
+  else
+    plan_reason='no linked GitHub issue'
+    plan_links=$(printf '%s\n' "$FM_BACKLOG_ROW_LINKS" | grep -oE 'doc:https://github[.]com/[^[:space:]," ]+' || true)
+    while IFS= read -r plan_link; do
+      [ -n "$plan_link" ] || continue
+      plan_url=${plan_link#doc:}
+      if fm_plan_gate_check "$plan_url"; then
+        PLAN_ISSUE=$plan_url
+        break
+      fi
+      plan_reason="$FM_PLAN_GATE_VERDICT: $FM_PLAN_GATE_REASON; bin/fm-plan-approve.sh $plan_url"
+    done <<< "$plan_links"
+    if [ -z "$PLAN_ISSUE" ]; then
+      plan_title=$FM_BACKLOG_ROW_TITLE
+      if [[ $plan_title = \"*\" ]]; then
+        plan_title=$(printf '%s' "$plan_title" | jq -r .)
+      fi
+      printf 'error: plan gate: %s; link with bin/fm-tasks-axi.sh update %s --title "%s <issue url>"; or %s\n' "$plan_reason" "$ID" "$plan_title" "$plan_fix" >&2
+      exit 1
+    fi
+    printf 'plan gate: approved %s\n' "$PLAN_ISSUE"
+  fi
+fi
+
 if [ "$SPAWN_META_LOCK_HELD" != 1 ]; then
   SPAWN_META_LOCK=$(fm_meta_lock_path "$STATE/$ID.meta") || exit 1
   fm_lock_acquire_wait "$SPAWN_META_LOCK"
@@ -5956,6 +6011,8 @@ preserve_relaunch_meta() {
 {
   echo "window=$META_WINDOW"
   echo "endpoint_task_id=$ID"
+  [ -z "$PLAN_ISSUE" ] || echo "plan_issue=$PLAN_ISSUE"
+  [ "$PLAN_EXCEPTION_SET" != 1 ] || printf 'plan_exception=%s\n' "$(printf '%s' "$PLAN_EXCEPTION" | base64 | tr -d '\n')"
   echo "worktree=$WT"
   echo "project=$PROJ_ABS"
   echo "harness=$HARNESS"

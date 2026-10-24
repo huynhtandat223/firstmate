@@ -77,6 +77,22 @@ fm_test_fake_gh() {
 if [ "${1:-}" = auth ] && [ "${2:-}" = status ]; then
   exit 0
 fi
+if [ -n "${FM_FAKE_GH_PLAN_DIR:-}" ]; then
+  printf '%s\n' "$*" >> "$FM_FAKE_GH_PLAN_DIR/calls"
+  [ ! -e "$FM_FAKE_GH_PLAN_DIR/fail" ] || { echo 'authentication failed' >&2; exit 1; }
+  [ ! -e "$FM_FAKE_GH_PLAN_DIR/sleep" ] || sleep 5
+  case "$*" in
+    *comments*POST*)
+      for arg in "$@"; do
+        case "$arg" in body=*) body=${arg#body=} ;; esac
+      done
+      jq -n --arg body "$body" '[{id:1,body:$body}]' > "$FM_FAKE_GH_PLAN_DIR/comments.json"
+      printf 'https://github.com/o/r/issues/7#issuecomment-1\n'
+      ;;
+    *comments*) cat "$FM_FAKE_GH_PLAN_DIR/comments.json" ;;
+    *) cat "$FM_FAKE_GH_PLAN_DIR/issue.json" ;;
+  esac
+fi
 exit 0
 SH
   chmod +x "$fakebin/gh"
