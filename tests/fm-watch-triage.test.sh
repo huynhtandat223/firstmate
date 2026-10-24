@@ -6247,6 +6247,28 @@ test_procevent_unacknowledged_result_redrains_until_handled() {
   pass "an unacknowledged process-event result re-drains until handling is acknowledged"
 }
 
+# A row for a result that is already handled (appended after its marker, the
+# publish race) must not wake the watcher: the owner already acted on it.
+test_procevent_handled_result_does_not_wake_the_watcher() {
+  local dir state out pid
+  dir=$(make_case procevent-handled-quiet); state="$dir/state"; out="$dir/watch.out"
+  seed_captured_procevent_result "$dir" || fail "the fixture captured no process-event result"
+  pe_case "$dir" handled delivery-src 1 >/dev/null || fail "could not acknowledge the captured result"
+  append_wake "$state" check "procevent:delivery-src:1" "check: procevent lavish delivery-src 1"
+  grep -F 'procevent:delivery-src:1' "$state/.wake-queue" >/dev/null \
+    || fail "the fixture did not leave a queued row for the handled result"
+
+  procevent_watch_bg "$dir" "$out"
+  pid=$!
+  if ! wait_poll_cycle "$state" "$pid"; then
+    reap "$pid"; fail "a queue holding only a handled process-event row woke the watcher: $(cat "$out")"
+  fi
+  reap "$pid"
+  grep -F 'process-event result captured' "$out" >/dev/null \
+    && fail "the watcher reported a handled result as captured: $(cat "$out")"
+  pass "a queue whose only process-event row is handled raises no process-event wake"
+}
+
 test_procevent_marker_keys_are_injective() {
   local dir state out pid marker_count
   dir=$(make_case procevent-marker-identity); state="$dir/state"; out="$dir/watch.out"
@@ -7182,6 +7204,7 @@ test_terminal_first_sight_drops_a_finished_write_deferral_chain
 test_triage_log_size_cap_accepts_spaced_wc_counts
 test_procevent_captured_result_surfaces_proactively
 test_procevent_unacknowledged_result_redrains_until_handled
+test_procevent_handled_result_does_not_wake_the_watcher
 test_procevent_marker_keys_are_injective
 test_procevent_headlines_classify_queue_keys
 test_procevent_launch_failed_episodes_are_each_delivered

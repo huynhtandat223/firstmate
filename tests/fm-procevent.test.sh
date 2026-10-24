@@ -401,6 +401,27 @@ case "$repeat_out" in
 esac
 pass "an unhandled result survives restart and repeat drains, and only explicit acknowledgement stops its re-announcement"
 
+# --- handled prunes the queued wake row --------------------------------------
+# Publication appends a row whenever the result is unhandled at that moment, so a
+# row appended before the marker used to stay queued and the next drain showed an
+# already-handled result again. Recording handling now removes that result's row,
+# and only that result's row.
+HPRUNE="$TMP_ROOT/hprune"; new_home "$HPRUNE"
+mkdir -p "$HPRUNE/state/procevent-inbox"
+for prune_seq in 1 2; do
+  printf 'pruned result %s\n' "$prune_seq" > "$HPRUNE/state/procevent-inbox/prune-src.$prune_seq.result"
+  printf 'lavish\n' > "$HPRUNE/state/procevent-inbox/prune-src.$prune_seq.adapter"
+  chmod 0600 "$HPRUNE/state/procevent-inbox/prune-src.$prune_seq.result" "$HPRUNE/state/procevent-inbox/prune-src.$prune_seq.adapter"
+done
+out=$(pe "$HPRUNE" reconcile)
+assert_contains "$out" "published=2" "both captured results were announced"
+assert_contains "$(wake_payloads "$HPRUNE")" "procevent lavish prune-src 1" "the first result was not queued before it was handled"
+assert_contains "$(wake_payloads "$HPRUNE")" "procevent lavish prune-src 2" "the second result was not queued before it was handled"
+pe "$HPRUNE" handled prune-src 1 >/dev/null
+assert_not_contains "$(wake_payloads "$HPRUNE")" "procevent lavish prune-src 1" "a handled result's wake row stayed queued"
+assert_contains "$(wake_payloads "$HPRUNE")" "procevent lavish prune-src 2" "handling one result removed another result's wake row"
+pass "recording a result handled removes its queued wake row and leaves every other row"
+
 HRACE="$TMP_ROOT/hrace"; new_home "$HRACE"
 mkdir -p "$HRACE/state/procevent-inbox"
 printf 'racing result\n' > "$HRACE/state/procevent-inbox/racing-src.1.result"

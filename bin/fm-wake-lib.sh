@@ -2444,6 +2444,29 @@ fm_wake_queue_prune_task() {  # <state> <task-id> [target]
   fm_lock_release "$lock"
 }
 
+# fm_wake_queue_prune_key <state> <kind> <key>
+# Remove every pending durable wake row of <kind> whose queue key is exactly <key>
+# (for example `check procevent:<id>:<seq>`), under the queue lock.
+fm_wake_queue_prune_key() {  # <state> <kind> <key>
+  local state=$1 kind=$2 key=$3
+  local queue="$state/.wake-queue" lock="$state/.wake-queue.lock" tmp
+  [ -f "$queue" ] || return 0
+  [ -s "$queue" ] || return 0
+  fm_lock_acquire_wait "$lock" || return 1
+  tmp=$(mktemp "$state/.wake-queue.prune.XXXXXX") || { fm_lock_release "$lock"; return 1; }
+  chmod 0600 "$tmp" 2>/dev/null || true
+  awk -F '\t' -v kind="$kind" -v key="$key" '
+    NF >= 5 && $3 == kind && $4 == key { next }
+    { print }
+  ' "$queue" > "$tmp" || { rm -f "$tmp"; fm_lock_release "$lock"; return 1; }
+  if ! _fm_atomic_replace "$tmp" "$queue"; then
+    rm -f "$tmp"
+    fm_lock_release "$lock"
+    return 1
+  fi
+  fm_lock_release "$lock"
+}
+
 fm_wake_print_deduped() {
   local file=$1
   awk -F '\t' '
