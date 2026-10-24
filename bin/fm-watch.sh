@@ -1965,7 +1965,7 @@ busy_turn_bound_check() {  # <window> <task> <hash> <since-file> <escalation-fil
       declared="declared:$(fm_wake_signal_sig "$statusf" || true)"
       if captain_held_silenced "$(status_declared_wait_line "$statusf")"; then
         printf '%s' "$declared" > "$STATE/.stale-$key"
-        triage_log "absorbed busy over-age pane (captain-held, never rechecked): $win"
+        triage_log "absorbed busy over-age pane (captain-held, never rechecked while the away-posture record exists): $win"
         return 0
       fi
       if [ "$(cat "$STATE/.stale-$key" 2>/dev/null || true)" != "$declared" ]; then
@@ -3497,7 +3497,7 @@ EOF
           # (captain_held_silenced).
           if captain_held_silenced "$last"; then
             printf '%s' "$h" > "$sf"
-            triage_log "absorbed stale (captain-held, never rechecked): $w"
+            triage_log "absorbed stale (captain-held, never rechecked while the away-posture record exists): $w"
           elif [ "$(cat "$sf" 2>/dev/null || true)" != "$h" ]; then
             stale_reason=$(stale_reason_naming_dialog "stale: $w" "$dialog")
             fm_wake_append stale "$w" "$stale_reason" || exit 1
