@@ -305,6 +305,10 @@
       "audience": "agent-runtime"
     },
     {
+      "path": "custom-skills/ticket-template/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": ".agents/skills/handoff-session/SKILL.md",
       "audience": "agent-runtime"
     },
