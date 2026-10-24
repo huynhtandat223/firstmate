@@ -69,6 +69,27 @@ test_complete_record_lifts_the_hold_and_closes_the_row() {
   pass "a complete record lifts the hold and moves the row to Done with its PR"
 }
 
+# Complete-looking evidence in the worker or firstmate home cannot replace the Tester.
+test_local_evidence_cannot_replace_the_testers_own_record() {
+  local home source
+  for source in firstmate worker; do
+    home=$(make_home "only-$source")
+    add_row "$home" 'verification pending: Tester proof missing'
+    write_verify "$home" pass
+    if [ "$source" = firstmate ]; then
+      cat "$(vg_tester_file "$home" "$ID")" >> "$home/data/$ID/verify.md"
+    else
+      cp "$(vg_tester_file "$home" "$ID")" "$home/data/$ID/notes.md"
+    fi
+    rm "$(vg_tester_file "$home" "$ID")"
+    run_close "$home"
+    [ "$CLOSE_RC" != 0 ] || fail "$source evidence closed the row without the Tester: $CLOSE_OUT"
+    case "$CLOSE_OUT" in *'Tester record missing:'*) ;; *) fail "missing Tester not reported: $CLOSE_OUT" ;; esac
+    [ "$(field "$home" state)" = queued ] && [ "$(field "$home" held)" = yes ] || fail "$source-only row lost its hold"
+  done
+  pass "firstmate and worker evidence cannot replace the Tester's own-home record"
+}
+
 test_incomplete_record_refuses_lists_problems_and_refreshes_the_reason() {
   local home
   home=$(make_home incomplete)
@@ -352,6 +373,7 @@ test_teardown_holds_the_row_before_it_leaves_in_flight() {
 }
 
 test_complete_record_lifts_the_hold_and_closes_the_row
+test_local_evidence_cannot_replace_the_testers_own_record
 test_incomplete_record_refuses_lists_problems_and_refreshes_the_reason
 test_a_newer_deploy_refuses_the_close_until_the_tester_verifies_again
 test_a_row_not_held_for_verification_is_refused_and_unchanged
