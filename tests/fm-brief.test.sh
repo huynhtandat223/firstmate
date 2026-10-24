@@ -313,7 +313,7 @@ check_brief_case() {  # <bin-dir>: 0 when --check refuses every range form and p
   FM_HOME="$home" "$bin/fm-brief.sh" check-ranges some-proj --mode direct-PR >/dev/null 2>&1 || { echo 'scaffold'; return 1; }
   FM_HOME="$home" "$bin/fm-brief.sh" --check check-ranges >/dev/null 2>&1 || { echo 'an unfilled brief was refused'; return 1; }
   id=0
-  for form in "$(printf 'A%s-A%s' 1 15)" "$(printf 'E%s-E%s' 1 6)" "$(printf 'E%s to E%s' 1 6)" "$(printf 'V%s..V%s' 3 9)" "$(printf 'E%s\xe2\x80\x93E%s' 11 13)" "(prove $(printf 'K%s-%s' 3 4))"; do
+  for form in "$(printf 'A%s-A%s' 1 15)" "$(printf 'E%s-E%s' 1 6)" "$(printf 'E%s to E%s' 1 6)" "$(printf 'V%s..V%s' 3 9)" "$(printf 'E%s\xe2\x80\x93E%s' 11 13)" "(prove $(printf 'K%s-%s' 3 4))" "$(printf 'ABCD%s-ABCD%s' 12 20)" "$(printf 'PAGE%s to PAGE%s' 7 9)" "$(printf 'E%s-E%s' 1234 1240)"; do
     id=$((id + 1))
     FM_HOME="$home" "$bin/fm-brief.sh" "check-r$id" some-proj --mode direct-PR >/dev/null 2>&1 || { echo 'scaffold'; return 1; }
     fill="$home/data/check-r$id/brief.md"

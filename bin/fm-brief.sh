@@ -121,9 +121,9 @@
 # worker reads the scenario list from the one parser and the brief carries no list
 # of its own. Acceptance wording appears in the brief only through this section.
 # --check <task-id> reads data/<task-id>/brief.md after Firstmate filled it and
-# refuses a `# Task` body that names an acceptance id range (capital letters and
-# digits, two of them joined by a dash, `..` or `to`): such a copy drifts from the
-# issue, so name the issue instead. Exit 1 prints the range it found.
+# refuses a `# Task` body that names an acceptance id range (ids of capital letters
+# then digits, as the parser reads them, two of them joined by a dash, `..` or `to`):
+# such a copy drifts from the issue, so name the issue instead. Exit 1 prints the range it found.
 # There is no --yolo flag here. The worker never owns merge decisions, so yolo is
 # a spawn-time and firstmate-side input only (AGENTS.md section 7).
 # Every scaffold's status protocol distinguishes the configured
@@ -305,7 +305,7 @@ if [ "$CHECK" -eq 1 ]; then
   CHECK_BRIEF="$DATA/${POS[0]}/brief.md"
   [ -f "$CHECK_BRIEF" ] || { echo "error: no brief at $CHECK_BRIEF" >&2; exit 1; }
   CHECK_RANGE=$(fm_brief_heading_body "$CHECK_BRIEF" "# Task" \
-    | grep -oE '(^|[^A-Za-z0-9])[A-Z]{1,3}[0-9]{1,3}[[:space:]]*(-|–|—|\.\.|[[:space:]]to[[:space:]])[[:space:]]*[A-Z]{0,3}[0-9]{1,3}($|[^A-Za-z0-9])' \
+    | grep -oE '(^|[^A-Za-z0-9])[A-Z]+[0-9]+[[:space:]]*(-|–|—|\.\.|[[:space:]]to[[:space:]])[[:space:]]*[A-Z]*[0-9]+($|[^A-Za-z0-9])' \
     | head -1 | sed 's/^[^A-Za-z0-9]//; s/[^A-Za-z0-9]$//') || true
   if [ -n "$CHECK_RANGE" ]; then
     echo "error: $CHECK_BRIEF names an acceptance id range ($CHECK_RANGE); name the issue instead and let the worker list its scenarios with $FM_ROOT/bin/fm-acceptance.mjs rows <issue-url> (fm-brief.sh --issue renders that)" >&2
