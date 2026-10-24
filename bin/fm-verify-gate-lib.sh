@@ -29,7 +29,8 @@
 #     text, `pass`, and existing evidence,
 #   - no Tester row names an id outside the issue,
 #   - the Tester's head= equals the sha of the newest deploy-round or replay ask for the task
-#     in <data-dir>/deploy-verify/ledger.jsonl (without an ask: the 'deployed:' line), and
+#     in <data-dir>/deploy-verify/ledger.jsonl (a missing ask refuses), or, for an issue of a repo
+#     deploy-verify does not watch, the 'deployed: <sha>' line of firstmate's record, and
 #   - 'approved: firstmate' is newer than the Tester's verified epoch.
 # <base-dir> is the firstmate home: <base-dir>/state is the state directory
 # (FM_STATE_OVERRIDE overrides it). The check never generates or changes evidence.
@@ -78,7 +79,7 @@ fm_verify_gate_row_text() {  # <row>
 
 fm_verify_gate_problems() {  # <data-dir> <task-id> <base-dir>
   local data=$1 id=$2 base=$3 file state tester_home tfile ledger first
-  local issue t_issue t_surface approved verified v_epoch v_head deployed ask_sha want_sha
+  local issue t_issue t_surface approved verified v_epoch v_head want_sha repo
   local rows all_rows parse rc line rid rstate revidence ev want_text in_scn=0 ln=0 last_row_ln=0 verified_ln
   local bad=0 expected=$'\n' known=$'\n' known_ids=$'\n' seen=$'\n'
   state=${FM_STATE_OVERRIDE:-$base/state}
@@ -124,13 +125,22 @@ fm_verify_gate_problems() {  # <data-dir> <task-id> <base-dir>
     fm_verify_gate_say "Tester verified line has no head=<sha>: verified: tester $verified"
   fi
 
-  # The deployed head: the newest ask in the ledger, else firstmate's own deployed: line.
-  ask_sha=$(fm_verify_gate_ledger_sha "$ledger" "$id")
-  deployed=$(fm_verify_gate_field "$file" deployed)
-  want_sha=${ask_sha:-$deployed}
-  if [ -z "$want_sha" ]; then
-    fm_verify_gate_say "no deployed head for $id: no deploy or replay ask in $ledger and no 'deployed: <sha>' line in $file"
-  elif [ -n "$v_head" ] && [ "$v_head" != "$want_sha" ]; then
+  # The deployed head. In the repo deploy-verify watches (FM_DEPLOY_VERIFY_REPO, the default of
+  # bin/fm-procevent-deploy-verify.sh) it is the newest ask of the task in the ledger, and a missing
+  # ask is a refusal; in any other repo there is no ask, so it is firstmate's own deployed: line.
+  repo=${issue#https://github.com/}
+  case "$issue" in
+    https://github.com/*/*/issues/[0-9]*) repo=${repo%/issues/*} ;;
+    *) repo= ;;
+  esac
+  if [ -n "$repo" ] && [ "$repo" = "${FM_DEPLOY_VERIFY_REPO:-huynhtandat223/cfw-modules}" ]; then
+    want_sha=$(fm_verify_gate_ledger_sha "$ledger" "$id")
+    [ -n "$want_sha" ] || fm_verify_gate_say "no deploy ask for $id in $ledger; deploy-verify watches $repo, so a deployed: line does not stand in for it"
+  else
+    want_sha=$(fm_verify_gate_field "$file" deployed)
+    [ -n "$want_sha" ] || fm_verify_gate_say "no deployed head for $id: deploy-verify does not watch ${repo:-its repo}, so $file needs a 'deployed: <sha>' line"
+  fi
+  if [ -n "$want_sha" ] && [ -n "$v_head" ] && [ "$v_head" != "$want_sha" ]; then
     fm_verify_gate_say "Tester head $v_head is not the deployed head $want_sha"
   fi
 

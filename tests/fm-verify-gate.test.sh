@@ -314,16 +314,22 @@ case_deployed_head_is_the_newest_ask() {
   passes "$1" "$home"
 }
 
-# A repo deploy-verify does not watch has no ask: firstmate's own deployed: line is the head.
-case_deployed_line_without_an_ask() {
-  local home
+# A repo deploy-verify does not watch has no ask: firstmate's own deployed: line is the head, and
+# only there. For the watched repo a missing ask is a refusal, whatever the record says.
+case_deployed_line_for_an_unwatched_repo() {
+  local home other=https://github.com/x/y/issues/9
   home=$(new_home)
   : > "$home/data/deploy-verify/ledger.jsonl"
-  refuses "$1" "$home" "no deployed head for $TASK" || return 1
   insert_before "$(firstmate "$home")" 'approved: ' "deployed: $VG_SHA"
+  refuses "$1" "$home" "no deploy ask for $TASK in" || return 1
+  case "$OUT" in *'a deployed: line does not stand in for it'*) ;; *) echo "the refusal does not say the deployed: line is not accepted: $OUT"; return 1 ;; esac
+  set_line "$(firstmate "$home")" 'issue: ' "issue: $other"
+  set_line "$(tester "$home")" 'issue: ' "issue: $other"
   passes "$1" "$home" || return 1
   set_line "$(firstmate "$home")" 'deployed: ' 'deployed: 3333333333333333333333333333333333333333'
-  refuses "$1" "$home" "Tester head $VG_SHA is not the deployed head 3333333333333333333333333333333333333333"
+  refuses "$1" "$home" "Tester head $VG_SHA is not the deployed head 3333333333333333333333333333333333333333" || return 1
+  drop "$(firstmate "$home")" 'deployed: '
+  refuses "$1" "$home" "no deployed head for $TASK"
 }
 
 case_approval() {
@@ -367,7 +373,7 @@ firstmate_line_one firstmate_issue_line tester_surface tester_issue_line records
 issue_cannot_be_parsed issue_cannot_be_read issue_without_user_visible_rows row_absent_from_tester_record
 row_not_pass row_without_evidence_field row_pass_without_evidence row_evidence_path row_id_not_in_issue retired_row
 retired_row_of_a_present_id_at_another_width internal_scenario_row row_text_differs_from_the_issue malformed_tester_row verified_line_closes_the_record verified_line_missing verified_line_without_head
-deployed_head_is_the_newest_ask deployed_line_without_an_ask approval home_video"
+deployed_head_is_the_newest_ask deployed_line_for_an_unwatched_repo approval home_video"
 
 # ---- real gate ------------------------------------------------------------------------
 
@@ -434,8 +440,10 @@ unsay 'the Tester head is the deployed head' deployed_head_is_the_newest_ask 'Te
 mutate 'the newest ask is the deployed head' deployed_head_is_the_newest_ask 's/\| tail -n 1\n\}/| head -n 1\n}/'
 mutate 'a draft round is not a deploy' deployed_head_is_the_newest_ask 's/\.round == "deploy" and //'
 mutate 'only the task'"'"'s own asks count' deployed_head_is_the_newest_ask 's/ and \.task == \$t//'
-unsay 'a deployed head is required' deployed_line_without_an_ask 'no deployed head for'
-mutate 'the deployed line stands in for a missing ask' deployed_line_without_an_ask 's/want_sha=\$\{ask_sha:-\$deployed\}/want_sha=\$ask_sha/'
+unsay 'a deployed head is required' deployed_line_for_an_unwatched_repo 'no deployed head for'
+mutate 'an unwatched repo takes the deployed line' deployed_line_for_an_unwatched_repo 's/want_sha=\$\(fm_verify_gate_field "\$file" deployed\)/want_sha=/'
+unsay 'a missing ask refuses for the watched repo' deployed_line_for_an_unwatched_repo 'no deploy ask for'
+mutate 'the watched repo needs an ask, not a deployed line' deployed_line_for_an_unwatched_repo 's/if \[ -n "\$repo" \] && \[ "\$repo" = "\$\{FM_DEPLOY_VERIFY_REPO:-huynhtandat223\/cfw-modules\}" \]; then/if false; then/'
 unsay 'approval is required' approval "missing 'approved: firstmate"
 unsay 'approval is a number' approval 'approved line needs a numeric epoch'
 unsay 'approval is newer than the Tester' approval 'approved: firstmate $approved is not newer'

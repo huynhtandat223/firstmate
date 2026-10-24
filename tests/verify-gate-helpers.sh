@@ -52,7 +52,8 @@ jq -Rs '{body: .}' "$VG_BODY_FILE"
 SH
   chmod +x "$dir/gh"
   VG_BODY_FILE="$dir/issue.body"
-  export FM_ACCEPTANCE_GH="$dir/gh" VG_BODY_FILE
+  # The fixture issue lives in o/r, the repo deploy-verify watches in these suites.
+  export FM_ACCEPTANCE_GH="$dir/gh" VG_BODY_FILE FM_DEPLOY_VERIFY_REPO=o/r
 }
 
 vg_tester_file() {  # <home> <task>
