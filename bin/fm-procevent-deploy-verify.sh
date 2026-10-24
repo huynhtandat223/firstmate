@@ -346,7 +346,7 @@ cmd_replay_skips() {
     [ -n "$task" ] || continue
     ledger_has_key "replay:$task:$sha" && continue
     # shellcheck disable=SC2016 # jq variables
-    ledger_test '.type == "ask" and .round == "deploy" and (.prs | index($p))' --arg p "$pr" && continue
+    ledger_test '.type == "ask" and .round == "deploy" and .task == $t and (.prs | index($p))' --arg p "$pr" --arg t "$task" && continue
     body=$(gh_read "repos/$REPO/pulls/${pr##*/}") || { rc=1; break; }
     merged=$(jq -r '.merge_commit_sha // empty' <<<"$body")
     [ -n "$merged" ] || continue

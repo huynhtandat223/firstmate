@@ -397,6 +397,8 @@ scenario_replay() {
   gh_put "repos/$REPO/pulls/84" "$(jq -cn --arg m "$(sha m84)" '{body:"Closes #501", merge_commit_sha:$m}')"
   fx_issue 500 V1:user-visible; fx_issue 501 A1:internal
   jq -cn --arg k "replay:replay43:$(sha s2)" '{type:"ask", round:"deploy", key:$k, prs:[]}' >> "$H/data/deploy-verify/ledger.jsonl"
+  # An ask for another task must not hide this task's skip of the same PR.
+  jq -cn --arg p "$RURL/pull/82" '{type:"ask", round:"deploy", key:"other-task", task:"other", prs:[$p]}' >> "$H/data/deploy-verify/ledger.jsonl"
   before=$(ledger)
   dry=$("$BIN/fm-procevent-deploy-verify.sh" replay-skips --dry-run) || return 1
   [ "$before" = "$(ledger)" ] && [ "$(inbox_count)" = 0 ] || return 1
@@ -441,6 +443,8 @@ mutate() {  # <label> <scenario> <perl-substitution>
   pass "guard '$1' is needed: scenario $2 goes red without it"
 }
 
+mutate 'replay dedupe is task scoped' replay \
+  's/ and \.task == \$t and \(\.prs/ and (.prs/'
 mutate 'replay ancestry' replay \
   's/jq -e .\.status == "ahead" or \.status == "identical". <<<"\$comparison" >\/dev\/null \|\| continue/:/'
 mutate 'replay dry run' replay \
@@ -450,7 +454,7 @@ mutate 'replay visible lines' replay \
 mutate 'replay grouping' replay \
   's/cut -d.\|. -f1 "\$w\/rows" \| sort -u/cut -d"|" -f1 "\$w\/rows"/'
 mutate 'replay idempotency' replay \
-  's/ledger_has_key "replay:\$task:\$sha" && continue/:/; s/ledger_test .\.type == "ask" and \.round == "deploy" and \(\.prs \| index\(\$p\)\). --arg p "\$pr" && continue/:/'
+  's/ledger_has_key "replay:\$task:\$sha" && continue/:/; s/ledger_test .\.type == "ask" and \.round == "deploy" and \.task == \$t and \(\.prs \| index\(\$p\)\). --arg p "\$pr" --arg t "\$task" && continue/:/'
 mutate 'non-A acceptance ids' ledger \
   's/\[A-Z\]\+/A/g'
 mutate 'non-A draft ids' draft \
