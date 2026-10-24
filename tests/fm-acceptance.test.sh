@@ -270,6 +270,30 @@ case_url() {
   node "$1/fm-acceptance.mjs" bogus - >/dev/null 2>&1 </dev/null; [ $? -eq 2 ] || { echo 'unknown command was not exit 2'; return 1; }
 }
 
+# `digest` is one stable hash of the parsed scenarios: a change to any scenario field moves it,
+# the checkbox and the sections around the scenarios do not.
+case_digest() {
+  local base d1 other field
+  digest() { printf '%s\n' "$2" | node "$1/fm-acceptance.mjs" digest -; }
+  d1=$(digest "$1" "$TEMPLATE_FULL") || { echo 'digest refused a good issue'; return 1; }
+  [ "$(printf '%s' "$d1" | tr -d '0-9a-f')" = '' ] && [ "${#d1}" = 64 ] || { echo "digest shape: $d1"; return 1; }
+  [ "$(digest "$1" "$TEMPLATE_FULL")" = "$d1" ] || { echo 'digest is not stable across runs'; return 1; }
+  base=$TEMPLATE_FULL
+  for field in 'button "Save"/button "Save2"' 'click Save and read/click Save twice and read' 'the probe row/the other row' 'mock: none/mock: a fake' \
+    'Dev 5001, SysAdmin/Dev 5002, SysAdmin' 'page: home.video/page: home.audio' 'widths: 1440, 390/widths: 1440' 'THE page SHALL answer/THE page SHALL stay'; do
+    other=$(printf '%s\n' "$base" | sed "s/${field%%/*}/${field#*/}/")
+    [ "$other" != "$base" ] || { echo "the edit '$field' changed nothing"; return 1; }
+    [ "$(digest "$1" "$other")" != "$d1" ] || { echo "digest ignores the edit '$field'"; return 1; }
+  done
+  other=$(printf '%s\n' "$base" | sed 's/^- \[ \] V1/- [x] V1/')
+  [ "$other" != "$base" ] && [ "$(digest "$1" "$other")" = "$d1" ] || { echo 'digest moved with the checkbox'; return 1; }
+  other=$(printf '%s\n' "$base" | sed 's/^Text of Decisions\./Another decision./')
+  [ "$other" != "$base" ] && [ "$(digest "$1" "$other")" = "$d1" ] || { echo 'digest moved with a section around the scenarios'; return 1; }
+  other=$(tpl "$FULL_SCENARIOS"$'\n'"$(scenario V9 user-visible - -)")
+  [ "$(digest "$1" "$other")" != "$d1" ] || { echo 'digest ignores an added scenario'; return 1; }
+  d1=$(printf '%s\n' "$(tpl "$(scenario V1 user-visible - -)")" | node "$1/fm-acceptance.mjs" digest - 2>/dev/null); [ $? -eq 1 ] && [ -z "$d1" ] || { echo 'digest of a refused issue'; return 1; }
+}
+
 # `rows` prints nothing for a refused issue and says why on stderr.
 case_rows_refusal() {
   local out err rc
@@ -290,7 +314,7 @@ case_import() {
   [ "$out" = '["v1",3,3]' ] || { echo "import result: $out"; return 1; }
 }
 
-CASES="fixtures template strict_legacy legacy_leniency field_order duplicate_id user_visible_needs_page_and_widths missing_field bad_id sections fences_and_headings url rows_refusal import"
+CASES="fixtures template strict_legacy legacy_leniency field_order duplicate_id user_visible_needs_page_and_widths missing_field bad_id sections fences_and_headings url rows_refusal digest import"
 
 # ---- real parser ------------------------------------------------------------
 
@@ -340,4 +364,6 @@ mutate 'a legacy scenario gets the default widths' fixtures 's/\? \[\.\.\.LEGACY
 mutate 'draft comes from the page' template "s/draft = \\/\\\\\\(draft\\\\\\)\\/\\.test\\(rawPage\\)/draft = false/"
 mutate 'a failed read is exit 2' url 's/process\.stderr\.write\(`error: \$\{error\.message\}\\n`\);\n    return 2;/process.stderr.write(`error: \${error.message}\\n`);\n    return 1;/'
 mutate 'rows refuse a refused issue' rows_refusal 's/else if \(parsed\.problems\.length === 0\) \{/else if (true) {/'
+mutate 'the checkbox is not part of the digest' digest 's/\(\{ done, \.\.\.rest \}\) => rest/(scenario) => scenario/'
+mutate 'the digest covers every scenario field' digest 's/\(\{ done, \.\.\.rest \}\) => rest/({ done, id }) => ({ id })/'
 pass 'every guarded behavior has a red mutation proof'
