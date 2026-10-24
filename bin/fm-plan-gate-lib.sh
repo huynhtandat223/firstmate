@@ -17,7 +17,7 @@ fm_plan_gate_url() {
 }
 
 fm_plan_gate_read() {
-  fm_run_timed "${FM_PLAN_GATE_TIMEOUT_SECS:-20}" gh api "$@"
+  fm_run_timed "${FM_PLAN_GATE_TIMEOUT_SECS:-20}" gh api "$@" --hostname github.com
 }
 
 fm_plan_gate_issue() {

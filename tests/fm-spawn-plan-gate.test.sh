@@ -76,6 +76,7 @@ expect 'plan gate: EXCEPTION "skip the plan for this task"'
 pass 'exception skips GitHub'
 label=approve
 new_case approve "$url"
+export GH_HOST=enterprise.example.test
 printf '[]\n' > "$FM_FAKE_GH_PLAN_DIR/comments.json"
 out=$(PATH="$fakebin:$PATH" "$ROOT/bin/fm-plan-approve.sh" "$url" --note 'Reviewed')
 expect 'https://github.com/o/r/issues/7#issuecomment-1'
@@ -84,7 +85,8 @@ marker_pattern="^approved: firstmate [0-9]+ body-sha256:$hash"$'\n''Reviewed$'
 [[ $marker =~ $marker_pattern ]] || fail 'approval marker or body hash differs'
 out=$(spawn)
 expect "plan gate: approved $url"
-pass 'approval round trip'
+pass 'approval round trip pins github.com despite GH_HOST'
+unset GH_HOST
 
 # Parser refusals do not need a project or endpoint.
 for forbidden in empty batch relaunch secondmate assistance; do

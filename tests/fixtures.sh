@@ -79,6 +79,10 @@ if [ "${1:-}" = auth ] && [ "${2:-}" = status ]; then
 fi
 if [ -n "${FM_FAKE_GH_PLAN_DIR:-}" ]; then
   printf '%s\n' "$*" >> "$FM_FAKE_GH_PLAN_DIR/calls"
+  if [ -n "${GH_HOST:-}" ] && [[ " $* " != *' --hostname github.com '* ]]; then
+    echo 'wrong GitHub host' >&2
+    exit 1
+  fi
   [ ! -e "$FM_FAKE_GH_PLAN_DIR/fail" ] || { echo 'authentication failed' >&2; exit 1; }
   [ ! -e "$FM_FAKE_GH_PLAN_DIR/sleep" ] || sleep 5
   case "$*" in
