@@ -3724,7 +3724,7 @@ EOF
 $pending
 EOF
       for id in $TURNEND_ESCALATED_TASKS; do
-        printf '4' > "$STATE/.turnend-pings-$id" 2>/dev/null || true
+        printf '%s' "$((TURNEND_PING_MAX + 1))" > "$STATE/.turnend-pings-$id" 2>/dev/null || true
       done
       # The wake signature advances for every file in this batch, including one
       # whose span could not be classified: it has now been reported, and this is
