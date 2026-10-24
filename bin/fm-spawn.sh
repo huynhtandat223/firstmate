@@ -4219,15 +4219,19 @@ herdr_projection_existing_meta_allows_flat() { # <meta>
 # a live pane. The authoritative mutation still runs under the meta lock below.
 BACKLOG_TRANSITION=0
 BACKLOG_ROW_STATE=
+PLAN_REFUSAL_HINT=
+if [ "$RELAUNCH" != 1 ] && [ "$KIND" != secondmate ] && [ -e "$CONFIG/dispatch-plan-gate" ]; then
+  PLAN_REFUSAL_HINT='; plan gate requires a readable backlog item; link its issue with bin/fm-tasks-axi.sh update <id> --title "<current title> <issue url>" or use --plan-exception "<captain words>"'
+fi
 if fm_backlog_transition_applies "$CONFIG" "$DATA" "$KIND"; then
   BACKLOG_TRANSITION=1
   if fm_backlog_row_probe "$DATA" "$ID"; then
     BACKLOG_ROW_STATE=$FM_BACKLOG_ROW_STATE
   elif [ "$FM_BACKLOG_ROW_RESULT" = not_found ]; then
-    echo "error: task $ID has no backlog item in this home, so dispatching it would leave a worker no record owns; add it first (bin/fm-tasks-axi.sh add $ID '<title>' --kind $KIND) and re-run" >&2
+    echo "error: task $ID has no backlog item in this home, so dispatching it would leave a worker no record owns; add it first (bin/fm-tasks-axi.sh add $ID '<title>' --kind $KIND) and re-run$PLAN_REFUSAL_HINT" >&2
     exit 1
   else
-    echo "error: task $ID's backlog item could not be read before dispatch ($FM_BACKLOG_ROW_ERROR)" >&2
+    echo "error: task $ID's backlog item could not be read before dispatch ($FM_BACKLOG_ROW_ERROR)$PLAN_REFUSAL_HINT" >&2
     exit 1
   fi
   spawn_preflight_actor=$(fm_lease_actor) || exit "$FM_LEASE_REFUSE_EXIT"
@@ -4243,7 +4247,7 @@ if fm_backlog_transition_applies "$CONFIG" "$DATA" "$KIND"; then
 else
   BACKLOG_GATE_STATUS=$?
   if [ "$BACKLOG_GATE_STATUS" -eq 2 ]; then
-    echo "error: task $ID cannot be dispatched because its backlog data directory is inaccessible: $DATA ($FM_BACKLOG_TRANSITION_ERROR)" >&2
+    echo "error: task $ID cannot be dispatched because its backlog data directory is inaccessible: $DATA ($FM_BACKLOG_TRANSITION_ERROR)$PLAN_REFUSAL_HINT" >&2
     exit 1
   fi
 fi

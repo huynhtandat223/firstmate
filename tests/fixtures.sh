@@ -90,6 +90,7 @@ if [ -n "${FM_FAKE_GH_PLAN_DIR:-}" ]; then
       printf 'https://github.com/o/r/issues/7#issuecomment-1\n'
       ;;
     *comments*) cat "$FM_FAKE_GH_PLAN_DIR/comments.json" ;;
+    *issues/8*) printf '{"state":"closed","body":"plan"}\n' ;;
     *) cat "$FM_FAKE_GH_PLAN_DIR/issue.json" ;;
   esac
 fi
