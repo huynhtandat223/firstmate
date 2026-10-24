@@ -410,9 +410,47 @@ scenario_replay() {
   [ "$before" = "$(ledger)" ] && [ "$(inbox_count)" = 1 ] || return 1
 }
 
+# A visible skip is left unhandled so one wake reaches firstmate. A later
+# successful result runs the shared catch-up acknowledgement, which must not
+# close that skip: the row stays queued and the drain still prints it.
+scenario_skip_catchup() {
+  new_lab "$1"
+  fx_runs "1:completed:success:s0" "2:completed:success:s2" "3:completed:success:s3"
+  fx_jobs 3 success
+  fx_compare s2 s3 cskip
+  fx_commit_prs cskip 73:501 74:502
+  backlog_task visible 73 501
+  live_task internal 74 internal
+  fx_pr 74 closed h0 502
+  fx_issue 501 A1:internal
+  set_cursor 2 s2
+  fm_test_track_procevent_home "$H"
+  "$BIN/fm-procevent-deploy-verify.sh" arm >/dev/null 2>&1 || { echo 'arm failed'; return 1; }
+  local out
+  out=$("$BIN/fm-procevent.sh" start deploy-verify 2>&1)
+  case "$out" in *'not-autohandled: deploy-verify'*) ;; *) echo "skip runner: $out"; return 1 ;; esac
+  [ "$(grep -c 'procevent deploy-verify deploy-verify' "$H/state/.wake-queue")" = 1 ] || { echo 'the skip queued no wake'; return 1; }
+  # A later result that delivers its ask, before any drain.
+  fx_runs "1:completed:success:s0" "2:completed:success:s2" "3:completed:success:s3" "4:completed:success:s4"
+  fx_jobs 4 success
+  fx_compare s3 s4 cdel
+  fx_commit_prs cdel 76:504
+  backlog_task delivered 76 504
+  fx_issue 504 A1:user-visible
+  out=$("$BIN/fm-procevent.sh" start deploy-verify 2>&1)
+  case "$out" in *'autohandled: deploy-verify'*) ;; *) echo "later runner: $out"; return 1 ;; esac
+  [ "$(inbox_count)" = 1 ] || { echo "the later ask was not delivered: $(inbox_count)"; return 1; }
+  [ ! -e "$H/state/procevent-inbox/deploy-verify.1.handled" ] || { echo 'the catch-up closed the visible skip'; return 1; }
+  # The second runner start announces the still-pending skip again, so one row or more.
+  [ "$(grep -c 'procevent:deploy-verify:1' "$H/state/.wake-queue" 2>/dev/null || echo 0)" -ge 1 ] \
+    || { echo "the visible skip lost its queued wake row: $(cat "$H/state/.wake-queue" 2>&1)"; return 1; }
+  out=$("$BIN/fm-wake-drain.sh" 2>&1)
+  case "$out" in *'procevent:deploy-verify:1'*) ;; *) echo "the drain hid the visible skip: $out"; return 1 ;; esac
+}
+
 run_scenarios() {  # <bin-dir>
   local s rc=0
-  for s in ledger skips not_deployed draft record failures runner replay; do
+  for s in ledger skips not_deployed draft record failures runner skip_catchup replay; do
     out=$(scenario_"$s" "$1" 2>&1) || { printf 'scenario %s: %s\n' "$s" "$out"; rc=1; }
   done
   return $rc
@@ -420,7 +458,7 @@ run_scenarios() {  # <bin-dir>
 
 # ---- real adapter -----------------------------------------------------------
 
-for s in ledger skips not_deployed draft record failures runner replay; do
+for s in ledger skips not_deployed draft record failures runner skip_catchup replay; do
   out=$(scenario_"$s" "$ROOT/bin" 2>&1) || fail "scenario $s failed on the real adapter: $out"
   pass "deploy-verify $s"
 done
@@ -477,6 +515,8 @@ mutate 'draft asks once per head' draft \
   's/ledger_has_key "\$key" && continue//'
 mutate 'draft asks name only the draft lines' draft \
   's/issue_lines draft/issue_lines visible/'
+mutate 'the catch-up leaves a visible skip pending' skip_catchup \
+  's/keep_pending_result\(\) \{ attention_skip "\$1"; \}/keep_pending_result() { return 1; }/'
 mutate 'a repeated failure stays quiet' failures \
   's/\[ "\$previous" = "\$reason" \] \|\| return 1//'
 mutate 'a failed delivery keeps the cursor' failures \

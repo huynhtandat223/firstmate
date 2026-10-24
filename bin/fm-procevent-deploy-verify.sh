@@ -175,6 +175,10 @@ attention_skip() {
   jq -e 'any(.skips[]; .task != "" and (.reason == "no-user-visible-line" or .reason == "no-issue"))' "$1" >/dev/null 2>&1
 }
 
+# The catch-up acknowledgement in fm-procevent-ask-lib.sh leaves an older result
+# with a visible skip pending: it was left unhandled so one wake reaches firstmate.
+keep_pending_result() { attention_skip "$1"; }
+
 issue_ref() { printf '%s#%s\n' "${REPO##*/}" "$1"; }
 
 # Plan the deploy of <sha>: every merged PR in the commits since <base> maps to
