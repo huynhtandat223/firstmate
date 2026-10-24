@@ -18,7 +18,7 @@
 #     issue: <url>
 #     ## Scenarios
 #     - <id>@<width> | <line> | pass | evidence: <existing file path or http(s) URL>
-#     verified: tester <epoch> head=<sha>
+#     verified: tester <epoch> head=<sha>     (after the last row; it covers the rows above it)
 # The Tester home is home= in <state>/tester.meta, or FM_TESTER_HOME. A relative evidence
 # path resolves against that home. A row in state `retired` is allowed only for an id the
 # issue no longer has; a row for an issue scenario that is not user-visible is ignored.
@@ -67,7 +67,7 @@ fm_verify_gate_evidence_problem() {  # <rid> <evidence> <base-dir>
 fm_verify_gate_problems() {  # <data-dir> <task-id> <base-dir>
   local data=$1 id=$2 base=$3 file state tester_home tfile ledger first
   local issue t_issue t_surface approved verified v_epoch v_head deployed ask_sha want_sha
-  local rows all_rows parse rc line rid rstate revidence ev in_scn=0
+  local rows all_rows parse rc line rid rstate revidence ev in_scn=0 ln=0 last_row_ln=0 verified_ln
   local bad=0 expected=$'\n' known=$'\n' seen=$'\n'
   state=${FM_STATE_OVERRIDE:-$base/state}
   file="$data/$id/verify.md"
@@ -163,12 +163,19 @@ fm_verify_gate_problems() {  # <data-dir> <task-id> <base-dir>
     # Every Tester row: a known id is checked for pass and evidence; an unknown id is refused
     # unless the Tester retired it.
     while IFS= read -r line || [ -n "$line" ]; do
+      ln=$((ln + 1))
       case "$line" in
         '## Scenarios') in_scn=1; continue ;;
         '#'*) in_scn=0; continue ;;
       esac
-      [ "$in_scn" -eq 1 ] || continue
+      if [ "$in_scn" -eq 0 ]; then
+        case "$line" in
+          '- '*[!\ ]@*' | '*) fm_verify_gate_say "scenario row outside '## Scenarios': $line" ;;
+        esac
+        continue
+      fi
       case "$line" in '- '*) ;; *) continue ;; esac
+      last_row_ln=$ln
       if [ "$(printf '%s' "${line#- }" | awk -F' [|] ' '{print NF}')" -lt 4 ]; then
         fm_verify_gate_say "malformed Tester row (need '- <id>@<width> | <line> | pass | evidence: x'): $line"
         continue
@@ -197,6 +204,11 @@ fm_verify_gate_problems() {  # <data-dir> <task-id> <base-dir>
           ;;
       esac
     done <"$tfile"
+    # The verified line closes the record: it is the Tester's word on the rows above it only.
+    verified_ln=$(grep -n '^verified: tester ' "$tfile" | tail -n 1 | cut -d: -f1)
+    if [ -n "$verified_ln" ] && [ "$verified_ln" -le "$last_row_ln" ]; then
+      fm_verify_gate_say "the 'verified: tester' line must come after the last scenario row (line $verified_ln, last row at line $last_row_ln)"
+    fi
     while IFS= read -r rid; do
       [ -n "$rid" ] || continue
       case "$seen" in *$'\n'"$rid"$'\n'*) ;; *) fm_verify_gate_say "$rid is missing from the Tester record" ;; esac

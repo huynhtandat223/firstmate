@@ -239,6 +239,21 @@ case_malformed_tester_row() {
   refuses "$1" "$home" 'malformed Tester row'
 }
 
+# The verified line closes the record: rows appended or changed after an old footer are not
+# covered by it, and a scenario row outside '## Scenarios' is never skipped.
+case_verified_line_closes_the_record() {
+  local home tf
+  home=$(new_home)
+  tf=$(tester "$home")
+  drop "$tf" '- A2@390 '
+  printf '%s\n' "$(row A2@390 pass 'evidence: https://example.test/late')" >> "$tf"
+  refuses "$1" "$home" "the 'verified: tester' line must come after the last scenario row" || return 1
+  home=$(new_home)
+  tf=$(tester "$home")
+  printf '%s\n' '' '## Notes' "$(row A1@1440 pass 'evidence: https://example.test/x')" >> "$tf"
+  refuses "$1" "$home" "scenario row outside '## Scenarios'"
+}
+
 case_verified_line_missing() {
   local home
   home=$(new_home)
@@ -323,7 +338,7 @@ CASES="pass_and_read_only firstmate_record_missing tester_record_missing no_test
 firstmate_line_one firstmate_issue_line tester_surface tester_issue_line records_name_different_issues
 issue_cannot_be_parsed issue_cannot_be_read issue_without_user_visible_rows row_absent_from_tester_record
 row_not_pass row_without_evidence_field row_pass_without_evidence row_evidence_path row_id_not_in_issue retired_row
-internal_scenario_row malformed_tester_row verified_line_missing verified_line_without_head
+internal_scenario_row malformed_tester_row verified_line_closes_the_record verified_line_missing verified_line_without_head
 deployed_head_is_the_newest_ask deployed_line_without_an_ask approval home_video"
 
 # ---- real gate ------------------------------------------------------------------------
@@ -381,6 +396,8 @@ mutate 'a retired row is allowed for a dropped id' retired_row 's/\[ "\$rstate" 
 unsay 'a retired row is not a pass for a present id' retired_row '$rid is '"'"'$rstate'"'"', not pass'
 mutate 'only user-visible rows are gate rows' internal_scenario_row 's/--surface all 2>\/dev\/null\) \|\| all_rows=\$rows/--surface user-visible 2>\/dev\/null) || all_rows=\$rows/'
 unsay 'a Tester row is well formed' malformed_tester_row 'malformed Tester row'
+unsay 'the verified line follows the last row' verified_line_closes_the_record "the 'verified: tester' line must come after"
+unsay 'a scenario row outside Scenarios is refused' verified_line_closes_the_record "scenario row outside"
 unsay 'the verified line is required' verified_line_missing "Tester record has no 'verified: tester"
 unsay 'the verified line names a head' verified_line_without_head 'Tester verified line has no head='
 unsay 'the Tester head is the deployed head' deployed_head_is_the_newest_ask 'Tester head '
