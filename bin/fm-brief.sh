@@ -117,7 +117,7 @@
 # that bin/fm-dod-lib.sh owns (record: bin/fm-verify-gate-lib.sh).
 # --issue <issue-url> is an optional ship-only input, the task's issue as
 # https://<host>/<owner>/<repo>/issues/<n>. It adds an `# Acceptance` section that
-# names the issue and the command `bin/fm-acceptance.mjs rows <issue-url>`, so the
+# names the issue and the command `bin/fm-acceptance.mjs rows <issue-url> --surface all` (every scenario, internal ones too), so the
 # worker reads the scenario list from the one parser and the brief carries no list
 # of its own. Acceptance wording appears in the brief only through this section.
 # --check <task-id> reads data/<task-id>/brief.md after Firstmate filled it and
@@ -846,7 +846,7 @@ ACCEPTANCE_SECTION=
 if [ "$ISSUE_SET" -eq 1 ]; then
   ACCEPTANCE_SECTION="# Acceptance
 The acceptance for this task is the scenarios of $ISSUE_URL.
-List them with \`$FM_ROOT/bin/fm-acceptance.mjs rows $ISSUE_URL\`; that output, not any list in this brief, names every scenario and width.
+List them with \`$FM_ROOT/bin/fm-acceptance.mjs rows $ISSUE_URL --surface all\`; that output, not any list in this brief, names every scenario and width.
 
 "
 fi

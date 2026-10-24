@@ -292,7 +292,15 @@ issue_brief_case() {  # <bin-dir>: 0 when --issue renders the issue and the pars
   file="$home/data/ship-issue/brief.md"
   grep -q '^# Acceptance$' "$file" || { echo 'no # Acceptance section'; return 1; }
   grep -qF "The acceptance for this task is the scenarios of $url." "$file" || { echo 'the section does not name the issue'; return 1; }
-  grep -qF "bin/fm-acceptance.mjs rows $url" "$file" || { echo 'the section does not name the parser command'; return 1; }
+  grep -qF "bin/fm-acceptance.mjs rows $url --surface all" "$file" || { echo 'the section does not name the parser command'; return 1; }
+  # The rendered command, run as written against a mixed issue, lists every scenario.
+  local cmd mixed="$home/mixed.md" fakegh="$home/gh"
+  cmd=$(grep -F 'fm-acceptance.mjs rows' "$file" | sed 's/^List them with `//; s/`;.*$//')
+  printf '## Context\n\nx\n\n## Acceptance\n\n- [ ] V1 WHEN a, THE b SHALL c.\n  - surface: user-visible\n- [ ] K1 WHEN d, THE e SHALL f.\n  - surface: internal\n' > "$mixed"
+  printf '#!/usr/bin/env bash\njq -Rs "{body: .}" "%s"\n' "$mixed" > "$fakegh"
+  chmod +x "$fakegh"
+  out=$(cd "$home" && FM_ACCEPTANCE_GH="$fakegh" eval "node $cmd" 2>&1) || { echo "rendered command failed: $out"; return 1; }
+  case "$out" in *'- V1@1440 '*'- V1@390 '*'- K1@- '*) ;; *) echo "the rendered command lists $out"; return 1 ;; esac
   out=$(FM_HOME="$home" "$bin/fm-brief.sh" ship-plain some-proj --mode direct-PR 2>&1) || { echo "plain brief: $out"; return 1; }
   grep -q '^# Acceptance$' "$home/data/ship-plain/brief.md" && { echo 'a brief without --issue carries # Acceptance'; return 1; }
   return 0
