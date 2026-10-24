@@ -329,21 +329,60 @@ case_deployed_head_is_the_newest_ask() {
   passes "$1" "$home"
 }
 
-# A repo deploy-verify does not watch has no ask: firstmate's own deployed: line is the head, and
-# only there. For the watched repo a missing ask is a refusal, whatever the record says.
-case_deployed_line_for_an_unwatched_repo() {
+# deploy-verify maps a task by its PR (the endpoint record's pr=, else the PR on the task's backlog
+# line), so the PR's repo decides: a PR in the watched repo needs a deploy ask, and a deployed:
+# line stands in only for a PR in another repo. The issue's repo plays no part.
+set_pr() {  # <home> <pr-url>
+  printf 'kind=ship\npr=%s\n' "$2" > "$1/state/$TASK.meta"
+}
+
+case_a_pr_in_the_watched_repo_needs_an_ask() {
   local home other=https://github.com/x/y/issues/9
   home=$(new_home)
+  passes "$1" "$home" || return 1
   : > "$home/data/deploy-verify/ledger.jsonl"
   insert_before "$(firstmate "$home")" 'approved: ' "deployed: $VG_SHA"
   refuses "$1" "$home" "no deploy ask for $TASK in" || return 1
   case "$OUT" in *'a deployed: line does not stand in for it'*) ;; *) echo "the refusal does not say the deployed: line is not accepted: $OUT"; return 1 ;; esac
+  # The issue in another repo changes nothing: the PR is still in the watched repo.
   set_line "$(firstmate "$home")" 'issue: ' "issue: $other"
   set_line "$(tester "$home")" 'issue: ' "issue: $other"
+  refuses "$1" "$home" "no deploy ask for $TASK in" || return 1
+  printf '{"type":"ask","round":"deploy","key":"deploy:%s:%s","task":"%s","sha":"%s"}\n' "$TASK" "$VG_SHA" "$TASK" "$VG_SHA" \
+    > "$home/data/deploy-verify/ledger.jsonl"
+  drop "$(firstmate "$home")" 'deployed: '
+  passes "$1" "$home"
+}
+
+case_a_pr_in_another_repo_takes_the_deployed_line() {
+  local home
+  home=$(new_home)
+  set_pr "$home" https://github.com/x/y/pull/5
+  : > "$home/data/deploy-verify/ledger.jsonl"
+  refuses "$1" "$home" "no deployed head for $TASK" || return 1
+  insert_before "$(firstmate "$home")" 'approved: ' "deployed: $VG_SHA"
   passes "$1" "$home" || return 1
   set_line "$(firstmate "$home")" 'deployed: ' 'deployed: 3333333333333333333333333333333333333333'
   refuses "$1" "$home" "Tester head $VG_SHA is not the deployed head 3333333333333333333333333333333333333333" || return 1
-  drop "$(firstmate "$home")" 'deployed: '
+  # An ask in the ledger does not count for a PR deploy-verify does not map.
+  printf '{"type":"ask","round":"deploy","key":"deploy:%s:%s","task":"%s","sha":"%s"}\n' "$TASK" "$VG_SHA" "$TASK" "$VG_SHA" \
+    > "$home/data/deploy-verify/ledger.jsonl"
+  refuses "$1" "$home" "is not the deployed head 3333333333333333333333333333333333333333"
+}
+
+# A finished task has no endpoint record; its PR is on its backlog line.
+case_the_backlog_line_names_the_pr() {
+  local home
+  home=$(new_home)
+  rm "$home/state/$TASK.meta"
+  printf '%s\n' '## Done' "- [x] $TASK - landed UI change https://github.com/x/y/pull/5 (kind: ship) (closed 2026-10-24)" > "$home/data/backlog.md"
+  : > "$home/data/deploy-verify/ledger.jsonl"
+  refuses "$1" "$home" "no deployed head for $TASK" || return 1
+  printf '%s\n' '## Done' "- [x] $TASK - landed UI change https://github.com/o/r/pull/5 (kind: ship) (closed 2026-10-24)" > "$home/data/backlog.md"
+  refuses "$1" "$home" "no deploy ask for $TASK in" || return 1
+  # Another task's PR does not make this one watched.
+  printf '%s\n' '## Done' "- [x] $TASK - landed UI change https://github.com/x/y/pull/5 (kind: ship)" \
+    '- [x] other - other change https://github.com/o/r/pull/6 (kind: ship)' > "$home/data/backlog.md"
   refuses "$1" "$home" "no deployed head for $TASK"
 }
 
@@ -388,7 +427,7 @@ firstmate_line_one firstmate_issue_line tester_surface tester_issue_line records
 issue_cannot_be_parsed issue_cannot_be_read issue_without_user_visible_rows row_absent_from_tester_record
 row_not_pass row_without_evidence_field row_pass_without_evidence row_evidence_path row_id_not_in_issue retired_row
 retired_row_of_a_present_id_at_another_width internal_scenario_row row_text_differs_from_the_issue malformed_tester_row verified_line_closes_the_record acceptance_digest verified_line_missing verified_line_without_head
-deployed_head_is_the_newest_ask deployed_line_for_an_unwatched_repo approval home_video"
+deployed_head_is_the_newest_ask a_pr_in_the_watched_repo_needs_an_ask a_pr_in_another_repo_takes_the_deployed_line the_backlog_line_names_the_pr approval home_video"
 
 # ---- real gate ------------------------------------------------------------------------
 
@@ -457,10 +496,13 @@ unsay 'the Tester head is the deployed head' deployed_head_is_the_newest_ask 'Te
 mutate 'the newest ask is the deployed head' deployed_head_is_the_newest_ask 's/\| tail -n 1\n\}/| head -n 1\n}/'
 mutate 'a draft round is not a deploy' deployed_head_is_the_newest_ask 's/\.round == "deploy" and //'
 mutate 'only the task'"'"'s own asks count' deployed_head_is_the_newest_ask 's/ and \.task == \$t//'
-unsay 'a deployed head is required' deployed_line_for_an_unwatched_repo 'no deployed head for'
-mutate 'an unwatched repo takes the deployed line' deployed_line_for_an_unwatched_repo 's/want_sha=\$\(fm_verify_gate_field "\$file" deployed\)/want_sha=/'
-unsay 'a missing ask refuses for the watched repo' deployed_line_for_an_unwatched_repo 'no deploy ask for'
-mutate 'the watched repo needs an ask, not a deployed line' deployed_line_for_an_unwatched_repo 's/if \[ -n "\$repo" \] && \[ "\$repo" = "\$\{FM_DEPLOY_VERIFY_REPO:-huynhtandat223\/cfw-modules\}" \]; then/if false; then/'
+unsay 'a deployed head is required' a_pr_in_another_repo_takes_the_deployed_line 'no deployed head for'
+mutate 'a PR elsewhere takes the deployed line' a_pr_in_another_repo_takes_the_deployed_line 's/want_sha=\$\(fm_verify_gate_field "\$file" deployed\)/want_sha=/'
+unsay 'a missing ask refuses for a PR in the watched repo' a_pr_in_the_watched_repo_needs_an_ask 'no deploy ask for'
+mutate 'a PR in the watched repo needs an ask, not a deployed line' a_pr_in_the_watched_repo_needs_an_ask 's/if fm_verify_gate_task_in_repo "\$state" "\$data" "\$id" "\$repo"; then/if false; then/'
+mutate 'the endpoint record names the PR' pass_and_read_only 's/case "\$pr" in "https:\/\/github.com\/\$4\/pull\/"\[0-9\]\*\) return 0 ;; esac//'
+mutate 'the backlog line names the PR' the_backlog_line_names_the_pr 's/\[ -f "\$2\/backlog.md" \] \|\| return 1/return 1/'
+mutate 'only the task'"'"'s own backlog line counts' the_backlog_line_names_the_pr 's/if \(t == task && match/if (match/'
 unsay 'approval is required' approval "missing 'approved: firstmate"
 unsay 'approval is a number' approval 'approved line needs a numeric epoch'
 unsay 'approval is newer than the Tester' approval 'approved: firstmate $approved is not newer'

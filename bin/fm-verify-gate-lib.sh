@@ -33,8 +33,8 @@
 #     scenarios as they read now, so a scenario edited in any field after the Tester read it
 #     is verified again,
 #   - the Tester's head= equals the sha of the newest deploy-round or replay ask for the task
-#     in <data-dir>/deploy-verify/ledger.jsonl (a missing ask refuses), or, for an issue of a repo
-#     deploy-verify does not watch, the 'deployed: <sha>' line of firstmate's record, and
+#     in <data-dir>/deploy-verify/ledger.jsonl (a missing ask refuses), or, for a task whose PR is
+#     not in the repo deploy-verify watches, the 'deployed: <sha>' line of firstmate's record, and
 #   - 'approved: firstmate' is newer than the Tester's verified epoch.
 # <base-dir> is the firstmate home: <base-dir>/state is the state directory
 # (FM_STATE_OVERRIDE overrides it). The check never generates or changes evidence.
@@ -52,6 +52,21 @@ fm_verify_gate_ledger_sha() {  # <ledger> <task-id>
 # A record's value for `<key>: ` (the last such line).
 fm_verify_gate_field() {  # <file> <key>
   sed -n "s/^$2: //p" "$1" | tail -n 1
+}
+
+# Whether the task has a PR in <repo>, read the way bin/fm-procevent-deploy-verify.sh build_map
+# maps a task: the endpoint record's pr=, else a PR URL on the task's own backlog line.
+fm_verify_gate_task_in_repo() {  # <state-dir> <data-dir> <task-id> <repo>
+  local pr
+  pr=$(sed -n 's/^pr=//p' "$1/$3.meta" 2>/dev/null | head -n 1)
+  case "$pr" in "https://github.com/$4/pull/"[0-9]*) return 0 ;; esac
+  [ -f "$2/backlog.md" ] || return 1
+  awk -v repo="$4" -v task="$3" '
+    /^- \[.\] / && /\(kind: ship\)/ {
+      line = $0; sub(/^- \[.\] /, "", line); t = line; sub(/ .*/, "", t)
+      if (t == task && match($0, "https://github.com/" repo "/pull/[0-9]+")) found = 1
+    }
+    END { exit !found }' "$2/backlog.md"
 }
 
 # Prints one problem and marks the running fm_verify_gate_problems (its local $bad) as failed.
@@ -138,20 +153,17 @@ fm_verify_gate_problems() {  # <data-dir> <task-id> <base-dir>
     fm_verify_gate_say "Tester verified line has no acceptance=<digest>: verified: tester $verified"
   fi
 
-  # The deployed head. In the repo deploy-verify watches (FM_DEPLOY_VERIFY_REPO, the default of
-  # bin/fm-procevent-deploy-verify.sh) it is the newest ask of the task in the ledger, and a missing
-  # ask is a refusal; in any other repo there is no ask, so it is firstmate's own deployed: line.
-  repo=${issue#https://github.com/}
-  case "$issue" in
-    https://github.com/*/*/issues/[0-9]*) repo=${repo%/issues/*} ;;
-    *) repo= ;;
-  esac
-  if [ -n "$repo" ] && [ "$repo" = "${FM_DEPLOY_VERIFY_REPO:-huynhtandat223/cfw-modules}" ]; then
+  # The deployed head. deploy-verify maps a task by its PR, so a task whose PR is in the repo it
+  # watches (FM_DEPLOY_VERIFY_REPO) has the newest ask of the task in the ledger as its head, and a
+  # missing ask is a refusal; a task with a PR elsewhere has no ask, so it is firstmate's own
+  # deployed: line. The issue's repo plays no part.
+  repo=${FM_DEPLOY_VERIFY_REPO:-huynhtandat223/cfw-modules}
+  if fm_verify_gate_task_in_repo "$state" "$data" "$id" "$repo"; then
     want_sha=$(fm_verify_gate_ledger_sha "$ledger" "$id")
-    [ -n "$want_sha" ] || fm_verify_gate_say "no deploy ask for $id in $ledger; deploy-verify watches $repo, so a deployed: line does not stand in for it"
+    [ -n "$want_sha" ] || fm_verify_gate_say "no deploy ask for $id in $ledger; its PR is in $repo, which deploy-verify watches, so a deployed: line does not stand in for it"
   else
     want_sha=$(fm_verify_gate_field "$file" deployed)
-    [ -n "$want_sha" ] || fm_verify_gate_say "no deployed head for $id: deploy-verify does not watch ${repo:-its repo}, so $file needs a 'deployed: <sha>' line"
+    [ -n "$want_sha" ] || fm_verify_gate_say "no deployed head for $id: its PR is not in $repo, the repo deploy-verify watches, so $file needs a 'deployed: <sha>' line"
   fi
   if [ -n "$want_sha" ] && [ -n "$v_head" ] && [ "$v_head" != "$want_sha" ]; then
     fm_verify_gate_say "Tester head $v_head is not the deployed head $want_sha"

@@ -13,6 +13,8 @@ unset TASKS_AXI_BACKEND || :
 CLOSE="$ROOT/bin/fm-verify-close.sh"
 TMP_ROOT=$(fm_test_tmproot fm-verify-close)
 vg_install_gh "$TMP_ROOT/gh"
+# The closed task has no endpoint record; deploy-verify finds its PR on its backlog line.
+export FM_DEPLOY_VERIFY_REPO=example/repo
 cd "$TMP_ROOT" || exit 1
 ID=landed-ui
 PR=https://github.com/example/repo/pull/7
@@ -39,7 +41,7 @@ add_row() {  # <home> <hold-reason-plain> [hold-kind]
 # unless <status> is not pass, which leaves the A2 row at 390 in that state.
 write_verify() {  # <home> <status>
   local home=$1 status=$2
-  vg_write_records "$home" "$ID"
+  vg_write_records "$home" "$ID" none
   [ "$status" = pass ] || vg_set_row "$home" "$ID" A2@390 "$status" 'evidence: -'
 }
 

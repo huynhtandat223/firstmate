@@ -6,9 +6,12 @@
 #
 # vg_install_gh <dir>               writes the fixture issue and a fake gh under <dir>, and
 #                                   exports FM_ACCEPTANCE_GH and VG_BODY_FILE
-# vg_write_records <home> <task>    writes all three for a home laid out as state/ and data/ with
+# vg_write_records <home> <task> [none]
+#                                   writes all three for a home laid out as state/ and data/ with
 #                                   the Tester home at <home>/tester; every row passes, the Tester
-#                                   head is the ledger's deploy sha and its digest the issue's, and firstmate approved later
+#                                   head is the ledger's deploy sha and its digest the issue's, and firstmate approved later;
+#                                   the task's endpoint record names a PR in the watched repo o/r, which
+#                                   is how deploy-verify maps a task (pass `none` to leave it out)
 # vg_digest                         the fixture issue's acceptance digest (fm-acceptance.mjs digest)
 # vg_tester_file <home> <task>      the Tester record's path
 # vg_set_row <home> <task> <id> <state> <evidence-field>
@@ -63,11 +66,13 @@ vg_tester_file() {  # <home> <task>
   printf '%s/tester/data/verify/%s.md\n' "$1" "$2"
 }
 
-vg_write_records() {  # <home> <task>
+vg_write_records() {  # <home> <task> [none]
   local home=$1 task=$2 tf
   tf=$(vg_tester_file "$home" "$task")
   mkdir -p "$home/state" "$home/data/$task" "$home/data/deploy-verify" "$(dirname "$tf")"
   printf 'home=%s\n' "$home/tester" >"$home/state/tester.meta"
+  [ "${3:-}" = none ] || printf 'pr=https://github.com/o/r/pull/5\n' >>"$home/state/$task.meta"
+  grep -qx 'kind=ship' "$home/state/$task.meta" 2>/dev/null || { [ "${3:-}" = none ] || printf 'kind=ship\n' >>"$home/state/$task.meta"; }
   printf '%s\n' 'surface: user-visible' "issue: $VG_ISSUE" 'approved: firstmate 2000' >"$home/data/$task/verify.md"
   printf '{"type":"ask","round":"deploy","key":"deploy:%s:%s","task":"%s","sha":"%s"}\n' "$task" "$VG_SHA" "$task" "$VG_SHA" \
     >"$home/data/deploy-verify/ledger.jsonl"
