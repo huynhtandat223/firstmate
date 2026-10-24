@@ -36,7 +36,8 @@
 #              unreadable GitHub leaves the result unacknowledged, so the runner
 #              publishes one wake; the next poll retries the same asks, and the same
 #              reason stays quiet until a poll succeeds.
-# replay-skips Re-read no-user-visible-line skips included in last_green_sha.
+# replay-skips Re-read no-user-visible-line and template-refused skips included in
+#              last_green_sha, so a corrected issue gets its ask.
 #              Plan one deploy ask per task with key replay:<task>:<sha>.
 #              --dry-run prints asks without sending or writing anything.
 #              Replayed asks read the issue the same way as every other ask; an
@@ -406,7 +407,7 @@ cmd_replay_skips() {
     hint=$(awk -F'|' -v p="$pr" -v t="$task" '$1 == p && $2 == t {print $4; exit}' "$w/map.psv")
     issue=$(resolve_issue "$(jq -r '.body // ""' <<<"$body")" "$hint")
     printf '%s|%s|%s\n' "$task" "$pr" "$issue" >> "$w/rows"
-  done < <(jq -sc 'unique_by([.task,.pr])[] | select(.type == "skip" and .reason == "no-user-visible-line")' "$LEDGER")
+  done < <(jq -sc 'unique_by([.task,.pr])[] | select(.type == "skip" and (.reason == "no-user-visible-line" or .reason == "template-refused"))' "$LEDGER")
   if [ "$rc" -eq 0 ]; then
     while IFS= read -r task; do
       rows=$(sort -u "$w/rows" | awk -F'|' -v t="$task" '$1 == t')

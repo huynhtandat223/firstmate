@@ -489,6 +489,27 @@ scenario_refused() {
   [ "$(ledger_count '.type == "skip"')" = 0 ] || { echo 'a missing parser was recorded as a skip'; return 1; }
 }
 
+# A template-refused skip is final for its PR, so replay-skips re-reads it too: once
+# the issue is corrected the task gets its ask; while it is still refused it asks nothing.
+scenario_replay_refused() {
+  new_lab "$1"
+  set_cursor 2 s2
+  backlog_task alpha 121 500
+  gh_put "repos/$REPO/pulls/121" "$(jq -cn --arg m "$(sha m121)" '{body:"Closes #500", merge_commit_sha:$m}')"
+  gh_put "repos/$REPO/compare/$(sha m121)...$(sha s2)" '{"status":"ahead"}'
+  jq -cn --arg p "$RURL/pull/121" '{type:"skip", reason:"template-refused", pr:$p, task:"alpha", detail:"V1 (line 9): duplicate id"}' >> "$H/data/deploy-verify/ledger.jsonl"
+  fx_issue_raw 500 "$(tpl_issue_body "$(tpl_scenario V1 user-visible home.video '1440, 390'; tpl_scenario V1 internal - -)")"
+  local dry
+  dry=$("$BIN/fm-procevent-deploy-verify.sh" replay-skips --dry-run 2>"$LAB/err") || { echo 'replay failed on a refused issue'; return 1; }
+  [ -z "$dry" ] || { echo "a still-refused issue was replayed: $dry"; return 1; }
+  grep -q 'refused: alpha cfw-modules#500: .*duplicate id' "$LAB/err" || { echo "no refusal named on stderr: $(cat "$LAB/err")"; return 1; }
+  fx_issue_raw 500 "$(tpl_issue_body "$(tpl_scenario V1 user-visible home.video '1440, 390'; tpl_scenario K2 internal - -)")"
+  dry=$("$BIN/fm-procevent-deploy-verify.sh" replay-skips --dry-run) || return 1
+  jq -se 'length == 1 and .[0].task == "alpha" and .[0].lines == ["V1"] and (.[0].rows | length) == 2' <<<"$dry" >/dev/null || { echo "corrected issue was not replayed: $dry"; return 1; }
+  "$BIN/fm-procevent-deploy-verify.sh" replay-skips >/dev/null || return 1
+  [ "$(inbox_count)" = 1 ] || { echo "inbox: $(inbox_count)"; return 1; }
+}
+
 scenario_replay() {
   new_lab "$1"
   set_cursor 2 s2
@@ -556,7 +577,7 @@ scenario_skip_catchup() {
 
 run_scenarios() {  # <bin-dir>
   local s rc=0
-  for s in ledger skips not_deployed draft record failures runner skip_catchup rows refused replay; do
+  for s in ledger skips not_deployed draft record failures runner skip_catchup rows refused replay replay_refused; do
     out=$(scenario_"$s" "$1" 2>&1) || { printf 'scenario %s: %s\n' "$s" "$out"; rc=1; }
   done
   return $rc
@@ -564,7 +585,7 @@ run_scenarios() {  # <bin-dir>
 
 # ---- real adapter -----------------------------------------------------------
 
-for s in ledger skips not_deployed draft record failures runner skip_catchup rows refused replay; do
+for s in ledger skips not_deployed draft record failures runner skip_catchup rows refused replay replay_refused; do
   out=$(scenario_"$s" "$ROOT/bin" 2>&1) || fail "scenario $s failed on the real adapter: $out"
   pass "deploy-verify $s"
 done
@@ -601,6 +622,8 @@ mutate_parser() {  # <label> <scenario> <perl-substitution>
   pass "guard '$1' is needed: scenario $2 goes red without it"
 }
 
+mutate 'replay reads template-refused skips' replay_refused \
+  's/(unique_by[^\n]*) or \.reason == "template-refused"/$1/'
 mutate 'replay dedupe is task scoped' replay \
   's/ and \.task == \$t and \(\.prs/ and (.prs/'
 mutate 'replay ancestry' replay \
