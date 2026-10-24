@@ -4,14 +4,15 @@
 # backlog is real; only the home around it is a fixture.
 set -u
 
-# shellcheck source=tests/lib.sh
-. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# shellcheck source=tests/verify-gate-helpers.sh
+. "$(dirname "${BASH_SOURCE[0]}")/verify-gate-helpers.sh"
 
 command -v tasks-axi >/dev/null 2>&1 || { echo 'ok - skipped (tasks-axi is not installed)'; exit 0; }
 unset TASKS_AXI_BACKEND || :
 
 CLOSE="$ROOT/bin/fm-verify-close.sh"
 TMP_ROOT=$(fm_test_tmproot fm-verify-close)
+vg_install_gh "$TMP_ROOT/gh"
 cd "$TMP_ROOT" || exit 1
 ID=landed-ui
 PR=https://github.com/example/repo/pull/7
@@ -34,12 +35,12 @@ add_row() {  # <home> <hold-reason-plain> [hold-kind]
   tasks-axi hold "$ID" --reason "$(encode "$reason")" --kind "$kind" --file "$home/data/backlog.md" >/dev/null
 }
 
+# The gate's two records for the fixture issue (tests/verify-gate-helpers.sh): every row passes
+# unless <status> is not pass, which leaves the A2 row at 390 in that state.
 write_verify() {  # <home> <status>
   local home=$1 status=$2
-  printf '%s\n' 'surface: user-visible' '## Acceptance' \
-    '- A1 | the page shows the new button | pass | evidence: https://example.test/shot' \
-    "- A2 | the button saves | $status | evidence: https://example.test/save" > "$home/data/$ID/verify.md"
-  [ "$status" != pass ] || printf '%s\n' 'approved: firstmate 1792486840' >> "$home/data/$ID/verify.md"
+  vg_write_records "$home" "$ID"
+  [ "$status" = pass ] || vg_set_row "$home" "$ID" A2@390 "$status" 'evidence: -'
 }
 
 show() { tasks-axi show "$ID" --file "$1/data/backlog.md" --full 2>/dev/null; }
@@ -73,7 +74,7 @@ test_incomplete_record_refuses_lists_problems_and_refreshes_the_reason() {
   write_verify "$home" pending
   run_close "$home"
   [ "$CLOSE_RC" != 0 ] || fail "an incomplete record closed the row: $CLOSE_OUT"
-  case "$CLOSE_OUT" in *"A2 is 'pending', not pass"*) ;; *) fail "the refusal does not list the problem: $CLOSE_OUT" ;; esac
+  case "$CLOSE_OUT" in *"A2@390 is 'pending', not pass"*) ;; *) fail "the refusal does not list the problem: $CLOSE_OUT" ;; esac
   [ "$(field "$home" state)" = queued ] || fail "the refused row moved to '$(field "$home" state)'"
   [ "$(field "$home" held)" = yes ] || fail "the refused row lost its hold"
   case "$(field "$home" hold_reason)" in
@@ -81,10 +82,29 @@ test_incomplete_record_refuses_lists_problems_and_refreshes_the_reason() {
     *) fail "the hold reason is not stored encoded: $(field "$home" hold_reason)" ;;
   esac
   case "$(printf '%s' "$(field "$home" hold_reason)" | sed 's/^fm-hold-v1://' | perl -MMIME::Base64 -e 'print decode_base64(<STDIN>)')" in
-    "verification pending: "*"A2 is 'pending', not pass"*) ;;
+    "verification pending: "*"A2@390 is 'pending', not pass"*) ;;
     *) fail "the hold reason was not refreshed to the current gaps" ;;
   esac
   pass "an incomplete record refuses, lists the problems and refreshes the hold reason"
+}
+
+# A newer deploy of the task sends a new ask; the Tester's record is for the older head, so
+# the close stays refused until the Tester verifies again.
+test_a_newer_deploy_refuses_the_close_until_the_tester_verifies_again() {
+  local home newer=2222222222222222222222222222222222222222
+  home=$(make_home newer-deploy)
+  add_row "$home" 'verification pending: an older gap'
+  write_verify "$home" pass
+  printf '{"type":"ask","round":"deploy","key":"deploy:%s:%s","task":"%s","sha":"%s"}\n' "$ID" "$newer" "$ID" "$newer" \
+    >> "$home/data/deploy-verify/ledger.jsonl"
+  run_close "$home"
+  [ "$CLOSE_RC" != 0 ] || fail "a record for an older deploy closed the row: $CLOSE_OUT"
+  case "$CLOSE_OUT" in *"is not the deployed head $newer"*) ;; *) fail "the refusal does not name the deployed head: $CLOSE_OUT" ;; esac
+  [ "$(field "$home" state)" = queued ] && [ "$(field "$home" held)" = yes ] || fail "the refused row changed: $(show "$home")"
+  sed -i.bak "s/head=.*/head=$newer/" "$(vg_tester_file "$home" "$ID")"
+  run_close "$home"
+  [ "$CLOSE_RC" = 0 ] && [ "$(field "$home" state)" = "done" ] || fail "the re-verified record did not close the row: $CLOSE_OUT"
+  pass "a newer deploy refuses the close until the Tester's record names that head"
 }
 
 test_a_row_not_held_for_verification_is_refused_and_unchanged() {
@@ -161,7 +181,7 @@ check_pending_after_answer() {  # <home> <label>
   [ "$(field "$home" held)" = yes ] || fail "$label: the open row is not held"
   [ "$(field "$home" hold_kind)" = external ] || fail "$label: the hold is '$(field "$home" hold_kind)', want external"
   case "$(printf '%s' "$(field "$home" hold_reason)" | sed 's/^fm-hold-v1://' | perl -MMIME::Base64 -e 'print decode_base64(<STDIN>)')" in
-    "verification pending: "*"A2 is 'pending', not pass"*) ;;
+    "verification pending: "*"A2@390 is 'pending', not pass"*) ;;
     *) fail "$label: the hold reason does not name the missing items: $(field "$home" hold_reason)" ;;
   esac
 }
@@ -331,6 +351,7 @@ test_teardown_holds_the_row_before_it_leaves_in_flight() {
 
 test_complete_record_lifts_the_hold_and_closes_the_row
 test_incomplete_record_refuses_lists_problems_and_refreshes_the_reason
+test_a_newer_deploy_refuses_the_close_until_the_tester_verifies_again
 test_a_row_not_held_for_verification_is_refused_and_unchanged
 test_answering_a_verification_pending_captain_call_keeps_it_open
 test_releasing_a_verification_pending_captain_call_keeps_it_held
