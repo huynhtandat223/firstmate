@@ -7553,8 +7553,280 @@ test_closed_exit_picker_drops_saved_dialog_name() {
   pass "a closed picker drops the saved dialog name, and the stale stays ordinary"
 }
 
+# --- the worker turn-end state checker ----------------------------------------
+# A ship or scout worker's turn end is decided from its own newest state line,
+# written since its previous turn end, with no model in the loop: a valid
+# working: or paused: line wakes nothing, a wake verb wakes as before, a missing
+# or malformed line is answered with up to three fire-and-forget pings per wait
+# and then wakes firstmate with the pane tail, and a pane that must not be pinged
+# (quota text, dead agent, composer not empty) wakes firstmate at once. The panes
+# here show an empty agent composer (a bare prompt glyph on the cursor row), a
+# live agent process, and no quota text unless a case says otherwise.
+
+tc_case() {  # <name> <kind> -> case dir
+  local name=$1 kind=$2 dir state
+  dir=$(make_case "$name"); state="$dir/state"
+  # The shared fake tmux answers capture, inventory and the pane command. This
+  # wrapper adds what the checker also reads or does: the cursor row the composer
+  # classifier anchors on, and the keys a doorbell ring types, logged.
+  mv "$dir/fakebin/tmux" "$dir/fakebin/tmux.base"
+  cat > "$dir/fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  display-message)
+    case "$*" in *cursor_y*) printf '%s\n' "${FM_FAKE_TMUX_CURSOR_Y:-0}"; exit 0 ;; esac ;;
+  send-keys)
+    printf '%s\n' "$*" >> "${FM_FAKE_TMUX_SENT:-/dev/null}"
+    exit 0 ;;
+esac
+exec "$(dirname "$0")/tmux.base" "$@"
+SH
+  chmod +x "$dir/fakebin/tmux"
+  printf 'window=test:fm-tc\nkind=%s\nharness=grok\nbackend=tmux\n' "$kind" > "$state/tc.meta"
+  tc_pane "$dir" 'output above the prompt'
+  printf '%s\n' "$dir"
+}
+
+# An idle claude screen: <text> is one transcript row, then the composer between
+# two rules with the cursor on it (row 2) - the shape the shared composer
+# classifier reads as an empty composer.
+tc_pane() {  # <dir> <transcript-row>
+  printf '%s\n────────────────────────\n❯\302\240\n────────────────────────\n  bypass permissions\n' "$2" > "$1/pane.txt"
+}
+
+# Write one status line and mark the status file as already reported, so a round
+# differs from the previous one only by the turn end the case touches.
+tc_status() {  # <dir> <line>
+  local state=$1/state
+  printf '%s\n' "$2" >> "$state/tc.status"
+  printf '%s' "$(seen_sig "$state/tc.status")" > "$state/.seen-tc_status"
+}
+
+# A new turn end: the marker grows, so its size:mtime signature is unseen.
+tc_turn_end() {  # <dir>
+  printf 'x' >> "$1/state/tc.turn-ended"
+}
+
+TC_WATCH_PID=
+tc_watch_launch() {  # <dir> [extra env assignments...]
+  local dir=$1 key text
+  shift
+  # The pane is already stably stale at its recorded hash and already surfaced
+  # once, as it is after the supervision turn that handled a first sight, so a
+  # round exercises the turn-end signal alone and not the staleness backbone.
+  key=test_fm-tc
+  text=$(cat "$dir/pane.txt")
+  printf '%s' "$(hash_text "$text")" > "$dir/state/.hash-$key"
+  printf '1\n' > "$dir/state/.count-$key"
+  printf '%s' "$(hash_text "$text")" > "$dir/state/.stale-$key"
+  env PATH="$dir/fakebin:$PATH" FM_FAKE_TMUX_WINDOW=test:fm-tc FM_FAKE_TMUX_CAPTURE="$dir/pane.txt" \
+    FM_FAKE_TMUX_CURRENT_COMMAND=grok FM_FAKE_TMUX_CURSOR_Y=2 FM_FAKE_TMUX_SENT="$dir/sent.log" \
+    FM_FAKE_CREW_STATE='state: unknown · source: none · no current-state source available' \
+    FM_WATCH_HANDLING_SUCCESSOR=1 \
+    FM_STATE_OVERRIDE="$dir/state" FM_CREW_STATE_BIN="$dir/fakebin/fm-crew-state.sh" \
+    FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$@" \
+    "$WATCH" >> "$dir/watch.out" 2>&1 &
+  TC_WATCH_PID=$!
+}
+
+# One round that must NOT wake: the watcher stays alive through two whole poll
+# cycles after the turn end, then is stopped.
+tc_round_quiet() {  # <dir> [env...]
+  local dir=$1
+  shift
+  tc_turn_end "$dir"
+  tc_watch_launch "$dir" "$@"
+  wait_poll_cycle "$dir/state" "$TC_WATCH_PID" 300 \
+    && wait_poll_cycle "$dir/state" "$TC_WATCH_PID" 300 \
+    || { reap "$TC_WATCH_PID"; return 1; }
+  reap "$TC_WATCH_PID"
+  return 0
+}
+
+# One round that must wake: the watcher exits on its own.
+tc_round_wake() {  # <dir> [env...]
+  local dir=$1
+  shift
+  tc_turn_end "$dir"
+  tc_watch_launch "$dir" "$@"
+  wait_for_exit "$TC_WATCH_PID" 100 || { reap "$TC_WATCH_PID"; return 1; }
+  return 0
+}
+
+# Rows as the drain presents them (it deduplicates the same file reported by both
+# scans of one batch).
+tc_signal_rows() {  # <state>
+  FM_STATE_OVERRIDE="$1" "$DRAIN" 2>/dev/null \
+    | awk -F '\t' '$3 == "signal" && $4 == "tc.turn-ended" { n++ } END { print n + 0 }'
+}
+
+tc_pings() {  # <state>
+  find "$1/tc.inbox" -maxdepth 1 -name '*.msg' 2>/dev/null | wc -l | tr -d ' '
+}
+
+tc_verdict_logged() {  # <state> <verdict>
+  grep -F "turn-end check: tc verdict=$2" "$1/.watch-triage.log" >/dev/null 2>&1
+}
+
+test_turn_end_with_a_valid_working_or_paused_line_wakes_nothing() {
+  local kind line verdict dir state
+  for kind in ship scout; do
+    for line in 'working: still implementing the parser' \
+      "paused: waiting on the validation run until $(iso_utc_at "$(( $(date +%s) + 7200 ))")"
+    do
+      case "$line" in working:*) verdict=valid-working ;; *) verdict=valid-paused ;; esac
+      dir=$(tc_case "tc-valid-$kind-$verdict" "$kind"); state="$dir/state"
+      tc_status "$dir" "$line"
+      tc_round_quiet "$dir" || fail "[$kind/$verdict] a valid state line at the turn end woke the watcher: $(cat "$dir/watch.out")"
+      [ ! -s "$state/.wake-queue" ] || fail "[$kind/$verdict] a valid state line queued a row: $(cat "$state/.wake-queue")"
+      [ "$(tc_pings "$state")" -eq 0 ] || fail "[$kind/$verdict] a valid state line was pinged"
+      tc_verdict_logged "$state" "$verdict" || fail "[$kind/$verdict] the triage log has no verdict line: $(cat "$state/.watch-triage.log" 2>/dev/null)"
+    done
+  done
+  pass "a ship or scout turn end with a valid working or paused line queues nothing, sends no ping, and logs its verdict"
+}
+
+test_turn_end_with_a_wake_verb_wakes_as_before() {
+  local verb line dir state
+  for verb in done blocked needs-decision failed handoff-needed; do
+    case "$verb" in
+      done) line='done: PR https://example.invalid/pull/1 head abc123' ;;
+      *) line="$verb: the release host is unreachable" ;;
+    esac
+    dir=$(tc_case "tc-wake-$verb" ship); state="$dir/state"
+    tc_status "$dir" "$line"
+    tc_round_wake "$dir" || fail "[$verb] a turn end under a $verb line did not wake firstmate"
+    [ "$(tc_signal_rows "$state")" -eq 1 ] || fail "[$verb] the turn end queued $(tc_signal_rows "$state") rows instead of one"
+    [ "$(tc_pings "$state")" -eq 0 ] || fail "[$verb] a wake verb was pinged"
+    tc_verdict_logged "$state" wake-verb || fail "[$verb] the triage log has no wake-verb line"
+  done
+  # A status change carrying the verb surfaces as it always did, with the
+  # decision-owned payload kept for needs-decision.
+  dir=$(tc_case tc-wake-status-batch ship); state="$dir/state"
+  printf 'needs-decision: which retention window wins\n' >> "$state/tc.status"
+  tc_round_wake "$dir" || fail "a needs-decision status change with a turn end did not wake"
+  grep -F 'needs-decision:' "$state/.wake-queue" >/dev/null || fail "the needs-decision payload was lost: $(cat "$state/.wake-queue")"
+  pass "a turn end under a done, blocked, needs-decision, failed or handoff-needed line wakes firstmate as before"
+}
+
+test_turn_end_without_a_valid_line_pings_three_times_then_wakes_with_the_pane_tail() {
+  local spec name line dir state round
+  for spec in 'missing|' 'unknown-verb|parked: waiting for a review' 'empty-note|working:' \
+    'bad-until|paused: waiting on the queue until 2026-13-45T99:99Z'
+  do
+    name=${spec%%|*}; line=${spec#*|}
+    dir=$(tc_case "tc-ping-$name" ship); state="$dir/state"
+    [ -z "$line" ] || tc_status "$dir" "$line"
+    round=1
+    while [ "$round" -le 3 ]; do
+      tc_round_quiet "$dir" || fail "[$name] ping round $round woke the watcher: $(cat "$dir/watch.out")"
+      [ ! -s "$state/.wake-queue" ] || fail "[$name] ping round $round queued a row: $(cat "$state/.wake-queue")"
+      [ "$(tc_pings "$state")" -eq "$round" ] || fail "[$name] ping round $round left $(tc_pings "$state") inbox records"
+      tc_verdict_logged "$state" "ping-$round" || fail "[$name] no ping-$round verdict was logged"
+      round=$((round + 1))
+    done
+    grep -F 'format reminder, not new work' "$state"/tc.inbox/*.msg >/dev/null \
+      || fail "[$name] the ping text was not the fixed reminder"
+    grep -F 'paused: <why> until <YYYY-MM-DDTHH:MMZ>' "$state"/tc.inbox/*.msg >/dev/null \
+      || fail "[$name] the ping did not show the paused shape"
+    grep -F "$state/tc.status" "$state"/tc.inbox/*.msg >/dev/null || fail "[$name] the ping did not name the status file"
+    tc_pane "$dir" 'last visible line of the pane'
+    tc_round_wake "$dir" || fail "[$name] the fourth missing state did not wake firstmate"
+    [ "$(tc_signal_rows "$state")" -eq 1 ] || fail "[$name] the escalation queued $(tc_signal_rows "$state") rows instead of one"
+    grep -F 'last visible line of the pane' "$state/.wake-queue" >/dev/null \
+      || fail "[$name] the escalation row did not carry the pane tail: $(cat "$state/.wake-queue")"
+    [ "$(tc_pings "$state")" -eq 3 ] || fail "[$name] the escalation sent a fourth ping"
+    tc_verdict_logged "$state" ping-exhausted || fail "[$name] no ping-exhausted verdict was logged"
+  done
+  pass "a missing or malformed state line is pinged three times per wait, and the fourth turn end wakes firstmate with the pane tail and no ping"
+}
+
+test_a_valid_line_after_pings_resets_the_ping_count() {
+  local dir state
+  dir=$(tc_case tc-ping-reset ship); state="$dir/state"
+  tc_round_quiet "$dir" || fail "ping 1 woke the watcher"
+  tc_round_quiet "$dir" || fail "ping 2 woke the watcher"
+  [ "$(tc_pings "$state")" -eq 2 ] || fail "two missing turn ends left $(tc_pings "$state") pings"
+  tc_status "$dir" 'working: back to the parser'
+  tc_round_quiet "$dir" || fail "a valid line after pings woke the watcher: $(cat "$dir/watch.out")"
+  [ ! -e "$state/.turnend-pings-tc" ] || fail "a valid line did not reset the ping count"
+  tc_round_quiet "$dir" || fail "the next missing turn end woke the watcher"
+  tc_verdict_logged "$state" ping-1 || fail "the next missing turn end was not ping 1 again"
+  [ "$(tc_pings "$state")" -eq 3 ] || fail "the reset wait sent $(tc_pings "$state") pings in total instead of three"
+  pass "a valid state line resets the ping count, so the next missing turn end is ping 1 again"
+}
+
+test_turn_end_that_must_not_be_pinged_wakes_at_once_with_the_pane_tail() {
+  local spec name text dir state sample
+  for sample in 'You have hit your usage limit. It resets at 3pm.' \
+    'Codex error: The usage limit has been reached' \
+    '[429] usage limit exceeded for this key' \
+    'Request failed: rate limit, retry later'
+  do
+    dir=$(tc_case tc-quota ship); state="$dir/state"
+    tc_pane "$dir" "$sample"
+    tc_round_wake "$dir" || fail "[quota: $sample] quota text did not wake firstmate"
+    [ "$(tc_pings "$state")" -eq 0 ] || fail "[quota: $sample] a rate-limited pane was pinged"
+    [ "$(tc_signal_rows "$state")" -eq 1 ] || fail "[quota: $sample] queued $(tc_signal_rows "$state") rows instead of one"
+    grep -F "$sample" "$state/.wake-queue" >/dev/null || fail "[quota: $sample] the row did not carry the pane tail"
+    tc_verdict_logged "$state" quota || fail "[quota: $sample] no quota verdict was logged"
+    rm -rf "$dir"
+  done
+  # A bare shell where the agent was: the process is dead.
+  dir=$(tc_case tc-dead ship); state="$dir/state"
+  tc_pane "$dir" 'shell after the agent exited'
+  tc_round_wake "$dir" FM_FAKE_TMUX_CURRENT_COMMAND=zsh || fail "a dead agent did not wake firstmate"
+  [ "$(tc_pings "$state")" -eq 0 ] || fail "a dead agent was pinged"
+  grep -F 'shell after the agent exited' "$state/.wake-queue" >/dev/null || fail "the dead-agent row did not carry the pane tail"
+  tc_verdict_logged "$state" dead || fail "no dead verdict was logged"
+  # A window that is gone: the process is missing.
+  dir=$(tc_case tc-missing ship); state="$dir/state"
+  tc_round_wake "$dir" FM_FAKE_TMUX_WINDOWS=test:fm-other || fail "a missing endpoint did not wake firstmate"
+  [ "$(tc_pings "$state")" -eq 0 ] || fail "a missing endpoint was pinged"
+  # A composer that is not empty: text typed and unsent, or a shape it cannot read.
+  dir=$(tc_case tc-composer-pending ship); state="$dir/state"
+  printf 'output above the prompt\n────────────────────────\n❯ half-typed instruction\n────────────────────────\n  bypass permissions\n' > "$dir/pane.txt"
+  tc_status "$dir" 'working: parser'
+  tc_round_wake "$dir" || fail "a pending composer did not wake firstmate"
+  [ "$(tc_pings "$state")" -eq 0 ] || fail "a pending composer was pinged"
+  tc_verdict_logged "$state" composer || fail "no composer verdict was logged"
+  dir=$(tc_case tc-composer-unknown ship); state="$dir/state"
+  printf 'no prompt shape here at all\n' > "$dir/pane.txt"
+  tc_round_wake "$dir" || fail "an unreadable composer did not wake firstmate"
+  [ "$(tc_pings "$state")" -eq 0 ] || fail "an unreadable composer was pinged"
+  pass "quota text, a dead or missing agent, and a composer that is not empty each wake firstmate at once with the pane tail and no ping"
+}
+
+test_turn_end_checker_failure_wakes_firstmate_naming_it() {
+  local dir state
+  # The status path is not a readable file.
+  dir=$(tc_case tc-error-status ship); state="$dir/state"
+  mkdir -p "$state/tc.status"
+  tc_round_wake "$dir" || fail "an unreadable status did not wake firstmate"
+  grep -F 'status file unreadable' "$state/.wake-queue" >/dev/null || fail "the row did not name the status failure: $(cat "$state/.wake-queue")"
+  tc_verdict_logged "$state" error || fail "no error verdict was logged"
+  # The pane capture fails.
+  dir=$(tc_case tc-error-capture ship); state="$dir/state"
+  tc_round_wake "$dir" FM_FAKE_TMUX_CAPTURE_COUNT_FILE="$dir/captures" FM_FAKE_TMUX_CAPTURE_FAIL_AFTER=0 \
+    || fail "a failed capture did not wake firstmate"
+  grep -F 'pane capture failed' "$state/.wake-queue" >/dev/null || fail "the row did not name the capture failure: $(cat "$state/.wake-queue")"
+  # The ping bookkeeping cannot be written.
+  dir=$(tc_case tc-error-bookkeeping ship); state="$dir/state"
+  mkdir -p "$state/.turnend-pings-tc"
+  tc_round_wake "$dir" || fail "unwritable ping bookkeeping did not wake firstmate"
+  grep -F 'ping bookkeeping unwritable' "$state/.wake-queue" >/dev/null || fail "the row did not name the bookkeeping failure: $(cat "$state/.wake-queue")"
+  [ "$(tc_pings "$state")" -eq 0 ] || fail "a ping was sent without its bookkeeping"
+  pass "a checker failure wakes firstmate with one row that names the failure"
+}
+
 test_exit_picker_stale_names_the_dialog
 test_exit_picker_wedge_keeps_climbing
 test_quoted_exit_picker_stays_ordinary_stale
 test_secondmate_exit_picker_stays_quiet
 test_closed_exit_picker_drops_saved_dialog_name
+test_turn_end_with_a_valid_working_or_paused_line_wakes_nothing
+test_turn_end_with_a_wake_verb_wakes_as_before
+test_turn_end_without_a_valid_line_pings_three_times_then_wakes_with_the_pane_tail
+test_a_valid_line_after_pings_resets_the_ping_count
+test_turn_end_that_must_not_be_pinged_wakes_at_once_with_the_pane_tail
+test_turn_end_checker_failure_wakes_firstmate_naming_it

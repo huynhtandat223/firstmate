@@ -2381,6 +2381,299 @@ EOF
   [ -z "$absorbed" ] || triage_log "absorbed assistance turn-end:$absorbed"
 }
 
+# --- the worker turn-end state checker ---------------------------------------
+# A ship or scout worker's turn end is checked against its own newest state
+# line, in shell, with no model in the loop (docs/architecture.md owns the
+# contract). Each decision writes one triage line:
+#   turn-end check: <task> verdict=<valid-working|valid-paused|wake-verb|ping-1|
+#   ping-2|ping-3|ping-exhausted|quota|dead|composer|error>
+# The checks run in this order: process, quota text, composer, then the state
+# line. A ping never goes to a rate-limited, dead or busy pane, because a ping to
+# a rate-limited session extends its limit.
+TURNEND_PING_MAX=3
+TURNEND_TAIL_LINES=20
+# Files that must wake firstmate (the checker kept them in $pending), and the
+# per-file wake-row suffix carrying the verdict and the pane tail.
+TURNEND_FORCE_FILES=''
+TURNEND_SUFFIXES=''
+# Tasks whose turn end carried a valid working or paused line: their .status file
+# in the same batch is not held to the old no-verb working proof.
+TURNEND_OK_TASKS=''
+TURNEND_VERDICT=''
+TURNEND_WHY=''
+TURNEND_TAIL=''
+
+# The one list of quota and limit texts, matched on the ANSI-stripped pane tail.
+# Each pattern has one test sample in tests/fm-watch-triage.test.sh.
+turnend_quota_text() {  # <plain pane tail>
+  printf '%s\n' "$1" | grep -qiE 'hit your (usage )?limit|usage limit has been reached|\[429\][^[:alnum:]]*usage limit|rate limit'
+}
+
+# The fixed ping text. It names the task's status file and the verbs with their
+# shapes; it is a format reminder, never new work.
+turnend_ping_text() {  # <task>
+  printf 'Your turn ended with no valid state line in %s/%s.status. Append exactly one line there, then continue your task: "working: <what you are doing>", "paused: <why> until <YYYY-MM-DDTHH:MMZ>", "done: <PR URL> head <sha>", "blocked: <why>", or "needs-decision: <options>". This is a format reminder, not new work.' "$STATE" "$1"
+}
+
+# Fire-and-forget through the steering inbox, the way secondmate_ring_to_drain
+# does it; the ring is the doorbell.
+turnend_send_ping() {  # <task> <window> <backend> <label>
+  local task=$1 w=$2 backend=$3 label=$4 delivery_id rec
+  delivery_id=$(LC_ALL=C od -An -v -tx1 -N 8 /dev/urandom 2>/dev/null | tr -d ' \n') || return 1
+  case "$delivery_id" in ''|*[!0-9a-f]*) return 1 ;; esac
+  rec=$(fm_task_inbox_write "$STATE" "$task" \
+    "${FM_FROMFIRST_MARK}delivery=${delivery_id} $(turnend_ping_text "$task")" fire-and-forget) || return 1
+  fm_task_inbox_ring "$backend" "$w" "$rec" "$label"
+}
+
+# Classify the newest state line a worker wrote since its previous turn end into
+# valid-working, valid-paused, wake-verb, malformed or missing; resolved lines are
+# skipped. The verb list stays in bin/fm-classify-lib.sh: a verb it does not
+# recognise is malformed, and any recognised verb other than working or paused
+# wakes firstmate exactly as it does today. Prints `<verdict> <size>`, the size
+# being the status file's byte length this verdict was read at, for the caller to
+# record once the verdict is final. Returns 1 when the status cannot be read.
+turnend_state_line_verdict() {  # <task> -> `<verdict> <size>` on stdout
+  local task=$1 f seenf size start span line newest='' verb note resolve
+  f="$STATE/$task.status"; seenf="$STATE/.turnend-seen-$task"
+  if [ ! -e "$f" ]; then
+    printf 'missing 0'
+    return 0
+  fi
+  [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 1
+  size=$(_fm_status_file_size "$f") || return 1
+  size=${size//[[:space:]]/}
+  case "$size" in ''|*[!0-9]*) return 1 ;; esac
+  start=$(cat "$seenf" 2>/dev/null || true)
+  case "$start" in ''|*[!0-9]*) start=0 ;; esac
+  [ "$start" -le "$size" ] || start=0
+  span=$(_fm_status_read_span "$f" "$start" "$((size - start))") || return 1
+  resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in *[![:space:]]*) ;; *) continue ;; esac
+    status_line_verb "$line" verb
+    [ "$verb" != "$resolve" ] || continue
+    newest=$line
+  done <<EOF
+$span
+EOF
+  if [ -z "$newest" ]; then
+    printf 'missing %s' "$size"
+    return 0
+  fi
+  status_line_verb "$newest" verb
+  note=$(status_line_note "$newest")
+  note=${note#"${note%%[![:space:]]*}"}
+  if [ "$verb" = working ]; then
+    if [ -n "$note" ]; then printf 'valid-working %s' "$size"; else printf 'malformed %s' "$size"; fi
+  elif status_is_paused "$newest"; then
+    if [ -z "$note" ]; then
+      printf 'malformed %s' "$size"
+    elif printf '%s' "$newest" | grep -qiE '[[:space:]]until[[:space:]]+[0-9]' && ! status_paused_until "$newest" >/dev/null; then
+      printf 'malformed %s' "$size"
+    else
+      printf 'valid-paused %s' "$size"
+    fi
+  elif status_prefix_unrecognized "$newest" || [ -z "$note" ]; then
+    printf 'malformed %s' "$size"
+  else
+    printf 'wake-verb %s' "$size"
+  fi
+}
+
+# Decide one worker's turn end. Sets TURNEND_VERDICT, TURNEND_WHY (the failure
+# an `error` verdict names) and TURNEND_TAIL (the last lines of the pane).
+turnend_check_task() {  # <task>
+  local task=$1 meta w backend label astate plain cstate verdict size count pingf seenf
+  TURNEND_VERDICT=error; TURNEND_WHY=''; TURNEND_TAIL=''
+  meta="$STATE/$task.meta"
+  pingf="$STATE/.turnend-pings-$task"; seenf="$STATE/.turnend-seen-$task"
+  w=$(fm_meta_get "$meta" window)
+  if [ -z "$w" ]; then
+    TURNEND_WHY='no window recorded for the task'
+    return 0
+  fi
+  backend=$(fm_meta_get "$meta" backend)
+  [ -n "$backend" ] || backend=tmux
+  label=$(window_label "$w")
+  astate=$(fm_backend_agent_state "$backend" "$w" 2>/dev/null) || astate=unreadable
+  case "$astate" in
+    alive) ;;
+    dead|missing)
+      if watcher_capture "$backend" "$w" "$TURNEND_TAIL_LINES" "$label"; then
+        TURNEND_TAIL=$(printf '%s\n' "$WATCHER_CAPTURE" | fm_composer_strip_ansi | tail -n "$TURNEND_TAIL_LINES")
+      fi
+      TURNEND_VERDICT=dead
+      TURNEND_WHY="agent process $astate"
+      return 0
+      ;;
+    *)
+      TURNEND_WHY="agent state $astate"
+      return 0
+      ;;
+  esac
+  if ! watcher_capture "$backend" "$w" "$TURNEND_TAIL_LINES" "$label"; then
+    TURNEND_WHY='pane capture failed'
+    return 0
+  fi
+  plain=$(printf '%s\n' "$WATCHER_CAPTURE" | fm_composer_strip_ansi | tail -n "$TURNEND_TAIL_LINES")
+  TURNEND_TAIL=$plain
+  if turnend_quota_text "$plain"; then
+    TURNEND_VERDICT=quota
+    return 0
+  fi
+  cstate=$(fm_backend_composer_state "$backend" "$w" "$label" 2>/dev/null) || cstate=unknown
+  if [ "$cstate" != empty ]; then
+    TURNEND_VERDICT=composer
+    TURNEND_WHY="composer $cstate"
+    return 0
+  fi
+  if ! verdict=$(turnend_state_line_verdict "$task"); then
+    TURNEND_WHY='status file unreadable'
+    return 0
+  fi
+  size=${verdict#* }
+  verdict=${verdict%% *}
+  case "$verdict" in
+    valid-working|valid-paused|wake-verb)
+      rm -f "$pingf"
+      printf '%s' "$size" > "$seenf" 2>/dev/null || true
+      TURNEND_VERDICT=$verdict
+      return 0
+      ;;
+  esac
+  # Missing or malformed: ping up to TURNEND_PING_MAX times per wait, then wake.
+  count=$(cat "$pingf" 2>/dev/null || true)
+  case "$count" in ''|*[!0-9]*) count=0 ;; esac
+  printf '%s' "$size" > "$seenf" 2>/dev/null || true
+  if [ "$count" -ge "$TURNEND_PING_MAX" ]; then
+    if [ "$count" -eq "$TURNEND_PING_MAX" ] && ! printf '%s' "$((count + 1))" > "$pingf" 2>/dev/null; then
+      TURNEND_WHY='ping bookkeeping unwritable'
+      return 0
+    fi
+    TURNEND_VERDICT=ping-exhausted
+    return 0
+  fi
+  count=$((count + 1))
+  if ! printf '%s' "$count" > "$pingf" 2>/dev/null; then
+    TURNEND_WHY='ping bookkeeping unwritable'
+    return 0
+  fi
+  if ! turnend_send_ping "$task" "$w" "$backend" "$label"; then
+    TURNEND_WHY='ping delivery failed'
+    return 0
+  fi
+  TURNEND_VERDICT="ping-$count"
+}
+
+# A ping answers a missing or malformed line, so that task's status change in the
+# same batch is advanced here as a surfaced batch would advance it, instead of
+# waking firstmate for it too.
+turnend_commit_status() {  # <status-file> <signature>
+  local f=$1 sig=$2 size ident
+  fm_wake_status_reported_commit "$STATE" "$f" "$sig" || true
+  mark_surface_reported "$f" "$sig" || true
+  size=$(_fm_status_file_size "$f" 2>/dev/null) && ident=$(_fm_open_decisions_file_ident "$f" 2>/dev/null) || return 0
+  size=${size//[[:space:]]/}
+  fm_wake_status_seen_commit "$STATE" "$f" "$size" "$ident" || true
+  mark_surfaced "$f" "$size" "$ident"
+}
+
+# Run the checker over every pending ship or scout turn end in $pending. A turn
+# end that needs no wake leaves the batch; one that needs firstmate stays, is
+# recorded in TURNEND_FORCE_FILES, and carries its verdict and pane tail in
+# TURNEND_SUFFIXES. A secondmate, or a task with no recorded kind, keeps the older
+# triage.
+worker_turn_end_checks() {
+  local sf sig f id kind kept='' decided='' dropped_status='' flat suffix
+  TURNEND_FORCE_FILES=''; TURNEND_SUFFIXES=''; TURNEND_OK_TASKS=''
+  while IFS=$(printf '\t') read -r sf sig f; do
+    [ -n "$sf" ] || continue
+    case "$f" in
+      *.turn-ended)
+        id=${f##*/}
+        id=${id%.turn-ended}
+        kind=$(fm_meta_get "$STATE/$id.meta" kind)
+        case "$kind" in
+          ship|scout)
+            case " $decided " in
+              *" $id:"*) ;;
+              *)
+                turnend_check_task "$id"
+                triage_log "turn-end check: $id verdict=$TURNEND_VERDICT${TURNEND_WHY:+ ($TURNEND_WHY)}"
+                decided="$decided $id:$TURNEND_VERDICT"
+                case "$TURNEND_VERDICT" in
+                  valid-working|valid-paused)
+                    TURNEND_OK_TASKS="$TURNEND_OK_TASKS $id"
+                    ;;
+                  ping-1|ping-2|ping-3)
+                    dropped_status="$dropped_status $id"
+                    ;;
+                  wake-verb)
+                    TURNEND_FORCE_FILES="$TURNEND_FORCE_FILES $f"
+                    ;;
+                  *)
+                    TURNEND_FORCE_FILES="$TURNEND_FORCE_FILES $f"
+                    flat=$(printf '%s' "$TURNEND_TAIL" | tr '\n\t' '  ' | cut -c1-1500)
+                    suffix="turn-end check $id verdict=$TURNEND_VERDICT${TURNEND_WHY:+ ($TURNEND_WHY)}"
+                    [ -z "$flat" ] || suffix="$suffix; pane tail: $flat"
+                    TURNEND_SUFFIXES="${TURNEND_SUFFIXES}${f}"$'\t'"${suffix}"$'\n'
+                    ;;
+                esac
+                ;;
+            esac
+            case " $decided " in
+              *" $id:valid-working "*|*" $id:valid-paused "*|*" $id:ping-1 "*|*" $id:ping-2 "*|*" $id:ping-3 "*)
+                printf '%s' "$sig" > "$sf"
+                continue
+                ;;
+            esac
+            ;;
+        esac
+        ;;
+    esac
+    kept="$kept$(printf '%s\t%s\t%s' "$sf" "$sig" "$f")
+"
+  done <<EOF
+$pending
+EOF
+  pending=${kept%?}
+  [ -n "$dropped_status" ] || return 0
+  kept=''
+  while IFS=$(printf '\t') read -r sf sig f; do
+    [ -n "$sf" ] || continue
+    case "$f" in
+      *.status)
+        id=${f##*/}
+        id=${id%.status}
+        case " $dropped_status " in
+          *" $id "*)
+            turnend_commit_status "$f" "$sig"
+            continue
+            ;;
+        esac
+        ;;
+    esac
+    kept="$kept$(printf '%s\t%s\t%s' "$sf" "$sig" "$f")
+"
+  done <<EOF
+$pending
+EOF
+  pending=${kept%?}
+}
+
+# The wake-row suffix for one turn-end file, empty when the checker added none.
+turnend_suffix_for() {  # <file>
+  local sf sx
+  while IFS=$(printf '\t') read -r sf sx; do
+    [ "$sf" = "$1" ] || continue
+    printf '%s' "$sx"
+    return 0
+  done <<EOF
+$TURNEND_SUFFIXES
+EOF
+}
+
 # Deliver a durably queued process-event result to firstmate. Publication is
 # owned by bin/fm-procevent.sh - by the runner at capture time and by reconcile's
 # re-announcement - so this decides only whether a queued check record has been
@@ -3318,6 +3611,13 @@ EOF
     sleep "$SIGNAL_GRACE"
     pending=$(printf '%s\n%s' "$pending" "$(scan_signals)")
     absorb_assistance_turn_ends
+    # A ship or scout worker's turn end is state-checked here, once per batch,
+    # after the grace period so the worker's last status write has landed. The
+    # away daemon owns triage while the away record exists and wants every wake.
+    TURNEND_FORCE_FILES=''; TURNEND_SUFFIXES=''; TURNEND_OK_TASKS=''
+    afk_present || worker_turn_end_checks
+  fi
+  if [ -n "$pending" ]; then
     # The final coalesced signal set is the watcher-carried status-change
     # trigger for this home's published summary. Start it before either
     # surfacing or absorbing the signal, but never wait on it: see
@@ -3360,6 +3660,19 @@ EOF
     # shellcheck disable=SC2086  # $files is a space-separated status-path list (ids carry no spaces)
     signal_files_actionable $files
     signal_actionable=$?
+    # A task whose turn end carried a valid working or paused line is decided by
+    # the checker, so its status file in this batch is not held to the no-verb
+    # working proof below; a captain-relevant span in it still surfaced above.
+    rest_files=''
+    for rf in $files; do
+      case "$rf" in
+        *.status)
+          rid=${rf##*/}
+          case " $TURNEND_OK_TASKS " in *" ${rid%.status} "*) continue ;; esac
+          ;;
+      esac
+      rest_files="$rest_files $rf"
+    done
     # A decision-owned file's queued row payload is marked "needs-decision:"
     # instead of the ordinary "signal:" below (other files in the same batch
     # keep the ordinary payload). The wake reason line itself, and every
@@ -3371,12 +3684,14 @@ EOF
     # passes it to handle_wake (see the comment above handle_wake in
     # bin/fm-supervise-daemon.sh).
     # shellcheck disable=SC2086  # same space-separated status-path list
-    if afk_present || [ "$signal_actionable" -eq 0 ] \
-      || { ! signal_crew_provably_working $files && ! signal_turnend_panes_churned $files; }; then
+    if afk_present || [ "$signal_actionable" -eq 0 ] || [ -n "$TURNEND_FORCE_FILES" ] \
+      || { [ -n "$rest_files" ] && ! signal_crew_provably_working $rest_files && ! signal_turnend_panes_churned $rest_files; }; then
       while IFS=$(printf '\t') read -r sf sig f; do
         [ -n "$sf" ] || continue
         file_reason="$reason"
         case " $FM_SIGNAL_NEEDS_DECISION_FILES " in *" $f "*) file_reason="needs-decision:$files" ;; esac
+        turnend_suffix=$(turnend_suffix_for "$f")
+        [ -z "$turnend_suffix" ] || file_reason="$file_reason | $turnend_suffix"
         fm_wake_append signal "$(basename "$f")" "$file_reason" || exit 1
       done <<EOF
 $pending
