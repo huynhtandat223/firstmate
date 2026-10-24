@@ -7629,6 +7629,11 @@ case "${1:-}" in
     case "$*" in *cursor_y*) printf '%s\n' "${FM_FAKE_TMUX_CURSOR_Y:-0}"; exit 0 ;; esac ;;
   send-keys)
     printf '%s\n' "$*" >> "${FM_FAKE_TMUX_SENT:-/dev/null}"
+    # A worker that writes a status line while the doorbell is being rung.
+    if [ -n "${FM_FAKE_TMUX_APPEND_LINE:-}" ] && [ ! -e "$FM_FAKE_TMUX_APPEND_TO.rung" ]; then
+      printf '%s\n' "$FM_FAKE_TMUX_APPEND_LINE" >> "$FM_FAKE_TMUX_APPEND_TO"
+      : > "$FM_FAKE_TMUX_APPEND_TO.rung"
+    fi
     exit 0 ;;
 esac
 exec "$(dirname "$0")/tmux.base" "$@"
@@ -7761,6 +7766,55 @@ test_turn_end_with_a_wake_verb_wakes_as_before() {
   tc_round_wake "$dir" || fail "a needs-decision status change with a turn end did not wake"
   grep -F 'needs-decision:' "$state/.wake-queue" >/dev/null || fail "the needs-decision payload was lost: $(cat "$state/.wake-queue")"
   pass "a turn end under a done, blocked, needs-decision, failed or handoff-needed line wakes firstmate as before"
+}
+
+# The checker classifies the whole span since the last turn end, not only its
+# newest line: a wake verb earlier in the span wakes firstmate whatever the last
+# line is, and is never swallowed by the ping that answers the last line.
+test_turn_end_with_a_wake_verb_before_a_malformed_last_line_wakes() {
+  local verb tail_line dir state
+  for verb in blocked needs-decision 'done'; do
+    for tail_line in 'parked: waiting for a review' 'working:'; do
+      dir=$(tc_case "tc-span-$verb" ship); state="$dir/state"
+      printf '%s: the release host is unreachable\n%s\n' "$verb" "$tail_line" >> "$state/tc.status"
+      tc_round_wake "$dir" || fail "[$verb then '$tail_line'] the span did not wake firstmate: $(cat "$dir/watch.out")"
+      [ "$(tc_signal_rows "$state")" -eq 1 ] || fail "[$verb then '$tail_line'] the span queued $(tc_signal_rows "$state") rows instead of one"
+      [ "$(tc_pings "$state")" -eq 0 ] || fail "[$verb then '$tail_line'] a span with a wake verb was pinged"
+      tc_verdict_logged "$state" wake-verb || fail "[$verb then '$tail_line'] the triage log has no wake-verb line"
+      rm -rf "$dir"
+    done
+  done
+  pass "a wake verb anywhere in the span since the last turn end wakes firstmate, whatever the last line is"
+}
+
+# A ping commits the status bytes the verdict was read at. A line the worker
+# writes while the ping is being sent stays unclassified, so the status scan reads
+# it. The watcher is sourced for this: the window is a few milliseconds long, and
+# the case stands in for the doorbell with a checker that writes the line.
+test_a_line_written_while_the_ping_is_sent_is_still_classified() {
+  local dir state out seen vsize
+  dir=$(tc_case tc-ping-window ship); state="$dir/state"
+  printf 'parked: waiting for a review\n' > "$state/tc.status"
+  : > "$state/tc.turn-ended"
+  out=$(
+    export FM_STATE_OVERRIDE="$state"
+    # shellcheck disable=SC1090
+    . "$WATCH"
+    turnend_check_task() {
+      TURNEND_VERDICT=ping-1; TURNEND_WHY=''; TURNEND_TAIL=''
+      TURNEND_SIZE=$(_fm_status_file_size "$state/tc.status")
+      TURNEND_IDENT=$(_fm_open_decisions_file_ident "$state/tc.status")
+      printf 'blocked: the release host is unreachable\n' >> "$state/tc.status"
+    }
+    pending=$(printf '%s\t%s\t%s\n%s\t%s\t%s' \
+      "$state/.signal-turn" "1:1" "$state/tc.turn-ended" "$state/.signal-status" "2:2" "$state/tc.status")
+    worker_turn_end_checks
+    printf '%s %s\n' "$(fm_wake_signal_seen_size "$state" "$state/tc.status")" "$TURNEND_SIZE"
+  ) || fail "the sourced checker failed: $out"
+  read -r seen vsize <<<"$out"
+  [ "${seen:-x}" = "${vsize:-y}" ] \
+    || fail "the ping marked ${seen:-?} bytes classified, but its verdict read ${vsize:-?} (the line written during the ping is unread)"
+  pass "a status line written while a ping is sent is not marked classified by that ping"
 }
 
 test_turn_end_without_a_valid_line_pings_three_times_then_wakes_with_the_pane_tail() {
@@ -7943,6 +7997,8 @@ test_closed_exit_picker_drops_saved_dialog_name
 test_stale_dialog_after_the_waits_wake_surfaces_once
 test_turn_end_with_a_valid_working_or_paused_line_wakes_nothing
 test_turn_end_with_a_wake_verb_wakes_as_before
+test_turn_end_with_a_wake_verb_before_a_malformed_last_line_wakes
+test_a_line_written_while_the_ping_is_sent_is_still_classified
 test_turn_end_without_a_valid_line_pings_three_times_then_wakes_with_the_pane_tail
 test_a_valid_line_after_pings_resets_the_ping_count
 test_turn_ends_after_the_escalation_wake_nothing_until_a_valid_line

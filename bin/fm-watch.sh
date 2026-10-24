@@ -2418,6 +2418,12 @@ TURNEND_OK_TASKS=''
 TURNEND_VERDICT=''
 TURNEND_WHY=''
 TURNEND_TAIL=''
+# The status size and identity the last verdict was read at, and the per-task
+# rows (`<id><TAB><size><TAB><identity>`) of tasks whose status change a ping
+# answered, so the commit marks exactly what was classified and no later byte.
+TURNEND_SIZE=''
+TURNEND_IDENT=''
+TURNEND_COMMITS=''
 
 # The one list of quota and limit texts, matched on the ANSI-stripped pane tail.
 # Each pattern has one test sample in tests/fm-watch-triage.test.sh.
@@ -2446,20 +2452,23 @@ turnend_send_ping() {  # <task> <window> <backend> <label>
 # valid-working, valid-paused, wake-verb, malformed or missing; resolved lines are
 # skipped. The verb list stays in bin/fm-classify-lib.sh: a verb it does not
 # recognise is malformed, and any recognised verb other than working or paused
-# wakes firstmate exactly as it does today. Prints `<verdict> <size>`, the size
-# being the status file's byte length this verdict was read at, for the caller to
+# wakes firstmate exactly as it does today, wherever it sits in the span: a
+# verb that wakes before a malformed last line is still a wake-verb verdict.
+# Prints `<verdict> <size> <identity>`, the size and identity being the status
+# file's byte length and identity this verdict was read at, for the caller to
 # record once the verdict is final. Returns 1 when the status cannot be read.
-turnend_state_line_verdict() {  # <task> -> `<verdict> <size>` on stdout
-  local task=$1 f seenf size start span line newest='' verb note resolve
+turnend_state_line_verdict() {  # <task> -> `<verdict> <size> <identity>` on stdout
+  local task=$1 f seenf size ident start span line newest='' verb note resolve waking=0
   f="$STATE/$task.status"; seenf="$STATE/.turnend-seen-$task"
   if [ ! -e "$f" ]; then
-    printf 'missing 0'
+    printf 'missing 0 -'
     return 0
   fi
   [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 1
   size=$(_fm_status_file_size "$f") || return 1
   size=${size//[[:space:]]/}
   case "$size" in ''|*[!0-9]*) return 1 ;; esac
+  ident=$(_fm_open_decisions_file_ident "$f") || return 1
   start=$(cat "$seenf" 2>/dev/null || true)
   case "$start" in ''|*[!0-9]*) start=0 ;; esac
   [ "$start" -le "$size" ] || start=0
@@ -2470,30 +2479,37 @@ turnend_state_line_verdict() {  # <task> -> `<verdict> <size>` on stdout
     status_line_verb "$line" verb
     [ "$verb" != "$resolve" ] || continue
     newest=$line
+    if [ "$verb" != working ] && ! status_is_paused "$line" && _fm_status_verb_recognized "$verb"; then
+      waking=1
+    fi
   done <<EOF
 $span
 EOF
   if [ -z "$newest" ]; then
-    printf 'missing %s' "$size"
+    printf 'missing %s %s' "$size" "$ident"
+    return 0
+  fi
+  if [ "$waking" -eq 1 ]; then
+    printf 'wake-verb %s %s' "$size" "$ident"
     return 0
   fi
   status_line_verb "$newest" verb
   note=$(status_line_note "$newest")
   note=${note#"${note%%[![:space:]]*}"}
   if [ "$verb" = working ]; then
-    if [ -n "$note" ]; then printf 'valid-working %s' "$size"; else printf 'malformed %s' "$size"; fi
+    if [ -n "$note" ]; then printf 'valid-working %s %s' "$size" "$ident"; else printf 'malformed %s %s' "$size" "$ident"; fi
   elif status_is_paused "$newest"; then
     if [ -z "$note" ]; then
-      printf 'malformed %s' "$size"
+      printf 'malformed %s %s' "$size" "$ident"
     elif printf '%s' "$newest" | grep -qiE '[[:space:]]until[[:space:]]+[0-9]' && ! status_paused_until "$newest" >/dev/null; then
-      printf 'malformed %s' "$size"
+      printf 'malformed %s %s' "$size" "$ident"
     else
-      printf 'valid-paused %s' "$size"
+      printf 'valid-paused %s %s' "$size" "$ident"
     fi
   elif status_prefix_unrecognized "$newest" || [ -z "$note" ]; then
-    printf 'malformed %s' "$size"
+    printf 'malformed %s %s' "$size" "$ident"
   else
-    printf 'wake-verb %s' "$size"
+    printf 'wake-verb %s %s' "$size" "$ident"
   fi
 }
 
@@ -2501,7 +2517,7 @@ EOF
 # an `error` verdict names) and TURNEND_TAIL (the last lines of the pane).
 turnend_check_task() {  # <task>
   local task=$1 meta w backend label astate plain cstate verdict size count pingf seenf
-  TURNEND_VERDICT=error; TURNEND_WHY=''; TURNEND_TAIL=''
+  TURNEND_VERDICT=error; TURNEND_WHY=''; TURNEND_TAIL=''; TURNEND_SIZE=''; TURNEND_IDENT=''
   meta="$STATE/$task.meta"
   pingf="$STATE/.turnend-pings-$task"; seenf="$STATE/.turnend-seen-$task"
   w=$(fm_meta_get "$meta" window)
@@ -2549,6 +2565,9 @@ turnend_check_task() {  # <task>
     return 0
   fi
   size=${verdict#* }
+  TURNEND_IDENT=${size#* }
+  size=${size%% *}
+  TURNEND_SIZE=$size
   verdict=${verdict%% *}
   case "$verdict" in
     valid-working|valid-paused|wake-verb)
@@ -2595,12 +2614,19 @@ turnend_check_task() {  # <task>
 # A ping answers a missing or malformed line, so that task's status change in the
 # same batch is advanced here as a surfaced batch would advance it, instead of
 # waking firstmate for it too.
-turnend_commit_status() {  # <status-file> <signature>
-  local f=$1 sig=$2 size ident
+turnend_commit_status() {  # <status-file> <signature> <task>
+  local f=$1 sig=$2 task=$3 rid size ident
   fm_wake_status_reported_commit "$STATE" "$f" "$sig" || true
   mark_surface_reported "$f" "$sig" || true
-  size=$(_fm_status_file_size "$f" 2>/dev/null) && ident=$(_fm_open_decisions_file_ident "$f" 2>/dev/null) || return 0
-  size=${size//[[:space:]]/}
+  # The size and identity the verdict was read at, not the file's size now: a
+  # line the worker wrote while the ping was sent stays unclassified.
+  while IFS=$'\t' read -r rid size ident; do
+    [ "$rid" = "$task" ] && break
+    size=''
+  done <<EOF
+$TURNEND_COMMITS
+EOF
+  [ -n "$size" ] && [ "$ident" != - ] || return 0
   fm_wake_status_seen_commit "$STATE" "$f" "$size" "$ident" || true
   mark_surfaced "$f" "$size" "$ident"
 }
@@ -2612,7 +2638,7 @@ turnend_commit_status() {  # <status-file> <signature>
 # triage.
 worker_turn_end_checks() {
   local sf sig f id kind kept='' decided='' dropped_status='' flat suffix
-  TURNEND_FORCE_FILES=''; TURNEND_SUFFIXES=''; TURNEND_OK_TASKS=''; TURNEND_ESCALATED_TASKS=''
+  TURNEND_FORCE_FILES=''; TURNEND_SUFFIXES=''; TURNEND_OK_TASKS=''; TURNEND_ESCALATED_TASKS=''; TURNEND_COMMITS=''
   while IFS=$(printf '\t') read -r sf sig f; do
     [ -n "$sf" ] || continue
     case "$f" in
@@ -2634,6 +2660,7 @@ worker_turn_end_checks() {
                     ;;
                   ping-1|ping-2|ping-3|ping-escalated)
                     dropped_status="$dropped_status $id"
+                    TURNEND_COMMITS="${TURNEND_COMMITS}${id}"$'\t'"${TURNEND_SIZE}"$'\t'"${TURNEND_IDENT}"$'\n'
                     ;;
                   wake-verb)
                     TURNEND_FORCE_FILES="$TURNEND_FORCE_FILES $f"
@@ -2675,7 +2702,7 @@ EOF
         id=${id%.status}
         case " $dropped_status " in
           *" $id "*)
-            turnend_commit_status "$f" "$sig"
+            turnend_commit_status "$f" "$sig" "$id"
             continue
             ;;
         esac
