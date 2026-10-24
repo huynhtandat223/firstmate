@@ -5,6 +5,7 @@
 // Usage:
 //   fm-acceptance.mjs parse <issue-url|-> [--strict]
 //   fm-acceptance.mjs rows <issue-url|-> [--surface user-visible|all] [--draft] [--strict]
+//   fm-acceptance.mjs digest <issue-url|-> [--strict]
 //
 // An <issue-url> is read with `gh issue view <url> --json body` (20 s bound,
 // FM_ACCEPTANCE_GH names another gh command); `-` reads the issue body from
@@ -18,6 +19,11 @@
 //           only the scenarios whose page is a draft row, of any surface.
 //           It prints nothing and exits 1 when the issue has problems.
 //
+// digest    Prints one sha256 (hex) of every parsed scenario with all its fields except the
+//           checkbox, so the same scenarios give the same digest on every run and an edit to
+//           any scenario field moves it; the other sections of the issue do not. It prints
+//           nothing and exits 1 when the issue has problems.
+//
 // Template v1 (heading `## Scenarios`): seven `## ` sections in order, every
 // scenario a checklist item with eight fields. Legacy (heading `## Acceptance` or
 // `## Acceptance criteria`, field `env/page`): parsed for the issues not yet
@@ -26,6 +32,7 @@
 // not a scenario); --strict refuses it. Headings and checklist lines inside fenced code
 // blocks are ignored, and only `## ` at the start of a line is a section.
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
@@ -233,6 +240,11 @@ export function rows(parsed, { surface = 'user-visible', draft = false } = {}) {
   return out;
 }
 
+export function digest(parsed) {
+  const scenarios = parsed.scenarios.map(({ done, ...rest }) => rest);
+  return createHash('sha256').update(JSON.stringify(scenarios)).digest('hex');
+}
+
 function readIssueBody(source) {
   if (source === '-') return fs.readFileSync(0, 'utf8');
   const gh = process.env.FM_ACCEPTANCE_GH || 'gh';
@@ -248,8 +260,8 @@ function readIssueBody(source) {
 
 function main(argv) {
   const [command, source, ...flags] = argv;
-  const usage = 'usage: fm-acceptance.mjs parse <issue-url|-> [--strict] | rows <issue-url|-> [--surface user-visible|all] [--draft] [--strict]';
-  if (!['parse', 'rows'].includes(command) || !source) {
+  const usage = 'usage: fm-acceptance.mjs parse <issue-url|-> [--strict] | rows <issue-url|-> [--surface user-visible|all] [--draft] [--strict] | digest <issue-url|-> [--strict]';
+  if (!['parse', 'rows', 'digest'].includes(command) || !source) {
     process.stderr.write(`${usage}\n`);
     return 2;
   }
@@ -274,12 +286,14 @@ function main(argv) {
   }
   if (command === 'parse') {
     process.stdout.write(`${JSON.stringify(parsed)}\n`);
+  } else if (command === 'digest') {
+    if (parsed.problems.length === 0) process.stdout.write(`${digest(parsed)}\n`);
   } else if (parsed.problems.length === 0) {
     const list = rows(parsed, { surface: surface ?? (draft ? 'all' : 'user-visible'), draft });
     if (list.length) process.stdout.write(`${list.join('\n')}\n`);
   }
   if (parsed.problems.length) {
-    if (command === 'rows') process.stderr.write(`error: ${source} is refused: ${parsed.problems.join('; ')}\n`);
+    if (command !== 'parse') process.stderr.write(`error: ${source} is refused: ${parsed.problems.join('; ')}\n`);
     return 1;
   }
   return 0;

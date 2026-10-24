@@ -65,13 +65,14 @@
 #   (z4) scout + ignored file                                -> ignored file survives
 set -u
 
-# shellcheck source=tests/lib.sh disable=SC1091
-. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# shellcheck source=tests/verify-gate-helpers.sh disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/verify-gate-helpers.sh"
 fm_git_identity fmtest fmtest@example.invalid
 
 TEARDOWN="$ROOT/bin/fm-teardown.sh"
 PR_CHECK="$ROOT/bin/fm-pr-check.sh"
 TMP_ROOT=$(fm_test_tmproot fm-teardown-tests)
+vg_install_gh "$TMP_ROOT/gh"
 REAL_GIT_FOR_TEST=$(command -v git)
 export REAL_GIT_FOR_TEST
 REAL_PS_FOR_TEST=$(command -v ps)
@@ -5205,13 +5206,16 @@ verify_gate_case() {  # <name> -> prints case dir: landed work, user-visible met
   printf '%s\n' "$case_dir"
 }
 
+# The gate's two records for the fixture issue (tests/verify-gate-helpers.sh); the A2 row at 390
+# takes <status> and <evidence>, and approved=no leaves firstmate's record without its approval.
 write_verify() {  # <case-dir> <status> <evidence> <approved:yes|no>
-  local case_dir=$1 status=$2 evidence=$3 approved=$4 f
-  f="$case_dir/data/task-x1/verify.md"
-  printf '%s\n' 'surface: user-visible' '## Acceptance' \
-    "- A1 | the page shows the new button | pass | evidence: https://example.test/shot" \
-    "- A2 | the button saves | $status | evidence: $evidence" > "$f"
-  [ "$approved" != yes ] || printf '%s\n' 'approved: firstmate 1792486840' >> "$f"
+  local case_dir=$1 status=$2 evidence=$3 approved=$4
+  vg_write_records "$case_dir" task-x1
+  vg_set_row "$case_dir" task-x1 A2@390 "$status" "evidence: $evidence"
+  if [ "$approved" != yes ]; then
+    awk 'index($0, "approved: ") != 1' "$case_dir/data/task-x1/verify.md" > "$case_dir/verify.new" \
+      && mv "$case_dir/verify.new" "$case_dir/data/task-x1/verify.md"
+  fi
 }
 
 # "<hold_kind>|<decoded hold reason>" of task-x1's backlog row.
@@ -5263,7 +5267,7 @@ test_verify_gate_holds_without_record() {
   local case_dir
   case_dir=$(verify_gate_case verify-none)
   rm -rf "$case_dir/data/task-x1"
-  expect_verify_hold "$case_dir" "verify-none" 'verification record missing'
+  expect_verify_hold "$case_dir" "verify-none" 'firstmate verification record missing'
   pass "user-visible task with no verify.md is cleaned up and its row held"
 }
 
@@ -5271,7 +5275,7 @@ test_verify_gate_holds_pending_line() {
   local case_dir
   case_dir=$(verify_gate_case verify-pending)
   write_verify "$case_dir" pending - yes
-  expect_verify_hold "$case_dir" "verify-pending" "A2 is 'pending', not pass"
+  expect_verify_hold "$case_dir" "verify-pending" "A2@390 is 'pending', not pass"
   pass "user-visible task with a pending acceptance line is cleaned up and its row held"
 }
 
@@ -5279,7 +5283,7 @@ test_verify_gate_holds_missing_evidence_path() {
   local case_dir
   case_dir=$(verify_gate_case verify-evidence)
   write_verify "$case_dir" pass "$case_dir/no-such-shot.png" yes
-  expect_verify_hold "$case_dir" "verify-evidence" 'A2 evidence path does not exist'
+  expect_verify_hold "$case_dir" "verify-evidence" 'A2@390 evidence path does not exist'
   pass "user-visible task whose evidence path is missing is cleaned up and its row held"
 }
 
@@ -5296,7 +5300,7 @@ test_verify_gate_force_never_marks_done() {
   local case_dir
   case_dir=$(verify_gate_case verify-force)
   write_verify "$case_dir" pending - yes
-  expect_verify_hold "$case_dir" "verify-force" "A2 is 'pending', not pass" --force
+  expect_verify_hold "$case_dir" "verify-force" "A2@390 is 'pending', not pass" --force
   pass "--force cleans up but never moves an unverified row to Done"
 }
 
@@ -5316,31 +5320,32 @@ test_verify_gate_holds_a_promoted_user_visible_scout() {
   pass "a promoted user-visible scout is cleaned up and its row held without verify.md"
 }
 
-test_verify_gate_holds_acceptance_line_outside_section() {
-  local case_dir
-  case_dir=$(verify_gate_case verify-outside)
-  : > "$case_dir/shot.png"
-  write_verify "$case_dir" pass "$case_dir/shot.png" yes
-  printf '%s\n' '## Notes' '- A3 | hidden line | pending | evidence: -' >> "$case_dir/data/task-x1/verify.md"
-  expect_verify_hold "$case_dir" "verify-outside" "acceptance line outside '## Acceptance'"
-  pass "an acceptance line outside the Acceptance section holds the row"
-}
-
-test_verify_gate_holds_approval_before_acceptance() {
+test_verify_gate_holds_approval_not_newer_than_the_tester() {
   local case_dir
   case_dir=$(verify_gate_case verify-early-approval)
   : > "$case_dir/shot.png"
-  printf '%s\n' 'surface: user-visible' 'approved: firstmate 1792486840' '## Acceptance' \
-    "- A1 | the page shows the new button | pass | evidence: $case_dir/shot.png" > "$case_dir/data/task-x1/verify.md"
-  expect_verify_hold "$case_dir" "verify-early-approval" "approved line must come after the last acceptance line"
-  pass "an approved line placed before the acceptance lines holds the row"
+  write_verify "$case_dir" pass "$case_dir/shot.png" yes
+  sed -i.bak 's/^approved: firstmate .*/approved: firstmate 999/' "$case_dir/data/task-x1/verify.md"
+  expect_verify_hold "$case_dir" "verify-early-approval" "approved: firstmate 999 is not newer than the Tester's verified epoch 1000"
+  pass "an approval older than the Tester's line holds the row"
+}
+
+test_verify_gate_holds_a_record_for_an_older_deploy() {
+  local case_dir newer=2222222222222222222222222222222222222222
+  case_dir=$(verify_gate_case verify-old-head)
+  : > "$case_dir/shot.png"
+  write_verify "$case_dir" pass "$case_dir/shot.png" yes
+  printf '{"type":"ask","round":"deploy","key":"deploy:task-x1:%s","task":"task-x1","sha":"%s"}\n' "$newer" "$newer" \
+    >> "$case_dir/data/deploy-verify/ledger.jsonl"
+  expect_verify_hold "$case_dir" "verify-old-head" "is not the deployed head $newer"
+  pass "a Tester record for an older deploy holds the row"
 }
 
 test_verify_gate_joins_every_missing_item() {
   local case_dir
   case_dir=$(verify_gate_case verify-joined)
   write_verify "$case_dir" pending - no
-  expect_verify_hold "$case_dir" "verify-joined" "A2 is 'pending', not pass; missing 'approved: firstmate <epoch>' line"
+  expect_verify_hold "$case_dir" "verify-joined" "missing 'approved: firstmate <epoch>' line; A2@390 is 'pending', not pass"
   pass "the hold reason names every missing line, joined with '; '"
 }
 
@@ -5375,7 +5380,7 @@ test_verify_gate_keeps_a_captain_hold_and_notes_the_gap() {
     || fail "verify-captain: the captain hold changed: $(backlog_hold "$case_dir")"
   body=$(tasks-axi show task-x1 --file "$case_dir/data/backlog.md" --full 2>/dev/null)
   case "$body" in
-    *"Verification pending: A2 is 'pending', not pass"*) ;;
+    *"Verification pending: A2@390 is 'pending', not pass"*) ;;
     *) fail "verify-captain: the row body lacks the Verification pending line: $body" ;;
   esac
   [ -f "$case_dir/data/task-x1/verify-pending" ] || fail "verify-captain: teardown left no verification-pending marker"
@@ -5542,8 +5547,8 @@ test_verify_gate_force_never_marks_done
 test_verify_gate_allows_complete_record
 test_verify_gate_ignores_internal_surface
 test_verify_gate_holds_a_promoted_user_visible_scout
-test_verify_gate_holds_acceptance_line_outside_section
-test_verify_gate_holds_approval_before_acceptance
+test_verify_gate_holds_approval_not_newer_than_the_tester
+test_verify_gate_holds_a_record_for_an_older_deploy
 test_verify_gate_joins_every_missing_item
 test_verify_gate_unlanded_work_still_refuses
 test_verify_gate_keeps_a_captain_hold_and_notes_the_gap

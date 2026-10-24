@@ -14,8 +14,11 @@
 #   servers and skills never run; the charter has the agent read the project's
 #   CLAUDE.md and AGENTS.md itself, as data.
 #   --surface <user-visible|internal> is an optional ship-only input recorded as
-#   surface=<value> in state/<id>.meta; absent means internal. bin/fm-teardown.sh
-#   owns what a user-visible task must prove before cleanup.
+#   surface=<value> in state/<id>.meta; absent means internal, except that a ship
+#   spawn into cfw-modules refuses a missing --surface. A user-visible spawn also
+#   writes data/<id>/verify.md with "surface: user-visible" and "issue: <url>" (the
+#   issue the backlog item links) and refuses when it finds none; bin/fm-verify-gate-lib.sh
+#   owns what the task must prove before its backlog item moves to Done.
 #   --mode and --yolo are this task's delivery contract, REQUIRED for every ship
 #   spawn and refused on --scout and --secondmate spawns. Firstmate resolves both
 #   per task at intake (AGENTS.md section 7); data/projects.md holds the captain's
@@ -3760,6 +3763,10 @@ delivery_rigor_rank() { # <mode> -> 3 (most rigor) .. 1 (least); 0 = not a task 
 # differ, which is the exact drift this contract prevents.
 if [ "$KIND" = ship ]; then
   PROJ_NAME=$(basename "$PROJ_ABS")
+  if [ "$RELAUNCH" != 1 ] && [ "$PROJ_NAME" = cfw-modules ] && [ "$SURFACE_SET" -eq 0 ]; then
+    echo "error: $ID is a ship task in cfw-modules, which has a user-visible surface on Dev 5001; pass --surface user-visible or --surface internal" >&2
+    exit 1
+  fi
   # The parser's own refusal reaches the operator here rather than being
   # discarded: an entry it refuses (an unknown forge token, or a forge on
   # local-only) resolves to no posture at all, and launching on the silent
@@ -4288,6 +4295,19 @@ if [ "$RELAUNCH" != 1 ] && [ "$KIND" != secondmate ] && { [ -e "$CONFIG/dispatch
       exit 1
     fi
     printf 'plan gate: approved %s\n' "$PLAN_ISSUE"
+  fi
+fi
+
+# A user-visible ship task starts firstmate's verification record with the issue its
+# backlog item links (bin/fm-verify-gate-lib.sh): the plan gate's approved issue, else the
+# first linked GitHub issue. No issue means the done gate could never pass, so refuse now.
+VERIFY_ISSUE=
+if [ "$RELAUNCH" != 1 ] && [ "$KIND" = ship ] && [ "$SURFACE" = user-visible ]; then
+  VERIFY_ISSUE=$PLAN_ISSUE
+  [ -n "$VERIFY_ISSUE" ] || VERIFY_ISSUE=$(printf '%s\n' "$FM_BACKLOG_ROW_LINKS" | grep -oE 'doc:https://github[.]com/[^[:space:]," ]+/issues/[0-9]+' | head -n 1 | sed 's/^doc://' || true)
+  if [ -z "$VERIFY_ISSUE" ]; then
+    echo "error: $ID is user-visible, so its verification record names the issue its backlog item links; link it with bin/fm-tasks-axi.sh update $ID --title \"<current title> <issue url>\" or spawn with --surface internal" >&2
+    exit 1
   fi
 fi
 
@@ -6086,6 +6106,10 @@ if [ "$RELAUNCH" -eq 0 ]; then
     exit 1
   fi
   SPAWN_META_TMP=
+  if [ -n "$VERIFY_ISSUE" ] && [ ! -e "$DATA/$ID/verify.md" ]; then
+    mkdir -p "$DATA/$ID" && printf 'surface: user-visible\nissue: %s\n' "$VERIFY_ISSUE" >"$DATA/$ID/verify.md" ||
+      echo "warning: the verification record of $ID could not be written at $DATA/$ID/verify.md; write its 'surface: user-visible' and 'issue: $VERIFY_ISSUE' lines by hand" >&2
+  fi
 fi
 
 # Fuse the backlog In-flight transition into the publication that just created

@@ -395,7 +395,7 @@ family_for_basename() {
     fm-spawn-compact-adviser-disable.test.sh|\
     fm-spawn-compact-adviser-disable-remote.test.sh|fm-spawn-agent-ask-asker.test.sh|\
     fm-project-capacity.test.sh|\
-    fm-teardown-endpoint-safety.test.sh|fm-verify-close.test.sh)
+    fm-spawn-surface.test.sh|fm-teardown-endpoint-safety.test.sh|fm-verify-close.test.sh)
       printf '%s\n' backend-dispatch
       ;;
     fm-check-unregister.test.sh|fm-pipeline-spend.test.sh|fm-pr-check-security.test.sh|\
@@ -420,7 +420,7 @@ family_for_basename() {
     fm-backend-orca.test.sh)
       printf '%s\n' orca
       ;;
-    fm-acceptance.test.sh|fm-branch-supervision.test.sh|fm-busy-adapter-wiring.test.sh|\
+    fm-acceptance.test.sh|fm-verify-gate.test.sh|fm-branch-supervision.test.sh|fm-busy-adapter-wiring.test.sh|\
     fm-busy-state.test.sh|fm-classify-corr-token.test.sh|\
     fm-claude-stop-autoarm.test.sh|fm-cursor-harness.test.sh|\
     fm-dispatch-resolve.test.sh|\
@@ -858,6 +858,7 @@ tests/fm-spawn-compact-adviser-disable.test.sh 21654
 tests/fm-spawn-dispatch-profile.test.sh 197548
 tests/fm-spawn-orca-worktree.test.sh 2400
 tests/fm-spawn-pool-base-freshen.test.sh 68652
+tests/fm-spawn-surface.test.sh 16000
 tests/fm-spawn-worktree-settle.test.sh 9309
 tests/fm-startup-memory-budget.test.sh 8086
 tests/fm-startup-network.test.sh 72106
@@ -887,6 +888,7 @@ tests/fm-turnend-guard.test.sh 34727
 tests/fm-update.test.sh 11894
 tests/fm-vendor-auth-probe.test.sh 43278
 tests/fm-verify-close.test.sh 4000
+tests/fm-verify-gate.test.sh 11000
 tests/fm-voice-relay.test.sh 28917
 tests/fm-wake-daemon-lifecycle-e2e.test.sh 7345
 tests/fm-wake-drain-open-decisions-cursor.test.sh 47677
@@ -1538,9 +1540,16 @@ families_for_changed_path() {
       printf '%s\n' "__script__:fm-procevent-deploy-verify.test.sh"
       ;;
     bin/fm-acceptance.mjs)
-      # The one acceptance parser; deploy-verify reads every issue through it.
+      # The one acceptance parser; deploy-verify and the done gate read every issue through it.
       printf '%s\n' "__script__:fm-acceptance.test.sh"
       printf '%s\n' "__script__:fm-procevent-deploy-verify.test.sh"
+      printf '%s\n' "__script__:fm-verify-gate.test.sh"
+      ;;
+    bin/fm-verify-gate-lib.sh|bin/fm-verify-close.sh)
+      # The done gate, sourced by teardown, the close helper and the captain-hold answer path.
+      printf '%s\n' "__script__:fm-verify-gate.test.sh"
+      printf '%s\n' "__script__:fm-verify-close.test.sh"
+      printf '%s\n' pr-forge
       ;;
     bin/fm-procevent-pr-review.sh)
       printf '%s\n' "__script__:fm-procevent-pr-review.test.sh"
