@@ -4576,15 +4576,17 @@ test_terminal_looking_stale_fires_once_per_wait() {
 
 # The identical fixture held for the captain never wakes at all - the backlog
 # call or the status line alone is enough - however long the pane churns past the
-# (shortened) re-surface cadence, and with no away record present.
+# (shortened) re-surface cadence, and with no away record present. Its fixture
+# names differ from test_open_captain_call_bounds_stale_churn's because make_case
+# reuses a directory by name and that case leaves an aged marker in its own.
 test_captain_held_worker_raises_no_stale_wake() {
   local spec name line hold dir state out capture wakes
   command -v tasks-axi >/dev/null 2>&1 \
     || { echo "skip: tasks-axi not found (captain-held stale silence)"; return 0; }
   for spec in \
-    'held-delivery|done: PR https://example.invalid/pull/1 checks green|hold' \
-    'held-worker-line|working: still tidying the branch|hold' \
-    'held-status-line|captain-held [key=merge]: awaiting the captain on the merge|nohold'
+    'nowake-delivery|done: PR https://example.invalid/pull/1 checks green|hold' \
+    'nowake-worker-line|working: still tidying the branch|hold' \
+    'nowake-status-line|captain-held [key=merge]: awaiting the captain on the merge|nohold'
   do
     name=${spec%%|*}; line=${spec#*|}; hold=${line##*|}; line=${line%|*}
     dir=$(make_hold_home "$name" "$line" "$hold") \
