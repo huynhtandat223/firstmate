@@ -120,6 +120,11 @@ function scenarioFrom(item, template, strict, problems) {
     if (f.name in fields) problems.push(`${where}: field ${f.name} given twice`);
     else fields[f.name] = f.value;
   }
+  if (template === 'v1') {
+    const given = item.fields.map((f) => f.name).filter((name, i, all) => TEMPLATE_FIELDS.includes(name) && all.indexOf(name) === i);
+    const ordered = TEMPLATE_FIELDS.filter((name) => given.includes(name));
+    if (given.join() !== ordered.join()) problems.push(`${where}: fields are out of order, the template order is ${TEMPLATE_FIELDS.join(', ')}`);
+  }
   const required = template === 'v1' ? TEMPLATE_FIELDS : ['surface'];
   const missing = required.filter((name) => !(name in fields) || fields[name] === '');
   if (missing.length) problems.push(`${where}: missing field${missing.length > 1 ? 's' : ''} ${missing.join(', ')}`);

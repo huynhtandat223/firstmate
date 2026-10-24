@@ -201,6 +201,17 @@ case_legacy_leniency() {
   has_problem "$1" "$body" 'line 3: checklist item has no id' '--strict' || return 1
 }
 
+# The template names the order of the eight fields; a scenario that shuffles them is refused.
+case_field_order() {
+  local shuffled
+  shuffled=$(scenario V1 internal - - | awk '/^  - env:/ { e = $0; next } /^  - proof:/ { print; print e; next } { print }')
+  has_problem "$1" "$(tpl "$shuffled")" 'V1 (line' || return 1
+  has_problem "$1" "$(tpl "$shuffled")" 'fields are out of order' || return 1
+  # The unshuffled control reads clean, and legacy field order stays free.
+  printf '%s\n' "$(tpl "$(scenario V1 internal - -)")" | parse "$1" --strict >/dev/null || { echo 'the ordered control was refused'; return 1; }
+  printf '## Acceptance\n\n- [ ] A1 WHEN a, THE b SHALL c.\n  - surface: internal\n  - env/page: x\n' | parse "$1" >/dev/null || { echo 'legacy field order was refused'; return 1; }
+}
+
 case_bad_id() {
   has_problem "$1" "$(tpl '- [ ] lowercase1 WHEN x, THE y SHALL z.')" 'no id right after the checkbox' || return 1
   has_problem "$1" "$(tpl '- [ ] WHEN there is no id, THE y SHALL z.')" 'no id right after the checkbox' || return 1
@@ -279,7 +290,7 @@ case_import() {
   [ "$out" = '["v1",3,3]' ] || { echo "import result: $out"; return 1; }
 }
 
-CASES="fixtures template strict_legacy legacy_leniency duplicate_id user_visible_needs_page_and_widths missing_field bad_id sections fences_and_headings url rows_refusal import"
+CASES="fixtures template strict_legacy legacy_leniency field_order duplicate_id user_visible_needs_page_and_widths missing_field bad_id sections fences_and_headings url rows_refusal import"
 
 # ---- real parser ------------------------------------------------------------
 
@@ -308,6 +319,7 @@ mutate() {  # <label> <case> <perl-substitution>
 mutate 'a duplicate id is refused' duplicate_id 's/seen\.has\(scenario\.id\)/false/'
 mutate 'a user-visible scenario needs page and widths' user_visible_needs_page_and_widths \
   "s/surface === 'user-visible' && \\(page === '-' \\|\\| widths\\.length === 0\\)/false/"
+mutate 'the fields keep the template order' field_order 's/if \(given\.join\(\) !== ordered\.join\(\)\)/if (false)/'
 mutate 'every field must be present' missing_field 's/if \(missing\.length\)/if (false)/'
 mutate 'an unknown field is refused' missing_field "s/if \\(template === 'v1'\\) problems\\.push\\(\`\\\$\\{where\\}: unknown field/if (false) problems.push(\`\\\${where}: unknown field/"
 mutate 'a field given twice is refused' missing_field 's/if \(f\.name in fields\)/if (false)/'
