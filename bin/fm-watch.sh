@@ -2309,6 +2309,38 @@ scan_signals() {
   return 0
 }
 
+# An assistance (kind=assistance in its meta: the Reviewer, Planner, Tester and
+# dms) reports through fm-assistance.sh propose, which has its own wake path, so
+# its turn-ended marker carries nothing the parent needs to act on. Drop those
+# markers from the global $pending batch: advance each one's seen signature so it
+# never comes back, log one triage line, and leave every other file for the usual
+# triage. A ship or scout worker's turn end, and an assistance's own .status
+# file, are not touched. The rule is here, not in the marker writer
+# (fm-busy-event.sh), so every harness is covered by one check.
+absorb_assistance_turn_ends() {
+  local sf sig f id kept="" absorbed=""
+  while IFS=$(printf '\t') read -r sf sig f; do
+    [ -n "$sf" ] || continue
+    case "$f" in
+      *.turn-ended)
+        id=${f##*/}
+        id=${id%.turn-ended}
+        if [ "$(fm_meta_get "$STATE/$id.meta" kind)" = assistance ]; then
+          printf '%s' "$sig" > "$sf"
+          case " $absorbed " in *" $id "*) ;; *) absorbed="$absorbed $id" ;; esac
+          continue
+        fi
+        ;;
+    esac
+    kept="$kept$(printf '%s\t%s\t%s' "$sf" "$sig" "$f")
+"
+  done <<EOF
+$pending
+EOF
+  pending=${kept%?}
+  [ -z "$absorbed" ] || triage_log "absorbed assistance turn-end:$absorbed"
+}
+
 # Deliver a durably queued process-event result to firstmate. Publication is
 # owned by bin/fm-procevent.sh - by the runner at capture time and by reconcile's
 # re-announcement - so this decides only whether a queued check record has been
@@ -3227,9 +3259,11 @@ EOF
   # costs a full firstmate turn each. The re-scan also picks up a newer
   # signature for an already-pending file (last write wins below).
   pending=$(scan_signals)
+  absorb_assistance_turn_ends
   if [ -n "$pending" ]; then
     sleep "$SIGNAL_GRACE"
     pending=$(printf '%s\n%s' "$pending" "$(scan_signals)")
+    absorb_assistance_turn_ends
     # The final coalesced signal set is the watcher-carried status-change
     # trigger for this home's published summary. Start it before either
     # surfacing or absorbing the signal, but never wait on it: see

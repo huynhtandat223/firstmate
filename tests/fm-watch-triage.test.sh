@@ -921,6 +921,93 @@ test_turn_ended_not_working_surfaced() {
   pass "a bare turn-end whose crew is not provably working is surfaced (the swallowed-finish fix)"
 }
 
+# --- an assistance's turn end wakes nothing; a ship or scout worker's does ----
+# An assistance (kind=assistance in its meta) reports through its own propose
+# path, so its turn-ended marker is absorbed in the watcher. Every other
+# worker's turn end keeps surfacing, and a mixed batch wakes for the workers only.
+
+test_assistance_turn_ended_absorbed() {
+  local dir state fakebin out pid
+  dir=$(make_case assistance-turn-ended); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"
+  printf 'window=test:fm-reviewer\nkind=assistance\n' > "$state/reviewer.meta"
+  : > "$state/reviewer.turn-ended"
+  # No working proof: on main this is exactly what surfaces a bare turn end.
+  export FM_FAKE_CREW_STATE='state: unknown · source: none · no current-state source available'
+  watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  if ! wait_poll_cycle "$state" "$pid"; then
+    reap "$pid"; fail "watcher exited for an assistance's turn end (should absorb): $(cat "$out")"
+  fi
+  [ ! -s "$out" ] || fail "an assistance's turn end printed a wake reason: $(cat "$out")"
+  [ ! -s "$state/.wake-queue" ] || fail "an assistance's turn end enqueued a durable wake record: $(cat "$state/.wake-queue")"
+  [ "$(cat "$state/.seen-reviewer_turn-ended" 2>/dev/null)" = "$(seen_sig "$state/reviewer.turn-ended")" ] \
+    || fail "the absorbed assistance marker's seen signature did not advance"
+  grep -F 'absorbed assistance turn-end' "$state/.watch-triage.log" >/dev/null \
+    || fail "the absorbed assistance turn end was not triage-logged"
+  reap "$pid"
+  unset FM_FAKE_CREW_STATE
+  pass "an assistance's turn end is absorbed: no exit, no queue row, seen signature advanced, one triage line"
+}
+
+test_assistance_turn_ended_mixed_batch_names_workers_only() {
+  local dir state fakebin out drain_out rows pid
+  dir=$(make_case assistance-turn-ended-mixed); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; drain_out="$dir/drain.out"
+  printf 'window=test:fm-reviewer\nkind=assistance\n' > "$state/reviewer.meta"
+  printf 'window=test:fm-a\nkind=ship\n' > "$state/a.meta"
+  : > "$state/reviewer.turn-ended"
+  : > "$state/a.turn-ended"
+  export FM_FAKE_CREW_STATE='state: unknown · source: none · no current-state source available'
+  watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "watcher did not surface the ship worker's turn end in a mixed batch"
+  grep -F "signal: $state/a.turn-ended" "$out" >/dev/null || fail "the wake did not name the ship worker's turn end: $(cat "$out")"
+  ! grep -F 'reviewer' "$out" >/dev/null || fail "the wake reason named the assistance: $(cat "$out")"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the mixed batch failed"
+  rows=$(grep -c "$(printf '\tsignal\t')" "$drain_out" || true)
+  [ "$rows" = 1 ] || fail "the mixed batch queued $rows signal rows, not 1: $(cat "$drain_out")"
+  ! grep "$(printf '\tsignal\t')" "$drain_out" | grep -F 'reviewer' >/dev/null \
+    || fail "the assistance's turn end was queued: $(cat "$drain_out")"
+  [ "$(cat "$state/.seen-reviewer_turn-ended" 2>/dev/null)" = "$(seen_sig "$state/reviewer.turn-ended")" ] \
+    || fail "the absorbed assistance marker's seen signature did not advance in the mixed batch"
+  unset FM_FAKE_CREW_STATE
+  pass "a mixed batch absorbs the assistance's turn end and wakes for the ship worker's alone"
+}
+
+test_scout_turn_ended_not_working_surfaced() {
+  local dir state fakebin out drain_out pid
+  dir=$(make_case scout-turn-ended-stopped); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; drain_out="$dir/drain.out"
+  printf 'window=test:fm-scout\nkind=scout\n' > "$state/scout.meta"
+  : > "$state/scout.turn-ended"
+  export FM_FAKE_CREW_STATE='state: unknown · source: none · no current-state source available'
+  watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "watcher did not surface a scout's turn end that is not provably working"
+  grep -F "signal: $state/scout.turn-ended" "$out" >/dev/null || fail "the wake did not name the scout's turn end: $(cat "$out")"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the scout turn end failed"
+  grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "$state/scout.turn-ended" >/dev/null \
+    || fail "the scout's turn end was not queued"
+  unset FM_FAKE_CREW_STATE
+  pass "a scout worker's turn end that is not provably working still surfaces"
+}
+
+test_assistance_status_line_still_surfaces() {
+  local dir state fakebin out drain_out pid
+  dir=$(make_case assistance-status); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; drain_out="$dir/drain.out"
+  printf 'window=test:fm-reviewer\nkind=assistance\n' > "$state/reviewer.meta"
+  printf 'working: round 1\nneeds-decision: pick A or B\n' > "$state/reviewer.status"
+  watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "watcher did not surface an assistance's captain-relevant status line"
+  grep -F "signal: $state/reviewer.status" "$out" >/dev/null || fail "the wake did not name the assistance's status file: $(cat "$out")"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the assistance status failed"
+  grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "$state/reviewer.status" >/dev/null \
+    || fail "the assistance's status line was not queued"
+  pass "an assistance's captain-relevant status line still surfaces"
+}
+
 # --- bare turn-end, unverifiable harness: pane churn is the third proof --------
 # A harness whose semantic busy state has no verified source (codex) can never
 # report working, so the two proofs above are unreachable for it and EVERY worker
@@ -6986,6 +7073,10 @@ test_secondmate_status_routine_absorbed_routed_surfaced_classifier
 test_provably_working_signal_absorbed
 test_turn_ended_provably_working_absorbed
 test_turn_ended_not_working_surfaced
+test_assistance_turn_ended_absorbed
+test_assistance_turn_ended_mixed_batch_names_workers_only
+test_scout_turn_ended_not_working_surfaced
+test_assistance_status_line_still_surfaces
 test_turn_ended_churning_pane_absorbed
 test_turn_ended_churn_resets_prior_stale_classification
 test_turn_ended_churn_resets_wedge_state_before_stale_poll
