@@ -21,6 +21,8 @@ set -u
 SCRIPT_DIR="$(d=${BASH_SOURCE[0]%/*}; [ "$d" != "${BASH_SOURCE[0]}" ] || d=.; cd "${d:-/}" && pwd)"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+# shellcheck source=bin/fm-procevent-lib.sh
+. "$SCRIPT_DIR/fm-procevent-lib.sh"
 # shellcheck source=bin/fm-classify-lib.sh
 . "$SCRIPT_DIR/fm-classify-lib.sh"
 # shellcheck source=bin/fm-line-cap-lib.sh
@@ -33,6 +35,43 @@ SCRIPT_DIR="$(d=${BASH_SOURCE[0]%/*}; [ "$d" != "${BASH_SOURCE[0]}" ] || d=.; cd
 . "$SCRIPT_DIR/fm-supervision-engine-lib.sh"
 # shellcheck source=bin/fm-afk-contract.sh
 . "$SCRIPT_DIR/fm-afk-contract.sh"
+
+# Print the drain view's rows without the process-event rows whose result is
+# already marked handled. `fm-procevent.sh handled` prunes its own row, but a row
+# appended after the marker (the publish race) would otherwise show the result
+# again. The caller computes the acknowledgement boundary BEFORE this filter, so a
+# hidden row is still consumed by the acknowledgement.
+drop_handled_procevent_rows() {  # <rows>
+  local line kind key id seq
+  while IFS= read -r line; do
+    IFS=$'\t' read -r _ _ kind key _ <<EOF
+$line
+EOF
+    if [ "$kind" = check ]; then
+      case "$key" in
+        procevent:*:*)
+          seq=${key##*:}
+          id=${key#procevent:}
+          id=${id%:*}
+          # Only a `procevent:<id>:<seq>` key names a result; a stranded or
+          # launch-failed key carries a further segment and is never hidden.
+          case "$seq" in
+            ''|*[!0-9]*) ;;
+            *)
+              case "$id" in
+                ''|*:*) ;;
+                *) ! fm_procevent_is_handled "$STATE" "$id" "$seq" || continue ;;
+              esac
+              ;;
+          esac
+          ;;
+      esac
+    fi
+    printf '%s\n' "$line"
+  done <<EOF
+$1
+EOF
+}
 
 DRAIN_TMP=
 DRAIN_VIEW_TMP=
@@ -1053,6 +1092,7 @@ RAW_ROWS=$(fm_wake_print_deduped "$DRAIN_VIEW_TMP") || exit "$?"
 rm -f -- "$DRAIN_VIEW_TMP" || exit 1
 DRAIN_VIEW_TMP=
 ACK_THROUGH=$(printf '%s\n' "$RAW_ROWS" | awk -F '\t' '$2 ~ /^[0-9]+$/ && $2 > max { max=$2 } END { print max + 0 }') || exit 1
+RAW_ROWS=$(drop_handled_procevent_rows "$RAW_ROWS") || exit 1
 case "${FM_WAKE_DRAIN_TEST_DELAY_BEFORE_COMMIT:-0}" in
   0) ;;
   ''|*[!0-9]*) ;;

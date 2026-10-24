@@ -921,6 +921,93 @@ test_turn_ended_not_working_surfaced() {
   pass "a bare turn-end whose crew is not provably working is surfaced (the swallowed-finish fix)"
 }
 
+# --- an assistance's turn end wakes nothing; a ship or scout worker's does ----
+# An assistance (kind=assistance in its meta) reports through its own propose
+# path, so its turn-ended marker is absorbed in the watcher. Every other
+# worker's turn end keeps surfacing, and a mixed batch wakes for the workers only.
+
+test_assistance_turn_ended_absorbed() {
+  local dir state fakebin out pid
+  dir=$(make_case assistance-turn-ended); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"
+  printf 'window=test:fm-reviewer\nkind=assistance\n' > "$state/reviewer.meta"
+  : > "$state/reviewer.turn-ended"
+  # No working proof: on main this is exactly what surfaces a bare turn end.
+  export FM_FAKE_CREW_STATE='state: unknown · source: none · no current-state source available'
+  watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  if ! wait_poll_cycle "$state" "$pid"; then
+    reap "$pid"; fail "watcher exited for an assistance's turn end (should absorb): $(cat "$out")"
+  fi
+  [ ! -s "$out" ] || fail "an assistance's turn end printed a wake reason: $(cat "$out")"
+  [ ! -s "$state/.wake-queue" ] || fail "an assistance's turn end enqueued a durable wake record: $(cat "$state/.wake-queue")"
+  [ "$(cat "$state/.seen-reviewer_turn-ended" 2>/dev/null)" = "$(seen_sig "$state/reviewer.turn-ended")" ] \
+    || fail "the absorbed assistance marker's seen signature did not advance"
+  grep -F 'absorbed assistance turn-end' "$state/.watch-triage.log" >/dev/null \
+    || fail "the absorbed assistance turn end was not triage-logged"
+  reap "$pid"
+  unset FM_FAKE_CREW_STATE
+  pass "an assistance's turn end is absorbed: no exit, no queue row, seen signature advanced, one triage line"
+}
+
+test_assistance_turn_ended_mixed_batch_names_workers_only() {
+  local dir state fakebin out drain_out rows pid
+  dir=$(make_case assistance-turn-ended-mixed); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; drain_out="$dir/drain.out"
+  printf 'window=test:fm-reviewer\nkind=assistance\n' > "$state/reviewer.meta"
+  printf 'window=test:fm-a\nkind=ship\n' > "$state/a.meta"
+  : > "$state/reviewer.turn-ended"
+  : > "$state/a.turn-ended"
+  export FM_FAKE_CREW_STATE='state: unknown · source: none · no current-state source available'
+  watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "watcher did not surface the ship worker's turn end in a mixed batch"
+  grep -F "signal: $state/a.turn-ended" "$out" >/dev/null || fail "the wake did not name the ship worker's turn end: $(cat "$out")"
+  ! grep -F 'reviewer' "$out" >/dev/null || fail "the wake reason named the assistance: $(cat "$out")"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the mixed batch failed"
+  rows=$(grep -c "$(printf '\tsignal\t')" "$drain_out" || true)
+  [ "$rows" = 1 ] || fail "the mixed batch queued $rows signal rows, not 1: $(cat "$drain_out")"
+  ! grep "$(printf '\tsignal\t')" "$drain_out" | grep -F 'reviewer' >/dev/null \
+    || fail "the assistance's turn end was queued: $(cat "$drain_out")"
+  [ "$(cat "$state/.seen-reviewer_turn-ended" 2>/dev/null)" = "$(seen_sig "$state/reviewer.turn-ended")" ] \
+    || fail "the absorbed assistance marker's seen signature did not advance in the mixed batch"
+  unset FM_FAKE_CREW_STATE
+  pass "a mixed batch absorbs the assistance's turn end and wakes for the ship worker's alone"
+}
+
+test_scout_turn_ended_not_working_surfaced() {
+  local dir state fakebin out drain_out pid
+  dir=$(make_case scout-turn-ended-stopped); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; drain_out="$dir/drain.out"
+  printf 'window=test:fm-scout\nkind=scout\n' > "$state/scout.meta"
+  : > "$state/scout.turn-ended"
+  export FM_FAKE_CREW_STATE='state: unknown · source: none · no current-state source available'
+  watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "watcher did not surface a scout's turn end that is not provably working"
+  grep -F "signal: $state/scout.turn-ended" "$out" >/dev/null || fail "the wake did not name the scout's turn end: $(cat "$out")"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the scout turn end failed"
+  grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "$state/scout.turn-ended" >/dev/null \
+    || fail "the scout's turn end was not queued"
+  unset FM_FAKE_CREW_STATE
+  pass "a scout worker's turn end that is not provably working still surfaces"
+}
+
+test_assistance_status_line_still_surfaces() {
+  local dir state fakebin out drain_out pid
+  dir=$(make_case assistance-status); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; drain_out="$dir/drain.out"
+  printf 'window=test:fm-reviewer\nkind=assistance\n' > "$state/reviewer.meta"
+  printf 'working: round 1\nneeds-decision: pick A or B\n' > "$state/reviewer.status"
+  watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "watcher did not surface an assistance's captain-relevant status line"
+  grep -F "signal: $state/reviewer.status" "$out" >/dev/null || fail "the wake did not name the assistance's status file: $(cat "$out")"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the assistance status failed"
+  grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "$state/reviewer.status" >/dev/null \
+    || fail "the assistance's status line was not queued"
+  pass "an assistance's captain-relevant status line still surfaces"
+}
+
 # --- bare turn-end, unverifiable harness: pane churn is the third proof --------
 # A harness whose semantic busy state has no verified source (codex) can never
 # report working, so the two proofs above are unreachable for it and EVERY worker
@@ -930,6 +1017,10 @@ test_turn_ended_not_working_surfaced() {
 # churning pane is benign. The pane going quiet afterwards is still caught by that
 # backbone, which is why this widens the proof rather than bounding the wake rate.
 
+# A ship or scout worker's turn end is decided by the state checker (see the
+# "worker turn-end state checker" cases below), not by these proofs. The pane-churn
+# cases therefore use a task whose meta records no kind, the one worker shape the
+# checker leaves to this older triage.
 # The pane-churn turn-end absorb is opt-in per home, so every case that exercises
 # it (whether it expects an absorb or one of the guards that must still surface)
 # points the watcher at a case-local config dir holding the flag. A case that must
@@ -963,7 +1054,7 @@ test_turn_ended_churning_pane_absorbed() {
   out="$dir/watch.out"; capture_file="$dir/pane.txt"
   window="test:fm-codexer"
   : > "$state/codexer.turn-ended"
-  printf 'window=%s\nkind=ship\nharness=codex\n' "$window" > "$state/codexer.meta"
+  printf 'window=%s\nharness=codex\n' "$window" > "$state/codexer.meta"
   printf 'apply_patch: writing bin/thing.sh' > "$capture_file"
   key=$(printf '%s' "$window" | tr ':/.' '___')
   # The previous poll recorded DIFFERENT pane content, so this poll's capture is
@@ -997,7 +1088,7 @@ test_turn_ended_churn_resets_prior_stale_classification() {
   out="$dir/watch.out"; capture_file="$dir/pane.txt"
   window="test:fm-codexreturned"
   : > "$state/codexreturned.turn-ended"
-  printf 'window=%s\nkind=ship\nharness=codex\n' "$window" > "$state/codexreturned.meta"
+  printf 'window=%s\nharness=codex\n' "$window" > "$state/codexreturned.meta"
   old_hash=$(hash_text 'idle prompt from an earlier turn')
   active_hash=$(hash_text 'rendering a new turn')
   printf 'rendering a new turn' > "$capture_file"
@@ -1043,7 +1134,7 @@ test_turn_ended_churn_resets_wedge_state_before_stale_poll() {
   out="$dir/watch.out"; capture_file="$dir/pane.txt"; capture_count="$dir/capture.count"
   window="test:fm-codexfreshinterval"
   : > "$state/codexfreshinterval.turn-ended"
-  printf 'window=%s\nkind=ship\nharness=codex\n' "$window" > "$state/codexfreshinterval.meta"
+  printf 'window=%s\nharness=codex\n' "$window" > "$state/codexfreshinterval.meta"
   printf 'rendering a new turn' > "$capture_file"
   key=$(printf '%s' "$window" | tr ':/.' '___')
   printf '%s' "$(hash_text 'idle output from the prior interval')" > "$state/.hash-$key"
@@ -1079,7 +1170,7 @@ test_turn_ended_churn_existing_marker_absorbed() {
   out="$dir/watch.out"; capture_file="$dir/pane.txt"
   window="test:fm-codexmarked"
   : > "$state/codexmarked.turn-ended"
-  printf 'window=%s\nkind=ship\nharness=codex\n' "$window" > "$state/codexmarked.meta"
+  printf 'window=%s\nharness=codex\n' "$window" > "$state/codexmarked.meta"
   printf 'apply_patch: writing bin/thing.sh' > "$capture_file"
   key=$(printf '%s' "$window" | tr ':/.' '___')
   printf '%s' "$(hash_text 'reading the brief')" > "$state/.hash-$key"
@@ -1115,7 +1206,7 @@ test_turn_ended_still_pane_surfaced() {
   out="$dir/watch.out"; drain_out="$dir/drain.out"; capture_file="$dir/pane.txt"
   window="test:fm-codexstopped"
   : > "$state/codexstopped.turn-ended"
-  printf 'window=%s\nkind=ship\nharness=codex\n' "$window" > "$state/codexstopped.meta"
+  printf 'window=%s\nharness=codex\n' "$window" > "$state/codexstopped.meta"
   printf 'apply_patch: writing bin/thing.sh' > "$capture_file"
   key=$(printf '%s' "$window" | tr ':/.' '___')
   # The previous poll recorded THIS pane content: nothing rendered since.
@@ -1143,7 +1234,7 @@ test_turn_ended_malformed_prior_hash_surfaced() {
   out="$dir/watch.out"; drain_out="$dir/drain.out"; capture_file="$dir/pane.txt"
   window="test:fm-codexmalformed"
   : > "$state/codexmalformed.turn-ended"
-  printf 'window=%s\nkind=ship\nharness=codex\n' "$window" > "$state/codexmalformed.meta"
+  printf 'window=%s\nharness=codex\n' "$window" > "$state/codexmalformed.meta"
   printf 'stopped after rendering this' > "$capture_file"
   key=$(printf '%s' "$window" | tr ':/.' '___')
   printf 'x' > "$state/.hash-$key"
@@ -1171,7 +1262,7 @@ test_turn_ended_trailing_newline_prior_hash_surfaced() {
   out="$dir/watch.out"; drain_out="$dir/drain.out"; capture_file="$dir/pane.txt"
   window="test:fm-codexnewline"
   : > "$state/codexnewline.turn-ended"
-  printf 'window=%s\nkind=ship\nharness=codex\n' "$window" > "$state/codexnewline.meta"
+  printf 'window=%s\nharness=codex\n' "$window" > "$state/codexnewline.meta"
   printf 'rendered after the prior poll' > "$capture_file"
   key=$(printf '%s' "$window" | tr ':/.' '___')
   printf '%s\n' "$(hash_text 'the previous render')" > "$state/.hash-$key"
@@ -1230,8 +1321,8 @@ test_turn_ended_colliding_window_key_surfaced() {
   out="$dir/watch.out"; drain_out="$dir/drain.out"; capture_file="$dir/pane.txt"
   window="test:fm-a.b"; colliding="test:fm-a_b"
   : > "$state/a.b.turn-ended"
-  printf 'window=%s\nkind=ship\nharness=codex\n' "$window" > "$state/a.b.meta"
-  printf 'window=%s\nkind=ship\nharness=codex\n' "$colliding" > "$state/a_b.meta"
+  printf 'window=%s\nharness=codex\n' "$window" > "$state/a.b.meta"
+  printf 'window=%s\nharness=codex\n' "$colliding" > "$state/a_b.meta"
   printf 'rendered after the prior poll' > "$capture_file"
   key=$(printf '%s' "$window" | tr ':/.' '___')
   printf '%s' "$(hash_text 'the other window pane')" > "$state/.hash-$key"
@@ -1259,8 +1350,8 @@ test_turn_ended_duplicate_endpoint_records_surfaced() {
   out="$dir/watch.out"; drain_out="$dir/drain.out"; capture_file="$dir/pane.txt"
   window="test:fm-shared"
   : > "$state/first.turn-ended"
-  printf 'window=%s\nkind=ship\nharness=codex\n' "$window" > "$state/first.meta"
-  printf 'window=%s\nkind=ship\nharness=codex\n' "$window" > "$state/second.meta"
+  printf 'window=%s\nharness=codex\n' "$window" > "$state/first.meta"
+  printf 'window=%s\nharness=codex\n' "$window" > "$state/second.meta"
   printf 'rendered after the prior poll' > "$capture_file"
   key=$(printf '%s' "$window" | tr ':/.' '___')
   printf '%s' "$(hash_text 'the previous render')" > "$state/.hash-$key"
@@ -1291,8 +1382,8 @@ test_turn_ended_mixed_positive_evidence_batch_absorbed() {
   first_window="test:fm-first"; second_window="test:fm-second"
   : > "$state/first.turn-ended"
   : > "$state/second.turn-ended"
-  printf 'window=%s\nkind=ship\nharness=pi\n' "$first_window" > "$state/first.meta"
-  printf 'window=%s\nkind=ship\nharness=codex\n' "$second_window" > "$state/second.meta"
+  printf 'window=%s\nharness=pi\n' "$first_window" > "$state/first.meta"
+  printf 'window=%s\nharness=codex\n' "$second_window" > "$state/second.meta"
   printf 'second task rendered after the prior poll' > "$capture_file"
   first_key=$(printf '%s' "$first_window" | tr ':/.' '___')
   second_key=$(printf '%s' "$second_window" | tr ':/.' '___')
@@ -1328,8 +1419,8 @@ test_turn_ended_mixed_positive_evidence_batch_default_off() {
   first_window="test:fm-firstoff"; second_window="test:fm-secondoff"
   : > "$state/firstoff.turn-ended"
   : > "$state/secondoff.turn-ended"
-  printf 'window=%s\nkind=ship\nharness=pi\n' "$first_window" > "$state/firstoff.meta"
-  printf 'window=%s\nkind=ship\nharness=codex\n' "$second_window" > "$state/secondoff.meta"
+  printf 'window=%s\nharness=pi\n' "$first_window" > "$state/firstoff.meta"
+  printf 'window=%s\nharness=codex\n' "$second_window" > "$state/secondoff.meta"
   printf 'second task rendered after the prior poll' > "$capture_file"
   first_key=$(printf '%s' "$first_window" | tr ':/.' '___')
   second_key=$(printf '%s' "$second_window" | tr ':/.' '___')
@@ -1368,8 +1459,8 @@ test_status_and_turn_end_batch_never_uses_churn_evidence() {
   first_window="test:fm-firststatus"; second_window="test:fm-secondturn"
   printf 'working: authoritative task still running\n' > "$state/firststatus.status"
   : > "$state/secondturn.turn-ended"
-  printf 'window=%s\nkind=ship\nharness=pi\n' "$first_window" > "$state/firststatus.meta"
-  printf 'window=%s\nkind=ship\nharness=codex\n' "$second_window" > "$state/secondturn.meta"
+  printf 'window=%s\nharness=pi\n' "$first_window" > "$state/firststatus.meta"
+  printf 'window=%s\nharness=codex\n' "$second_window" > "$state/secondturn.meta"
   printf 'second task rendered after the prior poll' > "$capture_file"
   second_key=$(printf '%s' "$second_window" | tr ':/.' '___')
   printf '%s' "$(hash_text 'second task previous render')" > "$state/.hash-$second_key"
@@ -1408,7 +1499,7 @@ test_turn_ended_churn_absorb_off_by_default() {
   out="$dir/watch.out"; drain_out="$dir/drain.out"; capture_file="$dir/pane.txt"
   window="test:fm-codexdefault"
   : > "$state/codexdefault.turn-ended"
-  printf 'window=%s\nkind=ship\nharness=codex\n' "$window" > "$state/codexdefault.meta"
+  printf 'window=%s\nharness=codex\n' "$window" > "$state/codexdefault.meta"
   printf 'apply_patch: writing bin/thing.sh' > "$capture_file"
   key=$(printf '%s' "$window" | tr ':/.' '___')
   printf '%s' "$(hash_text 'reading the brief')" > "$state/.hash-$key"
@@ -1444,7 +1535,7 @@ test_turn_ended_churn_absorb_bounded() {
   out="$dir/watch.out"; drain_out="$dir/drain.out"; capture_file="$dir/pane.txt"
   window="test:fm-codexclock"
   : > "$state/codexclock.turn-ended"
-  printf 'window=%s\nkind=ship\nharness=codex\n' "$window" > "$state/codexclock.meta"
+  printf 'window=%s\nharness=codex\n' "$window" > "$state/codexclock.meta"
   printf 'a background renderer that never stops' > "$capture_file"
   key=$(printf '%s' "$window" | tr ':/.' '___')
   printf '%s' "$(hash_text 'the previous frame')" > "$state/.hash-$key"
@@ -1477,7 +1568,7 @@ test_turn_ended_churn_timer_write_failure_surfaced() {
   out="$dir/watch.out"; drain_out="$dir/drain.out"; capture_file="$dir/pane.txt"
   window="test:fm-codextimer"
   : > "$state/codextimer.turn-ended"
-  printf 'window=%s\nkind=ship\nharness=codex\n' "$window" > "$state/codextimer.meta"
+  printf 'window=%s\nharness=codex\n' "$window" > "$state/codextimer.meta"
   printf 'rendered after the previous poll' > "$capture_file"
   key=$(printf '%s' "$window" | tr ':/.' '___')
   printf '%s' "$(hash_text 'the previous render')" > "$state/.hash-$key"
@@ -1506,7 +1597,7 @@ test_turn_ended_invalid_churn_bound_surfaced() {
   out="$dir/watch.out"; drain_out="$dir/drain.out"; capture_file="$dir/pane.txt"
   window="test:fm-codexbound"
   : > "$state/codexbound.turn-ended"
-  printf 'window=%s\nkind=ship\nharness=codex\n' "$window" > "$state/codexbound.meta"
+  printf 'window=%s\nharness=codex\n' "$window" > "$state/codexbound.meta"
   printf 'rendered after the previous poll' > "$capture_file"
   key=$(printf '%s' "$window" | tr ':/.' '___')
   printf '%s' "$(hash_text 'the previous render')" > "$state/.hash-$key"
@@ -1536,7 +1627,7 @@ test_turn_ended_oversized_churn_bound_surfaced() {
   out="$dir/watch.out"; drain_out="$dir/drain.out"; capture_file="$dir/pane.txt"
   window="test:fm-codexoversized"
   : > "$state/codexoversized.turn-ended"
-  printf 'window=%s\nkind=ship\nharness=codex\n' "$window" > "$state/codexoversized.meta"
+  printf 'window=%s\nharness=codex\n' "$window" > "$state/codexoversized.meta"
   printf 'rendered after the previous poll' > "$capture_file"
   key=$(printf '%s' "$window" | tr ':/.' '___')
   printf '%s' "$(hash_text 'the previous render')" > "$state/.hash-$key"
@@ -1568,7 +1659,7 @@ test_turn_ended_invalid_churn_deadline_surfaced() {
     out="$dir/watch.out"; drain_out="$dir/drain.out"; capture_file="$dir/pane.txt"
     window="test:fm-codexdeadline"
     : > "$state/codexdeadline.turn-ended"
-    printf 'window=%s\nkind=ship\nharness=codex\n' "$window" > "$state/codexdeadline.meta"
+    printf 'window=%s\nharness=codex\n' "$window" > "$state/codexdeadline.meta"
     printf 'rendered after the previous poll' > "$capture_file"
     key=$(printf '%s' "$window" | tr ':/.' '___')
     marker="$state/.churn-since-$key"
@@ -1609,8 +1700,8 @@ test_turn_ended_surfaced_batch_opens_no_partial_deadline() {
   first_window="test:fm-codexfirst"; second_window="test:fm-codexsecond"
   : > "$state/first.turn-ended"
   : > "$state/second.turn-ended"
-  printf 'window=%s\nkind=ship\nharness=codex\n' "$first_window" > "$state/first.meta"
-  printf 'window=%s\nkind=ship\nharness=codex\n' "$second_window" > "$state/second.meta"
+  printf 'window=%s\nharness=codex\n' "$first_window" > "$state/first.meta"
+  printf 'window=%s\nharness=codex\n' "$second_window" > "$state/second.meta"
   printf 'rendered after the previous poll' > "$capture_file"
   first_key=$(printf '%s' "$first_window" | tr ':/.' '___')
   second_key=$(printf '%s' "$second_window" | tr ':/.' '___')
@@ -2662,11 +2753,12 @@ test_exited_declared_pause_is_bounded_but_live_gate_surfaces() {
     FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_PAUSE_RESURFACE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
-  wait_for_exit "$pid" 100 || fail "captain-held dead-agent pane did not re-surface on the bounded cadence"
-  grep -F "awaiting the captain" "$state/.wake-queue" >/dev/null \
-    || fail "captain-held dead-agent pane surfaced as a stopped crew instead of a captain-owned recheck: $(cat "$state/.wake-queue")"
-  grep -F "awaiting external" "$state/.wake-queue" >/dev/null \
-    && fail "captain-held dead-agent pane borrowed the pause verb's external-wait wording"
+  # The captain already holds this worker: it is never rechecked, in either posture.
+  wait_poll_cycle "$state" "$pid" || { reap "$pid"; fail "captain-held dead-agent pane woke firstmate: $(cat "$out")"; }
+  wait_poll_cycle "$state" "$pid" || { reap "$pid"; fail "captain-held dead-agent pane woke firstmate: $(cat "$out")"; }
+  reap "$pid"
+  [ ! -s "$state/.wake-queue" ] \
+    || fail "captain-held dead-agent pane queued a recheck: $(cat "$state/.wake-queue")"
 
   dir=$(make_case alive-decision-gate); state="$dir/state"; fakebin="$dir/fakebin"
   out="$dir/watch.out"; capture_file="$dir/pane.txt"; statusf="$state/gate.status"
@@ -2711,7 +2803,7 @@ test_exited_declared_pause_is_bounded_but_live_gate_surfaces() {
   bare=$(awk -F '\t' -v w="$window" '$3 == "stale" && $4 == w && $5 == "stale: " w { n++ } END { print n + 0 }' "$state/.wake-queue" 2>/dev/null || echo 0)
   [ "$wakes" -eq 0 ] || fail "acknowledged external-decision surface replayed $wakes wakes"
   [ "$bare" -eq 0 ] || fail "acknowledged external-decision bare stale remained queued"
-  pass "exited declared-pause and captain-held panes use bounded pause cadence while a live decision gate still surfaces once"
+  pass "an exited declared-pause pane uses the bounded pause cadence, a captain-held one is never rechecked, and a live decision gate still surfaces once"
 }
 
 # A dead worker reaches handle_paused_stale rather than the live fallback above.
@@ -2721,9 +2813,9 @@ test_exited_declared_pause_is_bounded_but_live_gate_surfaces() {
 test_absorbed_replacement_wait_does_not_inherit_the_old_throttle() {
   local spec name initial replacement expected dir state fakebin out capture_file
   local statusf window key sig back pid wakes
+  # shellcheck disable=SC2041  # one spec left; the loop shape stays for the next
   for spec in \
-    'paused-replacement|paused: waiting on validation run one|paused: waiting on validation run two|awaiting external' \
-    'captain-held-replacement|captain-held [key=route]: awaiting the routing call|captain-held [key=release]: awaiting the release call|awaiting the captain'
+    'paused-replacement|paused: waiting on validation run one|paused: waiting on validation run two|awaiting external'
   do
     name=${spec%%|*}; spec=${spec#*|}
     initial=${spec%%|*}; spec=${spec#*|}
@@ -2769,7 +2861,7 @@ test_absorbed_replacement_wait_does_not_inherit_the_old_throttle() {
     grep -F "$expected" "$state/.wake-queue" >/dev/null \
       || fail "[$name] replacement declared wait used the wrong recheck reason: $(cat "$state/.wake-queue")"
   done
-  pass "absorbed paused and captain-held replacements each start their own re-surface cadence"
+  pass "an absorbed paused replacement starts its own re-surface cadence"
 }
 
 # Run one watcher round against a parked-worker fixture, so a round differs only
@@ -2807,11 +2899,11 @@ parked_watch_round() {  # <state> <fakebin> <out> <capture> <window> <exit|absor
 }
 
 # --- a live worker parked on a declared wait: pane churn must not re-alarm ----
-# The 2026-08/09 alarm loop, in both observed forms - a worker parked on the
-# CAPTAIN (captain-held, five consecutive alarms) and one parked on the PIPELINE
-# (paused:, dozens across one day). pause_state_class deliberately returns `none`
-# for either while the agent is still ALIVE, so that a worker genuinely waiting on
-# a decision is never silenced; first sight of each distinct stale hash therefore
+# The 2026-08/09 alarm loop for a worker parked on the PIPELINE (paused:, dozens
+# across one day); a worker parked on the CAPTAIN never wakes at all now
+# (test_captain_held_worker_raises_no_stale_wake). pause_state_class deliberately
+# returns `none` for a declared wait while the agent is still ALIVE, so that a
+# worker genuinely waiting on a decision is never silenced; first sight of each distinct stale hash therefore
 # reaches surface_nonterminal_stale. An idle parked pane still churns its hash (a
 # clock, a token counter), so every tick used to re-enter that first-sight path and
 # wake firstmate - the throttle was written by the very wake it should have
@@ -2822,9 +2914,9 @@ parked_watch_round() {  # <state> <fakebin> <out> <capture> <window> <exit|absor
 test_live_declared_wait_churn_honors_the_resurface_throttle() {
   local spec name status_line dir state fakebin out capture_file statusf window key
   local sig round wakes bare text throttle replacement
+  # shellcheck disable=SC2041  # one spec left; the loop shape stays for the next
   for spec in \
-    'paused-pipeline-churn|paused: waiting on the validation run to finish' \
-    'captain-held-churn|captain-held [key=route]: awaiting the captain on the routing call'
+    'paused-pipeline-churn|paused: waiting on the validation run to finish'
   do
     name=${spec%%|*}; status_line=${spec#*|}
     dir=$(make_case "$name"); state="$dir/state"; fakebin="$dir/fakebin"
@@ -2866,10 +2958,7 @@ test_live_declared_wait_churn_honors_the_resurface_throttle() {
     # same window remains parked. Its first sight must not inherit the previous
     # declaration's throttle, or an unrelated replacement wait can stay silent
     # for nearly the whole old cadence window.
-    case "$name" in
-      paused-pipeline-churn) replacement='paused: waiting on the replacement validation run' ;;
-      captain-held-churn) replacement='captain-held [key=release]: awaiting the captain on the release call' ;;
-    esac
+    replacement='paused: waiting on the replacement validation run'
     printf '%s\n' "$replacement" >> "$statusf"
     sig=$(seen_sig "$statusf"); printf '%s' "$sig" > "$state/.seen-parked_status"
     printf 'replacement wait, elapsed 1s' > "$capture_file"
@@ -2944,7 +3033,16 @@ test_live_paused_until_controls_recheck_time() {
   wakes=$(awk -F '\t' -v w="$window" '$3 == "stale" && $4 == w { n++ } END { print n + 0 }' \
     "$state/.wake-queue" 2>/dev/null || echo 0)
   [ "$wakes" -eq 0 ] || fail "a due declared time rechecked again inside the long cadence"
-  pass "a live paused worker stays absorbed until its declared time, then rechecks"
+  # However long the worker stays quiet after that one wake - the recheck cadence
+  # long gone - it is never rechecked again: the declared time was the recheck.
+  set_mtime "$(( $(date +%s) - 5000 ))" "$state/.paused-resurfaced-$key"
+  printf 'parked, elapsed 5s' > "$capture_file"
+  parked_watch_round "$state" "$fakebin" "$out" "$capture_file" "$window" absorb \
+    || fail "a due declared time rechecked again once the long cadence elapsed"
+  wakes=$(awk -F '\t' -v w="$window" '$3 == "stale" && $4 == w { n++ } END { print n + 0 }' \
+    "$state/.wake-queue" 2>/dev/null || echo 0)
+  [ "$wakes" -eq 0 ] || fail "a due declared time produced $wakes more wakes after the long cadence elapsed"
+  pass "a live paused worker stays absorbed until its declared time, wakes once, then stays absorbed"
 }
 
 # --- the wedge threshold consults the worker's own declared wait ------------
@@ -3166,92 +3264,45 @@ test_wedge_threshold_keeps_a_wait_past_a_default_key_answer() {
 # The other status-line record. A verified `captain-held:` transfer also reaches
 # this deferral - the mate has an active run attributed to it, so pause_state_class
 # reports working and the stable hash is handed to the wedge timer - but it blocks
-# on a DIFFERENT human than a `paused:` declaration does. The captain reading the
-# recheck is the one who can clear it, so wording it as an external dependency to
-# confirm points them away from the only action that ends the wait. The sibling
-# absorber makes exactly this distinction, and a lane routed here must not lose it.
+# on a DIFFERENT human than a `paused:` declaration does. The captain already holds
+# it and is the only one who can clear it, so a recheck has nothing to tell them:
+# the lane is never rechecked, in either posture, however old the line is.
+# The idle timer is pre-armed well past the threshold, so every round below
+# reaches the absorb with the same timer value and a restart would be visible.
 test_wedge_threshold_recheck_names_the_captain_for_a_held_lane() {
-  local dir state fakebin out capture window key n armed_timer
+  local dir state fakebin out capture window key n armed_timer leg
   local working='state: working · source: run-step · ci running'
 
-  dir=$(wedge_threshold_fixture captain-held-wait \
-    'captain-held: which retention window wins' 2000)
-  state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"; capture="$dir/pane.txt"
   window="test:fm-wedge"; key=$(printf '%s' "$window" | tr ':/.' '___')
-  FM_TEST_PAUSE_RESURFACE=240 wedge_threshold_round "$state" "$fakebin" "$out" "$capture" "$window" "$working" exit \
-    || fail "a captain-held lane older than the recheck cadence was never rechecked: $(cat "$out")"
-  grep -F 'awaiting the captain' "$out" >/dev/null \
-    || fail "the captain-held recheck did not name the captain as the human the wait is on: $(cat "$out")"
-  grep -F 'answer the held decision or release the hold' "$out" >/dev/null \
-    || fail "the captain-held recheck did not name the action that clears the hold: $(cat "$out")"
-  grep -F 'awaiting external' "$out" >/dev/null \
-    && fail "a captain-held transfer was published as a wait on an external dependency: $(cat "$out")"
-  grep -F 'confirm the wait still holds' "$out" >/dev/null \
-    && fail "a captain-held transfer borrowed the external-wait action: $(cat "$out")"
-  grep -F 'possible wedge' "$out" >/dev/null \
-    && fail "a captain-held transfer was reported as a possible wedge: $(cat "$out")"
-  ack_stopped_cycle "$state" || fail "could not acknowledge the captain-held recheck"
-
-  # The quiet direction is unchanged from a declared pause: inside the cadence the
-  # hold is absorbed whole, with no escalation counted.
-  dir=$(wedge_threshold_fixture captain-held-quiet \
-    'captain-held: which retention window wins' 0)
-  state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"; capture="$dir/pane.txt"
-  n=1
-  while [ "$n" -le 3 ]; do
-    wedge_threshold_round "$state" "$fakebin" "$out" "$capture" "$window" "$working" absorb \
-      || fail "a captain-held lane wedge-escalated at threshold $n under a working verdict: $(cat "$out")"
-    n=$((n + 1))
+  for leg in attended away archived; do
+    dir=$(wedge_threshold_fixture "captain-held-$leg" \
+      'captain-held: which retention window wins' 2000 2000)
+    state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"; capture="$dir/pane.txt"
+    armed_timer=$(cat "$state/.stale-since-$key")
+    case "$leg" in
+      away) write_away_record "$state" ;;
+      archived) write_away_record "$state"; archive_away_record "$state" ;;
+    esac
+    n=1
+    while [ "$n" -le 3 ]; do
+      FM_TEST_PAUSE_RESURFACE=240 wedge_threshold_round "$state" "$fakebin" "$out" "$capture" "$window" "$working" absorb \
+        || fail "[$leg] a captain-held lane was rechecked at threshold $n: $(cat "$out")"
+      n=$((n + 1))
+    done
+    [ "$(wedge_stale_wakes "$state" "$window")" -eq 0 ] \
+      || fail "[$leg] a captain-held lane woke firstmate: $(cat "$state/.wake-queue")"
+    [ ! -s "$out" ] \
+      || fail "[$leg] a captain-held lane printed a recheck: $(cat "$out")"
+    [ ! -e "$state/.waiting-resurfaced-$key" ] \
+      || fail "[$leg] a captain-held lane armed a recheck throttle"
+    [ ! -e "$state/.wedge-escalations-$key" ] \
+      || fail "[$leg] a captain-held lane counted $(cat "$state/.wedge-escalations-$key") wedge escalation(s)"
+    grep -F 'never rechecked' "$state/.watch-triage.log" >/dev/null \
+      || fail "[$leg] the captain-held lane was not recorded in the triage log: $(cat "$state/.watch-triage.log")"
+    [ "$(cat "$state/.stale-since-$key")" = "$armed_timer" ] \
+      || fail "[$leg] a captain-held lane restarted the idle timer"
   done
-  [ "$(wedge_stale_wakes "$state" "$window")" -eq 0 ] \
-    || fail "a captain-held lane queued a wedge wake inside its recheck cadence: $(cat "$state/.wake-queue")"
-  [ ! -e "$state/.wedge-escalations-$key" ] \
-    || fail "a captain-held lane counted $(cat "$state/.wedge-escalations-$key") wedge escalation(s)"
-
-  # While the away-posture record exists there is nobody to answer the hold, so
-  # this path absorbs it in silence like every other captain-held path in the
-  # watcher. The recheck is not merely delayed but not owed at all: no wake, and
-  # no throttle armed, so the moment the record is archived the hold is rechecked
-  # at once rather than waiting out a cadence that started while the captain was
-  # away. Same fixture and same age as the attended leg above, which is what makes
-  # the difference attributable to the record alone.
-  # The idle timer is pre-armed well past the threshold, so every round below
-  # reaches the absorb with the same timer value and a restart would be visible.
-  dir=$(wedge_threshold_fixture captain-held-away \
-    'captain-held: which retention window wins' 2000 2000)
-  state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"; capture="$dir/pane.txt"
-  armed_timer=$(cat "$state/.stale-since-$key")
-  write_away_record "$state"
-  n=1
-  while [ "$n" -le 3 ]; do
-    FM_TEST_PAUSE_RESURFACE=240 wedge_threshold_round "$state" "$fakebin" "$out" "$capture" "$window" "$working" absorb \
-      || fail "a captain-held lane was rechecked at threshold $n while the away-posture record existed: $(cat "$out")"
-    n=$((n + 1))
-  done
-  [ "$(wedge_stale_wakes "$state" "$window")" -eq 0 ] \
-    || fail "a captain-held lane woke the away captain: $(cat "$state/.wake-queue")"
-  [ ! -s "$out" ] \
-    || fail "a captain-held lane printed a recheck while the away-posture record existed: $(cat "$out")"
-  [ ! -e "$state/.waiting-resurfaced-$key" ] \
-    || fail "an away-silenced hold armed the recheck throttle, so the recheck owed on return would be delayed a full cadence"
-  [ ! -e "$state/.wedge-escalations-$key" ] \
-    || fail "an away-silenced hold counted $(cat "$state/.wedge-escalations-$key") wedge escalation(s)"
-  grep -F 'never rechecked while the away-posture record exists' "$state/.watch-triage.log" >/dev/null \
-    || fail "the away-silenced hold was not recorded in the triage log: $(cat "$state/.watch-triage.log")"
-  [ "$(cat "$state/.stale-since-$key")" = "$armed_timer" ] \
-    || fail "an away-silenced hold restarted the idle timer, so part of the away window would be spent against the cadence the recheck owed on return uses"
-
-  # And the recheck is owed in full the moment the captain is back: the absorb
-  # above leaves the idle timer alone, so no part of the away window is spent
-  # against the cadence the hold is rechecked on.
-  archive_away_record "$state"
-  : > "$out"
-  FM_TEST_PAUSE_RESURFACE=240 wedge_threshold_round "$state" "$fakebin" "$out" "$capture" "$window" "$working" exit \
-    || fail "a captain-held lane was never rechecked after the away-posture record was archived: $(cat "$out")"
-  grep -F 'awaiting the captain' "$out" >/dev/null \
-    || fail "the recheck owed on return did not name the captain: $(cat "$out")"
-  ack_stopped_cycle "$state" || fail "could not acknowledge the on-return captain-held recheck"
-  pass "a captain-held lane is rechecked as a hold on the captain, never as an external wait, and never at all while the captain is away"
+  pass "a captain-held lane under a working verdict is never rechecked, in either posture"
 }
 
 # The backlog record of the same hold. Once firstmate hands a decision to the
@@ -3272,39 +3323,26 @@ backlog_hold_wedge_fixture() {  # <name> <status-age-secs> [<wedge-timer-age-sec
 }
 
 test_wedge_threshold_defers_to_a_backlog_captain_hold() {
-  local dir state fakebin out capture window key n queued armed_timer past
+  local dir state fakebin out capture window key n armed_timer past leg
   local working='state: working · source: run-step · ci running'
   command -v tasks-axi >/dev/null 2>&1 \
     || { echo "skip: tasks-axi not found (backlog captain hold wedge bound)"; return 0; }
   window="test:fm-wedge"; key=$(printf '%s' "$window" | tr ':/.' '___')
 
-  # A fresh status line is no record of when the hold began, so the first
-  # threshold rechecks it once, as a wait on the captain with no wait age.
+  # The captain already holds the work, so the hold is absorbed whole at every
+  # threshold, with no recheck owed and no escalation counted.
   dir=$(backlog_hold_wedge_fixture backlog-hold-quiet 0) \
     || fail "could not build a backlog captain-hold wedge fixture"
   state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"; capture="$dir/pane.txt"
-  FM_HOME="$dir" FM_DATA_OVERRIDE="$dir/data" \
-    wedge_threshold_round "$state" "$fakebin" "$out" "$capture" "$window" "$working" exit \
-    || fail "a backlog-held lane was never rechecked at the threshold: $(cat "$out")"
-  grep -F 'awaiting the captain' "$out" >/dev/null \
-    || fail "the backlog-hold recheck did not name the captain: $(cat "$out")"
-  grep -F 'possible wedge' "$out" >/dev/null \
-    && fail "a backlog-held lane was reported as a possible wedge: $(cat "$out")"
-  grep -E ', waiting [0-9]+s' "$out" >/dev/null \
-    && fail "the backlog-hold recheck published the status line's age as the hold's: $(cat "$out")"
-  ack_stopped_cycle "$state" || fail "could not acknowledge the backlog-hold recheck"
-
-  # Inside the recheck cadence the hold is absorbed whole, threshold after threshold.
-  queued=$(wedge_stale_wakes "$state" "$window")
   n=1
   while [ "$n" -le 3 ]; do
     FM_HOME="$dir" FM_DATA_OVERRIDE="$dir/data" \
       wedge_threshold_round "$state" "$fakebin" "$out" "$capture" "$window" "$working" absorb \
-      || fail "a backlog-held lane wedge-escalated at threshold $n: $(cat "$out")"
+      || fail "a backlog-held lane wedge-escalated or was rechecked at threshold $n: $(cat "$out")"
     n=$((n + 1))
   done
-  [ "$(wedge_stale_wakes "$state" "$window")" -eq "$queued" ] \
-    || fail "a backlog-held lane queued a further wake inside its recheck cadence: $(cat "$state/.wake-queue")"
+  [ "$(wedge_stale_wakes "$state" "$window")" -eq 0 ] \
+    || fail "a backlog-held lane woke firstmate: $(cat "$state/.wake-queue")"
   [ ! -e "$state/.wedge-escalations-$key" ] \
     || fail "a backlog-held lane counted $(cat "$state/.wedge-escalations-$key") wedge escalation(s)"
 
@@ -3315,38 +3353,41 @@ test_wedge_threshold_defers_to_a_backlog_captain_hold() {
     "paused: waiting on the build queue until $past") \
     || fail "could not build a backlog captain-hold wedge fixture"
   state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"; capture="$dir/pane.txt"
-  FM_HOME="$dir" FM_DATA_OVERRIDE="$dir/data" \
-    wedge_threshold_round "$state" "$fakebin" "$out" "$capture" "$window" "$working" exit \
-    || fail "a backlog-held lane behind an elapsed pause was never rechecked: $(cat "$out")"
-  grep -F 'awaiting the captain' "$out" >/dev/null \
-    || fail "a backlog-held lane behind an elapsed pause was not rechecked as a wait on the captain: $(cat "$out")"
-  grep -F 'possible wedge' "$out" >/dev/null \
-    && fail "a backlog-held lane behind an elapsed pause was reported as a possible wedge: $(cat "$out")"
-  [ ! -e "$state/.wedge-escalations-$key" ] \
-    || fail "a backlog-held lane behind an elapsed pause counted a wedge escalation"
-  ack_stopped_cycle "$state" || fail "could not acknowledge the elapsed-pause backlog-hold recheck"
-
-  # While the away-posture record exists it is never rechecked, and the backlog
-  # read that proves the hold is paced by the idle timer rather than every poll.
-  dir=$(backlog_hold_wedge_fixture backlog-hold-away 2000 2000) \
-    || fail "could not build a backlog captain-hold wedge fixture"
-  state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"; capture="$dir/pane.txt"
-  armed_timer=$(cat "$state/.stale-since-$key")
-  write_away_record "$state"
   n=1
   while [ "$n" -le 3 ]; do
-    FM_HOME="$dir" FM_DATA_OVERRIDE="$dir/data" FM_TEST_PAUSE_RESURFACE=240 \
+    FM_HOME="$dir" FM_DATA_OVERRIDE="$dir/data" \
       wedge_threshold_round "$state" "$fakebin" "$out" "$capture" "$window" "$working" absorb \
-      || fail "a backlog-held lane was rechecked at threshold $n while the away-posture record existed: $(cat "$out")"
+      || fail "a backlog-held lane behind an elapsed pause woke at threshold $n: $(cat "$out")"
     n=$((n + 1))
   done
   [ "$(wedge_stale_wakes "$state" "$window")" -eq 0 ] \
-    || fail "a backlog-held lane woke the away captain: $(cat "$state/.wake-queue")"
-  [ ! -s "$out" ] \
-    || fail "a backlog-held lane printed a recheck while the away-posture record existed: $(cat "$out")"
-  [ "$(cat "$state/.stale-since-$key")" != "$armed_timer" ] \
-    || fail "an away-silenced backlog hold left the idle timer expired, so its backlog read repeats on every poll"
-  pass "a backlog captain hold bounds the wedge ladder like a captain-held line, and stays silent while the captain is away"
+    || fail "a backlog-held lane behind an elapsed pause woke firstmate: $(cat "$state/.wake-queue")"
+  [ ! -e "$state/.wedge-escalations-$key" ] \
+    || fail "a backlog-held lane behind an elapsed pause counted a wedge escalation"
+
+  # In either posture it is never rechecked, and the backlog read that proves the
+  # hold is paced by the idle timer rather than repeated on every poll.
+  for leg in attended away; do
+    dir=$(backlog_hold_wedge_fixture "backlog-hold-$leg" 2000 2000) \
+      || fail "could not build a backlog captain-hold wedge fixture"
+    state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"; capture="$dir/pane.txt"
+    armed_timer=$(cat "$state/.stale-since-$key")
+    [ "$leg" != away ] || write_away_record "$state"
+    n=1
+    while [ "$n" -le 3 ]; do
+      FM_HOME="$dir" FM_DATA_OVERRIDE="$dir/data" FM_TEST_PAUSE_RESURFACE=240 \
+        wedge_threshold_round "$state" "$fakebin" "$out" "$capture" "$window" "$working" absorb \
+        || fail "[$leg] a backlog-held lane was rechecked at threshold $n: $(cat "$out")"
+      n=$((n + 1))
+    done
+    [ "$(wedge_stale_wakes "$state" "$window")" -eq 0 ] \
+      || fail "[$leg] a backlog-held lane woke firstmate: $(cat "$state/.wake-queue")"
+    [ ! -s "$out" ] \
+      || fail "[$leg] a backlog-held lane printed a recheck: $(cat "$out")"
+    [ "$(cat "$state/.stale-since-$key")" != "$armed_timer" ] \
+      || fail "[$leg] a backlog hold left the idle timer expired, so its backlog read repeats on every poll"
+  done
+  pass "a backlog captain hold bounds the wedge ladder like a captain-held line, and is never rechecked"
 }
 
 # --- the wedge threshold reads the crew's own parked-gate state --------------
@@ -4329,7 +4370,7 @@ hold_stale_wakes() {  # <state>
 # inconclusive one. The hold is invisible to the status line in both, so both
 # branches had the same blindness and both are covered.
 test_open_captain_call_bounds_stale_churn() {
-  local spec name line dir state out capture throttle wakes
+  local spec name line dir state out capture throttle
   command -v tasks-axi >/dev/null 2>&1 \
     || { echo "skip: tasks-axi not found (captain-hold stale bound)"; return 0; }
   for spec in \
@@ -4342,40 +4383,35 @@ test_open_captain_call_bounds_stale_churn() {
     state="$dir/state"; out="$dir/watch.out"; capture="$dir/pane.txt"
     throttle="$state/.paused-resurfaced-$(hold_key)"
 
-    # First sight still alarms: the call bounds repetition, never the first look.
-    hold_watch_surface "$dir" "$out" "$capture" 'idle, elapsed 1s' \
-      || fail "[$name] first sight of held work did not surface"
-    wakes=$(hold_stale_wakes "$state")
-    [ "$wakes" -eq 1 ] || fail "[$name] first sight produced $wakes wakes instead of one"
-    ack_stopped_cycle "$state" || fail "[$name] could not acknowledge the first surface"
-
-    # The pane churns while the SAME call stands. Every one of these alarmed.
-    hold_watch_churn "$dir" "$out" "$capture" 'idle, tick' 2 \
+    # The captain already holds this work, so no pane sighting wakes firstmate,
+    # the first included, and no away record is needed for that. The re-surface
+    # window is shortened to one second and the churn outlasts it many times over:
+    # on main every new hash after the window re-alarmed.
+    FM_HOLD_PAUSE_RESURFACE_SECS=1 hold_watch_churn "$dir" "$out" "$capture" 'idle, tick' 3 \
       || fail "[$name] watcher exited during pane churn instead of supervising through it"
-    wakes=$(hold_stale_wakes "$state")
-    [ "$wakes" -eq 0 ] \
-      || fail "[$name] pane churn re-alarmed held work $wakes time(s) inside the re-surface window"
+    [ "$(hold_stale_wakes "$state")" -eq 0 ] \
+      || fail "[$name] held work woke firstmate $(hold_stale_wakes "$state") time(s) with its captain call open"
+    [ ! -e "$throttle" ] || fail "[$name] an absorbed held sighting armed a re-surface cadence"
 
-    # After the window ends, the next new pane hash re-surfaces held work exactly
-    # once, so a forgotten call on a churning pane cannot hide behind the bound.
-    [ -e "$throttle" ] || fail "[$name] the absorbed churn recorded no re-surface cadence to elapse"
+    # An aged marker changes nothing: the bound is absolute, not a throttle.
+    printf 'declared:stale\n' > "$throttle"
     set_mtime "$(( $(date +%s) - 5000 ))" "$throttle"
-    hold_watch_surface "$dir" "$out" "$capture" 'idle, elapsed 9s' \
-      || fail "[$name] held work did not re-surface once its re-surface window elapsed"
-    wakes=$(hold_stale_wakes "$state")
-    [ "$wakes" -eq 1 ] \
-      || fail "[$name] elapsed re-surface window produced $wakes wakes instead of one"
+    FM_HOLD_PAUSE_RESURFACE_SECS=1 hold_watch_churn "$dir" "$out" "$capture" 'idle, later tick' 2 \
+      || fail "[$name] watcher exited during the second churn"
+    [ "$(hold_stale_wakes "$state")" -eq 0 ] \
+      || fail "[$name] an aged re-surface marker woke held work again"
   done
-  pass "work under an open captain call surfaces once, absorbs pane churn, then re-surfaces when the window elapses"
+  pass "work under an open captain call never wakes firstmate as stale, whatever the pane does"
 }
 
 
 
-# The other half of the same bound, and the one that decides whether widening the
-# wait was safe: the identical fixtures with NO hold must keep alarming on every
-# new hash, on both branches.
+# The other half of the same bound: the identical fixtures with NO hold wake
+# exactly once per wait. Pane churn inside the wait is absorbed, and a new status
+# line starts the next wait, whose first stale sighting wakes once more, on both
+# branches.
 test_stale_churn_without_a_captain_call_still_alarms() {
-  local spec name line dir state out capture round wakes
+  local spec name line dir state out capture
   command -v tasks-axi >/dev/null 2>&1 \
     || { echo "skip: tasks-axi not found (unheld stale alarm)"; return 0; }
   for spec in \
@@ -4387,18 +4423,302 @@ test_stale_churn_without_a_captain_call_still_alarms() {
     dir=$(make_hold_home "$name" "$line" nohold) \
       || fail "[$name] could not build an unheld backlog fixture"
     state="$dir/state"; out="$dir/watch.out"; capture="$dir/pane.txt"
-    round=1
-    while [ "$round" -le 2 ]; do
-      hold_watch_surface "$dir" "$out" "$capture" "idle, elapsed ${round}s" \
-        || fail "[$name] an unheld stale window stopped alarming on round $round"
-      wakes=$(hold_stale_wakes "$state")
-      [ "$wakes" -eq 1 ] \
-        || fail "[$name] round $round produced $wakes wakes instead of one"
-      ack_stopped_cycle "$state" || fail "[$name] could not acknowledge round $round"
-      round=$((round + 1))
-    done
+    hold_watch_surface "$dir" "$out" "$capture" 'idle, elapsed 1s' \
+      || fail "[$name] an unheld stale window did not alarm on its first sight"
+    [ "$(hold_stale_wakes "$state")" -eq 1 ] \
+      || fail "[$name] the first sight produced $(hold_stale_wakes "$state") wakes instead of one"
+    ack_stopped_cycle "$state" || fail "[$name] could not acknowledge the first sight"
+
+    hold_watch_churn "$dir" "$out" "$capture" 'idle, tick' 2 \
+      || fail "[$name] the watcher woke for a pane that only redrew: $(cat "$out")"
+    [ "$(hold_stale_wakes "$state")" -eq 0 ] \
+      || fail "[$name] pane churn inside one wait queued $(hold_stale_wakes "$state") more rows"
+
+    printf '%s again\n' "$line" >> "$state/held-merge.status"
+    printf '%s' "$(seen_sig "$state/held-merge.status")" > "$state/.seen-held-merge_status"
+    hold_watch_surface "$dir" "$out" "$capture" 'idle, elapsed 9s' \
+      || fail "[$name] a new status line did not start a new wait"
+    [ "$(hold_stale_wakes "$state")" -eq 1 ] \
+      || fail "[$name] the new wait produced $(hold_stale_wakes "$state") wakes instead of one"
   done
-  pass "a stale window with no open captain call keeps alarming on every new hash"
+  pass "a stale window with no open captain call wakes once per wait and again after a new status line"
+}
+
+
+# --- stale fires once per wait -------------------------------------------------
+# A wait is the pair (the task's reported status signature, its turn-ended
+# marker's mtime), recorded when a stale wake fires. A pane that only redraws (a
+# clock, a token counter, a spinner) starts no new wait; a new status line or a
+# new turn end does. A worker held for the captain, by a `captain-held` status
+# line or an open backlog captain call, gets no stale wake at all. The panes here
+# change hash on every step, which is exactly what used to wake once per hash.
+
+quiet_stale_wakes() {  # <state> <window>
+  awk -F '\t' -v w="$2" '$3 == "stale" && $4 == w { n++ } END { print n + 0 }' \
+    "$1/.wake-queue" 2>/dev/null || echo 0
+}
+
+# A ship worker with no declared wait and no captain hold, one poll short of
+# stale: the pane hash and its stable-count are primed the way the other stale
+# cases prime them, and the status signature is primed so the signal scan does not
+# pre-empt the stale path.
+quiet_task_case() {  # <name> -> case dir
+  local name=$1 dir state window key
+  dir=$(make_case "$name"); state="$dir/state"; window="test:fm-quiet"
+  printf 'window=%s\nkind=ship\nbackend=tmux\n' "$window" > "$state/quiet.meta"
+  printf 'working: implementing\n' > "$state/quiet.status"
+  printf '%s' "$(seen_sig "$state/quiet.status")" > "$state/.seen-quiet_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  printf 'idle prompt 0' > "$dir/pane.txt"
+  printf '%s' "$(hash_text 'idle prompt 0')" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  printf '%s\n' "$dir"
+}
+
+QUIET_WATCH_PID=
+quiet_watch_launch() {  # <dir>
+  local dir=$1
+  PATH="$dir/fakebin:$PATH" FM_FAKE_TMUX_WINDOW=test:fm-quiet FM_FAKE_TMUX_CAPTURE="$dir/pane.txt" \
+    FM_FAKE_CREW_STATE='state: unknown · source: none · no current-state source available' \
+    FM_WATCH_HANDLING_SUCCESSOR=1 \
+    FM_STATE_OVERRIDE="$dir/state" FM_CREW_STATE_BIN="$dir/fakebin/fm-crew-state.sh" \
+    FM_STALE_ESCALATE_SECS=999 FM_PAUSE_RESURFACE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" >> "$dir/watch.out" 2>&1 &
+  QUIET_WATCH_PID=$!
+}
+
+# One sighting that must wake: the pane shows <text>, and the watcher exits.
+quiet_stale_surface() {  # <dir> <pane-text>
+  local dir=$1
+  printf '%s' "$2" > "$dir/pane.txt"
+  quiet_watch_launch "$dir"
+  wait_for_exit "$QUIET_WATCH_PID" 100 || { reap "$QUIET_WATCH_PID"; return 1; }
+  return 0
+}
+
+# <count> successive pane changes through ONE watcher, three poll cycles each: one
+# to see the new hash, one to count it stable and classify it, one to prove the
+# classification held. The watcher must stay in its loop throughout.
+quiet_pane_churn() {  # <dir> <label> <count>
+  local dir=$1 label=$2 count=$3 i=1 c state=$1/state
+  printf '%s 0' "$label" > "$dir/pane.txt"
+  quiet_watch_launch "$dir"
+  while [ "$i" -le "$count" ]; do
+    printf '%s %s' "$label" "$i" > "$dir/pane.txt"
+    c=0
+    while [ "$c" -lt 3 ]; do
+      wait_poll_cycle "$state" "$QUIET_WATCH_PID" 300 \
+        || { reap "$QUIET_WATCH_PID"; return 1; }
+      c=$((c + 1))
+    done
+    i=$((i + 1))
+  done
+  reap "$QUIET_WATCH_PID"
+  return 0
+}
+
+test_stale_fires_once_per_wait_and_again_after_a_new_status_or_turn_end() {
+  local dir state window
+  dir=$(quiet_task_case stale-once-per-wait); state="$dir/state"; window="test:fm-quiet"
+
+  quiet_stale_surface "$dir" 'idle prompt 0' || fail "a quiet worker's first stale did not wake"
+  [ "$(quiet_stale_wakes "$state" "$window")" -eq 1 ] \
+    || fail "the first stale queued $(quiet_stale_wakes "$state" "$window") rows instead of one"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the first stale"
+
+  # Five more pane hashes, with the status file and turn-ended unchanged.
+  quiet_pane_churn "$dir" 'redraw' 5 \
+    || fail "the watcher woke for a pane that only redrew: $(cat "$dir/watch.out")"
+  [ "$(quiet_stale_wakes "$state" "$window")" -eq 0 ] \
+    || fail "a redrawing pane queued $(quiet_stale_wakes "$state" "$window") more stale rows inside one wait"
+
+  # A new status line starts a new wait: exactly one more stale row.
+  printf 'working: next step\n' >> "$state/quiet.status"
+  printf '%s' "$(seen_sig "$state/quiet.status")" > "$state/.seen-quiet_status"
+  quiet_stale_surface "$dir" 'idle after the status line' \
+    || fail "a new status line did not start a new wait"
+  [ "$(quiet_stale_wakes "$state" "$window")" -eq 1 ] \
+    || fail "the new status line's wait queued $(quiet_stale_wakes "$state" "$window") rows instead of one"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the second wait's stale"
+  quiet_pane_churn "$dir" 'second redraw' 3 \
+    || fail "the watcher woke for a redraw inside the second wait: $(cat "$dir/watch.out")"
+  [ "$(quiet_stale_wakes "$state" "$window")" -eq 0 ] \
+    || fail "a redrawing pane queued stale rows inside the second wait"
+
+  # A new turn end starts a third wait.
+  : > "$state/quiet.turn-ended"
+  prime_turnend_seen "$state/quiet.turn-ended"
+  quiet_stale_surface "$dir" 'idle after the turn end' \
+    || fail "a new turn end did not start a new wait"
+  [ "$(quiet_stale_wakes "$state" "$window")" -eq 1 ] \
+    || fail "the new turn end's wait queued $(quiet_stale_wakes "$state" "$window") rows instead of one"
+  pass "stale wakes once per wait, and wakes again only after a new status line or a new turn end"
+}
+
+# A blocking dialog the pane shows after the wait's one stale wake is new
+# information: the worker is stuck on a prompt only someone can answer, so it
+# wakes once, naming the dialog, and the same dialog redrawing wakes nothing more.
+test_stale_dialog_after_the_waits_wake_surfaces_once() {
+  local dir state window
+  dir=$(quiet_task_case stale-dialog-after-wake); state="$dir/state"; window="test:fm-quiet"
+  quiet_stale_surface "$dir" 'idle prompt 0' || fail "a quiet worker's first stale did not wake"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the first stale"
+  write_exit_picker "$dir/pane.txt"
+  quiet_watch_launch "$dir"
+  wait_for_exit "$QUIET_WATCH_PID" 100 \
+    || { reap "$QUIET_WATCH_PID"; fail "a dialog that appeared after the wait's wake did not wake firstmate"; }
+  [ "$(quiet_stale_wakes "$state" "$window")" -eq 1 ] \
+    || fail "the dialog queued $(quiet_stale_wakes "$state" "$window") stale rows instead of one"
+  grep -F 'blocked-on-prompt: Claude background-task exit picker' "$state/.wake-queue" >/dev/null \
+    || fail "the dialog wake did not name the dialog: $(cat "$state/.wake-queue")"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the dialog wake"
+  quiet_pane_churn_picker "$dir" 3 \
+    || fail "the watcher woke for the same dialog redrawing: $(cat "$dir/watch.out")"
+  [ "$(quiet_stale_wakes "$state" "$window")" -eq 0 ] \
+    || fail "the same dialog queued stale rows again inside one wait"
+  pass "a dialog first seen after the wait's stale wake wakes once, and the same dialog redrawing wakes nothing more"
+}
+
+# <count> pane changes that all keep the recorded exit picker on screen.
+quiet_pane_churn_picker() {  # <dir> <count>
+  local dir=$1 count=$2 i=1 c state=$1/state
+  write_exit_picker "$dir/pane.next"
+  { printf 'redraw 0\n'; cat "$dir/pane.next"; } > "$dir/pane.txt"
+  quiet_watch_launch "$dir"
+  while [ "$i" -le "$count" ]; do
+    { printf 'redraw %s\n' "$i"; cat "$dir/pane.next"; } > "$dir/pane.txt"
+    c=0
+    while [ "$c" -lt 3 ]; do
+      wait_poll_cycle "$state" "$QUIET_WATCH_PID" 300 \
+        || { reap "$QUIET_WATCH_PID"; return 1; }
+      c=$((c + 1))
+    done
+    i=$((i + 1))
+  done
+  reap "$QUIET_WATCH_PID"
+  return 0
+}
+
+# The same wait, for a worker whose last status line is captain-relevant: the
+# terminal-looking stale path takes it, and it too wakes once.
+test_terminal_looking_stale_fires_once_per_wait() {
+  local dir state window
+  dir=$(quiet_task_case stale-once-terminal); state="$dir/state"; window="test:fm-quiet"
+  printf 'done: PR https://example.invalid/pull/1 checks green\n' > "$state/quiet.status"
+  printf '%s' "$(seen_sig "$state/quiet.status")" > "$state/.seen-quiet_status"
+
+  quiet_stale_surface "$dir" 'idle prompt 0' || fail "a delivered worker's first stale did not wake"
+  [ "$(quiet_stale_wakes "$state" "$window")" -eq 1 ] \
+    || fail "the first terminal-looking stale queued $(quiet_stale_wakes "$state" "$window") rows instead of one"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the first terminal-looking stale"
+  quiet_pane_churn "$dir" 'redraw' 4 \
+    || fail "the watcher woke for a delivered worker's redrawing pane: $(cat "$dir/watch.out")"
+  [ "$(quiet_stale_wakes "$state" "$window")" -eq 0 ] \
+    || fail "a redrawing delivered pane queued stale rows inside one wait"
+  pass "a terminal-looking stale wakes once per wait too"
+}
+
+# The identical fixture held for the captain never wakes at all - the backlog
+# call or the status line alone is enough - however long the pane churns past the
+# (shortened) re-surface cadence, and with no away record present. Its fixture
+# names differ from test_open_captain_call_bounds_stale_churn's because make_case
+# reuses a directory by name and that case leaves an aged marker in its own.
+test_captain_held_worker_raises_no_stale_wake() {
+  local spec name line hold dir state out capture wakes
+  command -v tasks-axi >/dev/null 2>&1 \
+    || { echo "skip: tasks-axi not found (captain-held stale silence)"; return 0; }
+  for spec in \
+    'nowake-delivery|done: PR https://example.invalid/pull/1 checks green|hold' \
+    'nowake-worker-line|working: still tidying the branch|hold' \
+    'nowake-status-line|captain-held [key=merge]: awaiting the captain on the merge|nohold'
+  do
+    name=${spec%%|*}; line=${spec#*|}; hold=${line##*|}; line=${line%|*}
+    dir=$(make_hold_home "$name" "$line" "$hold") \
+      || fail "[$name] could not build a captain-held fixture"
+    state="$dir/state"; out="$dir/watch.out"; capture="$dir/pane.txt"
+    printf 'idle, elapsed 1s\n' > "$capture"
+    FM_HOLD_PAUSE_RESURFACE_SECS=2 hold_watch_churn "$dir" "$out" "$capture" 'idle, tick' 4 \
+      || fail "[$name] the watcher woke while churning a captain-held pane: $(cat "$out")"
+    wakes=$(hold_stale_wakes "$state")
+    [ "$wakes" -eq 0 ] \
+      || fail "[$name] a worker held for the captain queued $wakes stale rows"
+    [ ! -e "$state/.paused-resurfaced-$(hold_key)" ] \
+      || fail "[$name] a worker held for the captain armed a re-surface cadence"
+  done
+  pass "a worker held for the captain, by a backlog call or a status line, raises no stale wake in either posture"
+}
+
+# A paused: line naming `until <t>`: no stale wake before <t> however old the
+# status line is, exactly one when <t> has passed, and no more however long the
+# worker stays quiet afterwards. A dead agent takes the bounded-pause path.
+test_exited_paused_until_wakes_once_when_the_time_passes() {
+  local dir state fakebin out capture_file statusf window key back pid round wakes
+  dir=$(make_case exited-paused-until); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; statusf="$state/waiting.status"
+  window="test:fm-waiting"
+  printf 'idle bare shell after agent exit\n' > "$capture_file"
+  printf 'window=%s\nkind=ship\nharness=grok\nbackend=tmux\n' "$window" > "$state/waiting.meta"
+  printf 'paused: rate limit resets, until %s, then resuming\n' "$(iso_utc_at "$(( $(date +%s) + 7200 ))")" > "$statusf"
+  back=$(( $(date +%s) - 900 ))
+  if [ "$(uname)" = Darwin ]; then touch -mt "$(date -r "$back" '+%Y%m%d%H%M.%S')" "$statusf"
+  else touch -m -d "@$back" "$statusf"; fi
+  printf '%s' "$(seen_sig "$statusf")" > "$state/.seen-waiting_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  printf '%s' "$(hash_text 'idle bare shell after agent exit')" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+
+  # Before <t>, with a status line older than the recheck cadence: no wake.
+  round=1
+  while [ "$round" -le 2 ]; do
+    PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+      FM_FAKE_TMUX_CURRENT_COMMAND=zsh FM_FAKE_CREW_STATE='state: stopped · source: pane · bare shell' \
+      FM_WATCH_HANDLING_SUCCESSOR=1 \
+      FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_PAUSE_RESURFACE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+      FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" >> "$out" &
+    pid=$!
+    wait_poll_cycle "$state" "$pid" || { reap "$pid"; fail "the watcher woke before the declared time (round $round): $(cat "$out")"; }
+    wait_poll_cycle "$state" "$pid" || { reap "$pid"; fail "the watcher woke before the declared time (round $round): $(cat "$out")"; }
+    reap "$pid"
+    round=$((round + 1))
+  done
+  wakes=$(quiet_stale_wakes "$state" "$window")
+  [ "$wakes" -eq 0 ] || fail "a pause with a future declared time queued $wakes stale rows before that time"
+
+  # The declared time passes: exactly one wake.
+  printf 'paused: rate limit resets, until %s, then resuming\n' "$(iso_utc_at "$(( $(date +%s) - 60 ))")" >> "$statusf"
+  printf '%s' "$(seen_sig "$statusf")" > "$state/.seen-waiting_status"
+  printf 'idle bare shell, after the time\n' > "$capture_file"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_FAKE_TMUX_CURRENT_COMMAND=zsh FM_FAKE_CREW_STATE='state: stopped · source: pane · bare shell' \
+    FM_WATCH_HANDLING_SUCCESSOR=1 \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_PAUSE_RESURFACE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" >> "$out" &
+  pid=$!
+  wait_for_exit "$pid" 100 || { reap "$pid"; fail "the watcher did not wake once the declared time passed"; }
+  wakes=$(quiet_stale_wakes "$state" "$window")
+  [ "$wakes" -eq 1 ] || fail "the declared time passing queued $wakes stale rows instead of one"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the declared-time wake"
+
+  # However long it stays quiet afterwards - the recheck cadence long gone - no more.
+  set_mtime "$(( $(date +%s) - 5000 ))" "$state/.paused-resurfaced-$key"
+  round=1
+  while [ "$round" -le 2 ]; do
+    printf 'idle bare shell, later %s\n' "$round" > "$capture_file"
+    PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+      FM_FAKE_TMUX_CURRENT_COMMAND=zsh FM_FAKE_CREW_STATE='state: stopped · source: pane · bare shell' \
+      FM_WATCH_HANDLING_SUCCESSOR=1 \
+      FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_PAUSE_RESURFACE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+      FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" >> "$out" &
+    pid=$!
+    wait_poll_cycle "$state" "$pid" || { reap "$pid"; fail "the watcher woke again after the declared-time wake (round $round): $(cat "$out")"; }
+    wait_poll_cycle "$state" "$pid" || { reap "$pid"; fail "the watcher woke again after the declared-time wake (round $round): $(cat "$out")"; }
+    wait_poll_cycle "$state" "$pid" || { reap "$pid"; fail "the watcher woke again after the declared-time wake (round $round): $(cat "$out")"; }
+    reap "$pid"
+    round=$((round + 1))
+  done
+  wakes=$(quiet_stale_wakes "$state" "$window")
+  [ "$wakes" -eq 0 ] || fail "a pause whose declared time passed queued $wakes more stale rows"
+  pass "a paused worker naming a clearing time wakes once when that time passes, and never before or after"
 }
 
 
@@ -4407,12 +4727,12 @@ test_stale_churn_without_a_captain_call_still_alarms() {
 # append fails, the watcher exits with nothing queued, and the next sighting
 # reads that fresh marker and absorbs the retry. An unwritable queue is the real
 # failure, so it is the one this drives.
-test_failed_wake_append_does_not_arm_the_captain_hold_throttle() {
+test_failed_wake_append_does_not_record_the_wait() {
   local dir state out capture wakes rc
   command -v tasks-axi >/dev/null 2>&1 \
     || { echo "skip: tasks-axi not found (failed wake append)"; return 0; }
-  dir=$(make_hold_home append-failure 'done: PR https://example.invalid/pull/1 checks green' hold) \
-    || fail "could not build a captain-held backlog fixture"
+  dir=$(make_hold_home append-failure 'done: PR https://example.invalid/pull/1 checks green' nohold) \
+    || fail "could not build an unheld backlog fixture"
   state="$dir/state"; out="$dir/watch.out"; capture="$dir/pane.txt"
 
   # A directory where the queue file belongs: every append fails, whatever the
@@ -4428,8 +4748,8 @@ test_failed_wake_append_does_not_arm_the_captain_hold_throttle() {
   rmdir "$state/.wake-queue"
   [ "$rc" -ne 124 ] || fail "the watcher did not exit when its durable queue could not be written"
   [ "$rc" -ne 0 ] || fail "the watcher reported success despite an unwritable durable queue"
-  [ -e "$state/.paused-resurfaced-$(hold_key)" ] \
-    && fail "a wake that never reached the durable queue still armed the re-surface throttle"
+  [ -e "$state/.stale-wait-$(hold_key)" ] \
+    && fail "a wake that never reached the durable queue still recorded its wait"
 
   # The retry must alarm: nothing was ever delivered, so nothing may be absorbed.
   hold_watch_surface "$dir" "$out" "$capture" 'idle, elapsed 2s' \
@@ -4437,50 +4757,8 @@ test_failed_wake_append_does_not_arm_the_captain_hold_throttle() {
   wakes=$(hold_stale_wakes "$state")
   [ "$wakes" -eq 1 ] \
     || fail "the retry after a failed wake append produced $wakes wakes instead of one"
-  pass "a wake that never reached the durable queue arms no re-surface throttle"
+  pass "a wake that never reached the durable queue records no wait"
 }
-
-# The task id is not the captain call. A task can be answered with `--release`
-# and held again as a genuinely different call with NO status append, and binding
-# the throttle to the status-log signature alone let the second call inherit the
-# first one's silence and absorbed its first sight. That is the one alarm this
-# bound must never swallow: a delivery announced twice is noise, but a decision
-# waiting on the captain that is never surfaced is invisible.
-# Measured at base c499f84 this fixture alarms on every sighting, so the
-# suppression was introduced by the bound itself rather than pre-existing.
-test_reheld_captain_call_starts_its_own_resurface_window() {
-  local dir state out capture wakes
-  command -v tasks-axi >/dev/null 2>&1 \
-    || { echo "skip: tasks-axi not found (re-held captain call)"; return 0; }
-  dir=$(make_hold_home reheld-call 'done: PR https://example.invalid/pull/1 checks green' hold) \
-    || fail "could not build a captain-held backlog fixture"
-  state="$dir/state"; out="$dir/watch.out"; capture="$dir/pane.txt"
-
-  hold_watch_surface "$dir" "$out" "$capture" 'idle, elapsed 1s' \
-    || fail "first sight of the first captain call did not surface"
-  ack_stopped_cycle "$state" || fail "could not acknowledge the first call's surface"
-  hold_watch_churn "$dir" "$out" "$capture" 'idle, tick' 1 \
-    || fail "the first call's churn was not absorbed"
-  [ "$(hold_stale_wakes "$state")" -eq 0 ] \
-    || fail "the first call's churn re-alarmed inside its own window"
-
-  # Answer and release, then re-hold: a second, distinct captain call on the same
-  # task id, with no status append, so the status signature cannot tell them apart.
-  printf 'go ahead\n' > "$dir/decision.txt"
-  run_hold "$dir" answer held-merge --decision-file "$dir/decision.txt" --release \
-    || fail "could not record the captain's answer"
-  run_hold "$dir" hold held-merge --reason 'awaiting the captain a second time' \
-    || fail "could not re-hold the task as a second captain call"
-
-  hold_watch_surface "$dir" "$out" "$capture" 'idle, elapsed 3s' \
-    || fail "the second captain call inherited the first call's silence"
-  wakes=$(hold_stale_wakes "$state")
-  [ "$wakes" -eq 1 ] \
-    || fail "the second captain call produced $wakes first wakes instead of one"
-  pass "a released-then-re-held task is a distinct captain call whose first sight still alarms"
-}
-
-
 
 test_secondmate_paused_resurfaces_in_normal_mode() {
   local dir state fakebin out capture_file statusf window key pane_hash sig pid back
@@ -6160,6 +6438,30 @@ test_procevent_unacknowledged_result_redrains_until_handled() {
   pass "an unacknowledged process-event result re-drains until handling is acknowledged"
 }
 
+# A row for a result that is already handled (appended after its marker, the
+# publish race) must not wake the watcher: the owner already acted on it.
+test_procevent_handled_result_does_not_wake_the_watcher() {
+  local dir state out pid
+  dir=$(make_case procevent-handled-quiet); state="$dir/state"; out="$dir/watch.out"
+  seed_captured_procevent_result "$dir" || fail "the fixture captured no process-event result"
+  pe_case "$dir" handled delivery-src 1 >/dev/null || fail "could not acknowledge the captured result"
+  append_wake "$state" check "procevent:delivery-src:1" "check: procevent lavish delivery-src 1"
+  grep -F 'procevent:delivery-src:1' "$state/.wake-queue" >/dev/null \
+    || fail "the fixture did not leave a queued row for the handled result"
+
+  # A successor that already handled the previous wake: the generic re-arm recovery
+  # would otherwise re-announce any queued row, handled or not.
+  FM_WATCH_HANDLING_SUCCESSOR=1 procevent_watch_bg "$dir" "$out"
+  pid=$!
+  if ! wait_poll_cycle "$state" "$pid"; then
+    reap "$pid"; fail "a queue holding only a handled process-event row woke the watcher: $(cat "$out")"
+  fi
+  reap "$pid"
+  grep -F 'process-event result captured' "$out" >/dev/null \
+    && fail "the watcher reported a handled result as captured: $(cat "$out")"
+  pass "a queue whose only process-event row is handled raises no process-event wake"
+}
+
 test_procevent_marker_keys_are_injective() {
   local dir state out pid marker_count
   dir=$(make_case procevent-marker-identity); state="$dir/state"; out="$dir/watch.out"
@@ -6986,6 +7288,10 @@ test_secondmate_status_routine_absorbed_routed_surfaced_classifier
 test_provably_working_signal_absorbed
 test_turn_ended_provably_working_absorbed
 test_turn_ended_not_working_surfaced
+test_assistance_turn_ended_absorbed
+test_assistance_turn_ended_mixed_batch_names_workers_only
+test_scout_turn_ended_not_working_surfaced
+test_assistance_status_line_still_surfaces
 test_turn_ended_churning_pane_absorbed
 test_turn_ended_churn_resets_prior_stale_classification
 test_turn_ended_churn_resets_wedge_state_before_stale_poll
@@ -7073,8 +7379,11 @@ test_wedge_threshold_parked_gate_is_off_until_armed
 test_wedge_defer_refuses_a_half_filled_wait_record
 test_open_captain_call_bounds_stale_churn
 test_stale_churn_without_a_captain_call_still_alarms
-test_failed_wake_append_does_not_arm_the_captain_hold_throttle
-test_reheld_captain_call_starts_its_own_resurface_window
+test_failed_wake_append_does_not_record_the_wait
+test_stale_fires_once_per_wait_and_again_after_a_new_status_or_turn_end
+test_terminal_looking_stale_fires_once_per_wait
+test_captain_held_worker_raises_no_stale_wake
+test_exited_paused_until_wakes_once_when_the_time_passes
 test_secondmate_paused_resurfaces_in_normal_mode
 test_secondmate_captain_held_resurfaces_in_normal_mode
 test_secondmate_nonpaused_stale_remains_suppressed
@@ -7091,6 +7400,7 @@ test_terminal_first_sight_drops_a_finished_write_deferral_chain
 test_triage_log_size_cap_accepts_spaced_wc_counts
 test_procevent_captured_result_surfaces_proactively
 test_procevent_unacknowledged_result_redrains_until_handled
+test_procevent_handled_result_does_not_wake_the_watcher
 test_procevent_marker_keys_are_injective
 test_procevent_headlines_classify_queue_keys
 test_procevent_launch_failed_episodes_are_each_delivered
@@ -7295,8 +7605,404 @@ test_closed_exit_picker_drops_saved_dialog_name() {
   pass "a closed picker drops the saved dialog name, and the stale stays ordinary"
 }
 
+# --- the worker turn-end state checker ----------------------------------------
+# A ship or scout worker's turn end is decided from its own newest state line,
+# written since its previous turn end, with no model in the loop: a valid
+# working: or paused: line wakes nothing, a wake verb wakes as before, a missing
+# or malformed line is answered with up to three fire-and-forget pings per wait
+# and then wakes firstmate with the pane tail, and a pane that must not be pinged
+# (quota text, dead agent, composer not empty) wakes firstmate at once. The panes
+# here show an empty agent composer (a bare prompt glyph on the cursor row), a
+# live agent process, and no quota text unless a case says otherwise.
+
+tc_case() {  # <name> <kind> -> case dir
+  local name=$1 kind=$2 dir state
+  dir=$(make_case "$name"); state="$dir/state"
+  # The shared fake tmux answers capture, inventory and the pane command. This
+  # wrapper adds what the checker also reads or does: the cursor row the composer
+  # classifier anchors on, and the keys a doorbell ring types, logged.
+  mv "$dir/fakebin/tmux" "$dir/fakebin/tmux.base"
+  cat > "$dir/fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  display-message)
+    case "$*" in *cursor_y*) printf '%s\n' "${FM_FAKE_TMUX_CURSOR_Y:-0}"; exit 0 ;; esac ;;
+  send-keys)
+    printf '%s\n' "$*" >> "${FM_FAKE_TMUX_SENT:-/dev/null}"
+    # A worker that writes a status line while the doorbell is being rung.
+    if [ -n "${FM_FAKE_TMUX_APPEND_LINE:-}" ] && [ ! -e "$FM_FAKE_TMUX_APPEND_TO.rung" ]; then
+      printf '%s\n' "$FM_FAKE_TMUX_APPEND_LINE" >> "$FM_FAKE_TMUX_APPEND_TO"
+      : > "$FM_FAKE_TMUX_APPEND_TO.rung"
+    fi
+    exit 0 ;;
+esac
+exec "$(dirname "$0")/tmux.base" "$@"
+SH
+  chmod +x "$dir/fakebin/tmux"
+  printf 'window=test:fm-tc\nkind=%s\nharness=grok\nbackend=tmux\n' "$kind" > "$state/tc.meta"
+  tc_pane "$dir" 'output above the prompt'
+  printf '%s\n' "$dir"
+}
+
+# An idle claude screen: <text> is one transcript row, then the composer between
+# two rules with the cursor on it (row 2) - the shape the shared composer
+# classifier reads as an empty composer.
+tc_pane() {  # <dir> <transcript-row>
+  printf '%s\n────────────────────────\n❯\302\240\n────────────────────────\n  bypass permissions\n' "$2" > "$1/pane.txt"
+}
+
+# Write one status line and mark the status file as already reported, so a round
+# differs from the previous one only by the turn end the case touches.
+tc_status() {  # <dir> <line>
+  local state=$1/state
+  printf '%s\n' "$2" >> "$state/tc.status"
+  printf '%s' "$(seen_sig "$state/tc.status")" > "$state/.seen-tc_status"
+}
+
+# A new turn end: the marker grows, so its size:mtime signature is unseen.
+tc_turn_end() {  # <dir>
+  printf 'x' >> "$1/state/tc.turn-ended"
+}
+
+TC_WATCH_PID=
+tc_watch_launch() {  # <dir> [extra env assignments...]
+  local dir=$1 key text
+  shift
+  # The pane is already stably stale at its recorded hash and already surfaced
+  # once, as it is after the supervision turn that handled a first sight, so a
+  # round exercises the turn-end signal alone and not the staleness backbone.
+  key=test_fm-tc
+  text=$(cat "$dir/pane.txt")
+  printf '%s' "$(hash_text "$text")" > "$dir/state/.hash-$key"
+  printf '1\n' > "$dir/state/.count-$key"
+  printf '%s' "$(hash_text "$text")" > "$dir/state/.stale-$key"
+  env PATH="$dir/fakebin:$PATH" FM_FAKE_TMUX_WINDOW=test:fm-tc FM_FAKE_TMUX_CAPTURE="$dir/pane.txt" \
+    FM_FAKE_TMUX_CURRENT_COMMAND=grok FM_FAKE_TMUX_CURSOR_Y=2 FM_FAKE_TMUX_SENT="$dir/sent.log" \
+    FM_FAKE_CREW_STATE='state: unknown · source: none · no current-state source available' \
+    FM_WATCH_HANDLING_SUCCESSOR=1 \
+    FM_STATE_OVERRIDE="$dir/state" FM_CREW_STATE_BIN="$dir/fakebin/fm-crew-state.sh" \
+    FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$@" \
+    "$WATCH" >> "$dir/watch.out" 2>&1 &
+  TC_WATCH_PID=$!
+}
+
+# One round that must NOT wake: the watcher stays alive through two whole poll
+# cycles after the turn end, then is stopped.
+tc_round_quiet() {  # <dir> [env...]
+  local dir=$1
+  shift
+  tc_turn_end "$dir"
+  tc_watch_launch "$dir" "$@"
+  if ! { wait_poll_cycle "$dir/state" "$TC_WATCH_PID" 300 \
+    && wait_poll_cycle "$dir/state" "$TC_WATCH_PID" 300; }; then
+    reap "$TC_WATCH_PID"
+    return 1
+  fi
+  reap "$TC_WATCH_PID"
+  return 0
+}
+
+# One round that must wake: the watcher exits on its own.
+tc_round_wake() {  # <dir> [env...]
+  local dir=$1
+  shift
+  tc_turn_end "$dir"
+  tc_watch_launch "$dir" "$@"
+  wait_for_exit "$TC_WATCH_PID" 100 || { reap "$TC_WATCH_PID"; return 1; }
+  return 0
+}
+
+# Rows as the drain presents them (it deduplicates the same file reported by both
+# scans of one batch).
+tc_signal_rows() {  # <state>
+  FM_STATE_OVERRIDE="$1" "$DRAIN" 2>/dev/null \
+    | awk -F '\t' '$3 == "signal" && $4 == "tc.turn-ended" { n++ } END { print n + 0 }'
+}
+
+tc_pings() {  # <state>
+  find "$1/tc.inbox" -maxdepth 1 -name '*.msg' 2>/dev/null | wc -l | tr -d ' '
+}
+
+tc_verdict_logged() {  # <state> <verdict>
+  grep -F "turn-end check: tc verdict=$2" "$1/.watch-triage.log" >/dev/null 2>&1
+}
+
+test_turn_end_with_a_valid_working_or_paused_line_wakes_nothing() {
+  local kind line verdict dir state
+  for kind in ship scout; do
+    for line in 'working: still implementing the parser' \
+      "paused: waiting on the validation run until $(iso_utc_at "$(( $(date +%s) + 7200 ))")"
+    do
+      case "$line" in working:*) verdict=valid-working ;; *) verdict=valid-paused ;; esac
+      dir=$(tc_case "tc-valid-$kind-$verdict" "$kind"); state="$dir/state"
+      tc_status "$dir" "$line"
+      tc_round_quiet "$dir" || fail "[$kind/$verdict] a valid state line at the turn end woke the watcher: $(cat "$dir/watch.out")"
+      [ ! -s "$state/.wake-queue" ] || fail "[$kind/$verdict] a valid state line queued a row: $(cat "$state/.wake-queue")"
+      [ "$(tc_pings "$state")" -eq 0 ] || fail "[$kind/$verdict] a valid state line was pinged"
+      tc_verdict_logged "$state" "$verdict" || fail "[$kind/$verdict] the triage log has no verdict line: $(cat "$state/.watch-triage.log" 2>/dev/null)"
+    done
+  done
+  pass "a ship or scout turn end with a valid working or paused line queues nothing, sends no ping, and logs its verdict"
+}
+
+test_turn_end_with_a_wake_verb_wakes_as_before() {
+  local verb line dir state
+  for verb in 'done' blocked needs-decision failed handoff-needed; do
+    case "$verb" in
+      done) line='done: PR https://example.invalid/pull/1 head abc123' ;;
+      *) line="$verb: the release host is unreachable" ;;
+    esac
+    dir=$(tc_case "tc-wake-$verb" ship); state="$dir/state"
+    tc_status "$dir" "$line"
+    tc_round_wake "$dir" || fail "[$verb] a turn end under a $verb line did not wake firstmate"
+    [ "$(tc_signal_rows "$state")" -eq 1 ] || fail "[$verb] the turn end queued $(tc_signal_rows "$state") rows instead of one"
+    [ "$(tc_pings "$state")" -eq 0 ] || fail "[$verb] a wake verb was pinged"
+    tc_verdict_logged "$state" wake-verb || fail "[$verb] the triage log has no wake-verb line"
+  done
+  # A status change carrying the verb surfaces as it always did, with the
+  # decision-owned payload kept for needs-decision.
+  dir=$(tc_case tc-wake-status-batch ship); state="$dir/state"
+  printf 'needs-decision: which retention window wins\n' >> "$state/tc.status"
+  tc_round_wake "$dir" || fail "a needs-decision status change with a turn end did not wake"
+  grep -F 'needs-decision:' "$state/.wake-queue" >/dev/null || fail "the needs-decision payload was lost: $(cat "$state/.wake-queue")"
+  pass "a turn end under a done, blocked, needs-decision, failed or handoff-needed line wakes firstmate as before"
+}
+
+# The checker classifies the whole span since the last turn end, not only its
+# newest line: a wake verb earlier in the span wakes firstmate whatever the last
+# line is, and is never swallowed by the ping that answers the last line.
+test_turn_end_with_a_wake_verb_before_a_malformed_last_line_wakes() {
+  local verb tail_line dir state
+  for verb in blocked needs-decision 'done'; do
+    for tail_line in 'parked: waiting for a review' 'working:'; do
+      dir=$(tc_case "tc-span-$verb" ship); state="$dir/state"
+      printf '%s: the release host is unreachable\n%s\n' "$verb" "$tail_line" >> "$state/tc.status"
+      tc_round_wake "$dir" || fail "[$verb then '$tail_line'] the span did not wake firstmate: $(cat "$dir/watch.out")"
+      [ "$(tc_signal_rows "$state")" -eq 1 ] || fail "[$verb then '$tail_line'] the span queued $(tc_signal_rows "$state") rows instead of one"
+      [ "$(tc_pings "$state")" -eq 0 ] || fail "[$verb then '$tail_line'] a span with a wake verb was pinged"
+      tc_verdict_logged "$state" wake-verb || fail "[$verb then '$tail_line'] the triage log has no wake-verb line"
+      rm -rf "$dir"
+    done
+  done
+  pass "a wake verb anywhere in the span since the last turn end wakes firstmate, whatever the last line is"
+}
+
+# A ping commits the status bytes the verdict was read at. A line the worker
+# writes while the ping is being sent stays unclassified, so the status scan reads
+# it. The watcher is sourced for this: the window is a few milliseconds long, and
+# the case stands in for the doorbell with a checker that writes the line.
+test_a_line_written_while_the_ping_is_sent_is_still_classified() {
+  local dir state out seen vsize
+  dir=$(tc_case tc-ping-window ship); state="$dir/state"
+  printf 'parked: waiting for a review\n' > "$state/tc.status"
+  : > "$state/tc.turn-ended"
+  out=$(
+    export FM_STATE_OVERRIDE="$state"
+    # shellcheck disable=SC1090
+    . "$WATCH"
+    turnend_check_task() {
+      TURNEND_VERDICT=ping-1; TURNEND_WHY=''; TURNEND_TAIL=''
+      TURNEND_SIZE=$(_fm_status_file_size "$state/tc.status")
+      TURNEND_IDENT=$(_fm_open_decisions_file_ident "$state/tc.status")
+      printf 'blocked: the release host is unreachable\n' >> "$state/tc.status"
+    }
+    pending=$(printf '%s\t%s\t%s\n%s\t%s\t%s' \
+      "$state/.signal-turn" "1:1" "$state/tc.turn-ended" "$state/.signal-status" "2:2" "$state/tc.status")
+    worker_turn_end_checks
+    printf '%s %s\n' "$(fm_wake_signal_seen_size "$state" "$state/tc.status")" "$TURNEND_SIZE"
+  ) || fail "the sourced checker failed: $out"
+  read -r seen vsize <<<"$out"
+  [ "${seen:-x}" = "${vsize:-y}" ] \
+    || fail "the ping marked ${seen:-?} bytes classified, but its verdict read ${vsize:-?} (the line written during the ping is unread)"
+  pass "a status line written while a ping is sent is not marked classified by that ping"
+}
+
+test_turn_end_without_a_valid_line_pings_three_times_then_wakes_with_the_pane_tail() {
+  local spec name line dir state round
+  for spec in 'missing|' 'unknown-verb|parked: waiting for a review' 'empty-note|working:' \
+    'bad-until|paused: waiting on the queue until 2026-13-45T99:99Z'
+  do
+    name=${spec%%|*}; line=${spec#*|}
+    dir=$(tc_case "tc-ping-$name" ship); state="$dir/state"
+    [ -z "$line" ] || tc_status "$dir" "$line"
+    round=1
+    while [ "$round" -le 3 ]; do
+      tc_round_quiet "$dir" || fail "[$name] ping round $round woke the watcher: $(cat "$dir/watch.out")"
+      [ ! -s "$state/.wake-queue" ] || fail "[$name] ping round $round queued a row: $(cat "$state/.wake-queue")"
+      [ "$(tc_pings "$state")" -eq "$round" ] || fail "[$name] ping round $round left $(tc_pings "$state") inbox records"
+      tc_verdict_logged "$state" "ping-$round" || fail "[$name] no ping-$round verdict was logged"
+      round=$((round + 1))
+    done
+    grep -F 'format reminder, not new work' "$state"/tc.inbox/*.msg >/dev/null \
+      || fail "[$name] the ping text was not the fixed reminder"
+    grep -F 'paused: <why> until <YYYY-MM-DDTHH:MMZ>' "$state"/tc.inbox/*.msg >/dev/null \
+      || fail "[$name] the ping did not show the paused shape"
+    grep -F "$state/tc.status" "$state"/tc.inbox/*.msg >/dev/null || fail "[$name] the ping did not name the status file"
+    tc_pane "$dir" 'last visible line of the pane'
+    tc_round_wake "$dir" || fail "[$name] the fourth missing state did not wake firstmate"
+    [ "$(tc_signal_rows "$state")" -eq 1 ] || fail "[$name] the escalation queued $(tc_signal_rows "$state") rows instead of one"
+    grep -F 'last visible line of the pane' "$state/.wake-queue" >/dev/null \
+      || fail "[$name] the escalation row did not carry the pane tail: $(cat "$state/.wake-queue")"
+    [ "$(tc_pings "$state")" -eq 3 ] || fail "[$name] the escalation sent a fourth ping"
+    tc_verdict_logged "$state" ping-exhausted || fail "[$name] no ping-exhausted verdict was logged"
+  done
+  pass "a missing or malformed state line is pinged three times per wait, and the fourth turn end wakes firstmate with the pane tail and no ping"
+}
+
+# After the three pings and the one wake with the pane tail, firstmate has the
+# state: the next malformed turn ends of that wait wake nothing, and a valid state
+# line starts a fresh wait.
+test_turn_ends_after_the_escalation_wake_nothing_until_a_valid_line() {
+  local dir state
+  dir=$(tc_case tc-escalated ship); state="$dir/state"
+  tc_round_quiet "$dir" || fail "ping 1 woke the watcher"
+  tc_round_quiet "$dir" || fail "ping 2 woke the watcher"
+  tc_round_quiet "$dir" || fail "ping 3 woke the watcher"
+  tc_pane "$dir" 'last visible line of the pane'
+  tc_round_wake "$dir" || fail "the fourth missing state did not wake firstmate"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the escalation"
+  tc_round_quiet "$dir" || fail "a turn end after the escalation woke the watcher again: $(cat "$dir/watch.out")"
+  tc_round_quiet "$dir" || fail "a second turn end after the escalation woke the watcher again: $(cat "$dir/watch.out")"
+  [ ! -s "$state/.wake-queue" ] || fail "turn ends after the escalation queued a row: $(cat "$state/.wake-queue")"
+  [ "$(tc_pings "$state")" -eq 3 ] || fail "a turn end after the escalation sent a ping"
+  tc_verdict_logged "$state" ping-escalated || fail "no ping-escalated verdict was logged"
+  tc_status "$dir" 'working: back to the parser'
+  tc_round_quiet "$dir" || fail "a valid line after the escalation woke the watcher"
+  tc_round_quiet "$dir" || fail "the next missing turn end woke the watcher"
+  tc_verdict_logged "$state" ping-1 || fail "the wait after a valid line did not start at ping 1"
+  pass "turn ends after the escalation wake nothing, and a valid state line starts a fresh wait with ping 1"
+}
+
+test_a_valid_line_after_pings_resets_the_ping_count() {
+  local dir state
+  dir=$(tc_case tc-ping-reset ship); state="$dir/state"
+  tc_round_quiet "$dir" || fail "ping 1 woke the watcher"
+  tc_round_quiet "$dir" || fail "ping 2 woke the watcher"
+  [ "$(tc_pings "$state")" -eq 2 ] || fail "two missing turn ends left $(tc_pings "$state") pings"
+  tc_status "$dir" 'working: back to the parser'
+  tc_round_quiet "$dir" || fail "a valid line after pings woke the watcher: $(cat "$dir/watch.out")"
+  [ ! -e "$state/.turnend-pings-tc" ] || fail "a valid line did not reset the ping count"
+  tc_round_quiet "$dir" || fail "the next missing turn end woke the watcher"
+  tc_verdict_logged "$state" ping-1 || fail "the next missing turn end was not ping 1 again"
+  [ "$(tc_pings "$state")" -eq 3 ] || fail "the reset wait sent $(tc_pings "$state") pings in total instead of three"
+  pass "a valid state line resets the ping count, so the next missing turn end is ping 1 again"
+}
+
+test_turn_end_that_must_not_be_pinged_wakes_at_once_with_the_pane_tail() {
+  local spec name text dir state sample
+  for sample in 'You have hit your usage limit. It resets at 3pm.' \
+    'Codex error: The usage limit has been reached' \
+    '[429] usage limit exceeded for this key' \
+    'Request failed: rate limit, retry later'
+  do
+    dir=$(tc_case tc-quota ship); state="$dir/state"
+    tc_pane "$dir" "$sample"
+    tc_round_wake "$dir" || fail "[quota: $sample] quota text did not wake firstmate"
+    [ "$(tc_pings "$state")" -eq 0 ] || fail "[quota: $sample] a rate-limited pane was pinged"
+    [ "$(tc_signal_rows "$state")" -eq 1 ] || fail "[quota: $sample] queued $(tc_signal_rows "$state") rows instead of one"
+    grep -F "$sample" "$state/.wake-queue" >/dev/null || fail "[quota: $sample] the row did not carry the pane tail"
+    tc_verdict_logged "$state" quota || fail "[quota: $sample] no quota verdict was logged"
+    rm -rf "$dir"
+  done
+  # A bare shell where the agent was: the process is dead.
+  dir=$(tc_case tc-dead ship); state="$dir/state"
+  tc_pane "$dir" 'shell after the agent exited'
+  tc_round_wake "$dir" FM_FAKE_TMUX_CURRENT_COMMAND=zsh || fail "a dead agent did not wake firstmate"
+  [ "$(tc_pings "$state")" -eq 0 ] || fail "a dead agent was pinged"
+  grep -F 'shell after the agent exited' "$state/.wake-queue" >/dev/null || fail "the dead-agent row did not carry the pane tail"
+  tc_verdict_logged "$state" dead || fail "no dead verdict was logged"
+  # A window that is gone: the process is missing.
+  dir=$(tc_case tc-missing ship); state="$dir/state"
+  tc_round_wake "$dir" FM_FAKE_TMUX_WINDOWS=test:fm-other || fail "a missing endpoint did not wake firstmate"
+  [ "$(tc_pings "$state")" -eq 0 ] || fail "a missing endpoint was pinged"
+  # A composer that is not empty: text typed and unsent, or a shape it cannot read.
+  dir=$(tc_case tc-composer-pending ship); state="$dir/state"
+  printf 'output above the prompt\n────────────────────────\n❯ half-typed instruction\n────────────────────────\n  bypass permissions\n' > "$dir/pane.txt"
+  tc_status "$dir" 'working: parser'
+  tc_round_wake "$dir" || fail "a pending composer did not wake firstmate"
+  [ "$(tc_pings "$state")" -eq 0 ] || fail "a pending composer was pinged"
+  tc_verdict_logged "$state" composer || fail "no composer verdict was logged"
+  dir=$(tc_case tc-composer-unknown ship); state="$dir/state"
+  printf 'no prompt shape here at all\n' > "$dir/pane.txt"
+  tc_round_wake "$dir" || fail "an unreadable composer did not wake firstmate"
+  [ "$(tc_pings "$state")" -eq 0 ] || fail "an unreadable composer was pinged"
+  pass "quota text, a dead or missing agent, and a composer that is not empty each wake firstmate at once with the pane tail and no ping"
+}
+
+test_turn_end_checker_failure_wakes_firstmate_naming_it() {
+  local dir state
+  # The status path is not a readable file.
+  dir=$(tc_case tc-error-status ship); state="$dir/state"
+  mkdir -p "$state/tc.status"
+  tc_round_wake "$dir" || fail "an unreadable status did not wake firstmate"
+  grep -F 'status file unreadable' "$state/.wake-queue" >/dev/null || fail "the row did not name the status failure: $(cat "$state/.wake-queue")"
+  tc_verdict_logged "$state" error || fail "no error verdict was logged"
+  # The pane capture fails.
+  dir=$(tc_case tc-error-capture ship); state="$dir/state"
+  tc_round_wake "$dir" FM_FAKE_TMUX_CAPTURE_COUNT_FILE="$dir/captures" FM_FAKE_TMUX_CAPTURE_FAIL_AFTER=0 \
+    || fail "a failed capture did not wake firstmate"
+  grep -F 'pane capture failed' "$state/.wake-queue" >/dev/null || fail "the row did not name the capture failure: $(cat "$state/.wake-queue")"
+  # The ping bookkeeping cannot be written.
+  dir=$(tc_case tc-error-bookkeeping ship); state="$dir/state"
+  mkdir -p "$state/.turnend-pings-tc"
+  tc_round_wake "$dir" || fail "unwritable ping bookkeeping did not wake firstmate"
+  grep -F 'ping bookkeeping unwritable' "$state/.wake-queue" >/dev/null || fail "the row did not name the bookkeeping failure: $(cat "$state/.wake-queue")"
+  [ "$(tc_pings "$state")" -eq 0 ] || fail "a ping was sent without its bookkeeping"
+  pass "a checker failure wakes firstmate with one row that names the failure"
+}
+
+# The escalation is recorded only once its wake row is durably queued, as a stale
+# wait is: a failed append must not lose the one wake with the pane tail.
+test_failed_wake_append_does_not_lose_the_ping_escalation() {
+  local dir state
+  dir=$(tc_case tc-escalate-append ship); state="$dir/state"
+  tc_round_quiet "$dir" || fail "ping 1 woke the watcher"
+  tc_round_quiet "$dir" || fail "ping 2 woke the watcher"
+  tc_round_quiet "$dir" || fail "ping 3 woke the watcher"
+  tc_pane "$dir" 'last visible line of the pane'
+  rm -f "$state/.wake-queue"
+  mkdir -p "$state/.wake-queue"
+  tc_round_wake "$dir"
+  rmdir "$state/.wake-queue" || fail "the wake queue could not be restored"
+  [ "$(cat "$state/.turnend-pings-tc" 2>/dev/null)" = 3 ] \
+    || fail "an escalation whose wake row was never queued was recorded: $(cat "$state/.turnend-pings-tc" 2>/dev/null)"
+  tc_round_wake "$dir" || fail "the retry after a failed wake append did not wake firstmate"
+  grep -F 'last visible line of the pane' "$state/.wake-queue" >/dev/null \
+    || fail "the retried escalation row did not carry the pane tail: $(cat "$state/.wake-queue" 2>/dev/null)"
+  [ "$(cat "$state/.turnend-pings-tc" 2>/dev/null)" = 4 ] \
+    || fail "the delivered escalation was not recorded: $(cat "$state/.turnend-pings-tc" 2>/dev/null)"
+  pass "a failed wake append does not record the ping escalation, and the retry wakes with the pane tail"
+}
+
+test_turn_end_cursor_write_failure_wakes_firstmate_naming_it() {
+  local dir state spec name line
+  for spec in 'valid|working: still implementing the parser' 'malformed|'; do
+    name=${spec%%|*}; line=${spec#*|}
+    dir=$(tc_case "tc-cursor-$name" ship); state="$dir/state"
+    [ -z "$line" ] || tc_status "$dir" "$line"
+    mkdir -p "$state/.turnend-seen-tc"
+    tc_round_wake "$dir" || fail "[$name] an unwritable turn-end cursor did not wake firstmate"
+    grep -F 'turn-end cursor unwritable' "$state/.wake-queue" >/dev/null \
+      || fail "[$name] the row did not name the cursor failure: $(cat "$state/.wake-queue" 2>/dev/null)"
+    [ "$(tc_pings "$state")" -eq 0 ] || fail "[$name] a ping was sent although the cursor could not be recorded"
+  done
+  pass "an unwritable turn-end cursor wakes firstmate with one row that names the failure"
+}
+
 test_exit_picker_stale_names_the_dialog
 test_exit_picker_wedge_keeps_climbing
 test_quoted_exit_picker_stays_ordinary_stale
 test_secondmate_exit_picker_stays_quiet
 test_closed_exit_picker_drops_saved_dialog_name
+test_stale_dialog_after_the_waits_wake_surfaces_once
+test_turn_end_with_a_valid_working_or_paused_line_wakes_nothing
+test_turn_end_with_a_wake_verb_wakes_as_before
+test_turn_end_with_a_wake_verb_before_a_malformed_last_line_wakes
+test_a_line_written_while_the_ping_is_sent_is_still_classified
+test_turn_end_without_a_valid_line_pings_three_times_then_wakes_with_the_pane_tail
+test_a_valid_line_after_pings_resets_the_ping_count
+test_turn_ends_after_the_escalation_wake_nothing_until_a_valid_line
+test_turn_end_that_must_not_be_pinged_wakes_at_once_with_the_pane_tail
+test_turn_end_checker_failure_wakes_firstmate_naming_it
+test_failed_wake_append_does_not_lose_the_ping_escalation
+test_turn_end_cursor_write_failure_wakes_firstmate_naming_it

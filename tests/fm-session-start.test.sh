@@ -184,8 +184,13 @@ case "${1:-}" in
         printf '%s\n' '  compact-startup,in_flight,ship,firstmate,Compact startup digest,none,captain,captain choice pending'
         ;;
       *'--state held'*)
-        task_header 1
-        printf '%s\n' '  held-queued,queued,ship,firstmate,Held queued work,none,captain,captain choice pending'
+        if [ -n "${FM_FAKE_TASKS_AXI_HELD_FILE:-}" ]; then
+          cat "$FM_FAKE_TASKS_AXI_HELD_FILE"
+        else
+          printf 'count: 1\n'
+          printf 'tasks[1]{id,state,kind,repo,title,blocked_by,hold_kind,hold_reason,hold_until}:\n'
+          printf '%s\n' '  held-queued,queued,ship,firstmate,Held queued work,none,captain,captain choice pending,"-"'
+        fi
         ;;
       *'--state queued'*'--blocked'*)
         task_header 1
@@ -2031,7 +2036,7 @@ EOF
   out=$(FM_FAKE_TASKS_AXI_LOG="$log" FM_FAKE_TASKS_AXI_READY=3 \
     run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
 
-  assert_contains "$out" "compact backlog listing (tasks-axi; done rows omitted; every in-flight, held, and blocked row shown in full; ready queued bounded to 20; task bodies omitted)" \
+  assert_contains "$out" "compact backlog listing (tasks-axi; done rows omitted; every in-flight and blocked row shown in full; held rows counted per hold kind, with the due or changed ones in full; ready queued bounded to 20; task bodies omitted)" \
     "compatible tasks-axi backend did not render the compact backlog listing"
   assert_contains "$out" "tasks[1]{id,state,kind,repo,title,blocked_by,hold_kind,hold_reason}:" \
     "tasks-axi compact listing omitted the expected structured field header"
@@ -2039,6 +2044,9 @@ EOF
     "tasks-axi compact listing omitted in-flight identity, state, or hold metadata"
   assert_contains "$out" "held-queued,queued,ship,firstmate,Held queued work,none,captain,captain choice pending" \
     "tasks-axi compact listing omitted a held row or its hold metadata"
+  assert_contains "$out" "  captain: 1" "tasks-axi compact listing omitted the held count for its hold kind"
+  assert_contains "$out" "full held list: bin/fm-tasks-axi.sh list --state held" \
+    "tasks-axi compact listing omitted the full held list command"
   assert_contains "$out" 'blocked-followup,queued,scout,firstmate,Follow compact startup,compact-startup,"-","-"' \
     "tasks-axi compact listing omitted blocked-by metadata"
   assert_contains "$out" "ready-3,queued,ship,firstmate,Ready item 3" \
@@ -2061,14 +2069,14 @@ EOF
   # filters the listing is built from.
   assert_grep "--state in_flight --fields blocked_by,hold_kind,hold_reason" "$log" \
     "session start did not ask tasks-axi for the in-flight group"
-  assert_grep "--state held --fields blocked_by,hold_kind,hold_reason" "$log" \
+  assert_grep "--state held --fields blocked_by,hold_kind,hold_reason,hold_until" "$log" \
     "session start did not ask tasks-axi for the held group"
   assert_grep "--state queued --blocked --fields blocked_by,hold_kind,hold_reason" "$log" \
     "session start did not ask tasks-axi for the blocked queued group"
   assert_grep "ready --file $home/data/backlog.md" "$log" \
     "session start did not ask tasks-axi for the dispatchable queued set"
 
-  pass "compatible tasks-axi backlog rendering drops done rows and keeps every in-flight, held, and blocked row"
+  pass "compatible tasks-axi backlog rendering drops done rows and keeps every in-flight and blocked row, with held rows summarized"
 }
 
 # The bound may only ever cut the dispatchable-now listing, and whatever it cuts
@@ -2119,7 +2127,7 @@ EOF
 
   out=$(FM_SESSION_START_QUEUED_LIMIT=4 run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
 
-  assert_contains "$out" "compact backlog listing (manual backend; done rows omitted; every in-flight, held, and blocked title line kept; other queued bounded to 4; indented task bodies omitted)" \
+  assert_contains "$out" "compact backlog listing (manual backend; done rows omitted; every in-flight and blocked title line kept; held title lines counted per hold kind, with the due or changed ones kept; other queued bounded to 4; indented task bodies omitted)" \
     "manual backend did not use compact title-line rendering"
   assert_contains "$out" "## In flight" "manual compact rendering omitted the in-flight section heading"
   assert_contains "$out" "- [ ] compact-startup - Compact startup digest" \
@@ -2138,13 +2146,13 @@ EOF
     "manual compact rendering dropped a queued title line inside its bound"
   assert_not_contains "$out" "- [ ] plain-5 - Plain queued item 5" \
     "manual compact rendering did not bound its plain queued listing"
-  assert_contains "$out" "(shown 1 in-flight, 2 held or blocked queued, 4 of 25 other queued title line(s); 1 done row(s) omitted)" \
+  assert_contains "$out" "(shown 1 in-flight, 1 blocked queued, 4 of 25 other queued title line(s); 1 held queued summarized by hold kind; 1 done row(s) omitted)" \
     "manual compact rendering did not report its bound accounting"
   assert_contains "$out" "(21 more queued - raise FM_SESSION_START_QUEUED_LIMIT or read data/backlog.md for the rest)" \
     "manual compact rendering did not disclose an exact queued remainder"
   assert_contains "$out" "or data/backlog.md" "manual compact digest omitted the data/backlog.md full-body pointer"
 
-  pass "manual backlog rendering drops done rows, keeps every held or blocked title line, and bounds the rest"
+  pass "manual backlog rendering drops done rows, keeps every blocked title line, summarizes held ones, and bounds the rest"
 }
 
 test_backlog_compact_tasks_axi_unavailable_uses_manual_fallback() {
@@ -2167,6 +2175,230 @@ EOF
   assert_not_contains "$out" "DONE-ROW-LINE" "unavailable tasks-axi fallback listed a done row at startup"
 
   pass "unavailable or incompatible tasks-axi falls back to compact manual backlog rendering"
+}
+
+# --- held items: one count per hold kind, plus only the due or changed ones ---
+#
+# The snapshot a genuine startup writes is "<id> TAB <md5 of the row text>", so a
+# case can pin which held items are unchanged by writing the matching hash itself.
+
+held_row_hash() {  # <row text without the two-space indent>
+  perl -MDigest::MD5=md5_hex -e 'print md5_hex($ARGV[0])' -- "$1"
+}
+
+write_held_fixture() {  # <file> <rows...>: a held listing shaped like tasks-axi's
+  local file=$1
+  shift
+  {
+    printf 'count: %s\n' "$#"
+    printf 'tasks[%s]{id,state,kind,repo,title,blocked_by,hold_kind,hold_reason,hold_until}:\n' "$#"
+    printf '  %s\n' "$@"
+  } > "$file"
+}
+
+HELD_ROW_PARK1='held-park-1,queued,ship,firstmate,Parked one,none,parked,not now,"-"'
+HELD_ROW_PARK2='held-park-2,queued,ship,firstmate,Parked two,none,parked,not now,"-"'
+HELD_ROW_CAP1='held-cap-1,queued,captain,firstmate,Captain one,none,captain,his call,"-"'
+HELD_ROW_CAP2='held-cap-2,queued,captain,firstmate,Captain two,none,captain,his call,"-"'
+HELD_ROW_FUT1='held-fut-1,queued,ship,firstmate,Future one,none,future,later,"-"'
+HELD_ROW_FUT2='held-fut-2,queued,ship,firstmate,Future two,none,future,later,"-"'
+
+held_world() {  # <name>: prints "<root>|<home>|<fakebin>" with a tasks-axi backend and a backlog
+  local rec root home fakebin
+  rec=$(new_world "$1")
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_tasks_axi_compact "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  write_long_body_backlog "$home/data/backlog.md"
+  printf '%s|%s|%s\n' "$root" "$home" "$fakebin"
+}
+
+test_held_summary_lists_only_changed_items_with_counts_per_kind() {
+  local rec root home fakebin out held
+  rec=$(held_world held-summary-changed)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  held="$home/held.toon"
+  write_held_fixture "$held" "$HELD_ROW_PARK1" "$HELD_ROW_PARK2" "$HELD_ROW_CAP1" "$HELD_ROW_CAP2" "$HELD_ROW_FUT1" "$HELD_ROW_FUT2"
+  # Four of the six match the snapshot; cap-2 and fut-2 changed their reason since.
+  {
+    printf 'held-park-1\t%s\n' "$(held_row_hash "$HELD_ROW_PARK1")"
+    printf 'held-park-2\t%s\n' "$(held_row_hash "$HELD_ROW_PARK2")"
+    printf 'held-cap-1\t%s\n' "$(held_row_hash "$HELD_ROW_CAP1")"
+    printf 'held-cap-2\t%s\n' "$(held_row_hash 'held-cap-2,queued,captain,firstmate,Captain two,none,captain,an older reason,"-"')"
+    printf 'held-fut-1\t%s\n' "$(held_row_hash "$HELD_ROW_FUT1")"
+    printf 'held-fut-2\t%s\n' "$(held_row_hash 'held-fut-2,queued,ship,firstmate,Future two,none,future,an older reason,"-"')"
+  } > "$home/state/.session-start-held-snapshot"
+
+  out=$(FM_FAKE_TASKS_AXI_HELD_FILE="$held" run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+
+  assert_contains "$out" "6 item(s)" "the held section did not total the held items"
+  assert_contains "$out" "  parked: 2" "the held section omitted the parked count"
+  assert_contains "$out" "  captain: 2" "the held section omitted the captain count"
+  assert_contains "$out" "  future: 2" "the held section omitted the future count"
+  assert_contains "$out" "changed since the last session start, in full: 2" "the held section did not name how many it lists"
+  assert_contains "$out" "$HELD_ROW_CAP2" "a changed held item was not listed in full"
+  assert_contains "$out" "$HELD_ROW_FUT2" "a changed held item was not listed in full"
+  assert_not_contains "$out" "held-park-1" "an unchanged held item was listed"
+  assert_not_contains "$out" "held-park-2" "an unchanged held item was listed"
+  assert_not_contains "$out" "held-cap-1" "an unchanged held item was listed"
+  assert_not_contains "$out" "held-fut-1" "an unchanged held item was listed"
+  assert_contains "$out" "full held list: bin/fm-tasks-axi.sh list --state held" "the held section omitted the full-list command"
+  assert_contains "$out" "compact-startup,in_flight,ship,firstmate,Compact startup digest" "the in-flight group changed"
+  assert_contains "$out" 'blocked-followup,queued,scout,firstmate,Follow compact startup,compact-startup,"-","-"' "the blocked group changed"
+  assert_contains "$out" "ready-2,queued,ship,firstmate,Ready item 2" "the ready group changed"
+
+  pass "held items print as one count per hold kind with only the changed ones in full, and the full-list command"
+}
+
+test_held_summary_lists_a_due_item_even_when_unchanged() {
+  local rec root home fakebin out held due_row future_row
+  rec=$(held_world held-summary-due)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  held="$home/held.toon"
+  due_row='held-due,queued,ship,firstmate,Due item,none,parked,wait for the date,2000-01-01'
+  future_row='held-later,queued,ship,firstmate,Later item,none,parked,wait for the date,2999-01-01'
+  write_held_fixture "$held" "$due_row" "$future_row" "$HELD_ROW_PARK1"
+  {
+    printf 'held-due\t%s\n' "$(held_row_hash "$due_row")"
+    printf 'held-later\t%s\n' "$(held_row_hash "$future_row")"
+    printf 'held-park-1\t%s\n' "$(held_row_hash "$HELD_ROW_PARK1")"
+  } > "$home/state/.session-start-held-snapshot"
+
+  out=$(FM_FAKE_TASKS_AXI_HELD_FILE="$held" run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+
+  assert_contains "$out" "  parked: 3" "the held section omitted the parked count"
+  assert_contains "$out" "$due_row" "an unchanged held item whose hold-until has passed was not listed"
+  assert_not_contains "$out" "held-later" "an unchanged held item whose hold-until is in the future was listed"
+  assert_not_contains "$out" "held-park-1" "an unchanged held item with no hold-until was listed"
+
+  pass "an unchanged held item is listed once its hold-until date is reached"
+}
+
+test_held_summary_without_a_snapshot_lists_all_and_only_a_genuine_startup_records_one() {
+  local rec root home fakebin out held snapshot mode
+  rec=$(held_world held-summary-snapshot)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_ps_harness "$fakebin" pi
+  held="$home/held.toon"
+  snapshot="$home/state/.session-start-held-snapshot"
+  write_held_fixture "$held" "$HELD_ROW_PARK1" "$HELD_ROW_CAP1" "$HELD_ROW_FUT1"
+
+  out=$(FM_FAKE_HARNESS=pi FM_FAKE_TASKS_AXI_HELD_FILE="$held" \
+    run_pi_session_start "$home" "$root" "$fakebin:$BASE_PATH" --source resume)
+  assert_contains "$out" "$HELD_ROW_PARK1" "with no snapshot a held item was not listed"
+  assert_contains "$out" "$HELD_ROW_CAP1" "with no snapshot a held item was not listed"
+  assert_contains "$out" "$HELD_ROW_FUT1" "with no snapshot a held item was not listed"
+  assert_absent "$snapshot" "a resume wrote the held snapshot"
+
+  out=$(FM_FAKE_HARNESS=pi FM_FAKE_TASKS_AXI_HELD_FILE="$held" \
+    run_pi_session_start "$home" "$root" "$fakebin:$BASE_PATH" --reemit --source compact)
+  assert_absent "$snapshot" "a compact rebuild wrote the held snapshot"
+
+  out=$(FM_FAKE_HARNESS=pi FM_FAKE_TASKS_AXI_HELD_FILE="$held" \
+    run_pi_session_start "$home" "$root" "$fakebin:$BASE_PATH" --source startup)
+  assert_contains "$out" "$HELD_ROW_PARK1" "the first startup did not list every held item"
+  assert_present "$snapshot" "a genuine startup did not record the held snapshot"
+  [ "$(wc -l < "$snapshot" | tr -d ' ')" = 3 ] || fail "the held snapshot does not hold one line per held item: $(cat "$snapshot")"
+  grep -F "held-park-1	$(held_row_hash "$HELD_ROW_PARK1")" "$snapshot" >/dev/null \
+    || fail "the held snapshot does not hold the item's id and row hash: $(cat "$snapshot")"
+  if grep -F 'Parked one' "$snapshot" >/dev/null; then fail "the held snapshot holds a title"; fi
+  mode=$(stat -c %a "$snapshot" 2>/dev/null || stat -f %Lp "$snapshot")
+  [ "$mode" = 600 ] || fail "the held snapshot is mode $mode, not 600"
+
+  out=$(FM_FAKE_HARNESS=pi FM_FAKE_TASKS_AXI_HELD_FILE="$held" \
+    run_pi_session_start "$home" "$root" "$fakebin:$BASE_PATH" --reemit --source compact)
+  assert_not_contains "$out" "held-park-1" "a rebuild after a startup listed an unchanged held item"
+  assert_contains "$out" "no held item is due or changed since the last session start" \
+    "a rebuild after a startup did not say nothing held changed"
+
+  pass "with no snapshot every held item is listed; only a genuine startup records the snapshot, and a rebuild reads it"
+}
+
+# A queued title line that is both held and blocked-by is a blocked row: the
+# digest keeps blocked rows whole, so it must not be counted into the held summary
+# and dropped from the listing.
+test_manual_held_and_blocked_line_is_kept_as_blocked() {
+  local rec root home fakebin out
+  rec=$(new_world held-and-blocked-manual)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  printf '%s\n' manual > "$home/config/backlog-backend"
+  cat > "$home/data/backlog.md" <<'EOF'
+# Backlog
+
+## Queued
+- [ ] both-park - Parked one (repo: firstmate) (kind: ship) (hold: not now) (hold-kind: parked)
+- [ ] both-held-blocked - Held and blocked (repo: firstmate) (kind: ship) (hold: not now) (hold-kind: parked) blocked-by: both-park
+EOF
+  {
+    printf 'both-park\t%s\n' "$(held_row_hash '- [ ] both-park - Parked one (repo: firstmate) (kind: ship) (hold: not now) (hold-kind: parked)')"
+    printf 'both-held-blocked\t%s\n' "$(held_row_hash '- [ ] both-held-blocked - Held and blocked (repo: firstmate) (kind: ship) (hold: not now) (hold-kind: parked) blocked-by: both-park')"
+  } > "$home/state/.session-start-held-snapshot"
+
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+
+  assert_contains "$out" "- [ ] both-held-blocked - Held and blocked" "a held and blocked title line was summarized away instead of kept whole"
+  assert_contains "$out" "  parked: 1" "the held summary did not count only the plain held line"
+  assert_not_contains "$out" "  parked: 2" "the blocked line was counted into the held summary"
+
+  pass "a manual title line that is both held and blocked is kept whole as a blocked row and not counted as held"
+}
+
+test_held_summary_applies_to_the_manual_title_lines() {
+  local rec root home fakebin out
+  rec=$(new_world held-summary-manual)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  printf '%s\n' manual > "$home/config/backlog-backend"
+  cat > "$home/data/backlog.md" <<'EOF'
+# Backlog
+
+## Queued
+- [ ] man-park-1 - Parked one (repo: firstmate) (kind: ship) (hold: not now) (hold-kind: parked)
+- [ ] man-park-2 - Parked two (repo: firstmate) (kind: ship) (hold: not now) (hold-kind: parked)
+- [ ] man-cap-1 - Captain one (repo: firstmate) (kind: captain) (hold: his call) (hold-kind: captain)
+- [ ] man-due - Due one (repo: firstmate) (kind: ship) (hold: wait for the date) (hold-kind: parked) (hold-until: 2000-01-01)
+- [ ] man-none - No kind (repo: firstmate) (kind: ship) (hold: unsorted)
+- [ ] man-blocked - Blocked one (repo: firstmate) (kind: ship) blocked-by: man-park-1
+- [ ] man-plain - Plain one (repo: firstmate) (kind: ship)
+EOF
+  {
+    printf 'man-park-1\t%s\n' "$(held_row_hash '- [ ] man-park-1 - Parked one (repo: firstmate) (kind: ship) (hold: not now) (hold-kind: parked)')"
+    printf 'man-park-2\t%s\n' "$(held_row_hash '- [ ] man-park-2 - Parked two (repo: firstmate) (kind: ship) (hold: not now) (hold-kind: parked)')"
+    printf 'man-cap-1\t%s\n' "$(held_row_hash '- [ ] man-cap-1 - Captain one (repo: firstmate) (kind: captain) (hold: an older reason) (hold-kind: captain)')"
+    printf 'man-due\t%s\n' "$(held_row_hash '- [ ] man-due - Due one (repo: firstmate) (kind: ship) (hold: wait for the date) (hold-kind: parked) (hold-until: 2000-01-01)')"
+  } > "$home/state/.session-start-held-snapshot"
+
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+
+  assert_contains "$out" "  parked: 3" "the manual held summary omitted the parked count"
+  assert_contains "$out" "  captain: 1" "the manual held summary omitted the captain count"
+  assert_contains "$out" "  other: 1" "the manual held summary omitted the no-kind count"
+  assert_contains "$out" "- [ ] man-cap-1 - Captain one" "a changed manual held title line was not kept"
+  assert_contains "$out" "- [ ] man-due - Due one" "a due manual held title line was not kept"
+  assert_contains "$out" "- [ ] man-none - No kind" "a manual held title line absent from the snapshot was not kept"
+  assert_not_contains "$out" "man-park-1 - Parked one" "an unchanged manual held title line was listed"
+  assert_not_contains "$out" "man-park-2 - Parked two" "an unchanged manual held title line was listed"
+  assert_contains "$out" "- [ ] man-blocked - Blocked one" "a blocked title line was summarized"
+  assert_contains "$out" "- [ ] man-plain - Plain one" "a plain queued title line was dropped"
+  assert_contains "$out" "full held list: data/backlog.md" "the manual held summary omitted the backlog pointer"
+
+  pass "the manual and fallback title-line listing applies the same count, due and changed rule to held lines"
 }
 
 # --- runtime bound -----------------------------------------------------------
@@ -3080,6 +3312,11 @@ test_backlog_compact_tasks_axi_omits_bodies_and_keeps_metadata
 test_backlog_queued_bound_discloses_its_remainder
 test_backlog_compact_manual_backend_skips_indented_bodies
 test_backlog_compact_tasks_axi_unavailable_uses_manual_fallback
+test_held_summary_lists_only_changed_items_with_counts_per_kind
+test_held_summary_lists_a_due_item_even_when_unchanged
+test_held_summary_without_a_snapshot_lists_all_and_only_a_genuine_startup_records_one
+test_held_summary_applies_to_the_manual_title_lines
+test_manual_held_and_blocked_line_is_kept_as_blocked
 test_fleet_digest_empty_fleet
 test_next_step_sources_x_mode_cadence
 test_next_step_afk_delegates_to_daemon

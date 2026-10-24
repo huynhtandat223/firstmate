@@ -17,7 +17,12 @@
 # ledger_test <jq-expr> [args]  exit 0 when any ledger line matches the jq boolean expression
 # ledger_append <json>          add one ledger line
 # throttle                      sleep until POLL_SECONDS have passed since the last poll
-# mark_handled <sequence>       acknowledge this result and every older unacknowledged one
+# mark_handled <sequence>       acknowledge this result and every older unacknowledged one, except an
+#                               older result keep_pending_result accepts
+# keep_pending_result <result-file>
+#                               the adapter may define it; exit 0 means this older result was left
+#                               unhandled on purpose for firstmate to read, so the catch-up leaves it
+#                               and its queued wake row alone. The default keeps nothing.
 # deliver_record <label> <assistance> <record-json>
 #                               write the record into the assistance home's data/pending-mentions/
 #                               and announce it with `fm-assistance.sh source-event`. Success sets
@@ -54,6 +59,8 @@ throttle() {
   [ "$wait_for" -le 0 ] || sleep "$wait_for"
 }
 
+keep_pending_result() { return 1; }
+
 mark_handled() {
   local seq=$1 pending s
   while IFS= read -r pending; do
@@ -62,6 +69,7 @@ mark_handled() {
     s=${s##*.}
     case "$s" in ''|*[!0-9]*) continue ;; esac
     [ "$s" -le "$seq" ] || continue
+    [ "$s" -eq "$seq" ] || ! keep_pending_result "$pending" || continue
     "$SCRIPT_DIR/fm-procevent.sh" handled "$SOURCE_ID" "$s" >/dev/null 2>&1 || true
   done < <(fm_procevent_pending "$STATE" | grep "/$SOURCE_ID\\.")
 }

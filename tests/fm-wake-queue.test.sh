@@ -2950,6 +2950,51 @@ test_historical_annotation_skips_announced_status() {
   pass "historical annotations replay nothing already announced and keep everything new"
 }
 
+# A row appended for a result AFTER its handled marker (the publish race) must
+# never reach firstmate: the drain hides it, yet still counts it toward the
+# acknowledgement boundary so the acknowledgement consumes it.
+test_drain_hides_handled_procevent_rows_but_still_acknowledges_them() {
+  local dir state out err sequence generation inbox
+  dir=$(make_case drain-handled-procevent)
+  state="$dir/state"
+  out="$dir/drain.out"
+  err="$dir/drain.err"
+  inbox="$state/procevent-inbox"
+  mkdir -p "$inbox"
+  for seq in 3 4; do
+    printf 'captured %s\n' "$seq" > "$inbox/src.$seq.result"
+    chmod 0600 "$inbox/src.$seq.result"
+  done
+  : > "$inbox/src.3.handled"
+  chmod 0600 "$inbox/src.3.handled"
+  append_wake "$state" check "procevent:src:3" "check: procevent lavish src 3"
+  append_wake "$state" check "procevent:src:4" "check: procevent lavish src 4"
+  append_wake "$state" check "other-check" "check: an ordinary check"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" 2> "$err" || fail "drain failed with a handled process-event row queued"
+  grep -F 'procevent lavish src 3' "$out" >/dev/null && fail "the drain printed a process-event row whose handled marker exists: $(cat "$out")"
+  grep -F 'procevent lavish src 4' "$out" >/dev/null || fail "the drain hid an unhandled process-event row: $(cat "$out")"
+  grep -F 'an ordinary check' "$out" >/dev/null || fail "the drain hid an ordinary check row: $(cat "$out")"
+  sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$err")
+  generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$err")
+  [ -n "$sequence" ] && [ -n "$generation" ] || fail "the drain omitted its acknowledgement boundary"
+  [ "$sequence" -ge 3 ] || fail "the acknowledgement boundary $sequence does not cover the hidden row"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" --ack-through "$sequence" --recovery-generation "$generation" \
+    || fail "the acknowledgement failed"
+  [ ! -s "$state/.wake-queue" ] || fail "the acknowledgement left the handled row queued: $(cat "$state/.wake-queue")"
+
+  : > "$state/.wake-queue"
+  append_wake "$state" check "procevent:src:3" "check: procevent lavish src 3"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" 2> "$err" || fail "drain failed with only a handled process-event row queued"
+  grep -F 'procevent lavish src 3' "$out" >/dev/null && fail "the drain printed the only queued row though it is handled: $(cat "$out")"
+  sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$err")
+  generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$err")
+  FM_STATE_OVERRIDE="$state" "$DRAIN" --ack-through "$sequence" --recovery-generation "$generation" \
+    || fail "the acknowledgement of a handled-only queue failed"
+  [ ! -s "$state/.wake-queue" ] || fail "a handled-only queue was not consumed by its acknowledgement"
+  pass "the drain never prints a handled process-event row, and the acknowledgement still consumes it"
+}
+
 test_wake_queue_prune_task() {
   local dir state queue
   dir=$(make_case prune)
@@ -3568,6 +3613,7 @@ test_stale_ack_that_consumes_nothing_names_the_current_wake
 test_branch_stale_ack_that_consumes_nothing_names_its_granted_wake
 test_recovery_ack_failure_is_reported
 test_interruption_before_and_after_raw_commit
+test_drain_hides_handled_procevent_rows_but_still_acknowledges_them
 test_wake_queue_prune_task
 test_drain_rotates_orphaned_scratch
 test_secondmate_liveness_tick_relaunches_dead_endpoint_once
