@@ -695,6 +695,7 @@ An existing ledger is left untouched while recording is disabled.
 ## Turn-end pane-churn absorb (config/turnend-churn-absorb)
 
 The optional local, gitignored `config/turnend-churn-absorb` presence flag opts this home into a default-off third form of positive work evidence in watcher triage.
+It applies only to a turn end the watcher's worker state checker does not own: a ship or scout worker's turn end is decided from its state line ([`architecture.md`](architecture.md)), whatever this flag says.
 With it present, every referenced task must independently show positive work evidence, and an eligible bare turn-ended task that lacks authoritative proof may satisfy that requirement when its pane content changed since the previous poll.
 
 ### Evidence and time limit
