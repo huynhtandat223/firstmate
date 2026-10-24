@@ -6397,7 +6397,9 @@ test_procevent_handled_result_does_not_wake_the_watcher() {
   grep -F 'procevent:delivery-src:1' "$state/.wake-queue" >/dev/null \
     || fail "the fixture did not leave a queued row for the handled result"
 
-  procevent_watch_bg "$dir" "$out"
+  # A successor that already handled the previous wake: the generic re-arm recovery
+  # would otherwise re-announce any queued row, handled or not.
+  FM_WATCH_HANDLING_SUCCESSOR=1 procevent_watch_bg "$dir" "$out"
   pid=$!
   if ! wait_poll_cycle "$state" "$pid"; then
     reap "$pid"; fail "a queue holding only a handled process-event row woke the watcher: $(cat "$out")"
