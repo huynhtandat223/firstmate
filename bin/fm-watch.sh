@@ -2197,21 +2197,34 @@ captain_call_stale_bound() {  # <window-key> <task>
 # token counter, a spinner) wakes firstmate once, not once per redraw. A new
 # status line or a new turn end changes the pair and starts a new wait. A task
 # with no id has no pair and is never held to this rule.
+# A blocking dialog (the name fm_composer_blocking_dialog gave this sighting) is
+# the one thing a redrawing pane can newly show that the wake did not carry: the
+# worker is stuck on a prompt only someone can answer. A wake records the dialog
+# it named after the pair, and a sighting naming a dialog the record does not
+# hold wakes once more. A sighting with no dialog never reopens a recorded wait.
 stale_wait_pair() {  # <task>
   printf '%s|%s' "$(fm_wake_signal_sig "$STATE/$1.status" 2>/dev/null || true)" \
     "$(stat_mtime "$STATE/$1.turn-ended" 2>/dev/null || true)"
 }
 
-stale_wait_fired() {  # <window-key> <task>
-  [ -n "$2" ] && [ "$(cat "$STATE/.stale-wait-$1" 2>/dev/null || true)" = "$(stale_wait_pair "$2")" ]
+stale_wait_fired() {  # <window-key> <task> [dialog-name]
+  local recorded pair
+  [ -n "$2" ] || return 1
+  recorded=$(cat "$STATE/.stale-wait-$1" 2>/dev/null || true)
+  pair=$(stale_wait_pair "$2")
+  if [ -n "${3-}" ]; then
+    [ "$recorded" = "$pair|$3" ]
+  else
+    [ "$recorded" = "$pair" ] || case "$recorded" in "$pair|"*) return 0 ;; *) return 1 ;; esac
+  fi
 }
 
 # Recorded only after the wake was durably appended, for the reason
 # stale_wait_record gives: a marker written ahead of a failed append would absorb
 # the retry.
-stale_wait_mark() {  # <window-key> <task>
+stale_wait_mark() {  # <window-key> <task> [dialog-name]
   [ -n "$2" ] || return 0
-  stale_wait_pair "$2" > "$STATE/.stale-wait-$1"
+  printf '%s%s' "$(stale_wait_pair "$2")" "${3:+|$3}" > "$STATE/.stale-wait-$1"
 }
 
 # Surface a stale pane no classifier could resolve, so firstmate inspects it: it
@@ -2268,14 +2281,14 @@ surface_nonterminal_stale() {  # <window> <hash> [dialog-name]
   elif captain_call_stale_bound "$key" "$task"; then
     bounded=0
     throttled=0
-  elif stale_wait_fired "$key" "$task"; then
+  elif stale_wait_fired "$key" "$task" "$dialog"; then
     throttled=0
   fi
   if [ "$throttled" -ne 0 ]; then
     reason=$(stale_reason_naming_dialog "stale: $win" "$dialog")
     fm_wake_append stale "$win" "$reason" || exit 1
     stale_wait_record "$key"
-    [ "$declared" -eq 0 ] || stale_wait_mark "$key" "$task"
+    [ "$declared" -eq 0 ] || stale_wait_mark "$key" "$task" "$dialog"
   fi
   printf '%s' "$h" > "$STATE/.stale-$key"
   rm -f "$STATE/.stale-since-$key"
@@ -2386,7 +2399,7 @@ EOF
 # line, in shell, with no model in the loop (docs/architecture.md owns the
 # contract). Each decision writes one triage line:
 #   turn-end check: <task> verdict=<valid-working|valid-paused|wake-verb|ping-1|
-#   ping-2|ping-3|ping-exhausted|quota|dead|composer|error>
+#   ping-2|ping-3|ping-exhausted|ping-escalated|quota|dead|composer|error>
 # The checks run in this order: process, quota text, composer, then the state
 # line. A ping never goes to a rate-limited, dead or busy pane, because a ping to
 # a rate-limited session extends its limit.
@@ -2546,8 +2559,15 @@ turnend_check_task() {  # <task>
   count=$(cat "$pingf" 2>/dev/null || true)
   case "$count" in ''|*[!0-9]*) count=0 ;; esac
   printf '%s' "$size" > "$seenf" 2>/dev/null || true
-  if [ "$count" -ge "$TURNEND_PING_MAX" ]; then
-    if [ "$count" -eq "$TURNEND_PING_MAX" ] && ! printf '%s' "$((count + 1))" > "$pingf" 2>/dev/null; then
+  # Once the wake with the pane tail has gone (count past the maximum), the rest
+  # of the wait is firstmate's to read: later malformed turn ends wake nothing,
+  # and a valid state line resets the wait.
+  if [ "$count" -gt "$TURNEND_PING_MAX" ]; then
+    TURNEND_VERDICT=ping-escalated
+    return 0
+  fi
+  if [ "$count" -eq "$TURNEND_PING_MAX" ]; then
+    if ! printf '%s' "$((count + 1))" > "$pingf" 2>/dev/null; then
       TURNEND_WHY='ping bookkeeping unwritable'
       return 0
     fi
@@ -2606,7 +2626,7 @@ worker_turn_end_checks() {
                   valid-working|valid-paused)
                     TURNEND_OK_TASKS="$TURNEND_OK_TASKS $id"
                     ;;
-                  ping-1|ping-2|ping-3)
+                  ping-1|ping-2|ping-3|ping-escalated)
                     dropped_status="$dropped_status $id"
                     ;;
                   wake-verb)
@@ -2623,7 +2643,7 @@ worker_turn_end_checks() {
                 ;;
             esac
             case " $decided " in
-              *" $id:valid-working "*|*" $id:valid-paused "*|*" $id:ping-1 "*|*" $id:ping-2 "*|*" $id:ping-3 "*)
+              *" $id:valid-working "*|*" $id:valid-paused "*|*" $id:ping-1 "*|*" $id:ping-2 "*|*" $id:ping-3 "*|*" $id:ping-escalated "*)
                 printf '%s' "$sig" > "$sf"
                 continue
                 ;;
@@ -3848,7 +3868,7 @@ EOF
               rm -f "$ssf"
               clear_write_tracking "$key"
               triage_log "absorbed stale (open captain call already surfaced for this status): $w"
-            elif stale_wait_fired "$key" "$task"; then
+            elif stale_wait_fired "$key" "$task" "$dialog"; then
               # The same wait (status line and turn end unchanged) already woke
               # firstmate; only the pane redrew.
               printf '%s' "$h" > "$sf"
@@ -3859,7 +3879,7 @@ EOF
               stale_reason=$(stale_reason_naming_dialog "stale: $w" "$dialog")
               fm_wake_append stale "$w" "$stale_reason" || exit 1
               stale_wait_record "$key"
-              stale_wait_mark "$key" "$task"
+              stale_wait_mark "$key" "$task" "$dialog"
               printf '%s' "$h" > "$sf"
               rm -f "$ssf"
               clear_write_tracking "$key"

@@ -4555,6 +4555,50 @@ test_stale_fires_once_per_wait_and_again_after_a_new_status_or_turn_end() {
   pass "stale wakes once per wait, and wakes again only after a new status line or a new turn end"
 }
 
+# A blocking dialog the pane shows after the wait's one stale wake is new
+# information: the worker is stuck on a prompt only someone can answer, so it
+# wakes once, naming the dialog, and the same dialog redrawing wakes nothing more.
+test_stale_dialog_after_the_waits_wake_surfaces_once() {
+  local dir state window
+  dir=$(quiet_task_case stale-dialog-after-wake); state="$dir/state"; window="test:fm-quiet"
+  quiet_stale_surface "$dir" 'idle prompt 0' || fail "a quiet worker's first stale did not wake"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the first stale"
+  write_exit_picker "$dir/pane.txt"
+  quiet_watch_launch "$dir"
+  wait_for_exit "$QUIET_WATCH_PID" 100 \
+    || { reap "$QUIET_WATCH_PID"; fail "a dialog that appeared after the wait's wake did not wake firstmate"; }
+  [ "$(quiet_stale_wakes "$state" "$window")" -eq 1 ] \
+    || fail "the dialog queued $(quiet_stale_wakes "$state" "$window") stale rows instead of one"
+  grep -F 'blocked-on-prompt: Claude background-task exit picker' "$state/.wake-queue" >/dev/null \
+    || fail "the dialog wake did not name the dialog: $(cat "$state/.wake-queue")"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the dialog wake"
+  quiet_pane_churn_picker "$dir" 3 \
+    || fail "the watcher woke for the same dialog redrawing: $(cat "$dir/watch.out")"
+  [ "$(quiet_stale_wakes "$state" "$window")" -eq 0 ] \
+    || fail "the same dialog queued stale rows again inside one wait"
+  pass "a dialog first seen after the wait's stale wake wakes once, and the same dialog redrawing wakes nothing more"
+}
+
+# <count> pane changes that all keep the recorded exit picker on screen.
+quiet_pane_churn_picker() {  # <dir> <count>
+  local dir=$1 count=$2 i=1 c state=$1/state
+  write_exit_picker "$dir/pane.next"
+  { printf 'redraw 0\n'; cat "$dir/pane.next"; } > "$dir/pane.txt"
+  quiet_watch_launch "$dir"
+  while [ "$i" -le "$count" ]; do
+    { printf 'redraw %s\n' "$i"; cat "$dir/pane.next"; } > "$dir/pane.txt"
+    c=0
+    while [ "$c" -lt 3 ]; do
+      wait_poll_cycle "$state" "$QUIET_WATCH_PID" 300 \
+        || { reap "$QUIET_WATCH_PID"; return 1; }
+      c=$((c + 1))
+    done
+    i=$((i + 1))
+  done
+  reap "$QUIET_WATCH_PID"
+  return 0
+}
+
 # The same wait, for a worker whose last status line is captain-relevant: the
 # terminal-looking stale path takes it, and it too wakes once.
 test_terminal_looking_stale_fires_once_per_wait() {
@@ -7751,6 +7795,30 @@ test_turn_end_without_a_valid_line_pings_three_times_then_wakes_with_the_pane_ta
   pass "a missing or malformed state line is pinged three times per wait, and the fourth turn end wakes firstmate with the pane tail and no ping"
 }
 
+# After the three pings and the one wake with the pane tail, firstmate has the
+# state: the next malformed turn ends of that wait wake nothing, and a valid state
+# line starts a fresh wait.
+test_turn_ends_after_the_escalation_wake_nothing_until_a_valid_line() {
+  local dir state
+  dir=$(tc_case tc-escalated ship); state="$dir/state"
+  tc_round_quiet "$dir" || fail "ping 1 woke the watcher"
+  tc_round_quiet "$dir" || fail "ping 2 woke the watcher"
+  tc_round_quiet "$dir" || fail "ping 3 woke the watcher"
+  tc_pane "$dir" 'last visible line of the pane'
+  tc_round_wake "$dir" || fail "the fourth missing state did not wake firstmate"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the escalation"
+  tc_round_quiet "$dir" || fail "a turn end after the escalation woke the watcher again: $(cat "$dir/watch.out")"
+  tc_round_quiet "$dir" || fail "a second turn end after the escalation woke the watcher again: $(cat "$dir/watch.out")"
+  [ ! -s "$state/.wake-queue" ] || fail "turn ends after the escalation queued a row: $(cat "$state/.wake-queue")"
+  [ "$(tc_pings "$state")" -eq 3 ] || fail "a turn end after the escalation sent a ping"
+  tc_verdict_logged "$state" ping-escalated || fail "no ping-escalated verdict was logged"
+  tc_status "$dir" 'working: back to the parser'
+  tc_round_quiet "$dir" || fail "a valid line after the escalation woke the watcher"
+  tc_round_quiet "$dir" || fail "the next missing turn end woke the watcher"
+  tc_verdict_logged "$state" ping-1 || fail "the wait after a valid line did not start at ping 1"
+  pass "turn ends after the escalation wake nothing, and a valid state line starts a fresh wait with ping 1"
+}
+
 test_a_valid_line_after_pings_resets_the_ping_count() {
   local dir state
   dir=$(tc_case tc-ping-reset ship); state="$dir/state"
@@ -7834,9 +7902,11 @@ test_exit_picker_wedge_keeps_climbing
 test_quoted_exit_picker_stays_ordinary_stale
 test_secondmate_exit_picker_stays_quiet
 test_closed_exit_picker_drops_saved_dialog_name
+test_stale_dialog_after_the_waits_wake_surfaces_once
 test_turn_end_with_a_valid_working_or_paused_line_wakes_nothing
 test_turn_end_with_a_wake_verb_wakes_as_before
 test_turn_end_without_a_valid_line_pings_three_times_then_wakes_with_the_pane_tail
 test_a_valid_line_after_pings_resets_the_ping_count
+test_turn_ends_after_the_escalation_wake_nothing_until_a_valid_line
 test_turn_end_that_must_not_be_pinged_wakes_at_once_with_the_pane_tail
 test_turn_end_checker_failure_wakes_firstmate_naming_it
