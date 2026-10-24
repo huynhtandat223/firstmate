@@ -230,6 +230,14 @@ case_retired_row() {
   refuses "$1" "$home" "A1@1440 is 'retired', not pass"
 }
 
+# Retired is for an id the issue dropped, not for one width of an id it still has.
+case_retired_row_of_a_present_id_at_another_width() {
+  local home
+  home=$(new_home)
+  insert_before "$(tester "$home")" 'verified: ' "$(row A1@1024 retired 'evidence: -')"
+  refuses "$1" "$home" 'A1@1024 is retired, but the issue still has A1'
+}
+
 # A scenario of the issue that is not user-visible is not a gate row; its Tester row is ignored.
 case_internal_scenario_row() {
   local home
@@ -358,7 +366,7 @@ CASES="pass_and_read_only firstmate_record_missing tester_record_missing no_test
 firstmate_line_one firstmate_issue_line tester_surface tester_issue_line records_name_different_issues
 issue_cannot_be_parsed issue_cannot_be_read issue_without_user_visible_rows row_absent_from_tester_record
 row_not_pass row_without_evidence_field row_pass_without_evidence row_evidence_path row_id_not_in_issue retired_row
-internal_scenario_row row_text_differs_from_the_issue malformed_tester_row verified_line_closes_the_record verified_line_missing verified_line_without_head
+retired_row_of_a_present_id_at_another_width internal_scenario_row row_text_differs_from_the_issue malformed_tester_row verified_line_closes_the_record verified_line_missing verified_line_without_head
 deployed_head_is_the_newest_ask deployed_line_without_an_ask approval home_video"
 
 # ---- real gate ------------------------------------------------------------------------
@@ -412,7 +420,8 @@ unsay 'a pass row has an evidence field' row_without_evidence_field '$rid has no
 unsay 'a pass row has evidence' row_pass_without_evidence '$1 is pass without evidence'
 unsay 'an evidence path must exist' row_evidence_path '$1 evidence path does not exist'
 unsay 'a Tester row id must be in the issue' row_id_not_in_issue '$rid is not a row of'
-mutate 'a retired row is allowed for a dropped id' retired_row 's/\[ "\$rstate" = retired \] \|\|/false ||/'
+mutate 'a retired row is allowed for a dropped id' retired_row 's/\[ "\$rstate" != retired \]; then/true; then/'
+unsay 'retired is only for an id the issue dropped' retired_row_of_a_present_id_at_another_width '$rid is retired, but the issue still has'
 unsay 'a retired row is not a pass for a present id' retired_row '$rid is '"'"'$rstate'"'"', not pass'
 mutate 'only user-visible rows are gate rows' internal_scenario_row 's/--surface all 2>\/dev\/null\) \|\| all_rows=\$rows/--surface user-visible 2>\/dev\/null) || all_rows=\$rows/'
 unsay 'a Tester row carries the issue'"'"'s current text' row_text_differs_from_the_issue '$rid line differs from the issue'

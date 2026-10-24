@@ -20,8 +20,8 @@
 #     - <id>@<width> | <line> | pass | evidence: <existing file path or http(s) URL>
 #     verified: tester <epoch> head=<sha>     (after the last row; it covers the rows above it)
 # The Tester home is home= in <state>/tester.meta, or FM_TESTER_HOME. A relative evidence
-# path resolves against that home. A row in state `retired` is allowed only for an id the
-# issue no longer has; a row for an issue scenario that is not user-visible is ignored.
+# path resolves against that home. A row in state `retired` is allowed only for a scenario id
+# the issue no longer has (not for one width of an id it still has); a row for an issue scenario that is not user-visible is ignored.
 # fm_verify_gate_problems <data-dir> <task-id> <base-dir> prints one problem per line on
 # stdout and returns 1 when there is any; it prints nothing and returns 0 when
 #   - the issue both records name parses, and every row of
@@ -80,7 +80,7 @@ fm_verify_gate_problems() {  # <data-dir> <task-id> <base-dir>
   local data=$1 id=$2 base=$3 file state tester_home tfile ledger first
   local issue t_issue t_surface approved verified v_epoch v_head deployed ask_sha want_sha
   local rows all_rows parse rc line rid rstate revidence ev want_text in_scn=0 ln=0 last_row_ln=0 verified_ln
-  local bad=0 expected=$'\n' known=$'\n' seen=$'\n'
+  local bad=0 expected=$'\n' known=$'\n' known_ids=$'\n' seen=$'\n'
   state=${FM_STATE_OVERRIDE:-$base/state}
   file="$data/$id/verify.md"
   ledger="$data/deploy-verify/ledger.jsonl"
@@ -169,7 +169,9 @@ fm_verify_gate_problems() {  # <data-dir> <task-id> <base-dir>
     done <<<"$rows"
     while IFS= read -r line; do
       [ -n "$line" ] || continue
-      known="$known$(printf '%s' "${line#- }" | awk -F' [|] ' '{print $1}')"$'\n'
+      rid=$(printf '%s' "${line#- }" | awk -F' [|] ' '{print $1}')
+      known="$known$rid"$'\n'
+      known_ids="$known_ids${rid%%@*}"$'\n'
     done <<<"$all_rows"
 
     # Every Tester row: a known id is checked for pass and evidence; an unknown id is refused
@@ -198,7 +200,13 @@ fm_verify_gate_problems() {  # <data-dir> <task-id> <base-dir>
       case "$known" in
         *$'\n'"$rid"$'\n'*) ;;
         *)
-          [ "$rstate" = retired ] || fm_verify_gate_say "$rid is not a row of $issue"
+          if [ "$rstate" != retired ]; then
+            fm_verify_gate_say "$rid is not a row of $issue"
+          else
+            case "$known_ids" in
+              *$'\n'"${rid%%@*}"$'\n'*) fm_verify_gate_say "$rid is retired, but the issue still has ${rid%%@*}" ;;
+            esac
+          fi
           continue ;;
       esac
       case "$expected" in
