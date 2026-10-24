@@ -2323,6 +2323,39 @@ EOF
   pass "with no snapshot every held item is listed; only a genuine startup records the snapshot, and a rebuild reads it"
 }
 
+# A queued title line that is both held and blocked-by is a blocked row: the
+# digest keeps blocked rows whole, so it must not be counted into the held summary
+# and dropped from the listing.
+test_manual_held_and_blocked_line_is_kept_as_blocked() {
+  local rec root home fakebin out
+  rec=$(new_world held-and-blocked-manual)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  printf '%s\n' manual > "$home/config/backlog-backend"
+  cat > "$home/data/backlog.md" <<'EOF'
+# Backlog
+
+## Queued
+- [ ] both-park - Parked one (repo: firstmate) (kind: ship) (hold: not now) (hold-kind: parked)
+- [ ] both-held-blocked - Held and blocked (repo: firstmate) (kind: ship) (hold: not now) (hold-kind: parked) blocked-by: both-park
+EOF
+  {
+    printf 'both-park\t%s\n' "$(held_row_hash '- [ ] both-park - Parked one (repo: firstmate) (kind: ship) (hold: not now) (hold-kind: parked)')"
+    printf 'both-held-blocked\t%s\n' "$(held_row_hash '- [ ] both-held-blocked - Held and blocked (repo: firstmate) (kind: ship) (hold: not now) (hold-kind: parked) blocked-by: both-park')"
+  } > "$home/state/.session-start-held-snapshot"
+
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+
+  assert_contains "$out" "- [ ] both-held-blocked - Held and blocked" "a held and blocked title line was summarized away instead of kept whole"
+  assert_contains "$out" "  parked: 1" "the held summary did not count only the plain held line"
+  assert_not_contains "$out" "  parked: 2" "the blocked line was counted into the held summary"
+
+  pass "a manual title line that is both held and blocked is kept whole as a blocked row and not counted as held"
+}
+
 test_held_summary_applies_to_the_manual_title_lines() {
   local rec root home fakebin out
   rec=$(new_world held-summary-manual)
@@ -3283,6 +3316,7 @@ test_held_summary_lists_only_changed_items_with_counts_per_kind
 test_held_summary_lists_a_due_item_even_when_unchanged
 test_held_summary_without_a_snapshot_lists_all_and_only_a_genuine_startup_records_one
 test_held_summary_applies_to_the_manual_title_lines
+test_manual_held_and_blocked_line_is_kept_as_blocked
 test_fleet_digest_empty_fleet
 test_next_step_sources_x_mode_cadence
 test_next_step_afk_delegates_to_daemon

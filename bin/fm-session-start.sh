@@ -582,17 +582,17 @@ write_held_snapshot() {
 # is the one tasks-axi's markdown backend writes: "(hold: ...)", "(hold-kind:
 # ...)", and "blocked-by: ...". Bracket expressions rather than backslashes,
 # because awk's -v applies escape processing before the regex is ever compiled.
-MANUAL_KEEP_RE='[(]hold|blocked-by:'
-# The held subset of that, which print_backlog_manual_compact summarizes instead
-# of keeping whole.
+# print_backlog_manual_compact summarizes a held line instead of keeping it whole,
+# except a line that is also blocked: a blocked row is always kept whole.
 MANUAL_HELD_RE='[(]hold'
+MANUAL_BLOCKED_RE='blocked-by:'
 
 print_backlog_manual_compact() {
   local path=$1 reason=$2
   local view
   printf 'compact backlog listing (%s; done rows omitted; every in-flight and blocked title line kept; held title lines counted per hold kind, with the due or changed ones kept; other queued bounded to %s; indented task bodies omitted)\n' \
     "$reason" "$QUEUED_LIMIT"
-  view=$(awk -v max="$QUEUED_LIMIT" -v keep_re="$MANUAL_KEEP_RE" -v held_re="$MANUAL_HELD_RE" '
+  view=$(awk -v max="$QUEUED_LIMIT" -v blocked_re="$MANUAL_BLOCKED_RE" -v held_re="$MANUAL_HELD_RE" '
     function state_for_heading(line, heading) {
       heading = line
       sub(/^##[[:space:]]+/, "", heading)
@@ -612,8 +612,8 @@ print_backlog_manual_compact() {
     state == "done" && /^[-*][[:space:]]+/ { done_total++; next }
     state == "queued" && /^[-*][[:space:]]+/ {
       queued_total++
+      if ($0 ~ blocked_re) { gated++; print $0; next }
       if ($0 ~ held_re) { held++; print $0 "\036HELD"; next }
-      if ($0 ~ keep_re) { gated++; print $0; next }
       if (plain_shown < max) { plain_shown++; print $0 }
       next
     }
