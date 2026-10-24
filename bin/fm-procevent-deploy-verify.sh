@@ -36,13 +36,22 @@
 #              unreadable GitHub leaves the result unacknowledged, so the runner
 #              publishes one wake; the next poll retries the same asks, and the same
 #              reason stays quiet until a poll succeeds.
-# replay-skips Re-read no-user-visible-line skips included in last_green_sha.
+# replay-skips Re-read no-user-visible-line and template-refused skips included in
+#              last_green_sha, so a corrected issue gets its ask.
 #              Plan one deploy ask per task with key replay:<task>:<sha>.
 #              --dry-run prints asks without sending or writing anything.
-#              Acceptance ids are [A-Z]+[0-9]+ immediately after the checkbox.
-#              Only lines inside ## Acceptance count, in visible and draft modes.
-#              User-visible no-issue and no-user-visible-line skips leave one
-#              result unacknowledged to wake firstmate; internal/no-task stay quiet.
+#              Replayed asks read the issue the same way as every other ask; an
+#              issue the parser refuses is named on stderr and asks nothing.
+#              User-visible no-issue, no-user-visible-line and template-refused skips
+#              leave one result unacknowledged to wake firstmate; internal/no-task
+#              stay quiet.
+# Issues are read only through bin/fm-acceptance.mjs. Visible mode asks for the
+# user-visible scenarios, draft mode for the scenarios on a draft page. Each ask
+# carries `lines` (the scenario ids) and `rows` (the parser's `rows` output: one
+# pending row per scenario and width), so the Tester starts its record from them.
+# An issue the parser refuses is a `template-refused` skip naming its problems; it
+# wakes firstmate once like a visible skip below, and a refused draft round is only
+# a draft-skip, because the deploy round of the same issue refuses and wakes.
 # silent       Exit 0 when the result needs no firstmate action: no error and every
 #              ask and skip is already in the ledger.
 # self-announcing, relisten
@@ -50,9 +59,10 @@
 #              the runner keeps polling after a fully handled result.
 #
 # Ledger lines (data/deploy-verify/ledger.jsonl):
-#   {type:"ask", round:"deploy"|"draft", key, task, issue, prs, sha, run, lines, record}
-#   {type:"skip", pr, task, reason:"no-task"|"internal"|"no-issue"|"no-user-visible-line"}
-#   {type:"draft-skip", key, reason}
+#   {type:"ask", round:"deploy"|"draft", key, task, issue, prs, sha, run, lines, rows, record}
+#   {type:"skip", pr, task, reason:"no-task"|"internal"|"no-issue"|"no-user-visible-line"|"template-refused", detail?}
+#   {type:"draft-skip", key, reason, detail?}
+# Needs node (bin/fm-acceptance.mjs) and jq.
 # Environment: FM_DEPLOY_VERIFY_REPO (default huynhtandat223/cfw-modules), _JOB,
 # _WORKFLOW, _ASSISTANCE (default tester), _GH (the gh command), _POLL_SECONDS,
 # _ONCE=1 (poll once and exit 1 when nothing is due).
@@ -91,6 +101,7 @@ die() { printf 'error: %s\n' "$*" >&2; exit 2; }
 
 READ_ERROR_FILE="$DATA/.read-error"
 READ_ERROR=
+ACCEPTANCE="$SCRIPT_DIR/fm-acceptance.mjs"
 
 # ---- ledger and cursor (ledger_test, ledger_append: bin/fm-procevent-ask-lib.sh) ----
 
@@ -150,16 +161,34 @@ resolve_issue() {  # <pr-body> <backlog-hint>: the issue number, or nothing
   printf '%s\n' "${n:-$2}"
 }
 
-# The acceptance lines of an issue body: ids of the user-visible lines, or of the
-# lines whose env/page names a (draft) row.
-issue_lines() {  # <visible|draft> <issue-body>
-  printf '%s\n' "$2" | awk -v mode="$1" '
-    function flush() { if (id != "" && ((mode == "visible" && vis) || (mode == "draft" && draft))) print id; id = ""; vis = 0; draft = 0 }
-    /^## / { flush(); acc = ($0 ~ /^## Acceptance/); next }
-    acc && /^- \[.\] [A-Z]+[0-9]+([ \t]|$)/ { flush(); id = $0; sub(/^- \[.\] /, "", id); sub(/[ \t].*$/, "", id); next }
-    acc && /^[ \t]+- surface:/ && /user-visible/ { vis = 1 }
-    acc && /^[ \t]+- env\/page:/ && /\(draft\)/ { draft = 1 }
-    END { flush() }'
+# Read an issue body through the one acceptance parser, bin/fm-acceptance.mjs.
+# Sets ISSUE_LINES (scenario ids, one per line), ISSUE_ROWS (a JSON array of the
+# parser's record rows) and ISSUE_PROBLEMS. Visible mode takes the user-visible
+# scenarios, draft mode the scenarios on a draft page. Exit 0: read. Exit 1: the
+# parser refused the issue. Exit 2: the parser did not run (READ_ERROR_FILE says so).
+read_acceptance() {  # <visible|draft> <issue-body>
+  local mode=$1 body=$2 parsed rows_out rc flag=
+  ISSUE_LINES=
+  ISSUE_ROWS='[]'
+  ISSUE_PROBLEMS=
+  parsed=$(printf '%s\n' "$body" | node "$ACCEPTANCE" parse - 2>/dev/null)
+  rc=$?
+  if ! jq -e '.schema == "fm-acceptance.v1"' <<<"$parsed" >/dev/null 2>&1; then
+    printf 'acceptance parser could not run: node %s (exit %s)\n' "${ACCEPTANCE##*/}" "$rc" > "$READ_ERROR_FILE"
+    return 2
+  fi
+  if [ "$rc" -ne 0 ]; then
+    ISSUE_PROBLEMS=$(jq -r '.problems | join("; ")' <<<"$parsed")
+    return 1
+  fi
+  [ "$mode" != draft ] || flag=--draft
+  # shellcheck disable=SC2086 # flag is one word or nothing
+  rows_out=$(printf '%s\n' "$body" | node "$ACCEPTANCE" rows - $flag 2>/dev/null) || {
+    printf 'acceptance parser could not run: node %s rows (exit %s)\n' "${ACCEPTANCE##*/}" "$?" > "$READ_ERROR_FILE"
+    return 2
+  }
+  ISSUE_ROWS=$(printf '%s' "$rows_out" | jq -R . | jq -sc 'map(select(. != ""))')
+  ISSUE_LINES=$(jq -r --arg m "$mode" '.scenarios[] | select(if $m == "draft" then .draft else .surface == "user-visible" end) | .id' <<<"$parsed")
 }
 
 # ---- planning --------------------------------------------------------------
@@ -167,12 +196,13 @@ issue_lines() {  # <visible|draft> <issue-body>
 ASKS='[]'
 SKIPS='[]'
 add_ask() { ASKS=$(jq -c --argjson a "$1" '. + [$a]' <<<"$ASKS"); }
-add_skip() {  # <pr> <task> <reason> <sha> [issue]
-  SKIPS=$(jq -c --arg pr "$1" --arg t "$2" --arg r "$3" --arg s "$4" --arg i "${5:-}" '. + [{pr: $pr, task: $t, reason: $r, sha: $s, issue: $i}]' <<<"$SKIPS")
+add_skip() {  # <pr> <task> <reason> <sha> [issue] [detail]
+  SKIPS=$(jq -c --arg pr "$1" --arg t "$2" --arg r "$3" --arg s "$4" --arg i "${5:-}" --arg d "${6:-}" \
+    '. + [{pr: $pr, task: $t, reason: $r, sha: $s, issue: $i} + (if $d == "" then {} else {detail: $d} end)]' <<<"$SKIPS")
 }
 
 attention_skip() {
-  jq -e 'any(.skips[]; .task != "" and (.reason == "no-user-visible-line" or .reason == "no-issue"))' "$1" >/dev/null 2>&1
+  jq -e 'any(.skips[]; .task != "" and (.reason == "no-user-visible-line" or .reason == "no-issue" or .reason == "template-refused"))' "$1" >/dev/null 2>&1
 }
 
 # The catch-up acknowledgement in fm-procevent-ask-lib.sh leaves an older result
@@ -227,7 +257,16 @@ plan_deploy() {  # <base-sha> <sha> <run-url> <completed-at> <workdir>
       continue
     fi
     issue_json=$(gh_read "repos/$REPO/issues/$n") || return 1
-    lines=$(issue_lines visible "$(jq -r '.body // ""' <<<"$issue_json")")
+    read_acceptance visible "$(jq -r '.body // ""' <<<"$issue_json")"
+    case $? in
+      0) ;;
+      1)
+        while IFS='|' read -r _ _ url _; do add_skip "$url" "$task" template-refused "$sha" "$(issue_ref "$n")" "$ISSUE_PROBLEMS"; done <<<"$rows"
+        continue
+        ;;
+      *) return 1 ;;
+    esac
+    lines=$ISSUE_LINES
     if [ -z "$lines" ]; then
       while IFS='|' read -r _ _ url _; do add_skip "$url" "$task" no-user-visible-line "$sha" "$(issue_ref "$n")"; done <<<"$rows"
       continue
@@ -236,8 +275,8 @@ plan_deploy() {  # <base-sha> <sha> <run-url> <completed-at> <workdir>
     add_ask "$(jq -cn --arg key "deploy:$task:$sha" --arg task "$task" --arg issue "$(issue_ref "$n")" \
       --arg issue_url "https://github.com/$REPO/issues/$n" --arg sha "$sha" --arg run "$run" --argjson arrival "$arrival" \
       --argjson prs "$(printf '%s\n' "$rows" | cut -d'|' -f3 | jq -R . | jq -sc .)" \
-      --argjson lines "$(printf '%s\n' "$lines" | jq -R . | jq -sc .)" \
-      '{round: "deploy", key: $key, task: $task, issue: $issue, issue_url: $issue_url, prs: $prs, sha: $sha, run: $run, lines: $lines, arrival: $arrival}')"
+      --argjson lines "$(printf '%s\n' "$lines" | jq -R . | jq -sc .)" --argjson rows "$ISSUE_ROWS" \
+      '{round: "deploy", key: $key, task: $task, issue: $issue, issue_url: $issue_url, prs: $prs, sha: $sha, run: $run, lines: $lines, rows: $rows, arrival: $arrival}')"
   done
 }
 
@@ -263,7 +302,16 @@ plan_drafts() {  # <workdir>
       continue
     fi
     issue_json=$(gh_read "repos/$REPO/issues/$issue") || return 1
-    lines=$(issue_lines draft "$(jq -r '.body // ""' <<<"$issue_json")")
+    read_acceptance draft "$(jq -r '.body // ""' <<<"$issue_json")"
+    case $? in
+      0) ;;
+      1)
+        ledger_append "$(jq -cn --arg k "$key" --arg d "$ISSUE_PROBLEMS" '{type: "draft-skip", key: $k, reason: "template-refused", detail: $d}')"
+        continue
+        ;;
+      *) return 1 ;;
+    esac
+    lines=$ISSUE_LINES
     if [ -z "$lines" ]; then
       ledger_append "$(jq -cn --arg k "$key" '{type: "draft-skip", key: $k, reason: "no-draft-lines"}')"
       continue
@@ -274,8 +322,8 @@ plan_drafts() {  # <workdir>
     add_ask "$(jq -cn --arg key "$key" --arg task "$task" --arg issue "$(issue_ref "$issue")" \
       --arg issue_url "https://github.com/$REPO/issues/$issue" --arg head "$head" --arg pushed "$pushed" \
       --arg pr "$url" --argjson arrival "$arrival" \
-      --argjson lines "$(printf '%s\n' "$lines" | jq -R . | jq -sc .)" \
-      '{round: "draft", key: $key, task: $task, issue: $issue, issue_url: $issue_url, prs: [$pr], sha: $head, head: $head, pushed: $pushed, run: null, lines: $lines, arrival: $arrival}')"
+      --argjson lines "$(printf '%s\n' "$lines" | jq -R . | jq -sc .)" --argjson rows "$ISSUE_ROWS" \
+      '{round: "draft", key: $key, task: $task, issue: $issue, issue_url: $issue_url, prs: [$pr], sha: $head, head: $head, pushed: $pushed, run: null, lines: $lines, rows: $rows, arrival: $arrival}')"
   done < "$w/map.psv"
 }
 
@@ -359,20 +407,26 @@ cmd_replay_skips() {
     hint=$(awk -F'|' -v p="$pr" -v t="$task" '$1 == p && $2 == t {print $4; exit}' "$w/map.psv")
     issue=$(resolve_issue "$(jq -r '.body // ""' <<<"$body")" "$hint")
     printf '%s|%s|%s\n' "$task" "$pr" "$issue" >> "$w/rows"
-  done < <(jq -sc 'unique_by([.task,.pr])[] | select(.type == "skip" and .reason == "no-user-visible-line")' "$LEDGER")
+  done < <(jq -sc 'unique_by([.task,.pr])[] | select(.type == "skip" and (.reason == "no-user-visible-line" or .reason == "template-refused"))' "$LEDGER")
   if [ "$rc" -eq 0 ]; then
     while IFS= read -r task; do
       rows=$(sort -u "$w/rows" | awk -F'|' -v t="$task" '$1 == t')
       n=$(cut -d'|' -f3 <<<"$rows" | grep -m1 . || true)
       [ -n "$n" ] || continue
       body=$(gh_read "repos/$REPO/issues/$n") || { rc=1; break; }
-      lines=$(issue_lines visible "$(jq -r '.body // ""' <<<"$body")")
+      read_acceptance visible "$(jq -r '.body // ""' <<<"$body")"
+      case $? in
+        0) ;;
+        1) printf 'refused: %s %s: %s\n' "$task" "$(issue_ref "$n")" "$ISSUE_PROBLEMS" >&2; continue ;;
+        *) rc=1; break ;;
+      esac
+      lines=$ISSUE_LINES
       [ -n "$lines" ] || continue
       ask=$(jq -cn --arg key "replay:$task:$sha" --arg task "$task" --arg issue "$(issue_ref "$n")" \
         --arg url "https://github.com/$REPO/issues/$n" --arg sha "$sha" --argjson at "$(date +%s)" \
         --argjson prs "$(cut -d'|' -f2 <<<"$rows" | jq -R . | jq -sc .)" \
-        --argjson lines "$(printf '%s\n' "$lines" | jq -R . | jq -sc .)" \
-        '{round:"deploy", key:$key, task:$task, issue:$issue, issue_url:$url, prs:$prs, sha:$sha, run:null, lines:$lines, arrival:$at}')
+        --argjson lines "$(printf '%s\n' "$lines" | jq -R . | jq -sc .)" --argjson rows "$ISSUE_ROWS" \
+        '{round:"deploy", key:$key, task:$task, issue:$issue, issue_url:$url, prs:$prs, sha:$sha, run:null, lines:$lines, rows:$rows, arrival:$at}')
       if [ "$dry" -eq 1 ]; then printf '%s\n' "$ask"; else
         deliver_ask "$ask" || { rc=1; break; }
         printf '%s\n' "$ask"
@@ -396,6 +450,7 @@ emit_result() {  # <error-or-empty> <recovered 0|1>
 cmd_wait() {
   local rc previous
   command -v jq >/dev/null 2>&1 || die 'jq is required'
+  command -v node >/dev/null 2>&1 || die 'node is required'
   mkdir -p "$DATA"
   while :; do
     throttle
@@ -438,7 +493,7 @@ cmd_wait() {
 
 deliver_ask() {  # <ask-json>
   local ask=$1 content record
-  content=$(jq -c 'del(.arrival, .key) + {schema: "fm-tester-verify.v1"} | {schema, round, task, issue, issue_url, prs, sha, run, head, pushed, lines}
+  content=$(jq -c 'del(.arrival, .key) + {schema: "fm-tester-verify.v1"} | {schema, round, task, issue, issue_url, prs, sha, run, head, pushed, lines, rows}
     | with_entries(select(.value != null))' <<<"$ask")
   record=$(jq -cn --arg id "$(jq -r .key <<<"$ask")" --argjson at "$(jq -r .arrival <<<"$ask")" --arg c "$content" \
     '{schema: "fm-assistance-mentions.v1", messages: [{id: $id, arrival: $at, content: $c}]}')
@@ -447,19 +502,20 @@ deliver_ask() {  # <ask-json>
 }
 
 cmd_autohandle() {  # <source-id> <sequence> <result-file>
-  local sid=${1:-} seq=${2:-} result=${3:-} ask failed=0 reason='' previous='' pr task
+  local sid=${1:-} seq=${2:-} result=${3:-} ask failed=0 reason='' previous='' pr task skip
   [ "$sid" = "$SOURCE_ID" ] && [ -f "$result" ] || return 1
   case "$seq" in ''|*[!0-9]*) return 1 ;; esac
   jq -e '.schema == "fm-deploy-verify-result.v1"' "$result" >/dev/null 2>&1 || return 1
   # A GitHub failure is left unacknowledged on purpose: that is the one wake.
   jq -e '.error == null' "$result" >/dev/null 2>&1 || return 1
   mkdir -p "$DATA"
-  while IFS='|' read -r pr task reason; do
-    [ -n "$pr" ] || continue
+  while IFS= read -r skip; do
+    [ -n "$skip" ] || continue
+    pr=$(jq -r .pr <<<"$skip")
+    task=$(jq -r .task <<<"$skip")
     ledger_pr_final "$pr" "$task" && continue
-    ledger_append "$(jq -cn --arg pr "$pr" --arg t "$task" --arg r "$reason" --argjson at "$(date +%s)" \
-      '{type: "skip", pr: $pr, task: $t, reason: $r, at: $at}')"
-  done < <(jq -r '.skips[] | [.pr, .task, .reason] | join("|")' "$result")
+    ledger_append "$(jq -c --argjson at "$(date +%s)" '{type: "skip", pr, task, reason, at: $at} + (if .detail then {detail} else {} end)' <<<"$skip")"
+  done < <(jq -c '.skips[]' "$result")
   reason=
   while IFS= read -r ask; do
     [ -n "$ask" ] || continue
