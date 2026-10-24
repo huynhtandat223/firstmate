@@ -143,10 +143,14 @@
 #   - `done` rows are never listed. Retained completion history belongs to the
 #     reporting surfaces (bin/fm-bearings-snapshot.sh, /ahoy), and at startup it
 #     is pure weight - 10 done rows cost 3.3KB in an observed main-home digest.
-#   - Every in-flight, held, and blocked row is listed IN FULL, with its
+#   - Every in-flight and blocked row is listed IN FULL, with its
 #     hold_kind/hold_reason and blocked_by. Those are the rows AGENTS.md
 #     sections 7 and 10 make actionable at startup, so they are never bounded
 #     away.
+#   - Held rows are one count per hold kind, plus IN FULL only the ones that are
+#     due (hold-until on or before today, local date) or changed since the last
+#     session start (held_summarize owns the rule and the snapshot it compares
+#     against). The section ends with the command that prints the full held list.
 #   - Only the plain queued (dispatchable-now) listing is bounded, by
 #     FM_SESSION_START_QUEUED_LIMIT, default 20. Anything it omits is disclosed
 #     with an exact remainder count and the command that shows the rest, so a
@@ -156,16 +160,16 @@
 # When compatible tasks-axi is selected and available, the shared tasks-axi
 # backend probe remains the compatibility owner and this script asks
 # `tasks-axi list` for the compact identity fields plus blocked_by, hold_kind,
-# and hold_reason, never body. The groups are the tool's own filters
+# and hold_reason (and hold_until for the held group), never body. The groups are the tool's own filters
 # (`--state in_flight`, `--state held`, `--state queued --blocked`, and
 # `tasks-axi ready`), so this script never reimplements task state; the groups
 # can overlap, because an in-flight item that is also held appears under both.
 # When manual mode is selected, or tasks-axi is unavailable or incompatible,
 # this script prints only backlog section headings and item title lines, so
 # title-line hold and blocked-by metadata remain visible while indented bodies
-# stay out of the startup digest; the same never-bound-a-held-or-blocked-row
-# rule applies, recognized there from the title line's own hold/blocked-by
-# markers.
+# stay out of the startup digest; the same never-bound-a-blocked-row and
+# held-summary rules apply, recognized there from the title line's own
+# hold/blocked-by markers.
 # Full bodies are targeted follow-up only: `bin/fm-tasks-axi.sh show <id> --full` when
 # compatible tasks-axi is available, or `data/backlog.md` when the file body is
 # truly needed.
@@ -398,6 +402,15 @@ ENDPOINT_TIMEOUT=${FM_SESSION_START_ENDPOINT_TIMEOUT:-10}
 case "$ENDPOINT_TIMEOUT" in ''|*[!0-9]*) ENDPOINT_TIMEOUT=10 ;; esac
 [ "$ENDPOINT_TIMEOUT" -gt 0 ] 2>/dev/null || ENDPOINT_TIMEOUT=10
 BACKLOG_FIELDS=blocked_by,hold_kind,hold_reason
+# Only the held group asks for hold_until: the summary below needs it to tell a
+# due hold from a quiet one, and no other group's rows should grow a column.
+HELD_FIELDS=$BACKLOG_FIELDS,hold_until
+HELD_SNAPSHOT_FILE="$STATE/.session-start-held-snapshot"
+HELD_SNAPSHOT_SENTINEL='@@fm-held-snapshot@@'
+# Set by emit_held_view when the held group was read and summarized; the
+# snapshot is committed at the end of a genuine startup, never earlier.
+HELD_SNAPSHOT_READY=0
+HELD_SNAPSHOT_NEXT=
 
 RULE='================================================================================'
 SUBRULE='--------------------------------------------------------------------------------'
@@ -429,18 +442,157 @@ print_backlog_pointer() {
   printf 'Full task bodies remain available on demand: bin/fm-tasks-axi.sh show <id> --full when compatible tasks-axi is available, or data/backlog.md.\n'
 }
 
+# Held items are a count per hold kind, plus in full only the ones this turn can
+# act on: a hold-until date on or before today (the home's local date), or a
+# rendered title line that differs from the snapshot the previous genuine startup
+# wrote (an item absent from the snapshot counts as changed, so with no snapshot
+# every held item is listed). The hash is taken over the line AFTER the hold
+# reason is decoded, so a re-encoding of the same reason is not a change.
+# Reads the decoded held listing on stdin. For `toon` that is tasks-axi's table;
+# for `markdown` it is the manual renderer's stream, where the awk stage tags each
+# held queued title line with a trailing \x1eHELD and every other line passes
+# through. Prints the summary, then HELD_SNAPSHOT_SENTINEL, then one
+# "<id><TAB><hash>" line per held item; emit_held_view splits the two. A listing
+# it cannot parse is passed through untouched with no snapshot.
+held_summarize() {  # <toon|markdown> <full-list-command>
+  perl -MJSON::PP -MDigest::MD5=md5_hex -MEncode=encode_utf8 -e '
+    use strict;
+    use warnings;
+    binmode STDIN, ":encoding(UTF-8)";
+    binmode STDOUT, ":encoding(UTF-8)";
+    my ($format, $snapshot_file, $list_cmd, $sentinel) = @ARGV;
+    my $json = JSON::PP->new->allow_nonref;
+    my @now = localtime;
+    my $today = sprintf("%04d-%02d-%02d", $now[5] + 1900, $now[4] + 1, $now[3]);
+    my %known;
+    if (open(my $fh, "<:encoding(UTF-8)", $snapshot_file)) {
+      while (my $row = <$fh>) {
+        chomp $row;
+        my ($id, $hash) = split /\t/, $row, 2;
+        $known{$id} = $hash if defined $hash && length $id;
+      }
+      close $fh;
+    }
+    sub unquote { my ($v) = @_; return "" unless defined $v; return $v =~ /^"/ ? $json->decode($v) : $v; }
+    my (@pass, @items, @raw, $header, $parsed, $id_col, $kind_col, $until_col);
+    while (my $line = <STDIN>) {
+      chomp $line;
+      push @raw, $line;
+      if ($format eq "toon") {
+        if ($line =~ /^tasks\[\d+\]\{([^}]*)\}:$/) {
+          $header = $1;
+          my @cols = split /,/, $header;
+          for my $i (0 .. $#cols) {
+            $id_col = $i if $cols[$i] eq "id";
+            $kind_col = $i if $cols[$i] eq "hold_kind";
+            $until_col = $i if $cols[$i] eq "hold_until";
+          }
+          $parsed = defined $id_col;
+        } elsif ($parsed && $line =~ /^  (.*)$/) {
+          my $body = $1;
+          my @f = $body =~ /("(?:[^"\\]|\\.)*"|[^,]+)/g;
+          push @items, { text => $line, hash_text => $body, id => unquote($f[$id_col]),
+            kind => defined $kind_col ? unquote($f[$kind_col]) : "",
+            until => defined $until_col ? unquote($f[$until_col]) : "" };
+        } elsif ($line =~ /^count: 0$/) {
+          $parsed = 1;
+        } elsif ($line !~ /^count: / && $line =~ /\S/) {
+          push @pass, $line;
+        }
+      } else {
+        $parsed = 1;
+        if ($line =~ s/\x1eHELD$//) {
+          my ($id) = $line =~ /^[-*]\s+(?:\[[ xX]\]\s+)?(\S+)/;
+          my ($kind) = $line =~ /\(hold-kind:\s*([^)]*?)\s*\)/;
+          my ($until) = $line =~ /\(hold-until:\s*([^)]*?)\s*\)/;
+          push @items, { text => $line, hash_text => $line, id => defined $id ? $id : $line,
+            kind => defined $kind ? $kind : "", until => defined $until ? $until : "" };
+        } else {
+          push @pass, $line;
+        }
+      }
+    }
+    if (!$parsed) {
+      print "$_\n" for @raw;
+      exit 0;
+    }
+    my (%count, @listed, @snapshot);
+    for my $item (@items) {
+      my $kind = lc $item->{kind};
+      $kind = "other" if $kind eq "" || $kind eq "none" || $kind eq "-";
+      $count{$kind}++;
+      my $hash = md5_hex(encode_utf8($item->{hash_text}));
+      push @snapshot, "$item->{id}\t$hash";
+      my $due = $item->{until} =~ /^(\d{4}-\d\d-\d\d)/ && $1 le $today;
+      my $changed = !defined $known{$item->{id}} || $known{$item->{id}} ne $hash;
+      push @listed, $item if $due || $changed;
+    }
+    print "$_\n" for @pass;
+    printf "held (captain- or time-gated; an in-flight item that is also held counts here and is listed under in flight): %d item(s)\n", scalar @items;
+    my %rank = (parked => 1, captain => 2, external => 3, future => 4, other => 99);
+    for my $kind (sort { ($rank{$a} || 50) <=> ($rank{$b} || 50) || $a cmp $b } keys %count) {
+      printf "  %s: %d\n", $kind, $count{$kind};
+    }
+    if (@listed) {
+      printf "held items due (hold-until reached) or changed since the last session start, in full: %d\n", scalar @listed;
+      if ($format eq "toon") {
+        printf "tasks[%d]{%s}:\n", scalar @listed, $header;
+      }
+      print "$_->{text}\n" for @listed;
+    } elsif (@items) {
+      print "no held item is due or changed since the last session start\n";
+    }
+    print "full held list: $list_cmd\n" if @items;
+    print "$sentinel\n";
+    print "$_\n" for @snapshot;
+  ' "$1" "$HELD_SNAPSHOT_FILE" "$2" "$HELD_SNAPSHOT_SENTINEL"
+}
+
+# Print held_summarize's summary and keep its snapshot half for the end of a
+# genuine startup. Runs in the main shell, so the snapshot survives the call.
+emit_held_view() {  # <held_summarize output>
+  local view=$1 body
+  body=${view%%"$HELD_SNAPSHOT_SENTINEL"*}
+  if [ "$body" = "$view" ]; then
+    printf '%s\n' "$view"
+    return 0
+  fi
+  printf '%s' "$body"
+  HELD_SNAPSHOT_NEXT=${view#*"$HELD_SNAPSHOT_SENTINEL"}
+  HELD_SNAPSHOT_NEXT=${HELD_SNAPSHOT_NEXT#$'\n'}
+  HELD_SNAPSHOT_READY=1
+}
+
+# Same discipline as write_agents_baseline: the caller decides WHEN (a genuine
+# startup that owns the lock, after the completion record); this only writes,
+# atomically, mode 0600, and holds ids and hashes, never a task body.
+write_held_snapshot() {
+  local tmp
+  tmp=$(mktemp "$STATE/.session-start-held-snapshot.XXXXXX" 2>/dev/null) || return 1
+  if { [ -z "$HELD_SNAPSHOT_NEXT" ] || printf '%s\n' "$HELD_SNAPSHOT_NEXT" > "$tmp"; } 2>/dev/null \
+    && mv -f "$tmp" "$HELD_SNAPSHOT_FILE" 2>/dev/null; then
+    return 0
+  fi
+  rm -f "$tmp" 2>/dev/null || true
+  return 1
+}
+
 # A queued title line whose own text already marks it held or blocked. The
 # manual renderer has no task model, so this is the only signal it gets, and it
 # is the one tasks-axi's markdown backend writes: "(hold: ...)", "(hold-kind:
 # ...)", and "blocked-by: ...". Bracket expressions rather than backslashes,
 # because awk's -v applies escape processing before the regex is ever compiled.
 MANUAL_KEEP_RE='[(]hold|blocked-by:'
+# The held subset of that, which print_backlog_manual_compact summarizes instead
+# of keeping whole.
+MANUAL_HELD_RE='[(]hold'
 
 print_backlog_manual_compact() {
   local path=$1 reason=$2
-  printf 'compact backlog listing (%s; done rows omitted; every in-flight, held, and blocked title line kept; other queued bounded to %s; indented task bodies omitted)\n' \
+  local view
+  printf 'compact backlog listing (%s; done rows omitted; every in-flight and blocked title line kept; held title lines counted per hold kind, with the due or changed ones kept; other queued bounded to %s; indented task bodies omitted)\n' \
     "$reason" "$QUEUED_LIMIT"
-  awk -v max="$QUEUED_LIMIT" -v keep_re="$MANUAL_KEEP_RE" '
+  view=$(awk -v max="$QUEUED_LIMIT" -v keep_re="$MANUAL_KEEP_RE" -v held_re="$MANUAL_HELD_RE" '
     function state_for_heading(line, heading) {
       heading = line
       sub(/^##[[:space:]]+/, "", heading)
@@ -460,23 +612,25 @@ print_backlog_manual_compact() {
     state == "done" && /^[-*][[:space:]]+/ { done_total++; next }
     state == "queued" && /^[-*][[:space:]]+/ {
       queued_total++
+      if ($0 ~ held_re) { held++; print $0 "\036HELD"; next }
       if ($0 ~ keep_re) { gated++; print $0; next }
       if (plain_shown < max) { plain_shown++; print $0 }
       next
     }
     END {
-      plain_total = queued_total - gated
+      plain_total = queued_total - gated - held
       if (in_flight + queued_total + done_total == 0) {
         print "(no backlog item title lines found)"
       } else {
-        printf "(shown %d in-flight, %d held or blocked queued, %d of %d other queued title line(s); %d done row(s) omitted)\n", \
-          in_flight, gated, plain_shown, plain_total, done_total
+        printf "(shown %d in-flight, %d blocked queued, %d of %d other queued title line(s); %d held queued summarized by hold kind; %d done row(s) omitted)\n", \
+          in_flight, gated, plain_shown, plain_total, held, done_total
         if (plain_total > plain_shown) {
           printf "(%d more queued - raise FM_SESSION_START_QUEUED_LIMIT or read data/backlog.md for the rest)\n", plain_total - plain_shown
         }
       }
     }
-  ' "$path" | fm_hold_reason_decode_stream markdown
+  ' "$path" | fm_hold_reason_decode_stream markdown | held_summarize markdown 'data/backlog.md')
+  emit_held_view "$view"
 }
 
 # tasks-axi closes every listing with its own help block. This section composes
@@ -515,22 +669,24 @@ print_ready_queued_bounded() {
 }
 
 print_backlog_tasks_axi_compact() {
-  local path=$1 in_flight held blocked ready err
+  local path=$1 in_flight held held_view blocked ready err
   if ! in_flight=$(tasks-axi list --file "$path" --state in_flight --fields "$BACKLOG_FIELDS" 2>&1); then
     err=$in_flight
-  elif ! held=$(tasks-axi list --file "$path" --state held --fields "$BACKLOG_FIELDS" 2>&1); then
+  elif ! held=$(tasks-axi list --file "$path" --state held --fields "$HELD_FIELDS" 2>&1); then
     err=$held
   elif ! blocked=$(tasks-axi list --file "$path" --state queued --blocked --fields "$BACKLOG_FIELDS" 2>&1); then
     err=$blocked
   elif ! ready=$(tasks-axi ready --file "$path" 2>&1); then
     err=$ready
   else
-    printf 'compact backlog listing (tasks-axi; done rows omitted; every in-flight, held, and blocked row shown in full; ready queued bounded to %s; task bodies omitted)\n' \
+    printf 'compact backlog listing (tasks-axi; done rows omitted; every in-flight and blocked row shown in full; held rows counted per hold kind, with the due or changed ones in full; ready queued bounded to %s; task bodies omitted)\n' \
       "$QUEUED_LIMIT"
     printf '\nin flight:\n'
     printf '%s\n' "$in_flight" | fm_hold_reason_decode_stream | strip_axi_help
-    printf '\nheld (captain- or time-gated; an in-flight item that is also held appears in both groups):\n'
-    printf '%s\n' "$held" | fm_hold_reason_decode_stream | strip_axi_help
+    printf '\n'
+    held_view=$(printf '%s\n' "$held" | fm_hold_reason_decode_stream | strip_axi_help \
+      | held_summarize toon 'bin/fm-tasks-axi.sh list --state held')
+    emit_held_view "$held_view"
     printf '\nblocked queued:\n'
     printf '%s\n' "$blocked" | fm_hold_reason_decode_stream | strip_axi_help
     printf '\nready queued (dispatchable now):\n'
@@ -1102,6 +1258,14 @@ if [ "$READ_ONLY" -eq 0 ] && [ "$REEMIT" -eq 0 ]; then
     if ! write_agents_baseline "$COMPLETION_PID" "$AGENTS_START_HASH"; then
       printf '\nSESSION_START_AGENTS_BASELINE: not recorded - a later supported rebuild will re-emit AGENTS.md.\n'
     fi
+  fi
+  # The held-item snapshot follows the same rule as the AGENTS.md baseline above:
+  # only a genuine startup that owns the lock records it, after the completion
+  # record, so a resume, compact or clear rebuild sees the same "changed" set as
+  # the session it rebuilds. A failed write only means the next startup lists
+  # every held item in full.
+  if [ "$SESSION_SOURCE" = startup ] && [ "$COMPLETION_RECORDED" -eq 1 ] && [ "$HELD_SNAPSHOT_READY" -eq 1 ]; then
+    write_held_snapshot || true
   fi
 fi
 
