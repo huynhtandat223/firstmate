@@ -3,6 +3,7 @@
 #
 # Usage:
 #   fm-procevent-deploy-verify.sh arm
+#   fm-procevent-deploy-verify.sh replay-skips [--dry-run]
 #   fm-procevent-deploy-verify.sh wait
 #   fm-procevent-deploy-verify.sh autohandle <source-id> <sequence> <result-file>
 #   fm-procevent-deploy-verify.sh classify <result-file>
@@ -35,6 +36,13 @@
 #              unreadable GitHub leaves the result unacknowledged, so the runner
 #              publishes one wake; the next poll retries the same asks, and the same
 #              reason stays quiet until a poll succeeds.
+# replay-skips Re-read no-user-visible-line skips included in last_green_sha.
+#              Plan one deploy ask per task with key replay:<task>:<sha>.
+#              --dry-run prints asks without sending or writing anything.
+#              Acceptance ids are [A-Z]+[0-9]+ immediately after the checkbox.
+#              Only lines inside ## Acceptance count, in visible and draft modes.
+#              User-visible no-issue and no-user-visible-line skips leave one
+#              result unacknowledged to wake firstmate; internal/no-task stay quiet.
 # silent       Exit 0 when the result needs no firstmate action: no error and every
 #              ask and skip is already in the ledger.
 # self-announcing, relisten
@@ -148,7 +156,7 @@ issue_lines() {  # <visible|draft> <issue-body>
   printf '%s\n' "$2" | awk -v mode="$1" '
     function flush() { if (id != "" && ((mode == "visible" && vis) || (mode == "draft" && draft))) print id; id = ""; vis = 0; draft = 0 }
     /^## / { flush(); acc = ($0 ~ /^## Acceptance/); next }
-    acc && /^- \[.\] A[0-9]+/ { flush(); match($0, /A[0-9]+/); id = substr($0, RSTART, RLENGTH); next }
+    acc && /^- \[.\] [A-Z]+[0-9]+([ \t]|$)/ { flush(); id = $0; sub(/^- \[.\] /, "", id); sub(/[ \t].*$/, "", id); next }
     acc && /^[ \t]+- surface:/ && /user-visible/ { vis = 1 }
     acc && /^[ \t]+- env\/page:/ && /\(draft\)/ { draft = 1 }
     END { flush() }'
@@ -159,8 +167,12 @@ issue_lines() {  # <visible|draft> <issue-body>
 ASKS='[]'
 SKIPS='[]'
 add_ask() { ASKS=$(jq -c --argjson a "$1" '. + [$a]' <<<"$ASKS"); }
-add_skip() {  # <pr> <task> <reason> <sha>
-  SKIPS=$(jq -c --arg pr "$1" --arg t "$2" --arg r "$3" --arg s "$4" '. + [{pr: $pr, task: $t, reason: $r, sha: $s}]' <<<"$SKIPS")
+add_skip() {  # <pr> <task> <reason> <sha> [issue]
+  SKIPS=$(jq -c --arg pr "$1" --arg t "$2" --arg r "$3" --arg s "$4" --arg i "${5:-}" '. + [{pr: $pr, task: $t, reason: $r, sha: $s, issue: $i}]' <<<"$SKIPS")
+}
+
+attention_skip() {
+  jq -e 'any(.skips[]; .task != "" and (.reason == "no-user-visible-line" or .reason == "no-issue"))' "$1" >/dev/null 2>&1
 }
 
 issue_ref() { printf '%s#%s\n' "${REPO##*/}" "$1"; }
@@ -213,7 +225,7 @@ plan_deploy() {  # <base-sha> <sha> <run-url> <completed-at> <workdir>
     issue_json=$(gh_read "repos/$REPO/issues/$n") || return 1
     lines=$(issue_lines visible "$(jq -r '.body // ""' <<<"$issue_json")")
     if [ -z "$lines" ]; then
-      while IFS='|' read -r _ _ url _; do add_skip "$url" "$task" no-user-visible-line "$sha"; done <<<"$rows"
+      while IFS='|' read -r _ _ url _; do add_skip "$url" "$task" no-user-visible-line "$sha" "$(issue_ref "$n")"; done <<<"$rows"
       continue
     fi
     arrival=$(jq -n --arg d "$completed" '$d | fromdateiso8601')
@@ -318,6 +330,55 @@ poll_once() {
   [ "$ASKS" != '[]' ] || [ "$SKIPS" != '[]' ]
 }
 
+# Replay only historical skips contained in the deployed history. Do not use
+# ledger_pr_final here: the historical skip itself is what we are repairing.
+cmd_replay_skips() {
+  local dry=0 sha w row pr task body hint issue comparison merged lines rows n ask rc=0
+  case "${1:-}" in --dry-run) dry=1; shift ;; esac
+  [ "$#" -eq 0 ] || die 'usage: replay-skips [--dry-run]'
+  sha=$(jq -er '.last_green_sha | select(length > 0)' "$CURSOR") || return 1
+  [ -f "$LEDGER" ] || return 0
+  w=$(mktemp -d "${TMPDIR:-/tmp}/fm-deploy-replay.XXXXXX") || return 1
+  build_map "$w/map.psv"
+  : > "$w/rows"
+  while IFS= read -r row; do
+    pr=$(jq -r .pr <<<"$row"); task=$(jq -r .task <<<"$row")
+    [ -n "$task" ] || continue
+    ledger_has_key "replay:$task:$sha" && continue
+    # shellcheck disable=SC2016 # jq variables
+    ledger_test '.type == "ask" and .round == "deploy" and .task == $t and (.prs | index($p))' --arg p "$pr" --arg t "$task" && continue
+    body=$(gh_read "repos/$REPO/pulls/${pr##*/}") || { rc=1; break; }
+    merged=$(jq -r '.merge_commit_sha // empty' <<<"$body")
+    [ -n "$merged" ] || continue
+    comparison=$(gh_read "repos/$REPO/compare/$merged...$sha") || { rc=1; break; }
+    jq -e '.status == "ahead" or .status == "identical"' <<<"$comparison" >/dev/null || continue
+    hint=$(awk -F'|' -v p="$pr" -v t="$task" '$1 == p && $2 == t {print $4; exit}' "$w/map.psv")
+    issue=$(resolve_issue "$(jq -r '.body // ""' <<<"$body")" "$hint")
+    printf '%s|%s|%s\n' "$task" "$pr" "$issue" >> "$w/rows"
+  done < <(jq -sc 'unique_by([.task,.pr])[] | select(.type == "skip" and .reason == "no-user-visible-line")' "$LEDGER")
+  if [ "$rc" -eq 0 ]; then
+    while IFS= read -r task; do
+      rows=$(sort -u "$w/rows" | awk -F'|' -v t="$task" '$1 == t')
+      n=$(cut -d'|' -f3 <<<"$rows" | grep -m1 . || true)
+      [ -n "$n" ] || continue
+      body=$(gh_read "repos/$REPO/issues/$n") || { rc=1; break; }
+      lines=$(issue_lines visible "$(jq -r '.body // ""' <<<"$body")")
+      [ -n "$lines" ] || continue
+      ask=$(jq -cn --arg key "replay:$task:$sha" --arg task "$task" --arg issue "$(issue_ref "$n")" \
+        --arg url "https://github.com/$REPO/issues/$n" --arg sha "$sha" --argjson at "$(date +%s)" \
+        --argjson prs "$(cut -d'|' -f2 <<<"$rows" | jq -R . | jq -sc .)" \
+        --argjson lines "$(printf '%s\n' "$lines" | jq -R . | jq -sc .)" \
+        '{round:"deploy", key:$key, task:$task, issue:$issue, issue_url:$url, prs:$prs, sha:$sha, run:null, lines:$lines, arrival:$at}')
+      if [ "$dry" -eq 1 ]; then printf '%s\n' "$ask"; else
+        deliver_ask "$ask" || { rc=1; break; }
+        printf '%s\n' "$ask"
+      fi
+    done < <(cut -d'|' -f1 "$w/rows" | sort -u)
+  fi
+  rm -rf "$w"
+  return "$rc"
+}
+
 # ---- wait ------------------------------------------------------------------
 
 emit_result() {  # <error-or-empty> <recovered 0|1>
@@ -416,11 +477,13 @@ cmd_autohandle() {  # <source-id> <sequence> <result-file>
     state_put "$(jq -r .cursor.cursor_run "$result")" "$(jq -r .cursor.last_green_sha "$result")"
   fi
   rm -f "$LAST_ERROR"
+  attention_skip "$result" && return 1
   mark_handled "$seq"
 }
 
 cmd_silent() {  # <result-file>
   local result=${1:-} ask pr task
+  attention_skip "$result" && return 1
   jq -e '.schema == "fm-deploy-verify-result.v1" and .error == null' "$result" >/dev/null 2>&1 || return 1
   while IFS= read -r ask; do
     ledger_has_key "$(jq -r .key <<<"$ask")" || return 1
@@ -446,6 +509,7 @@ cmd_arm() {
 }
 
 case "${1:-}" in
+  replay-skips) shift; cmd_replay_skips "$@" ;;
   arm) shift; cmd_arm "$@" ;;
   wait) shift; cmd_wait "$@" ;;
   autohandle) shift; [ "$#" -eq 3 ] || die 'usage: autohandle <source-id> <sequence> <result-file>'; cmd_autohandle "$@" ;;
@@ -453,5 +517,5 @@ case "${1:-}" in
   silent) shift; cmd_silent "$@" ;;
   terminal) exit 1 ;;
   self-announcing|relisten) exit 0 ;;
-  *) echo 'error: expected arm, wait, autohandle, classify, silent, terminal, self-announcing or relisten' >&2; exit 2 ;;
+  *) echo 'error: expected replay-skips, arm, wait, autohandle, classify, silent, terminal, self-announcing or relisten' >&2; exit 2 ;;
 esac

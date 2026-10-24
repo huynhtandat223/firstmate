@@ -153,7 +153,7 @@ asked() {  # the content of every pending ask, one JSON per line
 scenario_ledger() {
   new_lab "$1"
   backlog_task alpha 11 500; backlog_task alpha 12 500; backlog_task beta 13 600
-  fx_issue 500 A1:user-visible A2:internal; fx_issue 600 A1:user-visible
+  fx_issue 500 V1:user-visible A2:internal; fx_issue 600 E10:user-visible
   fx_runs "1:completed:success:s0" "2:completed:success:s2"
   fx_jobs 2 success
   fx_compare s0 s2 c1 c2 c3
@@ -164,7 +164,7 @@ scenario_ledger() {
   jq -e '(.asks | length) == 2' <<<"$LAST_RESULT" >/dev/null || { echo 'the deploy result is not one ask per task'; return 1; }
   [ "$(ledger_count '.type == "ask"')" = 2 ] || { echo "asks: $(ledger_count '.type == "ask"')"; return 1; }
   [ "$(inbox_count)" = 2 ] || { echo "inbox: $(inbox_count)"; return 1; }
-  [ "$(ledger_count '.type == "ask" and .task == "alpha" and (.prs | length) == 2 and .lines == ["A1"] and .issue == "cfw-modules#500"')" = 1 ] \
+  [ "$(ledger_count '.type == "ask" and .task == "alpha" and (.prs | length) == 2 and .lines == ["V1"] and .issue == "cfw-modules#500"')" = 1 ] \
     || { echo 'task alpha ask is not one ask with both PRs and its one user-visible line'; return 1; }
   # A later green deploy whose range returns PR 11 again.
   fx_runs "1:completed:success:s0" "2:completed:success:s2" "3:completed:success:s3"
@@ -191,7 +191,9 @@ scenario_skips() {
   gh_put "repos/$REPO/commits/$(sha c4)/pulls" "[{\"html_url\":\"$RURL/pull/24\",\"merged_at\":\"2026-10-20T14:00:00Z\",\"base\":{\"ref\":\"main\"},\"body\":\"No reference.\"}]"
   set_cursor 1 s0
   cycle
-  [ "$CYCLE_AUTO" = 0 ] || { echo "autohandle=$CYCLE_AUTO"; return 1; }
+  [ "$CYCLE_AUTO" = 1 ] || { echo "skip did not request attention: $CYCLE_AUTO"; return 1; }
+  [ "$(jq -r .cursor_run "$H/data/deploy-verify/state.json")" = 2 ] || return 1
+  "$BIN/fm-procevent-deploy-verify.sh" silent "$H/state/procevent-inbox/deploy-verify.$SEQ.result" && return 1
   [ "$(inbox_count)" = 0 ] || { echo "an ask was sent: $(inbox_count)"; ledger; ls "$H/state/tester.inbox"; return 1; }
   [ "$(ledger_count '.type == "ask"')" = 0 ] || return 1
   local reason
@@ -229,14 +231,14 @@ scenario_not_deployed() {
 scenario_draft() {
   new_lab "$1"
   live_task gamma 41
-  fx_issue 900 A1:user-visible:draft A2:user-visible A3:internal:draft
+  fx_issue 900 E10:user-visible:draft A2:user-visible C14:internal:draft
   fx_runs "1:completed:success:s0"
   set_cursor 1 s0
   fx_pr 41 open h1 900
   cycle
   [ "$CYCLE_AUTO" = 0 ] || { echo "autohandle=$CYCLE_AUTO"; return 1; }
   [ "$(ledger_count '.type == "ask" and .round == "draft"')" = 1 ] || { echo "draft asks: $(ledger_count '.type == "ask" and .round == "draft"')"; return 1; }
-  [ "$(ledger_count ".type == \"ask\" and .head == \"$(sha h1)\" and .lines == [\"A1\",\"A3\"] and .task == \"gamma\" and .issue == \"cfw-modules#900\"")" = 1 ] \
+  [ "$(ledger_count ".type == \"ask\" and .head == \"$(sha h1)\" and .lines == [\"E10\",\"C14\"] and .task == \"gamma\" and .issue == \"cfw-modules#900\"")" = 1 ] \
     || { echo 'draft ask does not name the task, issue, head and draft lines'; ledger; return 1; }
   cycle
   [ "$CYCLE_AUTO" = none ] || { echo 'the same head produced a second ask'; return 1; }
@@ -351,10 +353,27 @@ scenario_runner() {
   case "$out" in *'autohandled: deploy-verify'*) ;; *) echo "runner: $out"; return 1 ;; esac
   [ "$(inbox_count)" = 1 ] || { echo "inbox: $(inbox_count)"; return 1; }
   if [ -s "$H/state/.wake-queue" ]; then echo 'a delivered ask woke firstmate'; return 1; fi
-  # An undeliverable ask: one wake row naming the source.
+  # A visible skip advances the cursor but publishes one real runner wake.
   fx_runs "1:completed:success:s0" "2:completed:success:s2" "3:completed:success:s3"
   fx_jobs 3 success
-  fx_compare s2 s3 c2
+  fx_compare s2 s3 cskip
+  fx_commit_prs cskip 73:501 74:502 75:503
+  backlog_task visible 73 501
+  live_task internal 74 internal
+  fx_pr 74 closed h0 502
+  fx_issue 501 A1:internal
+  out=$("$BIN/fm-procevent.sh" start deploy-verify 2>&1)
+  case "$out" in *'not-autohandled: deploy-verify'*) ;; *) echo "skip runner: $out"; return 1 ;; esac
+  [ "$(grep -c 'procevent deploy-verify deploy-verify' "$H/state/.wake-queue")" = 1 ] || return 1
+  [ "$(jq -r .cursor_run "$H/data/deploy-verify/state.json")" = 3 ] || return 1
+  "$BIN/fm-procevent.sh" handled deploy-verify 2 >/dev/null 2>&1 || return 1
+  : > "$H/state/.wake-queue"
+  "$BIN/fm-procevent.sh" start deploy-verify >/dev/null 2>&1
+  [ ! -s "$H/state/.wake-queue" ] || { echo 'skip woke twice'; return 1; }
+  # An undeliverable ask: one wake row naming the source.
+  fx_runs "1:completed:success:s0" "2:completed:success:s2" "3:completed:success:s3" "4:completed:success:s4"
+  fx_jobs 4 success
+  fx_compare s3 s4 c2
   fx_commit_prs c2 72:500
   backlog_task beta 72 500
   unregister_tester
@@ -364,9 +383,36 @@ scenario_runner() {
     || { echo 'want exactly one wake row'; cat "$H/state/.wake-queue" 2>&1; return 1; }
 }
 
+scenario_replay() {
+  new_lab "$1"
+  set_cursor 2 s2
+  local n before dry
+  for n in 81 82 83 84 86; do
+    backlog_task "replay$((n / 2))" "$n" 500
+    gh_put "repos/$REPO/pulls/$n" "$(jq -cn --arg m "$(sha "m$n")" '{body:"Closes #500", merge_commit_sha:$m}')"
+    gh_put "repos/$REPO/compare/$(sha "m$n")...$(sha s2)" '{"status":"ahead"}'
+    jq -cn --arg p "$RURL/pull/$n" --arg t "replay$((n / 2))" '{type:"skip", reason:"no-user-visible-line", pr:$p, task:$t}' >> "$H/data/deploy-verify/ledger.jsonl"
+  done
+  gh_put "repos/$REPO/compare/$(sha m81)...$(sha s2)" '{"status":"behind"}'
+  gh_put "repos/$REPO/pulls/84" "$(jq -cn --arg m "$(sha m84)" '{body:"Closes #501", merge_commit_sha:$m}')"
+  fx_issue 500 V1:user-visible; fx_issue 501 A1:internal
+  jq -cn --arg k "replay:replay43:$(sha s2)" '{type:"ask", round:"deploy", key:$k, prs:[]}' >> "$H/data/deploy-verify/ledger.jsonl"
+  # An ask for another task must not hide this task's skip of the same PR.
+  jq -cn --arg p "$RURL/pull/82" '{type:"ask", round:"deploy", key:"other-task", task:"other", prs:[$p]}' >> "$H/data/deploy-verify/ledger.jsonl"
+  before=$(ledger)
+  dry=$("$BIN/fm-procevent-deploy-verify.sh" replay-skips --dry-run) || return 1
+  [ "$before" = "$(ledger)" ] && [ "$(inbox_count)" = 0 ] || return 1
+  jq -se 'length == 1 and .[0].lines == ["V1"] and (.[0].prs | length) == 2' <<<"$dry" >/dev/null || { echo "bad replay plan: $dry"; return 1; }
+  "$BIN/fm-procevent-deploy-verify.sh" replay-skips >/dev/null || return 1
+  [ "$(inbox_count)" = 1 ] || return 1
+  before=$(ledger)
+  [ -z "$("$BIN/fm-procevent-deploy-verify.sh" replay-skips)" ] || return 1
+  [ "$before" = "$(ledger)" ] && [ "$(inbox_count)" = 1 ] || return 1
+}
+
 run_scenarios() {  # <bin-dir>
   local s rc=0
-  for s in ledger skips not_deployed draft record failures runner; do
+  for s in ledger skips not_deployed draft record failures runner replay; do
     out=$(scenario_"$s" "$1" 2>&1) || { printf 'scenario %s: %s\n' "$s" "$out"; rc=1; }
   done
   return $rc
@@ -374,7 +420,7 @@ run_scenarios() {  # <bin-dir>
 
 # ---- real adapter -----------------------------------------------------------
 
-for s in ledger skips not_deployed draft record failures runner; do
+for s in ledger skips not_deployed draft record failures runner replay; do
   out=$(scenario_"$s" "$ROOT/bin" 2>&1) || fail "scenario $s failed on the real adapter: $out"
   pass "deploy-verify $s"
 done
@@ -397,6 +443,24 @@ mutate() {  # <label> <scenario> <perl-substitution>
   pass "guard '$1' is needed: scenario $2 goes red without it"
 }
 
+mutate 'replay dedupe is task scoped' replay \
+  's/ and \.task == \$t and \(\.prs/ and (.prs/'
+mutate 'replay ancestry' replay \
+  's/jq -e .\.status == "ahead" or \.status == "identical". <<<"\$comparison" >\/dev\/null \|\| continue/:/'
+mutate 'replay dry run' replay \
+  's/if \[ "\$dry" -eq 1 \]; then/if false; then/'
+mutate 'replay visible lines' replay \
+  's/\[ -n "\$lines" \] \|\| continue/:/'
+mutate 'replay grouping' replay \
+  's/cut -d.\|. -f1 "\$w\/rows" \| sort -u/cut -d"|" -f1 "\$w\/rows"/'
+mutate 'replay idempotency' replay \
+  's/ledger_has_key "replay:\$task:\$sha" && continue/:/; s/ledger_test .\.type == "ask" and \.round == "deploy" and \.task == \$t and \(\.prs \| index\(\$p\)\). --arg p "\$pr" --arg t "\$task" && continue/:/'
+mutate 'non-A acceptance ids' ledger \
+  's/\[A-Z\]\+/A/g'
+mutate 'non-A draft ids' draft \
+  's/\[A-Z\]\+/A/g'
+mutate 'visible skips need attention' skips \
+  's/attention_skip "\$result" && return 1/:/g'
 mutate 'ledger: a PR already asked is skipped' ledger \
   's/ledger_pr_final "\$url" "\$task" && continue//'
 mutate 'one ask per task' ledger \
