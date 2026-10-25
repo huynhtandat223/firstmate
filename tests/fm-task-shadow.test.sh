@@ -19,6 +19,7 @@ vg_install_gh "$TMP_ROOT/gh"
 mk_writer() {  # <dir>: a fake bin/fm-task.sh that records one line per call
   cat > "$1/fake-writer" <<'SH'
 #!/usr/bin/env bash
+if [ "${1:-}" = show ]; then printf '{"state":"running"}\n'; exit 0; fi
 printf '%s\n' "$*" >> "$FAKE_CALLS"
 printf 'auth=%s url=%s token=%s\n' "${FM_TASK_AUTH:-}" "${FM_TASK_BASE_URL:-}" "${FM_TASK_TOKEN_FILE:-}" >> "$FAKE_CALLS.env"
 [ -z "${FAKE_HANG:-}" ] || sleep "$FAKE_HANG"
@@ -84,7 +85,7 @@ test_dispatched_creates_assigns_and_starts() {
   assert_equals "$(printf '%s\n' shadow:t1:create shadow:t1:assign shadow:t1:start shadow:t1:create shadow:t1:assign shadow:t1:start)" "$(keys)" "a repeated hook repeats the same keys"
   make_case dispatched-other on
   hook dispatched t2 secondmate-x "" claude || fail "the hook failed"
-  assert_equals "$(printf '%s\n' 'create t2 --title t2 --kind other' 'assign t2 --to claude' 'start t2')" "$(calls)" "an unknown kind and no backlog row"
+  assert_equals "$(printf '%s\n' 'create t2 --title t2 --kind other' 'assign t2 --to t2' 'start t2')" "$(calls)" "an unknown kind and no backlog row"
   pass "dispatched: create, assign and start, with stable keys; the title comes from the backlog row"
 }
 
@@ -264,7 +265,7 @@ test_spawn_writes_the_record() {
   make_real_case spawn
   add_row "$TASK" 'Spawn shadow title' ship
   out=$(in_home "$SBIN/fm-spawn.sh" "$TASK" "$PROJ_DIR" --mode local-only --yolo off 2>&1) || fail "spawn failed: $out"
-  assert_equals "$(printf '%s\n' "create $TASK --title Spawn shadow title --kind ship --repo sample" "assign $TASK --to claude" "start $TASK")" "$(calls)" "the record calls of a fresh spawn"
+  assert_equals "$(printf '%s\n' "create $TASK --title Spawn shadow title --kind ship --repo sample" "assign $TASK --to $TASK" "start $TASK")" "$(calls)" "the record calls of a fresh spawn"
   make_real_case spawn-off
   rm -f "$HOME_DIR/config/task-shadow"
   out=$(in_home "$SBIN/fm-spawn.sh" "$TASK" "$PROJ_DIR" --mode local-only --yolo off 2>&1) || fail "spawn failed: $out"
