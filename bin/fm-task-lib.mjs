@@ -793,12 +793,21 @@ async function cmdRows(args) {
   out(summary);
 }
 
+// check rows of a closed task stay as they were closed.
+async function requireOpenTask(taskId, command) {
+  const task = fold(await taskEvents(taskId));
+  if (!task) throw rule(`no such task ${taskId}`);
+  if (CLOSED.includes(task.state)) throw rule(`${command} is refused: ${taskId} is ${task.state}`);
+  return task;
+}
+
 async function cmdCheck(args) {
   const taskId = taskIdOf(args);
   const who = identity(args, 'tester');
   const f = args.flags;
   const target = targetOf(args.pos.target);
   const status = oneOf(CHECK_STATUSES, f.status, 'status');
+  await requireOpenTask(taskId, 'check');
   const row = await checkRow(taskId, target);
   const nextActor = oneOf(ACTORS, f['next-actor'] ?? (status === 'pass' ? 'firstmate' : status === 'fail' ? 'worker' : row.nextActor), 'next actor');
   if (nextActor === 'owner' && !(await ownerItem(taskId, target))) throw rule(`${rowKey(row)} cannot read next actor owner without its owner item; run owner-check first`);
@@ -836,6 +845,7 @@ async function cmdOwnerCheck(args) {
   const who = identity(args, 'firstmate');
   const f = args.flags;
   const target = targetOf(args.pos.target);
+  await requireOpenTask(taskId, 'owner-check');
   const row = await checkRow(taskId, target);
   const item = { taskId, ...target, pageTitle: f['page-title'], url: f.url, steps: f.steps, data: f.data, expected: f.expected, status: 'pending' };
   for (const key of Object.keys(item)) if (item[key] === undefined) delete item[key];
