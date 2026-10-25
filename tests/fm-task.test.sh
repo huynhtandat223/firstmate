@@ -932,7 +932,23 @@ case_approve_head() {
   must 'approve after the rows pass on h2' 0 || return 1
 }
 
-CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head"}
+# A new owner item reopens a passed row, so approve cannot finish before the owner answers.
+case_owner_pending() {
+  BIN=$1; reset_db
+  local t=tk-op
+  mk_running $t >/dev/null; use_issue v1; ft rows $t "$ISSUE" >/dev/null
+  for r in A1@1440 A1@390 A2@- A3@-; do ft check $t $r --status pass >/dev/null; done
+  ft "done" $t "${DONE_FLAGS[@]}" >/dev/null
+  ft owner-check $t A1@1440 --page-title 'Home' --url 'http://100.88.10.58:5001/#home' --steps '1. open it' --data d --expected e
+  must 'owner-check on a passed row' 0 || return 1
+  db fm_task_check | jq -e '.[] | select(.scenarioId == "A1" and .width == "1440") | .status == "pending" and .nextActor == "owner"' >/dev/null \
+    || { echo "the paired row is not pending with next actor owner: $(db fm_task_check | jq -c '.[] | select(.scenarioId == "A1" and .width == "1440")')"; return 1; }
+  ft approve $t
+  must 'approve before the owner answers' 5 || return 1
+  [ "$(task_state $t)" = review ] || { echo "approve finished before the owner answered"; return 1; }
+}
+
+CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending"}
 
 # ---- real command -------------------------------------------------------------------
 
@@ -995,4 +1011,5 @@ mutate 'the last passed row routes the task to firstmate' route 'if (!wanted(fol
 mutate 'start waits for an open parent' start_parent 'if (parents.length) throw rule(`start is refused' 'if (false) throw rule(`start is refused'
 mutate 'a user-visible task needs check rows to be approved' approve_head 'if (task.surface === '"'"'user-visible'"'"' && !visible.length)' 'if (false)'
 mutate 'a pass counts only on the head of the latest done' approve_head 'if (stale.length) throw rule(`approve is refused' 'if (false) throw rule(`approve is refused'
+mutate 'an owner item reopens its row' owner_pending "{ nextActor: 'owner', status: 'pending', checkedAt: null }" "{ nextActor: 'owner' }"
 pass 'every guarded behavior has a red mutation proof'

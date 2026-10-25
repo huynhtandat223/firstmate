@@ -850,7 +850,7 @@ async function cmdOwnerCheck(args) {
     if (!task) throw rule('no such task');
     return { kind: 'owner-check', note: `${rowKey(row)}: ${f['page-title']} at ${f.url}` };
   }, async () => {
-    ok(await http('PATCH', `/api/fm_task_check/${row.id}`, { nextActor: 'owner' }), `patch the check row ${rowKey(row)}`);
+    ok(await http('PATCH', `/api/fm_task_check/${row.id}`, { nextActor: 'owner', status: 'pending', checkedAt: null }), `patch the check row ${rowKey(row)}`);
   });
 }
 
