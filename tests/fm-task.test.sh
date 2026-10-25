@@ -1145,7 +1145,26 @@ case_owner_repeat() {
   [ "$(db fm_owner_check | jq -r '.[0].status')" = pending ] || { echo "rows reset the row but left the item at $(db fm_owner_check | jq -r '.[0].status')"; return 1; }
 }
 
-CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat"}
+# A triage child linked to an open parent still reaches ready after assign once the parent has closed.
+case_link_triage() {
+  BIN=$1; reset_db
+  mk_running tk-lt-p1 >/dev/null; ft create tk-lt-c1 --title c1 --kind ship >/dev/null
+  ft link tk-lt-p1 tk-lt-c1; must 'link a triage child' 0 || return 1
+  [ "$(task_state tk-lt-c1)" = triage ] || { echo "linking moved the triage child to $(task_state tk-lt-c1)"; return 1; }
+  ft "done" tk-lt-p1 "${DONE_FLAGS[@]}" >/dev/null; ft approve tk-lt-p1 >/dev/null
+  [ "$(task_state tk-lt-c1)" = triage ] || { echo "closing the parent moved the triage child to $(task_state tk-lt-c1)"; return 1; }
+  ft assign tk-lt-c1 --to w; must 'assign after the parent closed' 0 || return 1
+  [ "$(task_state tk-lt-c1)" = ready ] || { echo "assign after the parent closed gave $(task_state tk-lt-c1), want ready"; return 1; }
+  ft start tk-lt-c1; must 'start the released child' 0 || return 1
+  # assign while the parent is still open waits in todo, and the parent closing releases it
+  mk_running tk-lt-p2 >/dev/null; ft create tk-lt-c2 --title c2 --kind ship >/dev/null
+  ft link tk-lt-p2 tk-lt-c2 >/dev/null; ft assign tk-lt-c2 --to w >/dev/null
+  [ "$(task_state tk-lt-c2)" = todo ] || { echo "assign with an open parent gave $(task_state tk-lt-c2), want todo"; return 1; }
+  ft "done" tk-lt-p2 "${DONE_FLAGS[@]}" >/dev/null; ft approve tk-lt-p2 >/dev/null
+  [ "$(task_state tk-lt-c2)" = ready ] || { echo "the parent closing left the child in $(task_state tk-lt-c2)"; return 1; }
+}
+
+CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage"}
 
 # ---- real command -------------------------------------------------------------------
 
