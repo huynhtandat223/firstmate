@@ -2,7 +2,7 @@
 # Behavior tests for bin/fm-task.sh, the one writer and reader of the task contract.
 #
 # Every case drives the real command against a local stand-in for Dev 5001 (a small
-# HTTP server written below). The stand-in applies the rules the published tables
+# HTTP server in tests/fm-task-fake-api). The stand-in applies the rules the published tables
 # carry: required and length rules on a root row and on each deep-insert child,
 # unique keys answering 409 with details.existingId, a missing int stored as 0,
 # server values, an undeclared verb answering 404, and OData $filter/$orderby/$top.
@@ -29,270 +29,7 @@ chmod 600 "$TMP_ROOT/token"
 
 # ---- the stand-in for Dev 5001 ------------------------------------------------
 
-cat > "$TMP_ROOT/schema.json" <<'JSON'
-{"fm_task":{"ops":["list","get","create","patch"],"f":{"assignee":{"t":"s","m":64},"blockKind":{"t":"s","n":1,"m":32},"blockReason":{"t":"s","n":1,"m":2000},"blockRepeats":{"t":"i"},"createdAt":{"t":"d","sv":"now"},"createdBy":{"t":"s","m":64,"sv":"callerId"},"holdUntil":{"t":"d","n":1},"issueUrl":{"t":"s","n":1,"m":2048},"kind":{"t":"s","m":32},"lastSeq":{"t":"i"},"nextActor":{"t":"s","m":32},"prUrl":{"t":"s","n":1,"m":2048},"repo":{"t":"s","n":1,"m":200},"state":{"t":"s","m":32},"surface":{"t":"s","n":1,"m":32},"taskId":{"t":"s","m":128},"title":{"t":"s","m":300}},"u":[["taskId"]]},"fm_task_event":{"ops":["list","get","create"],"f":{"actor":{"t":"s","m":64},"actorRole":{"t":"s","m":32},"body":{"t":"s","m":8000},"createdAt":{"t":"d","sv":"now"},"createdBy":{"t":"s","m":64,"sv":"callerId"},"idempotencyKey":{"t":"s","m":200},"kind":{"t":"s","m":32},"seq":{"t":"i"},"taskId":{"t":"s","m":128}},"u":[["seq"],["idempotencyKey"]]},"fm_event_done":{"ops":["list","get","create"],"f":{"changedFiles":{"t":"s","m":4000},"head":{"t":"s","n":1,"m":64},"prUrl":{"t":"s","n":1,"m":2048},"residualRisk":{"t":"s","m":2000},"rows":{"t":"s"},"summary":{"t":"s","m":4000},"verification":{"t":"s","m":4000}},"u":[["fmTaskEventId"]],"parent":["fmTaskEvent","done"]},"fm_event_question":{"ops":["list","get","create"],"f":{"document":{"t":"s","n":1,"m":2048},"options":{"t":"s","m":8000},"question":{"t":"s","m":2000},"recommendation":{"t":"s","m":2000},"why":{"t":"s","m":4000}},"u":[["fmTaskEventId"]],"parent":["fmTaskEvent","question"]},"fm_event_block":{"ops":["list","get","create"],"f":{"blockKind":{"t":"s","m":32},"nextActor":{"t":"s","m":32},"reason":{"t":"s","m":2000},"until":{"t":"d","n":1}},"u":[["fmTaskEventId"]],"parent":["fmTaskEvent","block"]},"fm_event_image":{"ops":["list","get","create"],"f":{"content":{"t":"s"},"label":{"t":"s","m":200},"mediaType":{"t":"s","m":32},"position":{"t":"i","n":1}},"u":[],"parent":["fmTaskEvent","images"]},"fm_task_check":{"ops":["list","get","create","patch"],"f":{"acceptanceDigest":{"t":"s","m":128},"checkedAt":{"t":"d","n":1},"controls":{"t":"s","m":2000},"data":{"t":"s","m":2000},"evidence":{"t":"s","n":1,"m":4000},"head":{"t":"s","n":1,"m":64},"line":{"t":"s","m":4000},"nextActor":{"t":"s","m":32},"page":{"t":"s","m":200},"proof":{"t":"s","m":4000},"scenarioId":{"t":"s","m":64},"status":{"t":"s","m":32},"surface":{"t":"s","m":32},"taskId":{"t":"s","m":128},"width":{"t":"s","m":32}},"u":[["taskId","scenarioId","width"]]},"fm_owner_check":{"ops":["list","get","create","patch"],"f":{"data":{"t":"s","m":4000},"decidedAt":{"t":"d","n":1},"expected":{"t":"s","m":4000},"note":{"t":"s","n":1,"m":4000},"pageTitle":{"t":"s","m":200},"scenarioId":{"t":"s","m":64},"status":{"t":"s","m":16},"steps":{"t":"s","m":8000},"taskId":{"t":"s","m":128},"url":{"t":"s","m":2048},"width":{"t":"s","m":32}},"u":[["taskId","scenarioId","width"]]},"fm_task_link":{"ops":["list","get","create","delete"],"f":{"childTaskId":{"t":"s","m":128},"parentTaskId":{"t":"s","m":128}},"u":[["parentTaskId","childTaskId"]]},"fm_task_delivery":{"ops":["list","get","create"],"f":{"consumer":{"t":"s","m":64},"deliveredAt":{"t":"d","sv":"now"},"seq":{"t":"i"}},"u":[["consumer","seq"]]}}
-JSON
-
-cat > "$TMP_ROOT/fake-api.mjs" <<'JS'
-import crypto from 'node:crypto';
-import fs from 'node:fs';
-import http from 'node:http';
-
-const [portFile, schemaFile, token] = process.argv.slice(2);
-const SCHEMA = JSON.parse(fs.readFileSync(schemaFile, 'utf8'));
-const camel = (s) => s.split('_').map((p, i) => (i ? p[0].toUpperCase() + p.slice(1) : p)).join('');
-const pascal = (s) => s[0].toUpperCase() + s.slice(1);
-const db = {};
-const NAVS = {};
-for (const table of Object.keys(SCHEMA)) db[table] = [];
-for (const [table, def] of Object.entries(SCHEMA)) {
-  if (!def.parent) continue;
-  const parent = Object.keys(SCHEMA).find((t) => camel(t) === def.parent[0]);
-  (NAVS[parent] ||= {})[def.parent[1]] = table;
-}
-let log = [];
-let rivals = 0;
-let lose = { mode: '', n: 0 };
-let delay = { table: '', ms: 0, n: 0, verb: 'patch' };
-
-const reply = (res, status, body) => {
-  res.writeHead(status, { 'content-type': 'application/json' });
-  res.end(body === undefined ? '' : JSON.stringify(body));
-};
-const refusal = (status, errorCode, message, details = null) => ({ status, body: { success: false, data: null, errorCode, message, details } });
-
-function normalize(table, body, partial) {
-  const errors = {};
-  const row = {};
-  for (const [name, f] of Object.entries(SCHEMA[table].f)) {
-    const present = Object.prototype.hasOwnProperty.call(body, name);
-    if (f.sv) {
-      if (present) errors[pascal(name)] = 'INVALID_WRITE';
-      continue;
-    }
-    if (!present) {
-      if (partial) continue;
-      if (f.t === 'i') row[name] = 0;
-      else if (f.n) row[name] = null;
-      else errors[pascal(name)] = `The ${pascal(name)} field is required.`;
-      continue;
-    }
-    const v = body[name];
-    if (v === null) {
-      if (f.n) row[name] = null;
-      else errors[pascal(name)] = `The ${pascal(name)} field is required.`;
-      continue;
-    }
-    if (f.t === 's' && typeof v !== 'string') errors[pascal(name)] = `The ${pascal(name)} field must be a string.`;
-    else if (f.t === 'i' && !Number.isInteger(v)) errors[pascal(name)] = `The ${pascal(name)} field must be an integer.`;
-    else if (f.t === 'd' && Number.isNaN(Date.parse(v))) errors[pascal(name)] = `The ${pascal(name)} field must be a date.`;
-    else if (f.m && typeof v === 'string' && v.length > f.m) errors[pascal(name)] = `The field ${pascal(name)} must be a string with a maximum length of ${f.m}.`;
-    else row[name] = v;
-  }
-  return { errors, row };
-}
-
-function conflict(table, row, exceptId) {
-  for (const group of SCHEMA[table].u) {
-    const hit = db[table].find((r) => r.id !== exceptId && group.every((k) => r[k] === row[k]));
-    if (hit) return refusal(409, 'UNIQUE_KEY_CONFLICT', `A ${table} row with the same (${group.join(', ')}) already exists.`, { key: group, existingId: hit.id });
-  }
-  return null;
-}
-
-function create(table, body) {
-  const { errors, row } = normalize(table, body, false);
-  const children = [];
-  for (const [nav, childTable] of Object.entries(NAVS[table] || {})) {
-    if (body[nav] === undefined) continue;
-    if (!Array.isArray(body[nav])) {
-      errors[pascal(nav)] = 'must be an array';
-      continue;
-    }
-    body[nav].forEach((child, i) => {
-      const n = normalize(childTable, child, false);
-      for (const [k, v] of Object.entries(n.errors)) errors[`${pascal(nav)}[${i}].${k}`] = v;
-      children.push([childTable, n.row]);
-    });
-  }
-  if (Object.keys(errors).length) return refusal(400, 'VALIDATION_ERROR', 'One or more validation errors occurred.', errors);
-  const clash = conflict(table, row, null);
-  if (clash) return clash;
-  const id = crypto.randomUUID();
-  const stored = { id, ...row };
-  for (const [name, f] of Object.entries(SCHEMA[table].f)) {
-    if (f.sv === 'now') stored[name] = new Date().toISOString();
-    if (f.sv === 'callerId') stored[name] = 'caller-1';
-  }
-  db[table].push(stored);
-  for (const [childTable, childRow] of children) {
-    const child = { id: crypto.randomUUID(), ...childRow, fmTaskEventId: id };
-    for (const [name, f] of Object.entries(SCHEMA[childTable].f)) if (f.sv === 'now') child[name] = new Date().toISOString();
-    db[childTable].push(child);
-  }
-  return { status: 201, body: { success: true, data: stored, errorCode: null, message: null, details: null } };
-}
-
-function patch(table, id, body) {
-  const target = db[table].find((r) => r.id === id);
-  if (!target) return refusal(404, 'NOT_FOUND', `${table} ${id} not found.`);
-  const { errors, row } = normalize(table, body, true);
-  if (Object.keys(errors).length) return refusal(400, 'VALIDATION_ERROR', 'One or more validation errors occurred.', errors);
-  const next = { ...target, ...row };
-  const clash = conflict(table, next, id);
-  if (clash) return clash;
-  Object.assign(target, row);
-  return { status: 200, body: { success: true, data: target, errorCode: null, message: null, details: null } };
-}
-
-const literal = (text) => {
-  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(text)) return { guid: text };
-  if (/^'.*'$/s.test(text)) return text.slice(1, -1).replaceAll("''", "'");
-  if (text === 'true') return true;
-  if (text === 'false') return false;
-  if (text === 'null') return null;
-  return Number(text);
-};
-
-function list(table, query) {
-  let rows = db[table];
-  const filter = query.get('$filter');
-  if (filter) {
-    for (const clause of filter.split(/ and /)) {
-      const m = /^(\w+) (eq|ne|gt|ge|lt|le) (.+)$/s.exec(clause.trim());
-      if (!m || !(m[1] in SCHEMA[table].f || m[1] === 'id' || m[1] === 'fmTaskEventId')) return refusal(400, 'INVALID_QUERY', `Could not find a property named '${m ? m[1] : clause}' on type ${table}.`);
-      let want = literal(m[3]);
-      const isGuid = m[1] === 'id' || m[1] === 'fmTaskEventId';
-      // the real API types these two as Edm.Guid: a quoted string is refused, a bare guid is the only literal
-      if (isGuid !== (typeof want === 'object' && want !== null)) return refusal(400, 'INVALID_QUERY', `A binary operator with incompatible types was detected on '${m[1]}'.`);
-      if (isGuid) want = want.guid;
-      const op = { eq: (a) => a === want, ne: (a) => a !== want, gt: (a) => a > want, ge: (a) => a >= want, lt: (a) => a < want, le: (a) => a <= want }[m[2]];
-      rows = rows.filter((r) => op(r[m[1]]));
-    }
-  }
-  const order = query.get('$orderby');
-  if (order) {
-    const [field, dir] = order.split(' ');
-    rows = [...rows].sort((a, b) => (a[field] > b[field] ? 1 : a[field] < b[field] ? -1 : 0) * (dir === 'desc' ? -1 : 1));
-  }
-  const top = query.has('$top') ? Number(query.get('$top')) : 100;
-  if (top > 100) return refusal(400, 'INVALID_QUERY', `The limit of '100' for Top query has been exceeded. The value from the incoming request is '${top}'.`);
-  const skip = Number(query.get('$skip') || 0);
-  const out = { value: rows.slice(skip, skip + top) };
-  if (query.get('$count') === 'true') out['@odata.count'] = rows.length;
-  return { status: 200, body: out };
-}
-
-const server = http.createServer((req, res) => {
-  const chunks = [];
-  req.on('data', (c) => chunks.push(c));
-  req.on('end', () => {
-    const url = new URL(req.url, 'http://x');
-    const raw = Buffer.concat(chunks).toString('utf8');
-    const parts = url.pathname.split('/').filter(Boolean);
-    if (parts[0] === '__x') {
-      if (parts[1] === 'rows') return reply(res, 200, db[parts[2]] || []);
-      if (parts[1] === 'log') {
-        if (req.method === 'POST') log = [];
-        return reply(res, 200, log);
-      }
-      if (parts[1] === 'rival') {
-        rivals = Number(url.searchParams.get('n') || 0);
-        return reply(res, 200, { rivals });
-      }
-      if (parts[1] === 'lose') {
-        lose = { mode: url.searchParams.get('mode') || '', n: Number(url.searchParams.get('n') || 1) };
-        return reply(res, 200, lose);
-      }
-      if (parts[1] === 'delay') {
-        delay = { table: parts[2], ms: Number(url.searchParams.get('ms') || 0), n: Number(url.searchParams.get('n') || 1), verb: url.searchParams.get('verb') || 'patch' };
-        return reply(res, 200, delay);
-      }
-      if (parts[1] === 'drop') {
-        db[parts[2]] = db[parts[2]].filter((r) => r.id !== parts[3]);
-        return reply(res, 200, {});
-      }
-      if (parts[1] === 'reset') {
-        for (const t of Object.keys(db)) db[t] = [];
-        log = [];
-        rivals = 0;
-        lose = { mode: '', n: 0 };
-        delay = { table: '', ms: 0, n: 0, verb: 'patch' };
-        return reply(res, 200, {});
-      }
-      return reply(res, 404);
-    }
-    let body = {};
-    try {
-      body = raw ? JSON.parse(raw) : {};
-    } catch {
-      return reply(res, 400, { success: false, errorCode: 'INVALID_JSON' });
-    }
-    log.push({ method: req.method, path: url.pathname, body });
-    const bearer = req.headers.authorization === `Bearer ${token}`;
-    const cookie = /(?:^|;\s*)cfw\.auth\.session=([^;]*)/.exec(req.headers.cookie || '')?.[1] === token;
-    if (!bearer && !cookie) return reply(res, 401, { success: false, data: null, errorCode: 'API_REQUIRES_SIGN_IN', message: 'requires a signed-in caller' });
-    const [api, table, id] = parts;
-    if (api !== 'api' || !SCHEMA[table]) return reply(res, 404);
-    const verb = { GET: id ? 'get' : 'list', POST: 'create', PATCH: 'patch', DELETE: 'delete' }[req.method];
-    if (!verb || !SCHEMA[table].ops.includes(verb)) return reply(res, 404);
-    let out;
-    if (verb === 'list' && delay.n > 0 && delay.verb === 'list' && delay.table === table) {
-      // the read is held before it is answered, so a later call can finish first
-      delay.n--;
-      return setTimeout(() => {
-        const late = list(table, url.searchParams);
-        reply(res, late.status, late.body);
-      }, delay.ms);
-    }
-    if (verb === 'list') out = list(table, url.searchParams);
-    else if (verb === 'get') {
-      const row = db[table].find((r) => r.id === id);
-      out = row ? { status: 200, body: { success: true, data: row } } : refusal(404, 'NOT_FOUND', 'not found');
-    } else if (verb === 'patch') {
-      if (delay.n > 0 && delay.verb === 'patch' && delay.table === table) {
-        // the patch is held before it is applied, so a later call can finish first
-        delay.n--;
-        return setTimeout(() => {
-          const late = patch(table, id, body);
-          reply(res, late.status, late.body);
-        }, delay.ms);
-      }
-      out = patch(table, id, body);
-    }
-    else if (verb === 'delete') {
-      db[table] = db[table].filter((r) => r.id !== id);
-      return reply(res, 204);
-    } else {
-      if (table === 'fm_task_event' && lose.n > 0 && lose.mode === 'before') {
-        lose.n--;
-        return reply(res, 503, { success: false, errorCode: 'UNAVAILABLE' });
-      }
-      if (table === 'fm_task_event' && rivals > 0) {
-        rivals--;
-        const top = Math.max(0, ...db.fm_task_event.map((r) => r.seq));
-        create('fm_task_event', { seq: top + 1, taskId: 'rival', kind: 'comment', actorRole: 'system', actor: 'rival', body: '{}', idempotencyKey: `rival-${crypto.randomUUID()}` });
-      }
-      out = create(table, body);
-      if (table === 'fm_task_event' && lose.n > 0 && lose.mode === 'after') {
-        lose.n--;
-        return reply(res, 503, { success: false, errorCode: 'UNAVAILABLE' });
-      }
-    }
-    return reply(res, out.status, out.body);
-  });
-});
-server.listen(0, '127.0.0.1', () => fs.writeFileSync(portFile, String(server.address().port)));
-const parent = process.ppid;
-setInterval(() => {
-  try {
-    process.kill(parent, 0);
-  } catch {
-    process.exit(0);
-  }
-}, 1000).unref();
-setTimeout(() => process.exit(0), 20 * 60 * 1000).unref();
-JS
+FAKE_API=$ROOT/tests/fm-task-fake-api
 
 cat > "$TMP_ROOT/fakebin/gh" <<'SH'
 #!/usr/bin/env bash
@@ -301,7 +38,7 @@ jq -Rs '{body: .}' "$FAKE_GH_BODY_FILE"
 SH
 chmod +x "$TMP_ROOT/fakebin/gh"
 
-node "$TMP_ROOT/fake-api.mjs" "$TMP_ROOT/port" "$TMP_ROOT/schema.json" "$TOKEN" &
+node "$FAKE_API/server.mjs" "$TMP_ROOT/port" "$FAKE_API/schema.json" "$TOKEN" &
 for _ in $(seq 1 100); do [ -s "$TMP_ROOT/port" ] && break; sleep 0.1; done
 [ -s "$TMP_ROOT/port" ] || fail 'the stand-in API did not start'
 PORT=$(cat "$TMP_ROOT/port")
@@ -1221,6 +958,39 @@ case_owner_close() {
   [ "$(db fm_task_check | jq -r '.[] | select(.scenarioId == "A2") | .status + "/" + .nextActor')" = pass/firstmate ] || { echo "the owner-check changed a row of the closed task"; return 1; }
 }
 
+# import writes a task at the state an old source holds, once: a second call changes nothing, and a bad value is refused.
+case_import() {
+  BIN=$1; reset_db
+  local events
+  ft import tk-im1 --title 'Imported' --kind ship --repo example/repo --state blocked --assignee w1 --next-actor owner --block-kind needs-decision --block-reason 'pick one' --issue https://github.com/o/r/issues/1 --since 2026-10-20T08:00:00Z
+  must 'import' 0 || return 1
+  task_row tk-im1 | jq -e '.state == "blocked" and .nextActor == "owner" and .blockKind == "needs-decision" and .blockReason == "pick one" and .assignee == "w1" and .repo == "example/repo" and .issueUrl == "https://github.com/o/r/issues/1" and .lastSeq > 0' >/dev/null \
+    || { echo "the imported row is wrong: $(task_row tk-im1)"; return 1; }
+  events=$(count fm_task_event)
+  ft import tk-im1 --title 'Changed' --kind scout --state running --assignee w2 --next-actor worker
+  must 'import again' 0 || return 1
+  case $OUT in *already*) ;; *) echo "import again does not say so: $OUT"; return 1 ;; esac
+  [ "$(count fm_task_event)" = "$events" ] && [ "$(task_state tk-im1)" = blocked ] || { echo "a second import changed the record"; return 1; }
+  ft import tk-im1 --title 'Other key' --kind ship --state running --assignee w3 --next-actor worker --key other-key
+  must 'import under another key' 0 || return 1
+  case $OUT in *'already present'*) ;; *) echo "import under another key does not say so: $OUT"; return 1 ;; esac
+  [ "$(count fm_task_event)" = "$events" ] || { echo "an import under another key stored an event"; return 1; }
+  ft import tk-im2 --title 'Done one' --kind ship --state "done" --assignee - --next-actor firstmate
+  must 'import done' 0 || return 1
+  [ "$(task_state tk-im2)" = "done" ] || { echo "done is $(task_state tk-im2)"; return 1; }
+  ft import tk-im3 --title t --kind ship --state nowhere --assignee - --next-actor worker
+  must 'import with a bad state' 5 || return 1
+  ft import tk-im3 --title t --kind ship --state ready --assignee - --next-actor nobody
+  must 'import with a bad actor' 5 || return 1
+  ft import tk-im3 --title t --kind ship --state ready --assignee - --next-actor worker --block-kind sulking
+  must 'import with a bad block kind' 5 || return 1
+  [ "$(task_row tk-im3)" = '' ] || { echo "a refused import stored a row"; return 1; }
+  ft reproject tk-im1 >/dev/null; task_row tk-im1 | jq -e '.state == "blocked"' >/dev/null || { echo "reproject changed the imported row"; return 1; }
+  # an imported task works with the other commands: unblock moves it on
+  ft unblock tk-im1 >/dev/null; must 'unblock an imported task' 0 || return 1
+  [ "$(task_state tk-im1)" = ready ] || { echo "unblock gave $(task_state tk-im1)"; return 1; }
+}
+
 # A re-sent key carries the values of its first event; a retry with other values is refused.
 case_check_values() {
   BIN=$1; reset_db
@@ -1345,7 +1115,7 @@ case_link_triage() {
   [ "$(task_state tk-lt-c2)" = ready ] || { echo "the parent closing left the child in $(task_state tk-lt-c2)"; return 1; }
 }
 
-CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close"}
+CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import"}
 
 # ---- real command -------------------------------------------------------------------
 
@@ -1430,4 +1200,6 @@ mutate 'a check on a task that closed meanwhile is refused' check_close "if (CLO
 mutate 'approve judges a row by its newest check event' approve_newest "return v ? { ...r, status: v.status," "return false ? { ...r, status: v.status,"
 mutate 'an owner-check update needs --url and --steps' owner_update "if (missing.length) throw rule(" "if (false) throw rule("
 mutate 'an owner-check on a task that closed meanwhile is refused' owner_close "if (CLOSED.includes(task.state)) throw rule(\`owner-check is refused:" "if (false) throw rule(\`owner-check is refused:"
+mutate 'an import leaves a task that is already there as it is' import "if (existing) throw rule(\`task \${taskId} already present\`);" "if (false) throw rule(\`task \${taskId} already present\`);"
+mutate 'an import checks the state list' import "const state = oneOf(STATES, f.state, 'state');" "const state = f.state;"
 pass 'every guarded behavior has a red mutation proof'

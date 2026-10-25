@@ -9,6 +9,8 @@
 //   A <task> comes from the first positional (the second for `block`), --task, or FM_TASK_ID.
 //   create   <task> --title T --kind ship|scout|assistance|secondmate|plan|other [--repo R] [--issue URL]
 //            [--surface user-visible|internal] [--after PARENT]...
+//   import   <task> --title T --kind K --state S --assignee A --next-actor N [--repo R] [--issue U] [--pr-url U] [--surface S]
+//            [--block-kind K --block-reason R] [--until ISO] [--since ISO]   the backfill: a task at the state an old source holds, once
 //   assign   <task> --to ASSIGNEE            triage|todo|ready -> ready (todo while a parent is open)
 //   start    <task>                          ready -> running
 //   heartbeat <task> [--note N]              running (today's `working:`)
@@ -247,6 +249,7 @@ async function project(taskId) {
 const COMMON = { actor: 's', role: 's', key: 's', note: 's', task: 's', json: 'b' };
 const SPECS = {
   create: { pos: ['task'], flags: { title: 's', kind: 's', repo: 's', issue: 's', surface: 's', after: 'm' } },
+  import: { pos: ['task'], flags: { title: 's', kind: 's', repo: 's', state: 's', assignee: 's', 'next-actor': 's', 'block-kind': 's', 'block-reason': 's', issue: 's', 'pr-url': 's', surface: 's', until: 's', since: 's' } },
   assign: { pos: ['task'], flags: { to: 's' } },
   start: { pos: ['task'], flags: {} },
   heartbeat: { pos: ['task'], flags: {} },
@@ -545,6 +548,37 @@ async function cmdCreate(args) {
     },
   );
   return task;
+}
+
+// Write a task at the state an old source holds (the backfill of the task contract in shadow). A task that is already
+// in the record stays as it is, so a second run adds nothing.
+async function cmdImport(args) {
+  const taskId = taskIdOf(args);
+  const who = identity(args, 'system');
+  const f = args.flags;
+  if (!f.title) throw usage('import needs --title');
+  const kind = oneOf(TASK_KINDS, f.kind, 'kind');
+  const state = oneOf(STATES, f.state, 'state');
+  const nextActor = oneOf(ACTORS, f['next-actor'], 'next actor');
+  const surface = f.surface === undefined ? null : oneOf(SURFACES, f.surface, 'surface');
+  const blockKind = f['block-kind'] === undefined ? null : oneOf([...BLOCK_KINDS, 'needs-decision'], f['block-kind'], 'block kind');
+  const until = f.until === undefined ? null : isoOf(f.until, '--until');
+  const key = args.flags.key ? who.key : `import:${taskId}`;
+  const { result } = await write(taskId, { ...who, key }, async ({ task: existing }) => {
+    if (existing) throw rule(`task ${taskId} already present`);
+    return {
+      kind: 'created',
+      note: `imported${f.since ? ` (open since ${f.since})` : ''}`,
+      set: { title: f.title, repo: f.repo ?? null, kind, state, assignee: f.assignee ?? '-', nextActor, blockKind, blockReason: f['block-reason'] ?? null, blockRepeats: 0, issueUrl: f.issue ?? null, prUrl: f['pr-url'] ?? null, surface, holdUntil: until },
+    };
+  }).catch((error) => {
+    if (error instanceof Fail && error.code === 5 && /already present/.test(error.message)) {
+      out(`import ${taskId}: already present`);
+      return {};
+    }
+    throw error;
+  });
+  return result;
 }
 
 function simple(command, kind, setFor, { needNote = false } = {}) {
@@ -1036,7 +1070,7 @@ async function cmdResume(args) {
 }
 
 const COMMANDS = {
-  create: cmdCreate, assign: cmdAssign, start: cmdStart, heartbeat: cmdHeartbeat, done: cmdDone, ask: cmdAsk, block: cmdBlock,
+  create: cmdCreate, import: cmdImport, assign: cmdAssign, start: cmdStart, heartbeat: cmdHeartbeat, done: cmdDone, ask: cmdAsk, block: cmdBlock,
   unblock: cmdUnblock, approve: cmdApprove, changes: cmdChanges, archive: cmdArchive, comment: cmdComment, event: cmdEvent,
   link: cmdLink, rows: cmdRows, check: cmdCheck, 'owner-check': cmdOwnerCheck, show: cmdShow, list: cmdList, resume: cmdResume, reproject: cmdReproject,
 };
