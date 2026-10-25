@@ -1183,6 +1183,25 @@ case_approve_newest() {
   ft approve $t; must 'approve' 5 || return 1
 }
 
+# owner-check on a row that already has an item needs --url and --steps too, and changes nothing without them.
+case_owner_update() {
+  BIN=$1; reset_db
+  local t=tk-ou events item
+  ft create $t --title t --kind ship >/dev/null; use_issue v1; ft rows $t "$ISSUE" >/dev/null
+  ft owner-check $t A1@1440 --page-title 'Home page' --url 'http://100.88.10.58:5001/#home' --steps '1. open it' --data d --expected e >/dev/null
+  events=$(count fm_task_event); item=$(db fm_owner_check | jq -S -c .)
+  ft owner-check $t A1@1440 --page-title 'New title' --steps '1. open it' --data d --expected e
+  must 'update without --url' 5 || return 1
+  case $ERR in *url*) ;; *) echo "the refusal does not name url: $ERR"; return 1 ;; esac
+  ft owner-check $t A1@1440 --page-title 'New title' --url 'http://100.88.10.58:5001/#home' --data d --expected e
+  must 'update without --steps' 5 || return 1
+  case $ERR in *steps*) ;; *) echo "the refusal does not name steps: $ERR"; return 1 ;; esac
+  [ "$(count fm_task_event)" = "$events" ] && [ "$(db fm_owner_check | jq -S -c .)" = "$item" ] || { echo "a refused update changed the record"; return 1; }
+  ft owner-check $t A1@1440 --page-title 'New title' --url 'http://100.88.10.58:5001/#home2' --steps '2. open it' --data d --expected e
+  must 'update with --url and --steps' 0 || return 1
+  db fm_owner_check | jq -e '.[0] | .pageTitle == "New title" and .url == "http://100.88.10.58:5001/#home2" and .steps == "2. open it"' >/dev/null || { echo "the update was not stored"; return 1; }
+}
+
 # A re-sent key carries the values of its first event; a retry with other values is refused.
 case_check_values() {
   BIN=$1; reset_db
@@ -1307,7 +1326,7 @@ case_link_triage() {
   [ "$(task_state tk-lt-c2)" = ready ] || { echo "the parent closing left the child in $(task_state tk-lt-c2)"; return 1; }
 }
 
-CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest"}
+CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update"}
 
 # ---- real command -------------------------------------------------------------------
 
@@ -1390,4 +1409,5 @@ mutate 'a re-sent owner-check key with another call is refused' owner_replay "if
 mutate 'a new result clears the head and evidence of an older one' check_nulls "evidence: v.evidence ?? null, head: v.head ?? null };" "...(v.evidence ? { evidence: v.evidence } : {}), ...(v.head ? { head: v.head } : {}) };"
 mutate 'a check on a task that closed meanwhile is refused' check_close "if (CLOSED.includes(task.state)) throw rule(\`check is refused:" "if (false) throw rule(\`check is refused:"
 mutate 'approve judges a row by its newest check event' approve_newest "return v ? { ...r, status: v.status," "return false ? { ...r, status: v.status,"
+mutate 'an owner-check update needs --url and --steps' owner_update "if (missing.length) throw rule(" "if (false) throw rule("
 pass 'every guarded behavior has a red mutation proof'

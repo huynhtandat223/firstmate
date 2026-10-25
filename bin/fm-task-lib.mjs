@@ -920,6 +920,9 @@ async function cmdOwnerCheck(args) {
   // the item first: a refusal here leaves the check row as it was
   const existing = prior ? null : await ownerItem(taskId, target);
   if (existing) {
+    // a create is refused by the API for a missing field; an update would keep the old one, so the writer asks for both
+    const missing = ['url', 'steps'].filter((name) => !f[name]);
+    if (missing.length) throw rule(`owner-check on a row that has an owner item needs ${missing.map((name) => `--${name}`).join(' and ')}`);
     const diff = Object.fromEntries(Object.entries(item).filter(([k, v]) => !['taskId', 'scenarioId', 'width', 'status'].includes(k) && existing[k] !== v));
     // the same item on a row that already waits on the owner: nothing to change
     if (!Object.keys(diff).length && existing.status === 'pending' && row.nextActor === 'owner' && row.status === 'pending') {
