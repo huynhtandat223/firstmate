@@ -145,6 +145,7 @@ function patch(table, id, body) {
 }
 
 const literal = (text) => {
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(text)) return { guid: text };
   if (/^'.*'$/s.test(text)) return text.slice(1, -1).replaceAll("''", "'");
   if (text === 'true') return true;
   if (text === 'false') return false;
@@ -159,7 +160,11 @@ function list(table, query) {
     for (const clause of filter.split(/ and /)) {
       const m = /^(\w+) (eq|ne|gt|ge|lt|le) (.+)$/s.exec(clause.trim());
       if (!m || !(m[1] in SCHEMA[table].f || m[1] === 'id' || m[1] === 'fmTaskEventId')) return refusal(400, 'INVALID_QUERY', `Could not find a property named '${m ? m[1] : clause}' on type ${table}.`);
-      const want = literal(m[3]);
+      let want = literal(m[3]);
+      const isGuid = m[1] === 'id' || m[1] === 'fmTaskEventId';
+      // the real API types these two as Edm.Guid: a quoted string is refused, a bare guid is the only literal
+      if (isGuid !== (typeof want === 'object' && want !== null)) return refusal(400, 'INVALID_QUERY', `A binary operator with incompatible types was detected on '${m[1]}'.`);
+      if (isGuid) want = want.guid;
       const op = { eq: (a) => a === want, ne: (a) => a !== want, gt: (a) => a > want, ge: (a) => a >= want, lt: (a) => a < want, le: (a) => a <= want }[m[2]];
       rows = rows.filter((r) => op(r[m[1]]));
     }

@@ -877,8 +877,8 @@ async function cmdResume(args) {
   lines.push('LAST TERMINAL CALL');
   if (!last) lines.push('  none yet');
   else {
-    const child = await firstRow(TERMINAL[last.kind], `fmTaskEventId eq ${lit(last.id)}`);
-    lines.push(`  #${last.seq} ${last.kind} by ${last.actorRole}/${last.actor} at ${cut(last.createdAt, 20)}`);
+    const child = await firstRow(TERMINAL[last.kind], `fmTaskEventId eq ${last.id}`);
+    lines.push(`  #${last.seq} ${last.kind} by ${last.actorRole}/${last.actor} at ${String(last.createdAt).slice(0, 19)}Z`);
     for (const field of TEMPLATE_FIELDS[last.kind]) {
       let value = child?.[field];
       if (field === 'rows' && value) {
