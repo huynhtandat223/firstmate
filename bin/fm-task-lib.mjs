@@ -832,15 +832,21 @@ async function cmdCheck(args) {
   });
 }
 
-// The row holds the values stored in the newest check event for it, whichever call patches last.
+// The row holds the values stored in the newest check event for it, whichever call patches last: after each
+// patch the newest event is read again, and a newer one is patched in turn.
 async function applyNewestCheck(taskId, row) {
-  const newest = [...(await taskEvents(taskId))].reverse().find((e) => e.kind === 'check' && bodyOf(e).row === rowKey(row));
-  const v = newest && bodyOf(newest).values;
-  if (!v) return;
-  const patch = { status: v.status, nextActor: v.nextActor, checkedAt: v.checkedAt };
-  if (v.evidence !== null && v.evidence !== undefined) patch.evidence = v.evidence;
-  if (v.head !== null && v.head !== undefined) patch.head = v.head;
-  ok(await http('PATCH', `/api/fm_task_check/${row.id}`, patch), `patch the check row ${rowKey(row)}`);
+  let applied = 0;
+  for (let round = 0; round < 30; round++) {
+    const newest = [...(await taskEvents(taskId))].reverse().find((e) => e.kind === 'check' && bodyOf(e).row === rowKey(row));
+    const v = newest && bodyOf(newest).values;
+    if (!v || newest.seq === applied) return;
+    const patch = { status: v.status, nextActor: v.nextActor, checkedAt: v.checkedAt };
+    if (v.evidence !== null && v.evidence !== undefined) patch.evidence = v.evidence;
+    if (v.head !== null && v.head !== undefined) patch.head = v.head;
+    ok(await http('PATCH', `/api/fm_task_check/${row.id}`, patch), `patch the check row ${rowKey(row)}`);
+    applied = newest.seq;
+  }
+  throw new Fail(3, `the check row ${rowKey(row)} kept changing; run the check again`);
 }
 
 // A task in review waits on the actor of its open check rows (worker first, then tester, then owner), and on

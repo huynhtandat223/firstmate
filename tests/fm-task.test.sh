@@ -53,6 +53,7 @@ for (const [table, def] of Object.entries(SCHEMA)) {
 let log = [];
 let rivals = 0;
 let lose = { mode: '', n: 0 };
+let delay = { table: '', ms: 0, n: 0 };
 
 const reply = (res, status, body) => {
   res.writeHead(status, { 'content-type': 'application/json' });
@@ -203,6 +204,10 @@ const server = http.createServer((req, res) => {
         lose = { mode: url.searchParams.get('mode') || '', n: Number(url.searchParams.get('n') || 1) };
         return reply(res, 200, lose);
       }
+      if (parts[1] === 'delay') {
+        delay = { table: parts[2], ms: Number(url.searchParams.get('ms') || 0), n: Number(url.searchParams.get('n') || 1) };
+        return reply(res, 200, delay);
+      }
       if (parts[1] === 'drop') {
         db[parts[2]] = db[parts[2]].filter((r) => r.id !== parts[3]);
         return reply(res, 200, {});
@@ -212,6 +217,7 @@ const server = http.createServer((req, res) => {
         log = [];
         rivals = 0;
         lose = { mode: '', n: 0 };
+        delay = { table: '', ms: 0, n: 0 };
         return reply(res, 200, {});
       }
       return reply(res, 404);
@@ -235,7 +241,17 @@ const server = http.createServer((req, res) => {
     else if (verb === 'get') {
       const row = db[table].find((r) => r.id === id);
       out = row ? { status: 200, body: { success: true, data: row } } : refusal(404, 'NOT_FOUND', 'not found');
-    } else if (verb === 'patch') out = patch(table, id, body);
+    } else if (verb === 'patch') {
+      if (delay.n > 0 && delay.table === table) {
+        // the patch is held before it is applied, so a later call can finish first
+        delay.n--;
+        return setTimeout(() => {
+          const late = patch(table, id, body);
+          reply(res, late.status, late.body);
+        }, delay.ms);
+      }
+      out = patch(table, id, body);
+    }
     else if (verb === 'delete') {
       db[table] = db[table].filter((r) => r.id !== id);
       return reply(res, 204);
@@ -1070,7 +1086,36 @@ case_check_values() {
   db fm_task_check | jq -e '.[] | select(.scenarioId == "A2") | .status == "pass" and .evidence == "e1"' >/dev/null || { echo "the re-send did not restore the stored values"; return 1; }
 }
 
-CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values"}
+# Parallel checks on one row leave the values of the newest check event on the row.
+case_check_parallel() {
+  BIN=$1; reset_db
+  local t=tk-cp round i st newest row pids
+  ft create $t --title t --kind ship >/dev/null; use_issue v1; ft rows $t "$ISSUE" >/dev/null
+  # the first call's patch is held until a second call has finished: the newest event still wins
+  curl -s -X POST "$BASE/__x/delay/fm_task_check?ms=700&n=1" >/dev/null
+  ( "$BIN/fm-task.sh" check $t A2@- --status pass --evidence slow --head hs > "$TMP_ROOT/cp.slow" 2>&1 ) &
+  pids=($!)
+  sleep 0.3
+  ft check $t A2@- --status fail --evidence fast --head hf
+  must 'the fast check' 0 || return 1
+  wait "${pids[@]}"
+  db fm_task_check | jq -e '.[] | select(.scenarioId == "A2") | .status == "fail" and .evidence == "fast" and .head == "hf"' >/dev/null \
+    || { echo "a slow older check overwrote the newest: $(db fm_task_check | jq -c '.[] | select(.scenarioId == "A2") | {status, evidence, head}')"; return 1; }
+  for round in 1 2 3 4 5 6; do
+    pids=()
+    for i in 1 2 3 4 5 6 7 8; do
+      st=pass; [ $((i % 2)) = 0 ] && st=fail
+      ( "$BIN/fm-task.sh" check $t A2@- --status $st --evidence "r$round-$i" --head "h$round-$i" > "$TMP_ROOT/cp.$i" 2>&1 ) &
+      pids+=($!)
+    done
+    wait "${pids[@]}"
+    newest=$(db fm_task_event | jq -c '[.[] | select(.kind == "check" and (.body | fromjson | .row == "A2@-"))] | max_by(.seq) | .body | fromjson | .values')
+    row=$(db fm_task_check | jq -c '.[] | select(.scenarioId == "A2") | {status, evidence, head}')
+    [ "$(jq -c '{status, evidence, head}' <<<"$newest")" = "$row" ] || { echo "round $round: the row holds $row, the newest event stored $newest"; return 1; }
+  done
+}
+
+CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel"}
 
 # ---- real command -------------------------------------------------------------------
 
@@ -1140,4 +1185,5 @@ mutate 'a pass counts for the head it was taken on' done_head "&& !(r.status ===
 mutate 'a row that opens again sends the task back' route_back "return !open.length ? 'firstmate' :" "return 'firstmate'; const unused = !open.length ? 'firstmate' :"
 mutate 'a re-sent key with other values is refused' check_values 'if (differs.length) throw rule(`the key' 'if (false) throw rule(`the key'
 mutate 'a re-sent check cannot undo a newer result' check_replay "const newest = [...(await taskEvents(taskId))].reverse().find((e) => e.kind === 'check' && bodyOf(e).row === rowKey(row));" "const newest = [...(await taskEvents(taskId))].reverse().find((e) => e.kind === 'check' && bodyOf(e).row === rowKey(row) && bodyOf(e).values.status === 'pass');"
+mutate 'the newest check event wins over a slower older call' check_parallel 'if (!v || newest.seq === applied) return;' 'if (!v || applied) return;'
 pass 'every guarded behavior has a red mutation proof'
