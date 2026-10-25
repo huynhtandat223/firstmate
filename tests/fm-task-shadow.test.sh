@@ -153,6 +153,7 @@ test_events_of_the_other_scripts() {
   make_case events on
   hook cleaned-up t1; hook verified t1
   hook held t1 captain "pick a path"; hook held t1 external "waiting for G"; hook held t1 parked "later"
+  hook held t1 external "fm-hold-v1:$(printf '%s' 'an encoded reason' | base64 -w0)"
   hook answered t1 released; hook answered t1 closed
   hook deploy-verify t1 abc123 1 https://github.com/o/r/issues/9
   assert_equals "$(printf '%s\n' \
@@ -161,6 +162,7 @@ test_events_of_the_other_scripts() {
     'ask t1 --question pick a path --option Decide now --option Decide later --recommendation - --why a captain hold --next-actor owner' \
     'block external t1 --reason waiting for G --next-actor firstmate' \
     'block transient t1 --reason later --next-actor firstmate' \
+    'block external t1 --reason an encoded reason --next-actor firstmate' \
     'unblock t1' \
     'approve t1' \
     'event t1 deploy --note deploy 1 at abc123: verify ask sent (https://github.com/o/r/issues/9)')" "$(calls)" "the events of the other scripts"
@@ -291,6 +293,23 @@ test_worker_status_command_writes_the_record() {
   pass "status command: a worker's status line reaches the record at once, and not at all without the flag"
 }
 
+test_teardown_writes_the_record() {
+  local out
+  make_real_case teardown
+  add_row "$TASK" 'Teardown shadow title' ship
+  out=$(in_home "$SBIN/fm-spawn.sh" "$TASK" "$PROJ_DIR" --mode local-only --yolo off 2>&1) || fail "spawn failed: $out"
+  : > "$CALLS"
+  printf 'landed\n' > "$WT_DIR/landed.txt"
+  git -C "$WT_DIR" add landed.txt
+  git -C "$WT_DIR" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm 'landed'
+  out=$(in_home "$SBIN/fm-merge-local.sh" "$TASK" 2>&1) || fail "local merge failed: $out"
+  : > "$CALLS"
+  out=$(in_home "$SBIN/fm-teardown.sh" "$TASK" 2>&1) || fail "teardown failed: $out"
+  assert_contains "$(calls)" "event $TASK comment --note cleaned up by bin/fm-teardown.sh" "teardown writes its cleanup to the record"
+  assert_contains "$(calls)" "approve $TASK" "the backlog close reaches the record (fm_backlog_done)"
+  pass "teardown: the cleanup and the backlog close reach the record"
+}
+
 test_flag_absent_writes_nothing
 test_dispatched_creates_assigns_and_starts
 test_status_lines_map_to_writer_commands
@@ -301,6 +320,7 @@ test_events_of_the_other_scripts
 test_backlog_verbs
 test_spawn_writes_the_record
 test_worker_status_command_writes_the_record
+test_teardown_writes_the_record
 
 # ---- mutation proofs: remove one rule of the hook, the case guarding it goes red ------------------------------
 
@@ -349,3 +369,5 @@ mutate_script() {  # <label> <case function> <script> <text of the hook line to 
 
 mutate_script 'the worker status command writes the record' test_worker_status_command_writes_the_record fm-brief.sh 'fm-task-shadow.sh'
 mutate_script 'fm-spawn.sh writes the dispatched task' test_spawn_writes_the_record fm-spawn.sh 'fm-task-shadow.sh" dispatched'
+mutate_script 'fm-teardown.sh writes the cleanup' test_teardown_writes_the_record fm-teardown.sh 'fm-task-shadow.sh" cleaned-up'
+mutate_script 'the backlog transition lib writes a landed close' test_teardown_writes_the_record fm-backlog-transition-lib.sh 'fm_backlog_shadow "$verb"'

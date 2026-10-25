@@ -145,8 +145,12 @@ status_event() {
 }
 
 hold_event() {  # <hold-kind> <reason>: the record takes ask or block only from a running task, so a refusal leaves a comment
-  local kind=$1 reason key
-  reason=$(cut_to "$2" 1500)
+  local kind=$1 reason key plain
+  reason=$2
+  case "$reason" in
+    fm-hold-v1:*) plain=$(printf '%s' "${reason#fm-hold-v1:}" | base64 -d 2>/dev/null) && reason=$plain ;;
+  esac
+  reason=$(cut_to "$reason" 1500)
   [ -n "$reason" ] || reason="held ($kind)"
   key=$(short "$kind|$reason")
   case "$kind" in
