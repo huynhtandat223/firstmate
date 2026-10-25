@@ -53,4 +53,19 @@ printf '\nUnrelated note\n' >> "$FM_HOME/data/backlog.md"
 bash "$ROOT/bin/fm-task-shadow.sh" held stable captain Same
 after=$("$ROOT/bin/fm-task.sh" show stable --json | jq .lastSeq)
 [ "$before" = "$after" ] || fail 'same captain occurrence wrote another hold'
-echo 'ok - shadow lifecycle and explicit reopen'
+for state in triage todo ready running blocked review 'done' archived; do
+  id="reassign-$state"
+  "$ROOT/bin/fm-task.sh" import "$id" --title "$id" --kind ship --state "$state" --assignee old --next-actor firstmate
+  "$ROOT/bin/fm-task.sh" show "$id" --json > "$TMP_ROOT/before"
+  if [ "$state" = 'done' ] || [ "$state" = archived ]; then
+    if "$ROOT/bin/fm-task.sh" reassign "$id" --to new --reason handoff; then fail "reassign allowed $state"; fi
+  else
+    "$ROOT/bin/fm-task.sh" reassign "$id" --to new --reason handoff --key "move-$id"
+    "$ROOT/bin/fm-task.sh" reassign "$id" --to new --reason handoff --key "move-$id"
+    "$ROOT/bin/fm-task.sh" reproject "$id"
+    "$ROOT/bin/fm-task.sh" show "$id" --json > "$TMP_ROOT/after"
+    jq -e --arg state "$state" '.state == $state and .assignee == "new"' "$TMP_ROOT/after"
+    diff <(jq 'del(.assignee,.lastSeq)' "$TMP_ROOT/before") <(jq 'del(.assignee,.lastSeq)' "$TMP_ROOT/after")
+  fi
+done
+echo 'ok - shadow lifecycle, reopen, reassign matrix and reproject'

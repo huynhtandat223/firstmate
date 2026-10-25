@@ -12,6 +12,7 @@
 //   import   <task> --title T --kind K --state S --assignee A --next-actor N [--repo R] [--issue U] [--pr-url U] [--surface S]
 //            [--block-kind K --block-reason R] [--until ISO] [--since ISO]   the backfill: a task at the state an old source holds, once
 //   assign   <task> --to ASSIGNEE            triage|todo|ready -> ready (todo while a parent is open)
+//   reassign <task> --to ASSIGNEE --reason WHY  changes only assignee; refused from done and archived
 //   start    <task>                          ready -> running
 //   heartbeat <task> [--note N]              running (today's `working:`)
 //   done     <task> --summary --changed-files --verification --residual-risk [--rows JSON]
@@ -84,6 +85,7 @@ const CLOSED = ['done', 'archived'];
 // command -> the states it may run from (the Hermes transitions)
 const TRANSITIONS = {
   assign: ['triage', 'todo', 'ready'],
+  reassign: ['triage', 'todo', 'ready', 'running', 'blocked', 'review'],
   start: ['ready'],
   heartbeat: ['running'],
   done: ['running'],
@@ -262,6 +264,7 @@ const SPECS = {
   approve: { pos: ['task'], flags: {} },
   changes: { pos: ['task'], flags: {} },
   reopen: { pos: ['task'], flags: { reason: 's' } },
+  reassign: { pos: ['task'], flags: { to: 's', reason: 's' } },
   archive: { pos: ['task'], flags: {} },
   comment: { pos: ['task'], flags: { image: 'm', 'image-label': 'm' } },
   event: { pos: ['task', 'kind'], flags: { 'pr-url': 's' } },
@@ -606,6 +609,11 @@ const cmdAssign = simple('assign', 'assigned', async (task, args, taskId) => {
   const waiting = (await openParents(taskId)).length > 0;
   return { assignee: args.flags.to, nextActor: 'worker', state: waiting ? 'todo' : 'ready' };
 });
+const cmdReassign = async (args) => {
+  if (!args.flags.to?.trim() || !args.flags.reason?.trim()) throw usage('reassign needs --to and --reason');
+  args.flags.note = args.flags.reason;
+  return simple('reassign', 'reassigned', async () => ({assignee: args.flags.to}))(args);
+};
 const cmdStart = simple('start', 'started', async (task, args, taskId) => {
   const parents = await openParents(taskId);
   if (parents.length) throw rule(`start is refused while the task waits on open parents: ${parents.join(', ')}`);
@@ -1079,7 +1087,7 @@ async function cmdResume(args) {
 
 const COMMANDS = {
   create: cmdCreate, import: cmdImport, assign: cmdAssign, start: cmdStart, heartbeat: cmdHeartbeat, done: cmdDone, ask: cmdAsk, block: cmdBlock,
-  unblock: cmdUnblock, approve: cmdApprove, changes: cmdChanges, reopen: cmdReopen, archive: cmdArchive, comment: cmdComment, event: cmdEvent,
+  unblock: cmdUnblock, approve: cmdApprove, changes: cmdChanges, reopen: cmdReopen, reassign: cmdReassign, archive: cmdArchive, comment: cmdComment, event: cmdEvent,
   link: cmdLink, rows: cmdRows, check: cmdCheck, 'owner-check': cmdOwnerCheck, show: cmdShow, list: cmdList, resume: cmdResume, reproject: cmdReproject,
 };
 
