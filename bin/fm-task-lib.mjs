@@ -472,6 +472,7 @@ function targetOf(text) {
 async function checkRow(taskId, target) {
   const row = await firstRow('fm_task_check', `taskId eq ${lit(taskId)} and scenarioId eq ${lit(target.scenarioId)} and width eq ${lit(target.width)}`);
   if (!row) throw rule(`task ${taskId} has no check row ${target.scenarioId}@${target.width}; run rows first`);
+  if (row.status === 'retired') throw rule(`check row ${rowKey(row)} is retired: its scenario left the issue`);
   return row;
 }
 const ownerItem = (taskId, target) => firstRow('fm_owner_check', `taskId eq ${lit(taskId)} and scenarioId eq ${lit(target.scenarioId)} and width eq ${lit(target.width)}`);

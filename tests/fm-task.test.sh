@@ -987,7 +987,24 @@ case_check_closed() {
   must 'check on a done task' 5 || return 1
 }
 
-CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed"}
+# check and owner-check refuse a retired row.
+case_row_retired() {
+  BIN=$1; reset_db
+  local t=tk-rr
+  ft create $t --title t --kind ship >/dev/null
+  use_issue v2; ft rows $t "$ISSUE" >/dev/null
+  use_issue v3; ft rows $t "$ISSUE" >/dev/null
+  [ "$(db fm_task_check | jq -r '.[] | select(.scenarioId == "A1" and .width == "390") | .status')" = retired ] || { echo "setup: A1@390 is not retired"; return 1; }
+  ft check $t A1@390 --status pass
+  must 'check on a retired row' 5 || return 1
+  case $ERR in *retired*) ;; *) echo "the refusal does not say the row is retired: $ERR"; return 1 ;; esac
+  ft owner-check $t A1@390 --page-title p --url u --steps s --data d --expected e
+  must 'owner-check on a retired row' 5 || return 1
+  [ "$(db fm_task_check | jq -r '.[] | select(.scenarioId == "A1" and .width == "390") | .status')" = retired ] || { echo "the retired row changed"; return 1; }
+  [ "$(count fm_owner_check)" = 0 ] || { echo "an owner item was stored for a retired row"; return 1; }
+}
+
+CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired"}
 
 # ---- real command -------------------------------------------------------------------
 
@@ -1053,4 +1070,5 @@ mutate 'a pass counts only on the head of the latest done' approve_head 'if (sta
 mutate 'an owner item reopens its row' owner_pending "{ nextActor: 'owner', status: 'pending', checkedAt: null }" "{ nextActor: 'owner' }"
 mutate 'rows are refused on a closed task' rows_closed 'if (CLOSED.includes(task.state)) throw rule(`rows is refused' 'if (false) throw rule(`rows is refused'
 mutate 'check and owner-check refuse a closed task' check_closed 'if (CLOSED.includes(task.state)) throw rule(`${command} is refused' 'if (false) throw rule(`${command} is refused'
+mutate 'a retired row takes no check' row_retired "if (row.status === 'retired') throw rule(\`check row" "if (false) throw rule(\`check row"
 pass 'every guarded behavior has a red mutation proof'
