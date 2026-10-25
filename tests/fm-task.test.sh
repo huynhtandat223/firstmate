@@ -879,7 +879,7 @@ case_route() {
   ft "done" $t "${DONE_FLAGS[@]}" >/dev/null
   [ "$(task_row $t | jq -r .nextActor)" = tester ] || { echo "done with user-visible rows open should wait on the tester: $(task_row $t)"; return 1; }
   ft check $t A1@1440 --status pass >/dev/null; ft check $t A1@390 --status pass >/dev/null; ft check $t A2@- --status pass >/dev/null
-  [ "$(task_row $t | jq -r .nextActor)" = tester ] || { echo "routed before the last row passed"; return 1; }
+  [ "$(task_row $t | jq -r .nextActor)" = worker ] || { echo "with a worker row open the task should wait on the worker: $(task_row $t | jq -r .nextActor)"; return 1; }
   ft check $t A3@- --status pass
   must 'last pass' 0 || return 1
   [ "$(task_row $t | jq -r .nextActor)" = firstmate ] || { echo "the task stays with $(task_row $t | jq -r .nextActor) after the last row passed"; return 1; }
@@ -1022,7 +1022,30 @@ case_done_head() {
   [ "$(task_row tk-dh3 | jq -r .nextActor)" = firstmate ] || { echo "passes with no head and a done with no head should match: $(task_row tk-dh3 | jq -c '{state,nextActor}')"; return 1; }
 }
 
-CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head"}
+# Routing goes both ways: a row that opens again on a review task sends it back to that row's actor.
+case_route_back() {
+  BIN=$1; reset_db
+  local t=tk-rb r row
+  mk_running $t >/dev/null; use_issue v1; ft rows $t "$ISSUE" >/dev/null
+  ft "done" $t "${DONE_FLAGS[@]}" >/dev/null
+  for r in A1@1440 A1@390 A2@- A3@-; do ft check $t $r --status pass >/dev/null; done
+  na() { task_row $t | jq -r .nextActor; }
+  [ "$(na)" = firstmate ] || { echo "setup: not routed to firstmate: $(na)"; return 1; }
+  ft check $t A2@- --status fail >/dev/null
+  [ "$(na)" = worker ] || { echo "a failed row did not send the task back to the worker: $(na)"; return 1; }
+  ft check $t A2@- --status pass >/dev/null
+  [ "$(na)" = firstmate ] || { echo "the row passed again but the task stays with $(na)"; return 1; }
+  ft check $t A1@1440 --status pending >/dev/null
+  [ "$(na)" = tester ] || { echo "a user-visible row open again did not send the task to the tester: $(na)"; return 1; }
+  [ "$(db fm_task_check | jq -r '.[] | select(.scenarioId == "A1" and .width == "1440") | .nextActor')" = tester ] || { echo "a reopened user-visible row reads another actor"; return 1; }
+  ft check $t A1@1440 --status pass >/dev/null
+  ft owner-check $t A1@390 --page-title p --url u --steps s --data d --expected e >/dev/null
+  [ "$(na)" = owner ] || { echo "an owner item on a row did not send the task to the owner: $(na)"; return 1; }
+  row=$(task_row $t); ft reproject $t >/dev/null
+  [ "$(task_row $t)" = "$row" ] || { echo "reproject changed the routed row"; return 1; }
+}
+
+CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back"}
 
 # ---- real command -------------------------------------------------------------------
 
@@ -1081,7 +1104,7 @@ mutate 'resume gives the last terminal call with its fields' resume 'for (const 
 mutate 'reproject rebuilds a damaged row' resume 'if (diff.length) {' 'if (false) {'
 mutate 'an API that does not answer is exit 3' connection 'throw new Fail(3, `${method} ${pathname}: no answer' 'throw new Fail(1, `${method} ${pathname}: no answer'
 mutate 'a re-sent check cannot undo a newer result' check_replay 'if (!newest || newest.seq !== result.event.seq) return;' ';'
-mutate 'the last passed row routes the task to firstmate' route 'if (!wanted(fold(await taskEvents(taskId))) || openRows(await checkRows(taskId)).length) return;' 'return;'
+mutate 'the last passed row routes the task to firstmate' route 'if (!(await needed())) return;' 'return;'
 mutate 'start waits for an open parent' start_parent 'if (parents.length) throw rule(`start is refused' 'if (false) throw rule(`start is refused'
 mutate 'a user-visible task needs check rows to be approved' approve_head 'if (task.surface === '"'"'user-visible'"'"' && !visible.length)' 'if (false)'
 mutate 'a pass counts only on the head of the latest done' approve_head 'if (stale.length) throw rule(`approve is refused' 'if (false) throw rule(`approve is refused'
@@ -1090,4 +1113,5 @@ mutate 'rows are refused on a closed task' rows_closed 'if (CLOSED.includes(task
 mutate 'check and owner-check refuse a closed task' check_closed 'if (CLOSED.includes(task.state)) throw rule(`${command} is refused' 'if (false) throw rule(`${command} is refused'
 mutate 'a retired row takes no check' row_retired "if (row.status === 'retired') throw rule(\`check row" "if (false) throw rule(\`check row"
 mutate 'a pass counts for the head it was taken on' done_head "&& !(r.status === 'pass' && (r.head ?? null) === (f.head ?? null))" "&& r.status !== 'pass'"
+mutate 'a row that opens again sends the task back' route_back "return !open.length ? 'firstmate' :" "return 'firstmate'; const unused = !open.length ? 'firstmate' :"
 pass 'every guarded behavior has a red mutation proof'

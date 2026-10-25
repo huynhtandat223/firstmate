@@ -459,6 +459,7 @@ function imagesOf(args) {
 }
 const withImages = (children, images) => (images.length ? { ...children, images } : children);
 
+const surfaceActor = (surface) => (surface === 'user-visible' ? 'tester' : 'worker');
 const rowKey = (row) => `${row.scenarioId}@${row.width}`;
 const openRows = (rows) => rows.filter((row) => row.status === 'pending' || row.status === 'fail');
 function rowsJson(rows) {
@@ -810,7 +811,7 @@ async function cmdCheck(args) {
   const status = oneOf(CHECK_STATUSES, f.status, 'status');
   await requireOpenTask(taskId, 'check');
   const row = await checkRow(taskId, target);
-  const nextActor = oneOf(ACTORS, f['next-actor'] ?? (status === 'pass' ? 'firstmate' : status === 'fail' ? 'worker' : row.nextActor), 'next actor');
+  const nextActor = oneOf(ACTORS, f['next-actor'] ?? (status === 'pass' ? 'firstmate' : status === 'fail' ? 'worker' : row.nextActor === 'firstmate' ? surfaceActor(row.surface) : row.nextActor), 'next actor');
   if (nextActor === 'owner' && !(await ownerItem(taskId, target))) throw rule(`${rowKey(row)} cannot read next actor owner without its owner item; run owner-check first`);
   const patch = { status, nextActor, checkedAt: status === 'pending' ? null : new Date().toISOString() };
   if (f.evidence !== undefined) patch.evidence = f.evidence;
@@ -825,17 +826,27 @@ async function cmdCheck(args) {
       if (!newest || newest.seq !== result.event.seq) return;
     }
     ok(await http('PATCH', `/api/fm_task_check/${row.id}`, patch), `patch the check row ${rowKey(row)}`);
-    await routeToFirstmate(taskId, who);
+    await routeReview(taskId, who);
   });
 }
 
-// A task in review whose check rows are all closed waits on firstmate, not on the tester.
-async function routeToFirstmate(taskId, who) {
-  const wanted = (task) => task?.state === 'review' && task.nextActor !== 'firstmate';
-  if (!wanted(fold(await taskEvents(taskId))) || openRows(await checkRows(taskId)).length) return;
-  await append(taskId, { ...who, key: `${who.key}:route` }, async ({ task }) => {
-    if (!wanted(task)) throw rule('already routed');
-    return { kind: 'routed', note: 'every check row is closed', set: { nextActor: 'firstmate' } };
+// A task in review waits on the actor of its open check rows (worker first, then tester, then owner), and on
+// firstmate when none is open. Called after every change of a row.
+const reviewActor = (rows) => {
+  const open = openRows(rows);
+  return !open.length ? 'firstmate' : ['worker', 'tester', 'owner'].find((a) => open.some((r) => r.nextActor === a)) ?? 'firstmate';
+};
+async function routeReview(taskId, who) {
+  const needed = async () => {
+    const task = fold(await taskEvents(taskId));
+    const actor = reviewActor(await checkRows(taskId));
+    return task?.state === 'review' && task.nextActor !== actor ? actor : null;
+  };
+  if (!(await needed())) return;
+  await append(taskId, { ...who, key: `${who.key}:route:${crypto.randomBytes(3).toString('hex')}` }, async ({ task }) => {
+    const actor = reviewActor(await checkRows(taskId));
+    if (task?.state !== 'review' || task.nextActor === actor) throw rule('already routed');
+    return { kind: 'routed', note: `check rows are open for ${actor}`, set: { nextActor: actor } };
   }).catch((error) => {
     if (!(error instanceof Fail && error.code === 5)) throw error;
   });
@@ -863,6 +874,7 @@ async function cmdOwnerCheck(args) {
     return { kind: 'owner-check', note: `${rowKey(row)}: ${f['page-title']} at ${f.url}` };
   }, async () => {
     ok(await http('PATCH', `/api/fm_task_check/${row.id}`, { nextActor: 'owner', status: 'pending', checkedAt: null }), `patch the check row ${rowKey(row)}`);
+    await routeReview(taskId, who);
   });
 }
 
