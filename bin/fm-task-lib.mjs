@@ -936,6 +936,7 @@ async function cmdOwnerCheck(args) {
   }
   await write(taskId, who, async ({ task }) => {
     if (!task) throw rule('no such task');
+    if (CLOSED.includes(task.state)) throw rule(`owner-check is refused: ${taskId} is ${task.state}`);
     return { kind: 'owner-check', note, extra: { row: rowKey(row), values: { status: 'pending', nextActor: 'owner', evidence: row.evidence ?? null, head: row.head ?? null, checkedAt: null } } };
   }, async () => {
     await applyNewestCheck(taskId, row);

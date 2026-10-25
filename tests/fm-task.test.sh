@@ -1202,6 +1202,25 @@ case_owner_update() {
   db fm_owner_check | jq -e '.[0] | .pageTitle == "New title" and .url == "http://100.88.10.58:5001/#home2" and .steps == "2. open it"' >/dev/null || { echo "the update was not stored"; return 1; }
 }
 
+# An owner-check cannot be stored behind an approval that closed the task in between.
+case_owner_close() {
+  BIN=$1; reset_db
+  local t=tk-oc r pid
+  mk_running $t >/dev/null; use_issue v1; ft rows $t "$ISSUE" >/dev/null
+  ft "done" $t "${DONE_FLAGS[@]}" >/dev/null
+  for r in A1@1440 A1@390 A2@- A3@-; do ft check $t $r --status pass >/dev/null; done
+  # the owner-check has read the open task and waits for its row; the approval lands first
+  curl -s -X POST "$BASE/__x/delay/fm_task_check?ms=800&n=1&verb=list" >/dev/null
+  ( "$BIN/fm-task.sh" owner-check $t A2@- --page-title p --url u --steps s --data d --expected e > "$TMP_ROOT/oc.out" 2>&1; echo $? > "$TMP_ROOT/oc.rc" ) &
+  pid=$!
+  sleep 0.3
+  ft approve $t; must 'approve' 0 || return 1
+  wait $pid
+  [ "$(cat "$TMP_ROOT/oc.rc")" = 5 ] || { echo "the owner-check behind the approval exited $(cat "$TMP_ROOT/oc.rc"), want 5: $(cat "$TMP_ROOT/oc.out")"; return 1; }
+  db fm_task_event | jq -e '[.[] | select(.kind == "owner-check")] | length == 0' >/dev/null || { echo "an owner-check event was stored after the task closed"; return 1; }
+  [ "$(db fm_task_check | jq -r '.[] | select(.scenarioId == "A2") | .status + "/" + .nextActor')" = pass/firstmate ] || { echo "the owner-check changed a row of the closed task"; return 1; }
+}
+
 # A re-sent key carries the values of its first event; a retry with other values is refused.
 case_check_values() {
   BIN=$1; reset_db
@@ -1326,7 +1345,7 @@ case_link_triage() {
   [ "$(task_state tk-lt-c2)" = ready ] || { echo "the parent closing left the child in $(task_state tk-lt-c2)"; return 1; }
 }
 
-CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update"}
+CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close"}
 
 # ---- real command -------------------------------------------------------------------
 
@@ -1410,4 +1429,5 @@ mutate 'a new result clears the head and evidence of an older one' check_nulls "
 mutate 'a check on a task that closed meanwhile is refused' check_close "if (CLOSED.includes(task.state)) throw rule(\`check is refused:" "if (false) throw rule(\`check is refused:"
 mutate 'approve judges a row by its newest check event' approve_newest "return v ? { ...r, status: v.status," "return false ? { ...r, status: v.status,"
 mutate 'an owner-check update needs --url and --steps' owner_update "if (missing.length) throw rule(" "if (false) throw rule("
+mutate 'an owner-check on a task that closed meanwhile is refused' owner_close "if (CLOSED.includes(task.state)) throw rule(\`owner-check is refused:" "if (false) throw rule(\`owner-check is refused:"
 pass 'every guarded behavior has a red mutation proof'
