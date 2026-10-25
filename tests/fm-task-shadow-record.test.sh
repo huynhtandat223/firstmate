@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Real writer integration for holds across lifecycle states and repeated occurrences.
+set -euo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+TMP_ROOT=$(fm_test_tmproot fm-task-shadow-record)
+trap 'kill "${PID:-0}" 2>/dev/null || true; fm_test_cleanup' EXIT
+mkdir -p "$TMP_ROOT/home/config" "$TMP_ROOT/home/state" "$TMP_ROOT/home/data"
+touch "$TMP_ROOT/home/config/task-shadow"
+printf token > "$TMP_ROOT/token"; chmod 600 "$TMP_ROOT/token"
+node "$ROOT/tests/fm-task-fake-api/server.mjs" "$TMP_ROOT/port" "$ROOT/tests/fm-task-fake-api/schema.json" token &
+PID=$!
+for _ in {1..100}; do [ ! -s "$TMP_ROOT/port" ] || break; sleep .1; done
+export FM_HOME="$TMP_ROOT/home" FM_TASK_TOKEN_FILE="$TMP_ROOT/token" FM_TASK_BASE_URL="http://127.0.0.1:$(<"$TMP_ROOT/port")"
+unset FM_TASK_AUTH
+bash "$ROOT/bin/fm-task-shadow.sh" held missing captain 'Choose A'
+"$ROOT/bin/fm-task.sh" show missing --json | jq -e '.state == "blocked" and .nextActor == "owner"'
+"$ROOT/bin/fm-task.sh" create queued --title Q --kind ship
+bash "$ROOT/bin/fm-task-shadow.sh" held queued captain 'Choose B'
+"$ROOT/bin/fm-task.sh" show queued --json | jq -e '.state == "blocked" and .nextActor == "owner"'
+echo 'ok - missing and nonrunning task holds survive'

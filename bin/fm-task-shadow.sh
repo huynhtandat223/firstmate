@@ -144,8 +144,8 @@ status_event() {
   return 0
 }
 
-hold_event() {  # <hold-kind> <reason>: the record takes ask or block only from a running task, so a refusal leaves a comment
-  local kind=$1 reason key plain
+hold_event() {  # <hold-kind> <reason>: make the record capable of taking this old-source hold
+  local kind=$1 reason key plain current
   reason=$2
   case "$reason" in
     fm-hold-v1:*) plain=$(printf '%s' "${reason#fm-hold-v1:}" | base64 -d 2>/dev/null) && reason=$plain ;;
@@ -153,6 +153,22 @@ hold_event() {  # <hold-kind> <reason>: the record takes ask or block only from 
   reason=$(cut_to "$reason" 1500)
   [ -n "$reason" ] || reason="held ($kind)"
   key=$(short "$kind|$reason")
+  current=$("$WRITER" show "$TASK" --json 2>/dev/null) || current=''
+  if [ -z "$current" ]; then
+    w "hold-$key-create" create "$TASK" --title "$(title_of)" --kind other || return 0
+    current='{"state":"triage"}'
+  fi
+  current=$(printf '%s' "$current" | jq -r '.state // "running"' 2>/dev/null) || current=running
+  case "$current" in
+    review) w "hold-$key-changes" changes "$TASK" --note 'old source holds the task' || return 0 ;;
+    blocked) w "hold-$key-unblock" unblock "$TASK" || return 0 ;;
+    done|archived) return 0 ;;
+  esac
+  case "$current" in
+    running) ;;
+    *) w "hold-$key-assign" assign "$TASK" --to "$TASK" || return 0
+       w "hold-$key-start" start "$TASK" || return 0 ;;
+  esac
   case "$kind" in
     captain)
       w "hold-$key" ask "$TASK" --question "$reason" --option 'Decide now' --option 'Decide later' --recommendation - --why 'a captain hold' --next-actor owner ;;
