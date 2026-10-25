@@ -24,6 +24,7 @@
 //   unblock  <task>                          blocked|triage -> ready
 //   approve  <task>                          review -> done (refused while a check row is pending or failed)
 //   changes  <task> --note WHY               review -> ready
+//   reopen   <task> --reason WHY             done -> ready, next actor firstmate; archived stays final
 //   archive  <task>                          triage|todo|ready|blocked|review|done -> archived
 //   comment  <task> --note T [--image PATH --image-label L]...             any state
 //   event    <task> <kind> [--note N] [--pr-url U]   kinds: steer comment pr deploy protocol_violation divergence
@@ -91,6 +92,7 @@ const TRANSITIONS = {
   unblock: ['triage', 'blocked'],
   approve: ['review'],
   changes: ['review'],
+  reopen: ['done'],
   archive: ['triage', 'todo', 'ready', 'blocked', 'review', 'done'],
   comment: STATES,
 };
@@ -259,6 +261,7 @@ const SPECS = {
   unblock: { pos: ['task'], flags: {} },
   approve: { pos: ['task'], flags: {} },
   changes: { pos: ['task'], flags: {} },
+  reopen: { pos: ['task'], flags: { reason: 's' } },
   archive: { pos: ['task'], flags: {} },
   comment: { pos: ['task'], flags: { image: 'm', 'image-label': 'm' } },
   event: { pos: ['task', 'kind'], flags: { 'pr-url': 's' } },
@@ -616,6 +619,11 @@ const cmdUnblock = simple('unblock', 'unblocked', async (task, args, taskId) => 
   return set;
 });
 const cmdChanges = simple('changes', 'changes', async () => ({ state: 'ready', nextActor: 'worker' }), { needNote: true });
+const cmdReopen = async (args) => {
+  if (!args.flags.reason?.trim()) throw usage('reopen needs --reason');
+  args.flags.note = args.flags.reason;
+  return simple('reopen', 'reopened', async () => ({state: 'ready', nextActor: 'firstmate', blockKind: null, blockReason: null, blockRepeats: 0, holdUntil: null}))(args);
+};
 const cmdArchive = simple('archive', 'archived', async () => ({ state: 'archived', nextActor: 'firstmate' }));
 // A user-visible pass counts for the head that was built last: the head of the newest done call.
 async function latestDoneHead(taskId) {
@@ -1071,7 +1079,7 @@ async function cmdResume(args) {
 
 const COMMANDS = {
   create: cmdCreate, import: cmdImport, assign: cmdAssign, start: cmdStart, heartbeat: cmdHeartbeat, done: cmdDone, ask: cmdAsk, block: cmdBlock,
-  unblock: cmdUnblock, approve: cmdApprove, changes: cmdChanges, archive: cmdArchive, comment: cmdComment, event: cmdEvent,
+  unblock: cmdUnblock, approve: cmdApprove, changes: cmdChanges, reopen: cmdReopen, archive: cmdArchive, comment: cmdComment, event: cmdEvent,
   link: cmdLink, rows: cmdRows, check: cmdCheck, 'owner-check': cmdOwnerCheck, show: cmdShow, list: cmdList, resume: cmdResume, reproject: cmdReproject,
 };
 

@@ -209,7 +209,7 @@ case "$EVENT" in
   backlog)
     case "${1:-}" in
       done) close_task backlog-done ;;
-      reopen) w backlog-reopen event "$TASK" comment --note 'backlog row reopened' ;;
+      reopen) w backlog-reopen reopen "$TASK" --reason 'backlog row reopened' ;;
       hold) [ "${3:-}" = captain ] || hold_event "${3:-hold}" "${4:-}" ;;
       unhold) w backlog-unhold unblock "$TASK" || w backlog-unhold-comment event "$TASK" comment --note 'backlog hold lifted' ;;
     esac

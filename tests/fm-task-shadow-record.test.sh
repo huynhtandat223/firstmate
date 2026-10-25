@@ -29,4 +29,11 @@ bash "$ROOT/bin/fm-task-shadow.sh" held repeat captain 'Same reason' occurrence-
 "$ROOT/bin/fm-task.sh" unblock repeat
 bash "$ROOT/bin/fm-task-shadow.sh" held repeat captain 'Same reason' occurrence-2
 "$ROOT/bin/fm-task.sh" show repeat --json | jq -e '.state == "blocked" and .nextActor == "owner"'
-echo 'ok - holds, identity, external mapping and repeated holds'
+"$ROOT/bin/fm-task.sh" import closed --title Closed --kind ship --state done --assignee closed --next-actor firstmate
+"$ROOT/bin/fm-task.sh" reopen closed --reason 'New work' --key reopen-once
+"$ROOT/bin/fm-task.sh" reopen closed --reason 'New work' --key reopen-once
+"$ROOT/bin/fm-task.sh" show closed --json | jq -e '.state == "ready" and .nextActor == "firstmate"'
+if "$ROOT/bin/fm-task.sh" reopen closed --reason again; then fail 'reopen allowed from ready'; fi
+"$ROOT/bin/fm-task.sh" archive closed
+if "$ROOT/bin/fm-task.sh" reopen closed --reason again; then fail 'reopen allowed from archived'; fi
+echo 'ok - shadow lifecycle and explicit reopen'
