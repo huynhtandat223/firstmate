@@ -1124,6 +1124,19 @@ case_owner_replay() {
   must 'owner-check re-sent for another row' 5 || return 1
 }
 
+# A new result with no --head or --evidence keeps no head or evidence of an older one.
+case_check_nulls() {
+  BIN=$1; reset_db
+  local t=tk-cn
+  ft create $t --title t --kind ship >/dev/null; use_issue v1; ft rows $t "$ISSUE" >/dev/null
+  rowv() { db fm_task_check | jq -c '.[] | select(.scenarioId == "A2") | {status, evidence, head}'; }
+  ft check $t A2@- --status pass --evidence first --head h1 >/dev/null
+  [ "$(rowv)" = '{"status":"pass","evidence":"first","head":"h1"}' ] || { echo "setup: $(rowv)"; return 1; }
+  ft check $t A2@- --status pending >/dev/null
+  ft check $t A2@- --status pass; must 'a pass with no head' 0 || return 1
+  [ "$(rowv)" = '{"status":"pass","evidence":null,"head":null}' ] || { echo "a new pass kept the older evidence or head: $(rowv)"; return 1; }
+}
+
 # A re-sent key carries the values of its first event; a retry with other values is refused.
 case_check_values() {
   BIN=$1; reset_db
@@ -1248,7 +1261,7 @@ case_link_triage() {
   [ "$(task_state tk-lt-c2)" = ready ] || { echo "the parent closing left the child in $(task_state tk-lt-c2)"; return 1; }
 }
 
-CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay"}
+CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls"}
 
 # ---- real command -------------------------------------------------------------------
 
@@ -1328,4 +1341,5 @@ mutate 'a pass on another head than the latest done is still open for routing' r
 mutate 'rows routes a task in review again' rows_route "set: sets }), () => routeReview(taskId, who));" "set: sets }));"
 mutate 'a re-sent owner-check does not write its item again' owner_replay "const existing = prior ? null : await ownerItem(taskId, target);" "const existing = await ownerItem(taskId, target);"
 mutate 'a re-sent owner-check key with another call is refused' owner_replay "if (prior && (prior.taskId !== taskId ||" "if (false && (prior.taskId !== taskId ||"
+mutate 'a new result clears the head and evidence of an older one' check_nulls "evidence: v.evidence ?? null, head: v.head ?? null };" "...(v.evidence ? { evidence: v.evidence } : {}), ...(v.head ? { head: v.head } : {}) };"
 pass 'every guarded behavior has a red mutation proof'

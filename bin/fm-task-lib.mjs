@@ -864,9 +864,7 @@ async function applyNewestCheck(taskId, row) {
     const newest = rowEvent(await taskEvents(taskId), row);
     const v = newest && bodyOf(newest).values;
     if (!v || newest.seq === applied) return;
-    const patch = { status: v.status, nextActor: v.nextActor, checkedAt: v.checkedAt };
-    if (v.evidence !== null && v.evidence !== undefined) patch.evidence = v.evidence;
-    if (v.head !== null && v.head !== undefined) patch.head = v.head;
+    const patch = { status: v.status, nextActor: v.nextActor, checkedAt: v.checkedAt, evidence: v.evidence ?? null, head: v.head ?? null };
     ok(await http('PATCH', `/api/fm_task_check/${row.id}`, patch), `patch the check row ${rowKey(row)}`);
     if (v.status === 'pending') await reopenItem(taskId, { scenarioId: row.scenarioId, width: row.width });
     applied = newest.seq;
