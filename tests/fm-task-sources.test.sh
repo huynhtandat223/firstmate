@@ -35,12 +35,17 @@ jq -e 'length == 4 and any(.[]; .taskId == "owner" and .blockKind == "needs-deci
 "$ROOT/bin/fm-task.sh" show probe --json > "$TMP_ROOT/before"
 sed -i 's/## In flight/## Queued/' "$FM_HOME/data/backlog.md"
 bash "$ROOT/bin/fm-task-reconcile.sh" once --now 2026-10-25T14:00:00Z > "$TMP_ROOT/reconcile"
-jq -e '.added == 3' "$TMP_ROOT/reconcile"
+jq -e '.added == 2' "$TMP_ROOT/reconcile"
 bash "$ROOT/bin/fm-task-reconcile.sh" once --now 2026-10-25T14:00:00Z > "$TMP_ROOT/repeat"
 jq -e '.added == 0' "$TMP_ROOT/repeat"
 # Divergence events change lastSeq only, not the old source or projected values.
 "$ROOT/bin/fm-task.sh" show probe --json > "$TMP_ROOT/after"
 diff <(jq 'del(.lastSeq)' "$TMP_ROOT/before") <(jq 'del(.lastSeq)' "$TMP_ROOT/after")
+node --input-type=module - "$ROOT/bin/fm-task-sources-lib.mjs" "$FM_HOME" <<'JS'
+const {parseBacklog} = await import(process.argv[2]);
+const rows = parseBacklog(process.argv[3], Date.parse('2026-10-25'));
+if (rows.some(t => t.assignee !== t.id)) process.exit(1);
+JS
 "$ROOT/bin/fm-task.sh" block external probe --reason wait --next-actor firstmate
 "$ROOT/bin/fm-task.sh" unblock probe
 # No hold remains in the old source; stale blockKind must not count as a difference.

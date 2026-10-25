@@ -201,7 +201,7 @@ hold_event() {  # <hold-kind> <reason>: make the record capable of taking this o
        w "hold-$key-start" start "$TASK" || return 0 ;;
   esac
   if printf '%s' "$reason" | grep -qi 'verification pending'; then
-    w "hold-$key-review" done "$TASK" --summary "$reason" --changed-files - --verification 'old source verification pending' --residual-risk - --next-actor tester
+    w "hold-$key-review" "done" "$TASK" --summary "$reason" --changed-files - --verification 'old source verification pending' --residual-risk - --next-actor tester
     return 0
   fi
   case "$kind" in

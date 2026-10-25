@@ -56,7 +56,7 @@ export function parseBacklog(home, now = Date.now()) {
   }
   return rows.filter(t => t.section !== 'Done' || Date.parse(t.completed) >= now - 30 * 86400000).map(t => {
     const meta = read(path.join(home, 'state', `${t.id}.meta`));
-    const assignee = meta.match(/^assignee=(.*)$/m)?.[1] || (t.section === 'In flight' ? t.id : 'firstmate');
+    const assignee = meta.match(/^assignee=(.*)$/m)?.[1] || t.id;
     return {...t, ...hermes(t), assignee};
   });
 }

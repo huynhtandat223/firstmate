@@ -29,7 +29,7 @@ bash "$ROOT/bin/fm-task-shadow.sh" held repeat captain 'Same reason' occurrence-
 "$ROOT/bin/fm-task.sh" unblock repeat
 bash "$ROOT/bin/fm-task-shadow.sh" held repeat captain 'Same reason' occurrence-2
 "$ROOT/bin/fm-task.sh" show repeat --json | jq -e '.state == "blocked" and .nextActor == "owner"'
-"$ROOT/bin/fm-task.sh" import closed --title Closed --kind ship --state done --assignee closed --next-actor firstmate
+"$ROOT/bin/fm-task.sh" import closed --title Closed --kind ship --state 'done' --assignee closed --next-actor firstmate
 "$ROOT/bin/fm-task.sh" reopen closed --reason 'New work' --key reopen-once
 "$ROOT/bin/fm-task.sh" reopen closed --reason 'New work' --key reopen-once
 "$ROOT/bin/fm-task.sh" show closed --json | jq -e '.state == "ready" and .nextActor == "firstmate"'
