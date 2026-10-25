@@ -72,6 +72,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
+CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 DATA="$FM_HOME/data/deploy-verify"
 LEDGER="$DATA/ledger.jsonl"
 CURSOR="$DATA/state.json"
@@ -499,6 +500,9 @@ deliver_ask() {  # <ask-json>
     '{schema: "fm-assistance-mentions.v1", messages: [{id: $id, arrival: $at, content: $c}]}')
   deliver_record Tester "$ASSISTANCE" "$record" || return 1
   ledger_append "$(jq -c --arg r "$DELIVER_BASE" --argjson at "$(date +%s)" 'del(.arrival) + {type: "ask", record: $r, at: $at}' <<<"$ask")"
+  # Opt-in task record shadow (bin/fm-task-shadow.sh): the delivered ask is a deploy event of its task; off costs one file test.
+  [ ! -e "$CONFIG/task-shadow" ] || FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_CONFIG_OVERRIDE=$CONFIG "$SCRIPT_DIR/fm-task-shadow.sh" deploy-verify \
+    "$(jq -r .task <<<"$ask")" "$(jq -r .sha <<<"$ask")" "$(jq -r .round <<<"$ask")" "$(jq -r .issue <<<"$ask")" >/dev/null 2>&1 || true
 }
 
 cmd_autohandle() {  # <source-id> <sequence> <result-file>
