@@ -20,5 +20,8 @@ bash "$ROOT/bin/fm-task-shadow.sh" held queued captain 'Choose B'
 bash "$ROOT/bin/fm-task-shadow.sh" dispatched fresh ship example/repo pi
 "$ROOT/bin/fm-task.sh" show fresh --json | jq -e '.assignee == "fresh"'
 bash "$ROOT/bin/fm-task-shadow.sh" held fresh external 'External dependency'
-"$ROOT/bin/fm-task.sh" show fresh --json | jq -e '.blockKind == "dependency"'
+"$ROOT/bin/fm-task.sh" show fresh --json | jq -e '.blockKind == "external"'
+printf '## Queued\n- [ ] mapped - Mapping probe (hold-kind: external) (hold: External dependency)\n' > "$FM_HOME/data/backlog.md"
+bash "$ROOT/bin/fm-task-backfill.sh"
+"$ROOT/bin/fm-task.sh" show mapped --json | jq -e '.blockKind == "external"'
 echo 'ok - holds, identity and external mapping'

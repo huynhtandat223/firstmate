@@ -36,10 +36,10 @@ export function hermes(t) {
   if (t.section === 'Done') return {state: 'done', nextActor: 'firstmate', blockKind: null};
   if (t.hold.toLowerCase().includes('verification pending')) return {state: 'review', nextActor: 'tester', blockKind: null};
   if (hk === 'captain') return {state: 'blocked', nextActor: 'owner', blockKind: 'needs-decision'};
-  if (t.section === 'In flight') return !hk ? {state: 'running', nextActor: 'worker', blockKind: null} : {state: 'blocked', nextActor: 'firstmate', blockKind: hk === 'external' ? 'dependency' : 'transient'};
+  if (t.section === 'In flight') return !hk ? {state: 'running', nextActor: 'worker', blockKind: null} : {state: 'blocked', nextActor: 'firstmate', blockKind: hk === 'external' ? 'external' : 'transient'};
   if (hk === 'parked') return {state: 'triage', nextActor: 'firstmate', blockKind: null};
   if (hk === 'future') return {state: 'todo', nextActor: 'firstmate', blockKind: null};
-  if (hk === 'external') return {state: 'blocked', nextActor: 'firstmate', blockKind: 'dependency'};
+  if (hk === 'external') return {state: 'blocked', nextActor: 'firstmate', blockKind: 'external'};
   return {state: 'ready', nextActor: 'firstmate', blockKind: null};
 }
 export function parseBacklog(home, now = Date.now()) {

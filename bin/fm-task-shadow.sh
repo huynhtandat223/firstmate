@@ -173,7 +173,7 @@ hold_event() {  # <hold-kind> <reason>: make the record capable of taking this o
     captain)
       w "hold-$key" ask "$TASK" --question "$reason" --option 'Decide now' --option 'Decide later' --recommendation - --why 'a captain hold' --next-actor owner ;;
     external)
-      w "hold-$key" block dependency "$TASK" --reason "$reason" --next-actor firstmate ;;
+      w "hold-$key" block external "$TASK" --reason "$reason" --next-actor firstmate ;;
     *)
       w "hold-$key" block transient "$TASK" --reason "$reason" --next-actor firstmate ;;
   esac || w "hold-$key-comment" event "$TASK" comment --note "held ($kind): $reason"
