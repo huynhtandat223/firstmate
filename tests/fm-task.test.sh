@@ -348,7 +348,7 @@ case_terminal() {
   local t=tk10 id seq child events dones before f field
   mk_running $t >/dev/null || { echo "setup: $ERR"; return 1; }
   log_reset
-  ft done $t "${DONE_FLAGS[@]}" --pr-url https://example.com/pr/1 --head abc123
+  ft "done" $t "${DONE_FLAGS[@]}" --pr-url https://example.com/pr/1 --head abc123
   must 'done' 0 || return 1
   seq=$(seq_of); [ -n "$seq" ] || { echo "no seq printed: $OUT"; return 1; }
   id=$(db fm_task_event | jq -r --argjson s "$seq" '.[] | select(.seq == $s and .kind == "done" and .taskId == "tk10") | .id')
@@ -389,9 +389,9 @@ case_terminal() {
       if [ "$f" = "--$field" ]; then skip=1; continue; fi
       args+=("$f")
     done
-    ft done "tk10m-$field" "${args[@]}"
+    ft "done" "tk10m-$field" "${args[@]}"
     must "done without --$field" 4 || return 1
-    case $(tr 'A-Z' 'a-z' <<<"$ERR" | tr -d '-') in *"$(tr -d '-' <<<"$field")"*) ;; *) echo "the refusal does not name $field: $ERR"; return 1 ;; esac
+    case $(tr '[:upper:]' '[:lower:]' <<<"$ERR" | tr -d '-') in *"$(tr -d '-' <<<"$field")"*) ;; *) echo "the refusal does not name $field: $ERR"; return 1 ;; esac
     [ "$(count fm_task_event)" = "$events" ] && [ "$(count fm_event_done)" = "$dones" ] || { echo "a refused done stored rows (missing $field)"; return 1; }
     [ "$(task_state "tk10m-$field")" = running ] || { echo "a refused done moved the task"; return 1; }
   done
@@ -410,8 +410,8 @@ case_terminal() {
   [ "$RC" -eq 5 ] || { echo "one option: exit $RC, want 5: $ERR"; return 1; }
   ft ask tk10q --question q --option 1 --option 2 --option 3 --option 4 --option 5 --option 6 --option 7 --recommendation 1 --why w
   [ "$RC" -eq 5 ] || { echo "seven options: exit $RC, want 5: $ERR"; return 1; }
-  ft done tk10q --summary '' --changed-files f --verification v --residual-risk r
-  [ "$RC" -ne 0 ] && ! grep -q '^seq=' <<<"$OUT" || { echo "an empty --summary was stored"; return 1; }
+  ft "done" tk10q --summary '' --changed-files f --verification v --residual-risk r
+  if [ "$RC" -eq 0 ] || grep -q '^seq=' <<<"$OUT"; then echo "an empty --summary was stored"; return 1; fi
 }
 
 # TR11: 20 writers at once get consecutive seq values, a re-send returns the first event,
@@ -443,6 +443,14 @@ case_concurrent() {
   must 're-send' 0 || return 1
   [ "$(seq_of)" = "$first" ] || { echo "the re-send returned seq $(seq_of), not $first"; return 1; }
   [ "$(count fm_task_event)" = "$n" ] || { echo "the re-send stored a second event"; return 1; }
+  # a re-sent transition returns its first event even though the task has moved on
+  mk_ready tk11s >/dev/null
+  ft start tk11s --key k-start
+  must 'start' 0 || return 1
+  first=$(seq_of)
+  ft start tk11s --key k-start
+  must 're-sent start' 0 || return 1
+  [ "$(seq_of)" = "$first" ] || { echo "the re-sent start returned seq $(seq_of), not $first"; return 1; }
   # a rival takes the next seq three times: the writer retries past it
   curl -s -X POST "$BASE/__x/rival?n=3" >/dev/null
   n=$(count fm_task_event)
@@ -468,8 +476,8 @@ case_concurrent() {
 
 # TR12: the Hermes transitions, every state x command pair, then the block-repeat and parent rules.
 declare -A EXPECT
-for s in triage todo ready running blocked review done archived; do
-  for c in assign start heartbeat done ask block unblock approve changes archive comment; do EXPECT[$s:$c]=-; done
+for s in triage todo ready running blocked review 'done' archived; do
+  for c in assign start heartbeat 'done' ask block unblock approve changes archive comment; do EXPECT[$s:$c]=-; done
 done
 EXPECT[triage:assign]=ready;   EXPECT[triage:unblock]=ready;   EXPECT[triage:archive]=archived;   EXPECT[triage:comment]=triage
 EXPECT[todo:assign]=todo;      EXPECT[todo:archive]=archived;  EXPECT[todo:comment]=todo
@@ -477,8 +485,8 @@ EXPECT[ready:assign]=ready;    EXPECT[ready:start]=running;    EXPECT[ready:arch
 EXPECT[running:heartbeat]=running; EXPECT[running:done]=review; EXPECT[running:ask]=blocked;      EXPECT[running:block]=blocked
 EXPECT[running:comment]=running
 EXPECT[blocked:unblock]=ready; EXPECT[blocked:archive]=archived; EXPECT[blocked:comment]=blocked
-EXPECT[review:approve]=done;   EXPECT[review:changes]=ready;  EXPECT[review:archive]=archived;   EXPECT[review:comment]=review
-EXPECT[done:archive]=archived; EXPECT[done:comment]=done
+EXPECT[review:approve]='done';   EXPECT[review:changes]=ready;  EXPECT[review:archive]=archived;   EXPECT[review:comment]=review
+EXPECT['done':archive]=archived; EXPECT['done':comment]='done'
 EXPECT[archived:comment]=archived
 CMDS='assign start heartbeat done ask block unblock approve changes archive comment'
 
@@ -490,15 +498,15 @@ put_in_state() {  # <task> <state>
     ready) mk_ready "$t" ;;
     running) mk_running "$t" ;;
     blocked) mk_running "$t" && ft block transient "$t" --reason waiting --next-actor firstmate ;;
-    review) mk_running "$t" && ft done "$t" "${DONE_FLAGS[@]}" ;;
-    done) mk_running "$t" && ft done "$t" "${DONE_FLAGS[@]}" && ft approve "$t" ;;
+    review) mk_running "$t" && ft "done" "$t" "${DONE_FLAGS[@]}" ;;
+    done) mk_running "$t" && ft "done" "$t" "${DONE_FLAGS[@]}" && ft approve "$t" ;;
     archived) ft create "$t" --title "T $t" --kind ship && ft archive "$t" ;;
   esac
 }
 run_command() {  # <task> <command>
   case $2 in
     assign) ft assign "$1" --to worker-2 ;;
-    done) ft done "$1" "${DONE_FLAGS[@]}" ;;
+    done) ft "done" "$1" "${DONE_FLAGS[@]}" ;;
     ask) ft ask "$1" "${ASK_FLAGS[@]}" ;;
     block) ft block transient "$1" --reason waiting --next-actor firstmate ;;
     changes) ft changes "$1" --note 'fix the label' ;;
@@ -510,7 +518,7 @@ run_command() {  # <task> <command>
 case_transitions() {
   BIN=$1; reset_db
   local s c t want allowed events state listed n=0
-  for s in triage todo ready running blocked review done archived; do
+  for s in triage todo ready running blocked review 'done' archived; do
     allowed=''
     for c in $CMDS; do [ "${EXPECT[$s:$c]}" = - ] || allowed="$allowed $c"; done
     for c in $CMDS; do
@@ -558,7 +566,7 @@ case_block_rules() {
   # a done call ends the streak
   t=tk12d; mk_running $t >/dev/null
   ft block transient $t --reason a --next-actor firstmate >/dev/null; ft unblock $t >/dev/null; ft start $t >/dev/null
-  ft done $t "${DONE_FLAGS[@]}" >/dev/null
+  ft "done" $t "${DONE_FLAGS[@]}" >/dev/null
   [ "$(task_row $t | jq -r .blockRepeats)" = 0 ] || { echo "done did not reset the block count: $(task_row $t)"; return 1; }
   return 0
 }
@@ -578,7 +586,7 @@ case_parents() {
   must 'assign a waiting task' 0 || return 1
   [ "$(task_state $c)" = todo ] || { echo "assign took a waiting task out of todo: $(task_state $c)"; return 1; }
   # the parent finishing releases the child to ready, with an event
-  ft done $p "${DONE_FLAGS[@]}" >/dev/null; ft approve $p >/dev/null
+  ft "done" $p "${DONE_FLAGS[@]}" >/dev/null; ft approve $p >/dev/null
   [ "$(task_state $c)" = ready ] || { echo "the child was not released when the parent was approved: $(task_state $c)"; return 1; }
   db fm_task_event | jq -e --arg c $c 'any(.[]; .taskId == $c and .kind == "promoted")' >/dev/null || { echo "no promoted event for the released child"; return 1; }
   # a dependency needs an open parent that exists
@@ -594,8 +602,12 @@ case_parents() {
   ft create tk12c3 --title c3 --kind ship --after tk12p2
   must 'create --after' 0 || return 1
   [ "$(task_state tk12c3)" = todo ] || { echo "create --after an open parent: $(task_state tk12c3)"; return 1; }
-  ft link tk12c3 tk12p2
+  ft create tk12a --title a --kind ship >/dev/null; ft create tk12b --title b --kind ship >/dev/null
+  ft link tk12a tk12b
+  must 'link' 0 || return 1
+  ft link tk12b tk12a
   must 'link cycle' 5 || return 1
+  case $ERR in *waits*) ;; *) echo "the cycle refusal does not say who waits on whom: $ERR"; return 1 ;; esac
   ft link tk12p2 tk12p2
   must 'link to itself' 5 || return 1
   links=$(count fm_task_link); events=$(count fm_task_event)
@@ -615,9 +627,9 @@ case_value_lists() {
   ft comment tk-vl --note x --role boss;                           must 'role' 5 || return 1
   ft create tk-vl2 --title t --kind weird;                         must 'task kind' 5 || return 1
   ft event tk-vl bogus --note x;                                   must 'event kind' 5 || return 1
-  ft event tk-vl done --note x;                                    must 'terminal kind through event' 5 || return 1
+  ft event tk-vl "done" --note x;                                  must 'terminal kind through event' 5 || return 1
   ft event tk-vl blocked --note x;                                 must 'blocked through event' 5 || return 1
-  ft done tk-vl "${DONE_FLAGS[@]}" --next-actor owner;             must 'done next actor' 5 || return 1
+  ft "done" tk-vl "${DONE_FLAGS[@]}" --next-actor owner;             must 'done next actor' 5 || return 1
   ft check tk-vl A1@- --status maybe;                              must 'check status' 5 || return 1
   ft create 'bad id!' --title t --kind ship;                       must 'task id' 2 || return 1
   ft create tk-vl --title t --kind ship;                           must 'duplicate task' 5 || return 1
@@ -685,7 +697,7 @@ case_rows() {
   [ "$RC" -ne 0 ] && [ "$(count fm_task_event)" = "$events" ] || { echo "a refused issue was stored"; return 1; }
   # an open row blocks the approval
   mk_running tk13b >/dev/null; use_issue v1; ft rows tk13b "$ISSUE" >/dev/null
-  ft done tk13b "${DONE_FLAGS[@]}" >/dev/null
+  ft "done" tk13b "${DONE_FLAGS[@]}" >/dev/null
   ft approve tk13b
   must 'approve with open rows' 5 || return 1
   [ "$(task_state tk13b)" = review ] || { echo "approve moved a task with open rows"; return 1; }
@@ -730,12 +742,12 @@ case_owner() {
 # TR14: resume gives the record in one screen; reproject rebuilds a damaged row from events.
 case_resume() {
   BIN=$1; reset_db
-  local t=tk14 lines events_shown row id before
+  local t=tk14 lines events_shown row id before i
   ft create $t --title 'Resume me' --kind ship --repo example/repo --issue "$ISSUE" --surface internal >/dev/null
   use_issue v1; ft rows $t "$ISSUE" >/dev/null
   ft assign $t --to worker-1 >/dev/null; ft start $t >/dev/null
   ft heartbeat $t --note one >/dev/null; ft heartbeat $t --note two >/dev/null
-  ft done $t "${DONE_FLAGS[@]}" --pr-url https://example.com/pr/9 --head deadbeef >/dev/null
+  ft "done" $t "${DONE_FLAGS[@]}" --pr-url https://example.com/pr/9 --head deadbeef >/dev/null
   ft resume $t
   must 'resume after done' 0 || return 1
   for want in 'state=review' 'assignee=worker-1' 'next=tester' 'Built it' 'bin/fm-task.sh' 'ran the tests' 'none known' 'https://example.com/pr/9' 'deadbeef' 'A1@1440' 'A2@-' 'A3@-'; do
@@ -745,13 +757,15 @@ case_resume() {
   [ "$lines" -le 60 ] || { echo "resume is $lines lines, more than one screen"; return 1; }
   ft changes $t --note 'fix the label' >/dev/null; ft start $t >/dev/null
   ft ask $t "${ASK_FLAGS[@]}" >/dev/null
+  for i in 1 2 3; do ft comment $t --note "extra $i" >/dev/null; done
   ft resume $t
   must 'resume after ask' 0 || return 1
   for want in 'state=blocked' 'needs-decision' 'Which one?' 'Option A' 'Option B' 'Both work; A is simpler'; do
     case $OUT in *"$want"*) ;; *) echo "resume lacks '$want':"; echo "$OUT"; return 1 ;; esac
   done
   case $OUT in *'Built it'*) echo "resume shows the older done call as the last terminal call"; return 1 ;; esac
-  events_shown=$(grep -c '^  #[0-9]' <<<"$OUT")
+  events_shown=$(sed -n '/^LAST 10 EVENTS/,$p' <<<"$OUT" | grep -c '^  #[0-9]')
+  case $OUT in *'#1 created'*) echo "resume lists the first event, so it is not the last 10"; return 1 ;; esac
   [ "$events_shown" = 10 ] || { echo "resume lists $events_shown events, want the last 10:"; echo "$OUT"; return 1; }
   [ "$(wc -l <<<"$OUT" | tr -d ' ')" -le 60 ] || { echo "resume is more than one screen"; return 1; }
   case $OUT in *'open check rows'*|*'OPEN CHECK ROWS'*) ;; *) echo "resume has no open check rows section"; return 1 ;; esac
@@ -842,5 +856,50 @@ for c in $CASES; do
   pass "fm-task $c"
 done
 
-pass 'every behavior case passes on the real command'
+# ---- mutation proofs: remove one guard, the case guarding it goes red -----------------------
 
+MBIN="$TMP_ROOT/mbin"
+mkdir -p "$MBIN"
+for f in fm-task.sh fm-task-lib.mjs fm-acceptance.mjs; do cp "$ROOT/bin/$f" "$TMP_ROOT/$f.orig"; done
+cp "$TMP_ROOT/fm-acceptance.mjs.orig" "$MBIN/fm-acceptance.mjs"
+cp "$TMP_ROOT/fm-task.sh.orig" "$MBIN/fm-task.sh"
+chmod +x "$MBIN/fm-task.sh"
+LIB="$MBIN/fm-task-lib.mjs"
+
+mutate() {  # <label> <case> <exact source text> <replacement>
+  cp "$TMP_ROOT/fm-task-lib.mjs.orig" "$LIB"
+  S="$3" R="$4" perl -0pi -e 's/\Q$ENV{S}\E/$ENV{R}/' "$LIB"
+  cmp -s "$TMP_ROOT/fm-task-lib.mjs.orig" "$LIB" && fail "mutation '$1' changed nothing"
+  if out=$(case_"$2" "$MBIN" 2>&1); then
+    fail "removing the guard '$1' left case $2 green"
+  fi
+  pass "guard '$1' is needed: case $2 goes red without it"
+}
+
+mutate 'the event and its child travel in one request' terminal 'Object.assign(body, spec.children || {});' ';'
+mutate 'an empty value is refused' terminal "if (value === '') throw usage" 'if (false) throw usage'
+mutate 'the option count is checked' terminal 'if (options.length < 2 || options.length > 6)' 'if (false)'
+mutate 'a seq taken by another writer is retried' concurrent 'if (res.status === 409) {' 'if (false) {'
+mutate 'a re-send finds its first event before the rules run' concurrent 'if (prior) {' 'if (false) {'
+mutate 'the key makes a re-send return the first event' concurrent 'args.flags.key ||' ''
+mutate 'a lost answer is looked up by its key' concurrent 'if (found) return { event: found, replayed: false };' 'if (false) return { event: found, replayed: false };'
+mutate 'a refused move is refused' transitions 'if (!TRANSITIONS[command].includes(task.state)) {' 'if (false) {'
+mutate 'the third block of one kind goes to triage' block_rules "const triage = kind !== 'dependency' && repeats >= 3;" 'const triage = false;'
+mutate 'a different kind starts the count again' block_rules 'task.blockKind === kind ? task.blockRepeats + 1 : 1' 'task.blockRepeats + 1'
+mutate 'a dependency waits in todo on an open parent' parents "state: waiting ? 'todo' : 'ready'" "state: 'ready'"
+mutate 'a closed parent releases its children' parents 'if (!child || child.state !== '"'"'todo'"'"' || (await openParents(link.childTaskId)).length) continue;' 'continue;'
+mutate 'a dependency needs an open parent' parents 'if (CLOSED.includes(parent.state)) throw rule(`parent ${f.on}' 'if (false) throw rule(`parent ${f.on}'
+mutate 'a link cannot make a cycle' parents 'if (!existing && (await wouldCycle(parent, child)))' 'if (false)'
+mutate 'a value outside its list is refused' value_lists 'if (!list.includes(value))' 'if (false)'
+mutate 'a changed digest resets a passed row' rows 'row.line !== want.line || row.acceptanceDigest !== want.acceptanceDigest' 'row.line !== want.line'
+mutate 'a changed line resets a passed row' rows "changed && row.status === 'pass'" 'false'
+mutate 'a removed id is retired' rows "if (wanted.has(key) || row.status === 'retired') continue;" 'continue;'
+mutate 'an issue with no template is refused' rows ", 'parse', issue, '--strict']" ", 'parse', issue]"
+mutate 'open rows block the approval' rows 'if (open.length) throw rule(`approve is refused' 'if (false) throw rule(`approve is refused'
+mutate 'a check row cannot read owner without its item' owner 'if (nextActor === '"'"'owner'"'"' && !(await ownerItem(taskId, target)))' 'if (false)'
+mutate 'the owner item and the owner row go together' owner "ok(await http('POST', '/api/fm_owner_check', item), 'the owner item');" "await http('POST', '/api/fm_owner_check', item);"
+mutate 'resume lists the last 10 events' resume 'events.slice(-10)' 'events'
+mutate 'resume gives the last terminal call with its fields' resume 'for (const field of TEMPLATE_FIELDS[last.kind])' 'for (const field of [])'
+mutate 'reproject rebuilds a damaged row' resume 'if (diff.length) {' 'if (false) {'
+mutate 'an API that does not answer is exit 3' connection 'throw new Fail(3, `${method} ${pathname}: no answer' 'throw new Fail(1, `${method} ${pathname}: no answer'
+pass 'every guarded behavior has a red mutation proof'

@@ -1,0 +1,943 @@
+#!/usr/bin/env node
+// The one writer and reader of the task contract (spec huynhtandat223/cfw-modules#1675).
+// bin/fm-task.sh runs this file. The record is ten API Builder tables on Dev 5001
+// (docs/fm-task-contract/definitions.json in cfw-modules): fm_task, fm_task_event, the event
+// children fm_event_done / fm_event_question / fm_event_block / fm_event_image, fm_task_check,
+// fm_owner_check, fm_task_link and fm_task_delivery. This file adds no table and no grant.
+//
+// Usage: fm-task.sh <command> [<positional>...] [--flag value ...]
+//   A <task> comes from the first positional (the second for `block`), --task, or FM_TASK_ID.
+//   create   <task> --title T --kind ship|scout|assistance|secondmate|plan|other [--repo R] [--issue URL]
+//            [--surface user-visible|internal] [--after PARENT]...
+//   assign   <task> --to ASSIGNEE            triage|todo|ready -> ready (todo while a parent is open)
+//   start    <task>                          ready -> running
+//   heartbeat <task> [--note N]              running (today's `working:`)
+//   done     <task> --summary --changed-files --verification --residual-risk [--rows JSON]
+//            [--pr-url U] [--head H] [--next-actor tester|firstmate]       running -> review
+//   ask      <task> --question Q --option O (2 to 6 times) --recommendation R --why W
+//            [--document D] [--next-actor firstmate|owner]                  running -> blocked (needs-decision)
+//   block    <kind> <task> --reason R --next-actor A [--until ISO] [--on PARENT]
+//            kind: transient|dependency|external|credential|failure; running -> blocked,
+//            a dependency waits in todo on --on PARENT; a third block of one kind goes to triage
+//   unblock  <task>                          blocked|triage -> ready
+//   approve  <task>                          review -> done (refused while a check row is pending or failed)
+//   changes  <task> --note WHY               review -> ready
+//   archive  <task>                          triage|todo|ready|blocked|review|done -> archived
+//   comment  <task> --note T [--image PATH --image-label L]...             any state
+//   event    <task> <kind> [--note N] [--pr-url U]   kinds: steer comment pr deploy protocol_violation divergence
+//   link     <parent> <child>                the child waits in todo while the parent is open
+//   rows     <task> <issue-url>              one check row per scenario x width from fm-acceptance.mjs
+//   check    <task> <id>@<width> --status pending|pass|fail [--evidence E] [--head H] [--next-actor A]
+//   owner-check <task> <id>@<width> --page-title --url --steps --data --expected   (sets next actor owner)
+//   show     <task> [--json]   list [--state S] [--actor A] [--json]   resume <task>   reproject <task>
+// Every write takes --key K (the idempotency key; a re-send returns the first event), --actor NAME
+// (default FM_TASK_ACTOR, FM_TASK_ID, then the login name) and --role (default FM_TASK_ROLE, then the
+// command's own: worker for start/heartbeat/done/ask/block, tester for check, firstmate for the rest).
+//
+// Writes print `seq=<n> task=<id> event=<kind> state=<state> next=<actor>`. A terminal call (done, ask,
+// block) and its template child go in one deep-insert request, so the API refuses a missing or over-long
+// field (400) and stores nothing; the refusal prints the API's field. The writer checks what the API
+// cannot: the value lists (states, kinds, actors, roles), an empty value, 2 to 6 options, and the
+// transitions below.
+//
+// Event log and projection. `seq` is global: the writer reads the highest, creates seq + 1 under the unique
+// key and retries on 409 (reading the task's events again each time, so a transition is checked against the
+// events that are really before it). Each event body is JSON {"v":1,"note":...,"set":{...}} and `set` holds
+// the task fields the event changes. fm_task is the projection: the fold of every `set` in seq order. After
+// each event the writer folds again and patches the row; `reproject` does the same on demand and creates a
+// missing row. Tasks start in triage (todo while a parent is open); the state of each command is the table
+// below.
+//
+// Exit codes: 0 done; 2 usage or configuration; 3 the API did not answer (an event whose answer was lost is
+// looked up by its key first, so nothing is stored twice; a re-run with the same --key is safe); 4 the API
+// refused the request; 5 a writer rule refused it (transition, value list, open rows, pairing).
+//
+// Environment: FM_TASK_BASE_URL (default http://127.0.0.1:5001); FM_TASK_TOKEN_FILE (default
+// ~/.local/share/cfw-scripts-private/notify-firstmate.token: a private file you own, as agent-ask reads it);
+// FM_TASK_AUTH=bearer|cookie (cookie sends the token as the cfw.auth.session cookie, for a SysAdmin session
+// until the notify-firstmate grant lands); FM_TASK_ACCEPTANCE (the acceptance parser, default fm-acceptance.mjs
+// beside this file). The token is read from the file and sent as a header, never printed.
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+
+// ---- the value lists the API cannot check ---------------------------------------------------------------
+const STATES = ['triage', 'todo', 'ready', 'running', 'blocked', 'review', 'done', 'archived'];
+const TASK_KINDS = ['ship', 'scout', 'assistance', 'secondmate', 'plan', 'other'];
+const SURFACES = ['user-visible', 'internal'];
+const ACTORS = ['worker', 'tester', 'firstmate', 'owner'];
+const ROLES = ['worker', 'firstmate', 'tester', 'planner', 'owner', 'assistance', 'system'];
+const BLOCK_KINDS = ['transient', 'dependency', 'external', 'credential', 'failure'];
+const CHECK_STATUSES = ['pending', 'pass', 'fail'];
+const FREE_KINDS = ['steer', 'comment', 'pr', 'deploy', 'protocol_violation', 'divergence'];
+const CLOSED = ['done', 'archived'];
+
+// command -> the states it may run from (the Hermes transitions)
+const TRANSITIONS = {
+  assign: ['triage', 'todo', 'ready'],
+  start: ['ready'],
+  heartbeat: ['running'],
+  done: ['running'],
+  ask: ['running'],
+  block: ['running'],
+  unblock: ['triage', 'blocked'],
+  approve: ['review'],
+  changes: ['review'],
+  archive: ['triage', 'todo', 'ready', 'blocked', 'review', 'done'],
+  comment: STATES,
+};
+
+// the fm_task columns the projection holds, with the lengths the API enforces on them
+const LIMITS = { title: 300, repo: 200, kind: 32, state: 32, assignee: 64, nextActor: 32, blockKind: 32, blockReason: 2000, issueUrl: 2048, prUrl: 2048, surface: 32 };
+const PROJECTED = ['title', 'repo', 'kind', 'state', 'assignee', 'nextActor', 'blockKind', 'blockReason', 'blockRepeats', 'issueUrl', 'prUrl', 'surface', 'holdUntil', 'lastSeq'];
+const TASK_ID = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
+const MAX_ATTEMPTS = 300;
+const IMAGE_TYPES = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp' };
+const MAX_IMAGE = 2 * 1024 * 1024;
+
+class Fail extends Error {
+  constructor(code, message, extra = {}) {
+    super(message);
+    this.code = code;
+    Object.assign(this, extra);
+  }
+}
+const usage = (m) => new Fail(2, m);
+const rule = (m) => new Fail(5, m);
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// ---- the API ----------------------------------------------------------------------------------------------
+function readToken() {
+  const file = process.env.FM_TASK_TOKEN_FILE || path.join(os.homedir(), '.local', 'share', 'cfw-scripts-private', 'notify-firstmate.token');
+  let info;
+  try {
+    info = fs.lstatSync(file);
+  } catch {
+    throw usage(`the token file is missing: ${file}`);
+  }
+  if (!info.isFile() || info.uid !== process.getuid() || info.mode & 0o077) throw usage('the token must be a regular file you own, with no group or other permissions');
+  const token = fs.readFileSync(file, 'utf8').trim();
+  if (!token || /[\r\n"\\]/.test(token)) throw usage('the token file does not hold a token');
+  return token;
+}
+
+let TOKEN;
+async function http(method, pathname, body) {
+  const base = (process.env.FM_TASK_BASE_URL || 'http://127.0.0.1:5001').replace(/\/+$/, '');
+  if (!/^https?:\/\//.test(base)) throw usage('FM_TASK_BASE_URL must use http or https');
+  TOKEN ??= readToken();
+  const headers = { accept: 'application/json' };
+  if ((process.env.FM_TASK_AUTH || 'bearer') === 'cookie') headers.cookie = `cfw.auth.session=${TOKEN}`;
+  else headers.authorization = `Bearer ${TOKEN}`;
+  if (body !== undefined) headers['content-type'] = 'application/json';
+  let res;
+  try {
+    res = await fetch(base + pathname, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(20000) });
+  } catch (error) {
+    const why = error?.cause?.code || error?.cause?.message || error?.message || 'no answer';
+    throw new Fail(3, `${method} ${pathname}: no answer from ${base} (${why})`, { network: true });
+  }
+  const text = await res.text();
+  let json = null;
+  try {
+    json = text.trim() ? JSON.parse(text) : null;
+  } catch {
+    json = null;
+  }
+  if (res.status >= 500) throw new Fail(3, `${method} ${pathname}: ${base} answered HTTP ${res.status}`, { network: true });
+  return { status: res.status, json };
+}
+
+function refused(res, what) {
+  const j = res.json || {};
+  const lines = [`${what} refused by the API (HTTP ${res.status}${j.errorCode ? ` ${j.errorCode}` : ''})${j.message ? `: ${j.message}` : ''}`];
+  if (j.details && typeof j.details === 'object') {
+    for (const [key, value] of Object.entries(j.details)) lines.push(`  field ${key}: ${typeof value === 'string' ? value : JSON.stringify(value)}`);
+  }
+  return new Fail(4, lines.join('\n'));
+}
+const ok = (res, what) => {
+  if (res.status < 200 || res.status > 299) throw refused(res, what);
+  return res.json;
+};
+const unwrap = (json) => (json && typeof json === 'object' && 'data' in json && 'success' in json ? json.data : json);
+const lit = (value) => `'${String(value).replaceAll("'", "''")}'`;
+
+async function listAll(table, { filter, orderby = 'id', limit = Infinity } = {}) {
+  const out = [];
+  for (let skip = 0; out.length < limit; skip += 100) {
+    const query = [`$top=100`, `$skip=${skip}`, `$orderby=${encodeURIComponent(orderby)}`];
+    if (filter) query.push(`$filter=${encodeURIComponent(filter)}`);
+    const page = ok(await http('GET', `/api/${table}?${query.join('&')}`), `list ${table}`).value || [];
+    out.push(...page);
+    if (page.length < 100) break;
+  }
+  return out;
+}
+async function firstRow(table, filter, orderby = 'id') {
+  const query = [`$top=1`, `$orderby=${encodeURIComponent(orderby)}`, `$filter=${encodeURIComponent(filter)}`];
+  return (ok(await http('GET', `/api/${table}?${query.join('&')}`), `list ${table}`).value || [])[0] || null;
+}
+const highestSeq = async () => (await firstRow('fm_task_event', 'seq ge 0', 'seq desc'))?.seq ?? 0;
+const taskEvents = (taskId) => listAll('fm_task_event', { filter: `taskId eq ${lit(taskId)}`, orderby: 'seq' });
+const eventByKey = (key) => firstRow('fm_task_event', `idempotencyKey eq ${lit(key)}`);
+const taskRow = (taskId) => firstRow('fm_task', `taskId eq ${lit(taskId)}`);
+const checkRows = (taskId) => listAll('fm_task_check', { filter: `taskId eq ${lit(taskId)}`, orderby: 'scenarioId' });
+
+// ---- the projection ---------------------------------------------------------------------------------------
+function bodyOf(event) {
+  try {
+    const parsed = JSON.parse(event.body);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+// The fold of every event's `set`; null while the task has no `created` event.
+function fold(events) {
+  let task = null;
+  for (const event of [...events].sort((a, b) => a.seq - b.seq)) {
+    const set = bodyOf(event).set || {};
+    if (event.kind === 'created' && !task) task = { taskId: event.taskId };
+    if (!task) continue;
+    task = { ...task, ...set, lastSeq: event.seq };
+  }
+  if (!task) return null;
+  const full = { taskId: task.taskId };
+  for (const field of PROJECTED) full[field] = task[field] ?? (field === 'blockRepeats' || field === 'lastSeq' ? 0 : null);
+  return full;
+}
+
+const sameValue = (field, a, b) => (field === 'holdUntil' ? (a ? Date.parse(a) : null) === (b ? Date.parse(b) : null) : a === b);
+
+// Make fm_task equal the fold of the task's events; returns the fields it changed.
+async function project(taskId) {
+  for (let round = 0; round < 60; round++) {
+    if (round) await sleep(5 + Math.random() * 20);
+    const want = fold(await taskEvents(taskId));
+    if (!want) return null;
+    const row = await taskRow(taskId);
+    let changed = [];
+    if (!row) {
+      ok(await http('POST', '/api/fm_task', want), 'create the task row');
+      changed = ['(row created)'];
+    } else {
+      const diff = PROJECTED.filter((field) => !sameValue(field, row[field] ?? null, want[field]));
+      if (diff.length) {
+        const patch = {};
+        for (const field of diff) patch[field] = want[field];
+        ok(await http('PATCH', `/api/fm_task/${row.id}`, patch), 'patch the task row');
+        changed = diff;
+      }
+    }
+    const top = await firstRow('fm_task_event', `taskId eq ${lit(taskId)}`, 'seq desc');
+    if ((top?.seq ?? 0) <= want.lastSeq) return { task: want, changed };
+  }
+  throw new Fail(3, `the task row of ${taskId} kept moving while it was projected; run reproject`);
+}
+
+// ---- arguments --------------------------------------------------------------------------------------------
+const COMMON = { actor: 's', role: 's', key: 's', note: 's', task: 's', json: 'b' };
+const SPECS = {
+  create: { pos: ['task'], flags: { title: 's', kind: 's', repo: 's', issue: 's', surface: 's', after: 'm' } },
+  assign: { pos: ['task'], flags: { to: 's' } },
+  start: { pos: ['task'], flags: {} },
+  heartbeat: { pos: ['task'], flags: {} },
+  done: { pos: ['task'], flags: { summary: 's', 'changed-files': 's', verification: 's', 'residual-risk': 's', rows: 's', 'pr-url': 's', head: 's', 'next-actor': 's', image: 'm', 'image-label': 'm' } },
+  ask: { pos: ['task'], flags: { question: 's', option: 'm', recommendation: 's', why: 's', document: 's', 'next-actor': 's', image: 'm', 'image-label': 'm' } },
+  block: { pos: ['kind', 'task'], flags: { reason: 's', 'next-actor': 's', until: 's', on: 's', image: 'm', 'image-label': 'm' } },
+  unblock: { pos: ['task'], flags: {} },
+  approve: { pos: ['task'], flags: {} },
+  changes: { pos: ['task'], flags: {} },
+  archive: { pos: ['task'], flags: {} },
+  comment: { pos: ['task'], flags: { image: 'm', 'image-label': 'm' } },
+  event: { pos: ['task', 'kind'], flags: { 'pr-url': 's' } },
+  link: { pos: ['parent', 'child'], flags: {} },
+  rows: { pos: ['task', 'issue'], flags: {} },
+  check: { pos: ['task', 'target'], flags: { status: 's', evidence: 's', head: 's', 'next-actor': 's' } },
+  'owner-check': { pos: ['task', 'target'], flags: { 'page-title': 's', url: 's', steps: 's', data: 's', expected: 's' } },
+  show: { pos: ['task'], flags: {} },
+  list: { pos: [], flags: { state: 's', actor: 's' } },
+  resume: { pos: ['task'], flags: {} },
+  reproject: { pos: ['task'], flags: {} },
+};
+
+function parseArgs(command, argv) {
+  const spec = SPECS[command];
+  const flags = { ...COMMON, ...spec.flags };
+  const pos = {};
+  const given = {};
+  const positional = [];
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (!arg.startsWith('--')) {
+      positional.push(arg);
+      continue;
+    }
+    let [name, value] = arg.slice(2).split(/=(.*)/s, 2);
+    const type = flags[name];
+    if (!type) throw usage(`unknown flag --${name} for ${command}`);
+    if (type === 'b') {
+      given[name] = true;
+      continue;
+    }
+    if (value === undefined) {
+      if (i + 1 >= argv.length) throw usage(`--${name} needs a value`);
+      value = argv[++i];
+    }
+    if (value === '') throw usage(`--${name} is empty`);
+    if (type === 'm') (given[name] ||= []).push(value);
+    else given[name] = value;
+  }
+  if (positional.length > spec.pos.length) throw usage(`unexpected argument ${positional[spec.pos.length]} for ${command}`);
+  spec.pos.forEach((name, i) => {
+    if (positional[i] !== undefined) pos[name] = positional[i];
+  });
+  return { pos, flags: given };
+}
+
+function taskIdOf(args) {
+  const id = args.pos.task ?? args.flags.task ?? process.env.FM_TASK_ID;
+  if (!id) throw usage('no task: give <task>, --task or FM_TASK_ID');
+  if (!TASK_ID.test(id)) throw usage(`${id} is not a task id (letters, digits, '.', '_' and '-', up to 128)`);
+  return id;
+}
+const oneOf = (list, value, what) => {
+  if (!list.includes(value)) throw rule(`${what} ${JSON.stringify(value)} is not one of: ${list.join(', ')}`);
+  return value;
+};
+const isoOf = (value, what) => {
+  const time = Date.parse(value);
+  if (Number.isNaN(time)) throw rule(`${what} ${JSON.stringify(value)} is not a date`);
+  return new Date(time).toISOString();
+};
+
+// ---- appending an event -----------------------------------------------------------------------------------
+function identity(args, defaultRole) {
+  const actor = args.flags.actor || process.env.FM_TASK_ACTOR || process.env.FM_TASK_ID || os.userInfo().username;
+  const role = oneOf(ROLES, args.flags.role || process.env.FM_TASK_ROLE || defaultRole, 'role');
+  const key = args.flags.key || `${actor}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+  if (key.length > 200) throw usage('--key is longer than 200 characters');
+  if (actor.length > 64) throw usage('the actor name is longer than 64 characters');
+  return { actor, role, key };
+}
+
+function checkSet(set) {
+  for (const [field, value] of Object.entries(set)) {
+    if (typeof value === 'string' && LIMITS[field] && value.length > LIMITS[field]) throw rule(`${field} is ${value.length} characters; the task row holds ${LIMITS[field]}`);
+  }
+}
+
+const wireBody = (spec) => {
+  const text = JSON.stringify({ v: 1, note: spec.note ?? '', set: spec.set || {}, ...(spec.extra || {}) });
+  if (text.length > 8000) throw rule(`the event body is ${text.length} characters; the table holds 8000`);
+  return text;
+};
+
+// Append one event under the global seq. build({task, events}) returns {kind, note, set, extra, children} or
+// throws a rule refusal; it runs again after every 409, so it sees the events that are really before this one.
+async function append(taskId, who, build) {
+  const prior = await eventByKey(who.key);
+  if (prior) {
+    if (prior.taskId !== taskId) throw rule(`the key ${who.key} was used by task ${prior.taskId}`);
+    return { event: prior, replayed: true };
+  }
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    const high = await highestSeq();
+    const events = await taskEvents(taskId);
+    const spec = await build({ task: fold(events), events });
+    checkSet(spec.set || {});
+    const body = { seq: high + 1, taskId, kind: spec.kind, actorRole: who.role, actor: who.actor, body: wireBody(spec), idempotencyKey: who.key };
+    Object.assign(body, spec.children || {});
+    let res;
+    try {
+      res = await http('POST', '/api/fm_task_event', body);
+    } catch (error) {
+      if (!error.network) throw error;
+      // the answer may be lost after the event was stored: look it up by its key before giving up
+      let found;
+      try {
+        found = await eventByKey(who.key);
+      } catch {
+        throw new Fail(3, `${error.message}; whether the event was stored is unknown; re-run with --key ${who.key}`);
+      }
+      if (found) return { event: found, replayed: false };
+      throw new Fail(3, `${error.message}; nothing was stored`);
+    }
+    if (res.status === 201) return { event: unwrap(res.json), replayed: false };
+    if (res.status === 409) {
+      const found = await eventByKey(who.key);
+      if (found) return { event: found, replayed: true };
+      await sleep(Math.min(5 + attempt * 3, 40) + Math.random() * 25);
+      continue;
+    }
+    throw refused(res, 'the event');
+  }
+  throw new Fail(3, `gave up after ${MAX_ATTEMPTS} tries to take the next seq`);
+}
+
+function guard(command, task) {
+  if (!task) throw rule('no such task');
+  if (!TRANSITIONS[command].includes(task.state)) {
+    const allowed = Object.keys(TRANSITIONS).filter((c) => TRANSITIONS[c].includes(task.state));
+    throw rule(`${command} is not allowed from state ${task.state}; allowed from ${task.state}: ${allowed.join(', ')}`);
+  }
+}
+
+async function openParents(taskId) {
+  const links = await listAll('fm_task_link', { filter: `childTaskId eq ${lit(taskId)}`, orderby: 'parentTaskId' });
+  const open = [];
+  for (const link of links) {
+    const parent = fold(await taskEvents(link.parentTaskId));
+    if (parent && !CLOSED.includes(parent.state)) open.push(link.parentTaskId);
+  }
+  return open;
+}
+
+async function ensureLink(parent, child) {
+  const res = await http('POST', '/api/fm_task_link', { parentTaskId: parent, childTaskId: child });
+  if (res.status === 409) return false;
+  ok(res, 'the link');
+  return true;
+}
+
+async function wouldCycle(parent, child) {
+  const seen = new Set();
+  const queue = [parent];
+  while (queue.length) {
+    const id = queue.shift();
+    if (id === child) return true;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    for (const link of await listAll('fm_task_link', { filter: `childTaskId eq ${lit(id)}`, orderby: 'parentTaskId' })) queue.push(link.parentTaskId);
+  }
+  return false;
+}
+
+// A parent that closes releases the children that waited only on it.
+async function release(parentId, who) {
+  const links = await listAll('fm_task_link', { filter: `parentTaskId eq ${lit(parentId)}`, orderby: 'childTaskId' });
+  const released = [];
+  for (const link of links) {
+    const child = fold(await taskEvents(link.childTaskId));
+    if (!child || child.state !== 'todo' || (await openParents(link.childTaskId)).length) continue;
+    await append(link.childTaskId, { ...who, key: `${who.key}:release:${link.childTaskId}` }, async ({ task }) => {
+      if (task.state !== 'todo') throw rule('already released');
+      return { kind: 'promoted', note: `parent ${parentId} is closed`, set: { state: 'ready', nextActor: task.assignee && task.assignee !== '-' ? 'worker' : 'firstmate' } };
+    }).catch((error) => {
+      if (!(error instanceof Fail && error.code === 5)) throw error;
+    });
+    await project(link.childTaskId);
+    released.push(link.childTaskId);
+  }
+  return released;
+}
+
+// ---- images and rows --------------------------------------------------------------------------------------
+function imagesOf(args) {
+  const paths = args.flags.image || [];
+  const labels = args.flags['image-label'] || [];
+  if (paths.length !== labels.length) throw usage('give one --image-label for each --image');
+  return paths.map((file, i) => {
+    const mediaType = IMAGE_TYPES[path.extname(file).toLowerCase()];
+    if (!mediaType) throw rule(`${file}: an image is a png, jpg, gif or webp file`);
+    let data;
+    try {
+      data = fs.readFileSync(file);
+    } catch {
+      throw rule(`${file}: cannot read the image`);
+    }
+    if (data.length > MAX_IMAGE) throw rule(`${file}: an image is at most 2 MiB`);
+    return { label: labels[i], mediaType, content: data.toString('base64'), position: i + 1 };
+  });
+}
+const withImages = (children, images) => (images.length ? { ...children, images } : children);
+
+const rowKey = (row) => `${row.scenarioId}@${row.width}`;
+const openRows = (rows) => rows.filter((row) => row.status === 'pending' || row.status === 'fail');
+function rowsJson(rows) {
+  return JSON.stringify(rows.filter((r) => r.status !== 'retired').map((r) => ({ id: r.scenarioId, width: r.width, status: r.status, evidence: r.evidence ?? '-' })));
+}
+function targetOf(text) {
+  const m = /^([A-Za-z0-9_.-]+)@(\S+)$/.exec(text || '');
+  if (!m) throw usage('give the row as <id>@<width>, for example A1@1440, or A1@- for a scenario with no width');
+  return { scenarioId: m[1], width: m[2] };
+}
+async function checkRow(taskId, target) {
+  const row = await firstRow('fm_task_check', `taskId eq ${lit(taskId)} and scenarioId eq ${lit(target.scenarioId)} and width eq ${lit(target.width)}`);
+  if (!row) throw rule(`task ${taskId} has no check row ${target.scenarioId}@${target.width}; run rows first`);
+  return row;
+}
+const ownerItem = (taskId, target) => firstRow('fm_owner_check', `taskId eq ${lit(taskId)} and scenarioId eq ${lit(target.scenarioId)} and width eq ${lit(target.width)}`);
+
+// ---- output -----------------------------------------------------------------------------------------------
+const out = (line) => process.stdout.write(`${line}\n`);
+function reportWrite(result, task) {
+  const e = result.event;
+  out(`seq=${e.seq} task=${e.taskId} event=${e.kind} state=${task?.state ?? '?'} next=${task?.nextActor ?? '?'}${result.replayed ? ' (already recorded)' : ''}`);
+}
+
+// Append an event, then project; both are safe to repeat with the same --key.
+async function write(taskId, who, build, after) {
+  const result = await append(taskId, who, build);
+  let projected;
+  try {
+    projected = await project(taskId);
+    if (after) await after(result);
+  } catch (error) {
+    if (error instanceof Fail) {
+      out(`seq=${result.event.seq} task=${taskId} event=${result.event.kind} (stored; the follow-up write failed)`);
+      throw new Fail(error.code === 4 ? 4 : 3, `${error.message}\nthe event is stored; re-run the same command with --key ${who.key} to finish`);
+    }
+    throw error;
+  }
+  reportWrite(result, projected?.task);
+  return { result, task: projected?.task };
+}
+
+// ---- commands ---------------------------------------------------------------------------------------------
+const noteOf = (args) => args.flags.note ?? '';
+
+async function cmdCreate(args) {
+  const taskId = taskIdOf(args);
+  const who = identity(args, 'firstmate');
+  const f = args.flags;
+  if (!f.title) throw usage('create needs --title');
+  const kind = oneOf(TASK_KINDS, f.kind, 'kind');
+  const surface = f.surface === undefined ? null : oneOf(SURFACES, f.surface, 'surface');
+  const parents = f.after || [];
+  const { task } = await write(
+    taskId,
+    who,
+    async ({ task: existing }) => {
+      if (existing) throw rule(`task ${taskId} already exists`);
+      let waiting = false;
+      for (const parent of parents) {
+        const p = fold(await taskEvents(parent));
+        if (!p) throw rule(`parent ${parent} does not exist`);
+        if (!CLOSED.includes(p.state)) waiting = true;
+      }
+      return {
+        kind: 'created',
+        note: noteOf(args),
+        set: { title: f.title, repo: f.repo ?? null, kind, state: waiting ? 'todo' : 'triage', assignee: '-', nextActor: 'firstmate', blockKind: null, blockReason: null, blockRepeats: 0, issueUrl: f.issue ?? null, prUrl: null, surface, holdUntil: null },
+      };
+    },
+    async () => {
+      for (const parent of parents) await ensureLink(parent, taskId);
+    },
+  );
+  return task;
+}
+
+function simple(command, kind, setFor, { needNote = false } = {}) {
+  return async (args) => {
+    const taskId = taskIdOf(args);
+    const who = identity(args, ['start', 'heartbeat'].includes(command) ? 'worker' : 'firstmate');
+    if (needNote && !args.flags.note) throw usage(`${command} needs --note`);
+    return write(
+      taskId,
+      who,
+      async ({ task }) => {
+        guard(command, task);
+        return { kind, note: noteOf(args), set: await setFor(task, args, taskId) };
+      },
+      ['approve', 'archive'].includes(command) ? () => release(taskId, who) : undefined,
+    );
+  };
+}
+
+const cmdAssign = simple('assign', 'assigned', async (task, args, taskId) => {
+  if (!args.flags.to) throw usage('assign needs --to ASSIGNEE');
+  const waiting = (await openParents(taskId)).length > 0;
+  return { assignee: args.flags.to, nextActor: 'worker', state: waiting ? 'todo' : 'ready' };
+});
+const cmdStart = simple('start', 'started', async () => ({ state: 'running', nextActor: 'worker', holdUntil: null }));
+const cmdHeartbeat = simple('heartbeat', 'heartbeat', async () => ({}));
+const cmdUnblock = simple('unblock', 'unblocked', async (task, args, taskId) => {
+  const waiting = (await openParents(taskId)).length > 0;
+  const set = { state: waiting ? 'todo' : 'ready', nextActor: 'worker', holdUntil: null, blockReason: null };
+  if (task.state === 'triage') Object.assign(set, { blockKind: null, blockRepeats: 0 });
+  return set;
+});
+const cmdChanges = simple('changes', 'changes', async () => ({ state: 'ready', nextActor: 'worker' }), { needNote: true });
+const cmdArchive = simple('archive', 'archived', async () => ({ state: 'archived', nextActor: 'firstmate' }));
+const cmdApprove = simple('approve', 'approved', async (task, args, taskId) => {
+  const open = openRows(await checkRows(taskId));
+  if (open.length) throw rule(`approve is refused while check rows are open: ${open.map((r) => `${rowKey(r)} (${r.status})`).join(', ')}`);
+  return { state: 'done', nextActor: 'firstmate', blockKind: null, blockReason: null, blockRepeats: 0, holdUntil: null };
+});
+
+async function cmdComment(args) {
+  const taskId = taskIdOf(args);
+  const who = identity(args, 'worker');
+  const images = imagesOf(args);
+  if (!args.flags.note && !images.length) throw usage('comment needs --note or --image');
+  return write(taskId, who, async ({ task }) => {
+    guard('comment', task);
+    return { kind: 'comment', note: noteOf(args), children: withImages({}, images) };
+  });
+}
+
+async function cmdEvent(args) {
+  const taskId = taskIdOf(args);
+  const who = identity(args, 'worker');
+  const kind = oneOf(FREE_KINDS, args.pos.kind, 'event kind');
+  const prUrl = args.flags['pr-url'];
+  return write(taskId, who, async ({ task }) => {
+    if (!task) throw rule('no such task');
+    return { kind, note: noteOf(args), set: kind === 'pr' && prUrl ? { prUrl } : {} };
+  });
+}
+
+async function cmdDone(args) {
+  const taskId = taskIdOf(args);
+  const who = identity(args, 'worker');
+  const f = args.flags;
+  const images = imagesOf(args);
+  const nextActor = f['next-actor'] === undefined ? null : oneOf(['tester', 'firstmate'], f['next-actor'], 'next actor');
+  return write(taskId, who, async ({ task }) => {
+    guard('done', task);
+    const rows = await checkRows(taskId);
+    const waitingOnTester = rows.some((r) => r.surface === 'user-visible' && r.status !== 'pass' && r.status !== 'retired');
+    const child = { summary: f.summary, changedFiles: f['changed-files'], verification: f.verification, residualRisk: f['residual-risk'], rows: f.rows ?? rowsJson(rows), prUrl: f['pr-url'], head: f.head };
+    for (const key of Object.keys(child)) if (child[key] === undefined) delete child[key];
+    const set = { state: 'review', nextActor: nextActor ?? (waitingOnTester ? 'tester' : 'firstmate'), blockKind: null, blockReason: null, blockRepeats: 0, holdUntil: null };
+    if (f['pr-url']) set.prUrl = f['pr-url'];
+    return { kind: 'done', note: noteOf(args), set, children: withImages({ done: [child] }, images) };
+  });
+}
+
+// Count a block of `kind` against the task: the third in a row of one kind goes to triage.
+function blockSet(task, kind, reason, nextActor, until) {
+  const repeats = task.blockKind === kind ? task.blockRepeats + 1 : 1;
+  const triage = kind !== 'dependency' && repeats >= 3;
+  return { state: triage ? 'triage' : 'blocked', nextActor: triage ? 'firstmate' : nextActor, blockKind: kind, blockReason: String(reason ?? '').slice(0, LIMITS.blockReason), blockRepeats: repeats, holdUntil: until };
+}
+
+async function cmdAsk(args) {
+  const taskId = taskIdOf(args);
+  const who = identity(args, 'worker');
+  const f = args.flags;
+  const options = f.option || [];
+  if (options.length < 2 || options.length > 6) throw rule(`a question has 2 to 6 options, not ${options.length}`);
+  const nextActor = f['next-actor'] === undefined ? 'firstmate' : oneOf(['firstmate', 'owner'], f['next-actor'], 'next actor');
+  const images = imagesOf(args);
+  return write(taskId, who, async ({ task }) => {
+    guard('ask', task);
+    const child = { question: f.question, options: JSON.stringify(options), recommendation: f.recommendation, why: f.why, document: f.document };
+    for (const key of Object.keys(child)) if (child[key] === undefined) delete child[key];
+    return { kind: 'needs-decision', note: noteOf(args), set: blockSet(task, 'needs-decision', f.question, nextActor, null), children: withImages({ question: [child] }, images) };
+  });
+}
+
+async function cmdBlock(args) {
+  const taskId = taskIdOf({ ...args, pos: { task: args.pos.task } });
+  const who = identity(args, 'worker');
+  const f = args.flags;
+  const kind = oneOf(BLOCK_KINDS, args.pos.kind, 'block kind');
+  if (f['next-actor'] !== undefined) oneOf(ACTORS, f['next-actor'], 'next actor');
+  const until = f.until === undefined ? null : isoOf(f.until, '--until');
+  const images = imagesOf(args);
+  if (kind === 'dependency' && !f.on) throw rule('a dependency block needs --on PARENT');
+  return write(
+    taskId,
+    who,
+    async ({ task }) => {
+      guard('block', task);
+      let set;
+      if (kind === 'dependency') {
+        if (f.on === taskId) throw rule('a task cannot wait on itself');
+        const parent = fold(await taskEvents(f.on));
+        if (!parent) throw rule(`parent ${f.on} does not exist`);
+        if (CLOSED.includes(parent.state)) throw rule(`parent ${f.on} is ${parent.state}; a dependency waits on an open parent`);
+        if (await wouldCycle(f.on, taskId)) throw rule(`${f.on} already waits on ${taskId}`);
+        set = { ...blockSet(task, kind, f.reason, f['next-actor'] ?? 'worker', null), state: 'todo', nextActor: 'worker' };
+      } else {
+        set = blockSet(task, kind, f.reason, f['next-actor'] ?? 'firstmate', until);
+      }
+      const child = { blockKind: kind, reason: f.reason, nextActor: f['next-actor'], until };
+      for (const key of Object.keys(child)) if (child[key] === undefined) delete child[key];
+      return { kind: 'blocked', note: noteOf(args), set, children: withImages({ block: [child] }, images) };
+    },
+    async () => {
+      if (kind === 'dependency') await ensureLink(f.on, taskId);
+    },
+  );
+}
+
+async function cmdLink(args) {
+  const { parent, child } = args.pos;
+  if (!parent || !child) throw usage('link needs <parent> <child>');
+  for (const id of [parent, child]) if (!TASK_ID.test(id)) throw usage(`${id} is not a task id`);
+  const who = identity(args, 'firstmate');
+  if (parent === child) throw rule('a task cannot wait on itself');
+  const p = fold(await taskEvents(parent));
+  const c = fold(await taskEvents(child));
+  if (!p) throw rule(`parent ${parent} does not exist`);
+  if (!c) throw rule(`child ${child} does not exist`);
+  if (!['triage', 'todo', 'ready'].includes(c.state)) throw rule(`a task in state ${c.state} cannot take a new parent`);
+  const existing = await firstRow('fm_task_link', `parentTaskId eq ${lit(parent)} and childTaskId eq ${lit(child)}`);
+  if (!existing && (await wouldCycle(parent, child))) throw rule(`${parent} already waits on ${child}`);
+  const needsMove = !CLOSED.includes(p.state) && c.state === 'ready';
+  if (existing && !needsMove) {
+    out(`link ${parent} -> ${child} (already linked)`);
+    return;
+  }
+  await ensureLink(parent, child);
+  if (!needsMove) {
+    out(`link ${parent} -> ${child}`);
+    return;
+  }
+  await write(child, who, async ({ task }) => {
+    guard('assign', task);
+    return { kind: 'linked', note: `waits on ${parent}`, set: { state: 'todo' } };
+  });
+}
+
+async function cmdRows(args) {
+  const taskId = taskIdOf(args);
+  const issue = args.pos.issue;
+  if (!issue) throw usage('rows needs <task> <issue-url>');
+  const who = identity(args, 'firstmate');
+  const task = fold(await taskEvents(taskId));
+  if (!task) throw rule(`no such task ${taskId}`);
+  const parser = process.env.FM_TASK_ACCEPTANCE || path.join(HERE, 'fm-acceptance.mjs');
+  const run = spawnSync('node', [parser, 'parse', issue, '--strict'], { encoding: 'utf8', timeout: 60000, maxBuffer: 16 * 1024 * 1024 });
+  if (run.error || !run.stdout) throw new Fail(3, `could not read ${issue}: ${run.error?.message || run.stderr.trim() || `parser exited ${run.status}`}`);
+  const parsed = JSON.parse(run.stdout);
+  if (parsed.problems.length) throw rule(`${issue} is refused by the acceptance parser: ${parsed.problems.join('; ')}`);
+  const { rows: acceptanceRows } = await import(pathToFileURL(parser).href);
+  const byId = new Map(parsed.scenarios.map((s) => [s.id, s]));
+  const fit = (value, max) => (value.length > max ? `${value.slice(0, max - 1)}…` : value);
+  const wanted = new Map();
+  for (const line of acceptanceRows(parsed, { surface: 'all' })) {
+    const m = /^- (\S+)@(\S+) \| (.*) \| pending \| evidence: -$/s.exec(line);
+    if (!m) throw rule(`the acceptance parser printed a row this writer cannot read: ${line}`);
+    const s = byId.get(m[1]);
+    const { done, ...rest } = s;
+    wanted.set(`${m[1]}@${m[2]}`, {
+      scenarioId: m[1],
+      width: m[2],
+      line: fit(m[3], 4000),
+      surface: s.surface,
+      page: fit(s.page, 200),
+      controls: fit(s.controls.length ? s.controls.join('; ') : '-', 2000),
+      data: fit(s.data, 2000),
+      proof: fit(s.proof, 4000),
+      acceptanceDigest: crypto.createHash('sha256').update(JSON.stringify(rest)).digest('hex'),
+    });
+  }
+  const have = new Map((await checkRows(taskId)).map((row) => [rowKey(row), row]));
+  const counts = { added: 0, reset: 0, retired: 0, updated: 0, unchanged: 0 };
+  const fresh = { status: 'pending', evidence: null, head: null, checkedAt: null };
+  const actorFor = (surface) => (surface === 'user-visible' ? 'tester' : 'worker');
+  for (const [key, want] of wanted) {
+    const row = have.get(key);
+    if (!row) {
+      ok(await http('POST', '/api/fm_task_check', { taskId, ...want, ...fresh, nextActor: actorFor(want.surface) }), `create the check row ${key}`);
+      counts.added++;
+      continue;
+    }
+    const changed = row.line !== want.line || row.acceptanceDigest !== want.acceptanceDigest;
+    const text = { line: want.line, surface: want.surface, page: want.page, controls: want.controls, data: want.data, proof: want.proof, acceptanceDigest: want.acceptanceDigest };
+    if (row.status === 'retired') {
+      ok(await http('PATCH', `/api/fm_task_check/${row.id}`, { ...text, ...fresh, nextActor: actorFor(want.surface) }), `reopen the check row ${key}`);
+      counts.added++;
+    } else if (changed && row.status === 'pass') {
+      ok(await http('PATCH', `/api/fm_task_check/${row.id}`, { ...text, ...fresh, nextActor: actorFor(want.surface) }), `reset the check row ${key}`);
+      counts.reset++;
+    } else if (changed) {
+      ok(await http('PATCH', `/api/fm_task_check/${row.id}`, text), `update the check row ${key}`);
+      counts.updated++;
+    } else {
+      counts.unchanged++;
+    }
+  }
+  for (const [key, row] of have) {
+    if (wanted.has(key) || row.status === 'retired') continue;
+    ok(await http('PATCH', `/api/fm_task_check/${row.id}`, { status: 'retired' }), `retire the check row ${key}`);
+    counts.retired++;
+  }
+  const summary = `rows added=${counts.added} reset=${counts.reset} retired=${counts.retired} updated=${counts.updated} unchanged=${counts.unchanged} total=${wanted.size}`;
+  const sets = task.issueUrl ? {} : { issueUrl: issue };
+  if (counts.added + counts.reset + counts.retired + counts.updated === 0 && !Object.keys(sets).length) {
+    out(summary);
+    return;
+  }
+  await write(taskId, who, async () => ({ kind: 'check', note: summary, set: sets }));
+  out(summary);
+}
+
+async function cmdCheck(args) {
+  const taskId = taskIdOf(args);
+  const who = identity(args, 'tester');
+  const f = args.flags;
+  const target = targetOf(args.pos.target);
+  const status = oneOf(CHECK_STATUSES, f.status, 'status');
+  const row = await checkRow(taskId, target);
+  const nextActor = oneOf(ACTORS, f['next-actor'] ?? (status === 'pass' ? 'firstmate' : status === 'fail' ? 'worker' : row.nextActor), 'next actor');
+  if (nextActor === 'owner' && !(await ownerItem(taskId, target))) throw rule(`${rowKey(row)} cannot read next actor owner without its owner item; run owner-check first`);
+  const patch = { status, nextActor, checkedAt: status === 'pending' ? null : new Date().toISOString() };
+  if (f.evidence !== undefined) patch.evidence = f.evidence;
+  if (f.head !== undefined) patch.head = f.head;
+  await write(taskId, who, async ({ task }) => {
+    if (!task) throw rule('no such task');
+    return { kind: 'check', note: `${rowKey(row)} ${status}${f.evidence ? `: ${f.evidence}` : ''}` };
+  }, async () => {
+    ok(await http('PATCH', `/api/fm_task_check/${row.id}`, patch), `patch the check row ${rowKey(row)}`);
+  });
+}
+
+async function cmdOwnerCheck(args) {
+  const taskId = taskIdOf(args);
+  const who = identity(args, 'firstmate');
+  const f = args.flags;
+  const target = targetOf(args.pos.target);
+  const row = await checkRow(taskId, target);
+  const item = { taskId, ...target, pageTitle: f['page-title'], url: f.url, steps: f.steps, data: f.data, expected: f.expected, status: 'pending' };
+  for (const key of Object.keys(item)) if (item[key] === undefined) delete item[key];
+  // the item first: a refusal here leaves the check row as it was
+  const existing = await ownerItem(taskId, target);
+  if (existing) {
+    const diff = Object.fromEntries(Object.entries(item).filter(([k, v]) => !['taskId', 'scenarioId', 'width', 'status'].includes(k) && existing[k] !== v));
+    if (Object.keys(diff).length) ok(await http('PATCH', `/api/fm_owner_check/${existing.id}`, { ...diff, status: 'pending' }), 'update the owner item');
+  } else {
+    ok(await http('POST', '/api/fm_owner_check', item), 'the owner item');
+  }
+  await write(taskId, who, async ({ task }) => {
+    if (!task) throw rule('no such task');
+    return { kind: 'owner-check', note: `${rowKey(row)}: ${f['page-title']} at ${f.url}` };
+  }, async () => {
+    ok(await http('PATCH', `/api/fm_task_check/${row.id}`, { nextActor: 'owner' }), `patch the check row ${rowKey(row)}`);
+  });
+}
+
+async function cmdShow(args) {
+  const taskId = taskIdOf(args);
+  const row = await taskRow(taskId);
+  if (!row) throw rule(`no task row for ${taskId}${fold(await taskEvents(taskId)) ? '; its events exist, run reproject' : ''}`);
+  if (args.flags.json) return out(JSON.stringify(row));
+  for (const field of ['taskId', ...PROJECTED]) out(`${field}=${row[field] ?? '-'}`);
+}
+
+async function cmdList(args) {
+  const clauses = [];
+  if (args.flags.state) clauses.push(`state eq ${lit(oneOf(STATES, args.flags.state, 'state'))}`);
+  if (args.flags.actor) clauses.push(`nextActor eq ${lit(oneOf(ACTORS, args.flags.actor, 'actor'))}`);
+  const rows = await listAll('fm_task', { filter: clauses.join(' and ') || undefined, orderby: 'taskId' });
+  if (args.flags.json) return out(JSON.stringify(rows));
+  for (const r of rows) out(`${r.taskId} state=${r.state} next=${r.nextActor} assignee=${r.assignee} ${r.title}`);
+}
+
+async function cmdReproject(args) {
+  const taskId = taskIdOf(args);
+  const result = await project(taskId);
+  if (!result) throw rule(`no events for ${taskId}`);
+  out(result.changed.length ? `reprojected ${taskId}: repaired ${result.changed.join(', ')} (last seq ${result.task.lastSeq})` : `${taskId}: the row already matches its events (last seq ${result.task.lastSeq})`);
+}
+
+const cut = (text, max) => {
+  const flat = String(text ?? '-').replace(/\s+/g, ' ').trim();
+  return flat.length > max ? `${flat.slice(0, max - 1)}… (+${flat.length - max + 1})` : flat;
+};
+const TERMINAL = { done: 'fm_event_done', 'needs-decision': 'fm_event_question', blocked: 'fm_event_block' };
+const TEMPLATE_FIELDS = {
+  done: ['summary', 'changedFiles', 'verification', 'residualRisk', 'rows', 'prUrl', 'head'],
+  'needs-decision': ['question', 'options', 'recommendation', 'why', 'document'],
+  blocked: ['blockKind', 'reason', 'nextActor', 'until'],
+};
+
+function openCalls(events) {
+  let open = [];
+  for (const e of events) {
+    if (e.kind === 'blocked' || e.kind === 'needs-decision') open.push(e);
+    else if (e.kind === 'unblocked' || e.kind === 'started') open = [];
+  }
+  return open;
+}
+
+async function cmdResume(args) {
+  const taskId = taskIdOf(args);
+  const events = await taskEvents(taskId);
+  const task = fold(events);
+  if (!task) throw rule(`no such task ${taskId}`);
+  const rows = (await checkRows(taskId)).filter((r) => r.status !== 'retired');
+  const lines = [];
+  lines.push(`TASK ${taskId} (${task.kind}${task.repo ? `, ${task.repo}` : ''}): ${cut(task.title, 100)}`);
+  lines.push(`state=${task.state} assignee=${task.assignee} next=${task.nextActor} last seq=${task.lastSeq}${task.holdUntil ? ` hold until ${task.holdUntil}` : ''}`);
+  lines.push(`issue: ${task.issueUrl ?? '-'}  pr: ${task.prUrl ?? '-'}  surface: ${task.surface ?? '-'}${task.blockKind ? `  block: ${task.blockKind} x${task.blockRepeats}` : ''}`);
+  const last = [...events].reverse().find((e) => TERMINAL[e.kind]);
+  lines.push('LAST TERMINAL CALL');
+  if (!last) lines.push('  none yet');
+  else {
+    const child = await firstRow(TERMINAL[last.kind], `fmTaskEventId eq ${lit(last.id)}`);
+    lines.push(`  #${last.seq} ${last.kind} by ${last.actorRole}/${last.actor} at ${cut(last.createdAt, 20)}`);
+    for (const field of TEMPLATE_FIELDS[last.kind]) {
+      let value = child?.[field];
+      if (field === 'rows' && value) {
+        try {
+          const list = JSON.parse(value);
+          const tally = {};
+          for (const r of list) tally[r.status] = (tally[r.status] || 0) + 1;
+          value = `${list.length} rows (${Object.entries(tally).map(([k, v]) => `${v} ${k}`).join(', ') || 'none'})`;
+        } catch {
+          // shown as stored
+        }
+      }
+      lines.push(`  ${field}: ${cut(value, 150)}`);
+    }
+  }
+  const open = openRows(rows);
+  lines.push(`OPEN CHECK ROWS (${open.length})`);
+  for (const r of open.slice(0, 12)) lines.push(`  ${rowKey(r)} [${r.nextActor}] ${r.status}: ${cut(r.line, 90)}`);
+  if (open.length > 12) lines.push(`  ... ${open.length - 12} more`);
+  const calls = openCalls(events);
+  const questions = calls.filter((e) => e.kind === 'needs-decision');
+  const blocks = calls.filter((e) => e.kind === 'blocked');
+  lines.push(`OPEN QUESTIONS (${questions.length})`);
+  for (const e of questions.slice(-3)) lines.push(`  #${e.seq} ${cut(bodyOf(e).set?.blockReason, 130)} -> ${bodyOf(e).set?.nextActor ?? '-'}`);
+  lines.push(`OPEN BLOCKS (${blocks.length})`);
+  for (const e of blocks.slice(-3)) lines.push(`  #${e.seq} ${bodyOf(e).set?.blockKind ?? '-'}: ${cut(bodyOf(e).set?.blockReason, 110)} -> ${bodyOf(e).set?.nextActor ?? '-'}`);
+  lines.push('LAST 10 EVENTS');
+  for (const e of events.slice(-10)) lines.push(`  #${e.seq} ${e.kind} ${e.actorRole}/${e.actor}: ${cut(bodyOf(e).note, 90)}`);
+  for (const line of lines) out(line);
+}
+
+const COMMANDS = {
+  create: cmdCreate, assign: cmdAssign, start: cmdStart, heartbeat: cmdHeartbeat, done: cmdDone, ask: cmdAsk, block: cmdBlock,
+  unblock: cmdUnblock, approve: cmdApprove, changes: cmdChanges, archive: cmdArchive, comment: cmdComment, event: cmdEvent,
+  link: cmdLink, rows: cmdRows, check: cmdCheck, 'owner-check': cmdOwnerCheck, show: cmdShow, list: cmdList, resume: cmdResume, reproject: cmdReproject,
+};
+
+async function main(argv) {
+  const [command, ...rest] = argv;
+  if (!command || ['-h', '--help', 'help'].includes(command)) {
+    const header = [];
+    for (const line of fs.readFileSync(fileURLToPath(import.meta.url), 'utf8').split('\n').slice(1)) {
+      if (!line.startsWith('//')) break;
+      header.push(line.replace(/^\/\/ ?/, ''));
+    }
+    process.stdout.write(`${header.join('\n')}\n`);
+    return 0;
+  }
+  if (!COMMANDS[command]) throw usage(`unknown command ${command}; run fm-task.sh --help`);
+  await COMMANDS[command](parseArgs(command, rest));
+  return 0;
+}
+
+main(process.argv.slice(2)).then(
+  (code) => {
+    process.exitCode = code;
+  },
+  (error) => {
+    process.stderr.write(`fm-task: ${error.message}\n`);
+    process.exitCode = error instanceof Fail ? error.code : 1;
+  },
+);
