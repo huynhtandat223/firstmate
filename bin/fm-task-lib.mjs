@@ -28,7 +28,8 @@
 //   link     <parent> <child>                the child waits in todo while the parent is open
 //   rows     <task> <issue-url>              one check row per scenario x width from fm-acceptance.mjs
 //   check    <task> <id>@<width> --status pending|pass|fail [--evidence E] [--head H] [--next-actor A]
-//   owner-check <task> <id>@<width> --page-title --url --steps --data --expected   (sets next actor owner)
+//   owner-check <task> <id>@<width> --page-title --url --steps --data --expected   (sets next actor owner;
+//            a row that has an item needs --url and --steps again; a re-sent --key never writes the item twice)
 //   show     <task> [--json]   list [--state S] [--actor A] [--json]   resume <task>   reproject <task>
 // Every write takes --key K (the idempotency key; a re-send returns the first event), --actor NAME
 // (default FM_TASK_ACTOR, FM_TASK_ID, then the login name) and --role (default FM_TASK_ROLE, then the
