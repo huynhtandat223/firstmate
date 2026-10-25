@@ -948,7 +948,26 @@ case_owner_pending() {
   [ "$(task_state $t)" = review ] || { echo "approve finished before the owner answered"; return 1; }
 }
 
-CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending"}
+# rows on a closed task would reopen passed rows under a task that stays done.
+case_rows_closed() {
+  BIN=$1; reset_db
+  local before
+  use_issue v1
+  ft create tk-rc1 --title t --kind ship >/dev/null; ft rows tk-rc1 "$ISSUE" >/dev/null
+  for r in A1@1440 A1@390 A2@- A3@-; do ft check tk-rc1 $r --status pass >/dev/null; done
+  ft archive tk-rc1 >/dev/null
+  use_issue v2; before=$(db fm_task_check | jq -c '[.[] | [.scenarioId, .width, .status]]')
+  ft rows tk-rc1 "$ISSUE"
+  must 'rows on an archived task' 5 || return 1
+  case $ERR in *archived*) ;; *) echo "the refusal does not say why: $ERR"; return 1 ;; esac
+  [ "$(db fm_task_check | jq -c '[.[] | [.scenarioId, .width, .status]]')" = "$before" ] || { echo "rows changed an archived task's rows"; return 1; }
+  mk_running tk-rc2 >/dev/null; ft "done" tk-rc2 "${DONE_FLAGS[@]}" >/dev/null; ft approve tk-rc2 >/dev/null
+  ft rows tk-rc2 "$ISSUE"
+  must 'rows on a done task' 5 || return 1
+  [ "$(count fm_task_check)" = 4 ] || { echo "rows added rows to a done task"; return 1; }
+}
+
+CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed"}
 
 # ---- real command -------------------------------------------------------------------
 
@@ -1012,4 +1031,5 @@ mutate 'start waits for an open parent' start_parent 'if (parents.length) throw 
 mutate 'a user-visible task needs check rows to be approved' approve_head 'if (task.surface === '"'"'user-visible'"'"' && !visible.length)' 'if (false)'
 mutate 'a pass counts only on the head of the latest done' approve_head 'if (stale.length) throw rule(`approve is refused' 'if (false) throw rule(`approve is refused'
 mutate 'an owner item reopens its row' owner_pending "{ nextActor: 'owner', status: 'pending', checkedAt: null }" "{ nextActor: 'owner' }"
+mutate 'rows are refused on a closed task' rows_closed 'if (CLOSED.includes(task.state)) throw rule(`rows is refused' 'if (false) throw rule(`rows is refused'
 pass 'every guarded behavior has a red mutation proof'
