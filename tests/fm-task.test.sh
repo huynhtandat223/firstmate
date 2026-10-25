@@ -1115,7 +1115,37 @@ case_check_parallel() {
   done
 }
 
-CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel"}
+# owner-check with unchanged fields changes nothing; a row reset to pending reopens its item.
+case_owner_repeat() {
+  BIN=$1; reset_db
+  local t=tk-or events row_before item_before id
+  ft create $t --title t --kind ship >/dev/null; use_issue v1; ft rows $t "$ISSUE" >/dev/null
+  OC=(owner-check $t A1@1440 --page-title Home --url 'http://100.88.10.58:5001/#home' --steps '1. open it' --data d --expected e)
+  ft "${OC[@]}"; must 'owner-check' 0 || return 1
+  events=$(count fm_task_event); item_before=$(db fm_owner_check | jq -S -c .); row_before=$(db fm_task_check | jq -S -c .)
+  ft "${OC[@]}"; must 'owner-check repeated' 0 || return 1
+  [ "$(count fm_task_event)" = "$events" ] || { echo "a repeat stored an event"; return 1; }
+  [ "$(db fm_owner_check | jq -S -c .)" = "$item_before" ] || { echo "a repeat changed the item"; return 1; }
+  [ "$(db fm_task_check | jq -S -c .)" = "$row_before" ] || { echo "a repeat changed the rows"; return 1; }
+  # the owner answered; the row is set to pending again by hand: the item is pending again too
+  id=$(db fm_owner_check | jq -r '.[0].id')
+  api -X PATCH "$BASE/api/fm_owner_check/$id" -d '{"status":"pass"}' >/dev/null
+  ft check $t A1@1440 --status pending --next-actor owner >/dev/null
+  [ "$(db fm_owner_check | jq -r '.[0].status')" = pending ] || { echo "a row set to pending left its item at $(db fm_owner_check | jq -r '.[0].status')"; return 1; }
+  # the row passed meanwhile; the same owner-check opens both again
+  api -X PATCH "$BASE/api/fm_owner_check/$id" -d '{"status":"pass"}' >/dev/null
+  ft check $t A1@1440 --status pass >/dev/null
+  ft "${OC[@]}"; must 'owner-check after the row passed' 0 || return 1
+  [ "$(db fm_owner_check | jq -r '.[0].status')" = pending ] && [ "$(db fm_task_check | jq -r '.[] | select(.scenarioId == "A1" and .width == "1440") | .status + "/" + .nextActor')" = pending/owner ] \
+    || { echo "owner-check did not open the row and the item again"; return 1; }
+  # a row reset by the issue edit reopens its item
+  api -X PATCH "$BASE/api/fm_owner_check/$id" -d '{"status":"pass"}' >/dev/null
+  ft check $t A1@1440 --status pass >/dev/null
+  use_issue v2; ft rows $t "$ISSUE" >/dev/null
+  [ "$(db fm_owner_check | jq -r '.[0].status')" = pending ] || { echo "rows reset the row but left the item at $(db fm_owner_check | jq -r '.[0].status')"; return 1; }
+}
+
+CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat"}
 
 # ---- real command -------------------------------------------------------------------
 
@@ -1186,4 +1216,6 @@ mutate 'a row that opens again sends the task back' route_back "return !open.len
 mutate 'a re-sent key with other values is refused' check_values 'if (differs.length) throw rule(`the key' 'if (false) throw rule(`the key'
 mutate 'a re-sent check cannot undo a newer result' check_replay "const newest = [...(await taskEvents(taskId))].reverse().find((e) => e.kind === 'check' && bodyOf(e).row === rowKey(row));" "const newest = [...(await taskEvents(taskId))].reverse().find((e) => e.kind === 'check' && bodyOf(e).row === rowKey(row) && bodyOf(e).values.status === 'pass');"
 mutate 'the newest check event wins over a slower older call' check_parallel 'if (!v || newest.seq === applied) return;' 'if (!v || applied) return;'
+mutate 'an owner-check that changes nothing writes nothing' owner_repeat "row.nextActor === 'owner' && row.status === 'pending') {" "false) {"
+mutate 'a row set to pending reopens its item' owner_repeat "if (v.status === 'pending') await reopenItem(taskId" "if (false) await reopenItem(taskId"
 pass 'every guarded behavior has a red mutation proof'

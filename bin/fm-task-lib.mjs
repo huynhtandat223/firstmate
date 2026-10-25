@@ -476,6 +476,11 @@ async function checkRow(taskId, target) {
   if (row.status === 'retired') throw rule(`check row ${rowKey(row)} is retired: its scenario left the issue`);
   return row;
 }
+// A row set back to pending reopens the owner item that belongs to it.
+async function reopenItem(taskId, target) {
+  const item = await ownerItem(taskId, target);
+  if (item && item.status !== 'pending') ok(await http('PATCH', `/api/fm_owner_check/${item.id}`, { status: 'pending', decidedAt: null }), 'reopen the owner item');
+}
 const ownerItem = (taskId, target) => firstRow('fm_owner_check', `taskId eq ${lit(taskId)} and scenarioId eq ${lit(target.scenarioId)} and width eq ${lit(target.width)}`);
 
 // ---- output -----------------------------------------------------------------------------------------------
@@ -769,9 +774,11 @@ async function cmdRows(args) {
     const text = { line: want.line, surface: want.surface, page: want.page, controls: want.controls, data: want.data, proof: want.proof, acceptanceDigest: want.acceptanceDigest };
     if (row.status === 'retired') {
       ok(await http('PATCH', `/api/fm_task_check/${row.id}`, { ...text, ...fresh, nextActor: actorFor(want.surface) }), `reopen the check row ${key}`);
+      await reopenItem(taskId, row);
       counts.added++;
     } else if (changed && row.status === 'pass') {
       ok(await http('PATCH', `/api/fm_task_check/${row.id}`, { ...text, ...fresh, nextActor: actorFor(want.surface) }), `reset the check row ${key}`);
+      await reopenItem(taskId, row);
       counts.reset++;
     } else if (changed) {
       ok(await http('PATCH', `/api/fm_task_check/${row.id}`, text), `update the check row ${key}`);
@@ -844,6 +851,7 @@ async function applyNewestCheck(taskId, row) {
     if (v.evidence !== null && v.evidence !== undefined) patch.evidence = v.evidence;
     if (v.head !== null && v.head !== undefined) patch.head = v.head;
     ok(await http('PATCH', `/api/fm_task_check/${row.id}`, patch), `patch the check row ${rowKey(row)}`);
+    if (v.status === 'pending') await reopenItem(taskId, { scenarioId: row.scenarioId, width: row.width });
     applied = newest.seq;
   }
   throw new Fail(3, `the check row ${rowKey(row)} kept changing; run the check again`);
@@ -884,7 +892,12 @@ async function cmdOwnerCheck(args) {
   const existing = await ownerItem(taskId, target);
   if (existing) {
     const diff = Object.fromEntries(Object.entries(item).filter(([k, v]) => !['taskId', 'scenarioId', 'width', 'status'].includes(k) && existing[k] !== v));
-    if (Object.keys(diff).length) ok(await http('PATCH', `/api/fm_owner_check/${existing.id}`, { ...diff, status: 'pending' }), 'update the owner item');
+    // the same item on a row that already waits on the owner: nothing to change
+    if (!Object.keys(diff).length && existing.status === 'pending' && row.nextActor === 'owner' && row.status === 'pending') {
+      out(`owner item for ${rowKey(row)} unchanged`);
+      return;
+    }
+    if (Object.keys(diff).length || existing.status !== 'pending') ok(await http('PATCH', `/api/fm_owner_check/${existing.id}`, { ...diff, status: 'pending', decidedAt: null }), 'update the owner item');
   } else {
     ok(await http('POST', '/api/fm_owner_check', item), 'the owner item');
   }
