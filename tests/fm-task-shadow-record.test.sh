@@ -46,4 +46,11 @@ bash "$ROOT/bin/fm-task-shadow.sh" status "$FM_HOME/config" "$FM_HOME/state/read
 "$ROOT/bin/fm-task.sh" show readywork --json | jq -e '.state == "running"'
 bash "$ROOT/bin/fm-task-shadow.sh" held verify external 'verification pending: A1 waits'
 "$ROOT/bin/fm-task.sh" show verify --json | jq -e '.state == "review" and .nextActor == "tester"'
+printf '## Queued\n- [ ] stable - Stable (hold-kind: captain) (hold: Same)\n  Captain hold set: 2026-10-25T17:00:00Z\n' > "$FM_HOME/data/backlog.md"
+bash "$ROOT/bin/fm-task-shadow.sh" held stable captain Same
+before=$("$ROOT/bin/fm-task.sh" show stable --json | jq .lastSeq)
+printf '\nUnrelated note\n' >> "$FM_HOME/data/backlog.md"
+bash "$ROOT/bin/fm-task-shadow.sh" held stable captain Same
+after=$("$ROOT/bin/fm-task.sh" show stable --json | jq .lastSeq)
+[ "$before" = "$after" ] || fail 'same captain occurrence wrote another hold'
 echo 'ok - shadow lifecycle and explicit reopen'

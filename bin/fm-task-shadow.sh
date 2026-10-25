@@ -167,11 +167,14 @@ hold_event() {  # <hold-kind> <reason>: make the record capable of taking this o
   esac
   reason=$(cut_to "$reason" 1500)
   [ -n "$reason" ] || reason="held ($kind)"
-  # Producers run after the source mutation. Its nanosecond mtime identifies a
-  # new occurrence while retries of the same source transition keep their key.
+  # Captain hold-set is the source transition identity, not a whole-file mtime.
   occurrence=${3:-}
   if [ -z "$occurrence" ]; then
-    occurrence=$(stat -c '%y' "$DATA/backlog.md" 2>/dev/null || printf unknown)
+    occurrence=$(awk -v id="$TASK" '
+      /^- \[[ x]\] / { active=($3 == id) }
+      active && /Captain hold set:/ { sub(/^.*Captain hold set: /, ""); print; exit }
+    ' "$DATA/backlog.md" 2>/dev/null)
+    [ -n "$occurrence" ] || occurrence=legacy
   fi
   key=$(short "$kind|$reason|$occurrence")
   current=$("$WRITER" show "$TASK" --json 2>/dev/null) || current=''
@@ -180,6 +183,13 @@ hold_event() {  # <hold-kind> <reason>: make the record capable of taking this o
     current='{"state":"triage"}'
   fi
   current=$(printf '%s' "$current" | jq -r '.state // "running"' 2>/dev/null) || current=running
+  if [ "$current" = blocked ]; then
+    local prior
+    prior=$("$WRITER" show "$TASK" --json 2>/dev/null)
+    if [ "$(printf '%s' "$prior" | jq -r '.blockReason')" = "$reason" ]; then
+      return 0
+    fi
+  fi
   case "$current" in
     review) w "hold-$key-changes" changes "$TASK" --note 'old source holds the task' || return 0 ;;
     blocked) w "hold-$key-unblock" unblock "$TASK" || return 0 ;;
