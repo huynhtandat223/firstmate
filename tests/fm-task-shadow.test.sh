@@ -186,6 +186,111 @@ test_backlog_verbs() {
   pass "backlog verbs: done, reopen, hold and unhold; a captain hold is left to bin/fm-captain-hold.sh"
 }
 
+# ---- the state scripts, driven for real ------------------------------------------
+
+make_fakebin() {  # <dir>
+  local fakebin
+  fakebin=$(fm_fakebin "$1")
+  cat > "$fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+window_file="$(dirname "$0")/.spawn-window"
+case "$*" in
+  *"#{pane_current_path}"*) printf '%s\n' "${FM_FAKE_PANE_PATH:-}"; exit 0 ;;
+esac
+case "${1:-}" in
+  display-message) printf 'firstmate\n' ;;
+  list-windows) [ ! -s "$window_file" ] || cat "$window_file" ;;
+  new-window)
+    name=
+    previous=
+    for arg in "$@"; do
+      [ "$previous" = -n ] && name=$arg
+      previous=$arg
+    done
+    printf '%s\n' "$name" > "$window_file"
+    ;;
+  kill-window) : > "$window_file" ;;
+esac
+exit 0
+SH
+  chmod +x "$fakebin/tmux"
+  fm_fake_exit0 "$fakebin" treehouse no-mistakes
+  printf '%s\n' "$fakebin"
+}
+
+# Sets CASE_DIR HOME_DIR PROJ_DIR WT_DIR FAKEBIN TASK WRITER CALLS for one isolated home with the flag on.
+make_real_case() {  # <name>
+  make_case "$1" on
+  PROJ_DIR="$CASE_DIR/sample"
+  TASK="$1-t1"
+  WT_DIR="$CASE_DIR/wt"
+  mkdir -p "$HOME_DIR/data/$TASK" "$HOME_DIR/projects" "$HOME_DIR/user-home"
+  printf 'claude\n' > "$HOME_DIR/config/crew-harness"
+  printf '%s\n' "$$" > "$HOME_DIR/state/.lock"
+  touch "$HOME_DIR/state/.last-watcher-beat"
+  fm_git_worktree "$PROJ_DIR" "$WT_DIR" "fm/$TASK"
+  cat > "$HOME_DIR/data/$TASK/brief.md" <<EOF
+# Task
+## Captain's intent
+Exercise the task record shadow for $TASK.
+
+## Firstmate spec
+Nothing to build.
+EOF
+  FAKEBIN=$(make_fakebin "$CASE_DIR")
+}
+
+add_row() {  # <task> <title> <kind>: a real backlog row in the case home, so the spawn gate finds its item
+  fm_test_tasks_toml "$HOME_DIR/.tasks.toml"
+  in_home "$ROOT/bin/fm-tasks-axi.sh" add "$1" "$2" --kind "$3" --repo sample >/dev/null || fail "could not add the backlog row $1"
+}
+
+in_home() {  # <command...>: run one real script against the case home, from inside it
+  cd "$HOME_DIR" && env -u FM_TRACE_CONTEXT FM_ROOT_OVERRIDE='' FM_HOME="$HOME_DIR" \
+    HOME="$HOME_DIR/user-home" CLAUDE_CONFIG_DIR='' \
+    FM_STATE_OVERRIDE="$HOME_DIR/state" FM_DATA_OVERRIDE="$HOME_DIR/data" \
+    FM_PROJECTS_OVERRIDE="$HOME_DIR/projects" FM_CONFIG_OVERRIDE="$HOME_DIR/config" \
+    FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$WT_DIR" TMUX="fake,1,0" \
+    FM_TASK_SHADOW_WRITER="$WRITER" FAKE_CALLS="$CALLS" \
+    PATH="$FAKEBIN:$PATH" "$@"
+}
+SBIN=${SBIN:-$ROOT/bin}  # a mutation proof points this at a copy of bin/
+
+test_spawn_writes_the_record() {
+  local out
+  make_real_case spawn
+  add_row "$TASK" 'Spawn shadow title' ship
+  out=$(in_home "$SBIN/fm-spawn.sh" "$TASK" "$PROJ_DIR" --mode local-only --yolo off 2>&1) || fail "spawn failed: $out"
+  assert_equals "$(printf '%s\n' "create $TASK --title Spawn shadow title --kind ship --repo sample" "assign $TASK --to claude" "start $TASK")" "$(calls)" "the record calls of a fresh spawn"
+  make_real_case spawn-off
+  rm -f "$HOME_DIR/config/task-shadow"
+  out=$(in_home "$SBIN/fm-spawn.sh" "$TASK" "$PROJ_DIR" --mode local-only --yolo off 2>&1) || fail "spawn failed: $out"
+  assert_equals "" "$(cat "$CALLS")" "a spawn with the flag absent writes nothing"
+  pass "spawn: a fresh spawn writes create, assign and start to the record; a home without the flag writes nothing"
+}
+
+
+test_worker_status_command_writes_the_record() {
+  local cmd out
+  make_real_case status-cmd
+  rm -rf "${HOME_DIR:?}/data/$TASK"
+  (cd "$HOME_DIR" && in_home "$SBIN/fm-brief.sh" "$TASK" sample --mode no-mistakes >/dev/null) || fail "brief scaffold failed"
+  # shellcheck disable=SC2016 # Match literal backticks in the generated brief.
+  cmd=$(sed -n '/`echo "{state}/s/.*`\(echo .*\)`.*/\1/p' "$HOME_DIR/data/$TASK/brief.md" | head -1)
+  [ -n "$cmd" ] || fail "the brief carries no status command"
+  cmd=${cmd//\{state\}/blocked}
+  cmd=${cmd//<epoch>/1790000000}
+  cmd=${cmd//\{one short line\}/need a token}
+  # a worker runs the command in a plain shell with no firstmate environment
+  out=$(env -i PATH="$PATH" HOME="$HOME_DIR/user-home" FM_TASK_SHADOW_WRITER="$WRITER" FAKE_CALLS="$CALLS" bash -c "$cmd" 2>&1) || fail "the worker status command failed: $out"
+  assert_equals "blocked [at=1790000000]: need a token" "$(cat "$HOME_DIR/state/$TASK.status")" "status log"
+  assert_equals "block transient $TASK --reason need a token --next-actor firstmate" "$(calls)" "the record call right after the append"
+  rm -f "$HOME_DIR/config/task-shadow"; : > "$CALLS"
+  out=$(env -i PATH="$PATH" HOME="$HOME_DIR/user-home" FM_TASK_SHADOW_WRITER="$WRITER" FAKE_CALLS="$CALLS" bash -c "$cmd" 2>&1) || fail "the worker status command failed without the flag: $out"
+  assert_equals "" "$(cat "$CALLS")" "a status command with the flag absent writes nothing to the record"
+  pass "status command: a worker's status line reaches the record at once, and not at all without the flag"
+}
+
 test_flag_absent_writes_nothing
 test_dispatched_creates_assigns_and_starts
 test_status_lines_map_to_writer_commands
@@ -194,6 +299,8 @@ test_the_hook_never_fails_the_script
 test_the_flag_file_carries_the_writer_settings
 test_events_of_the_other_scripts
 test_backlog_verbs
+test_spawn_writes_the_record
+test_worker_status_command_writes_the_record
 
 # ---- mutation proofs: remove one rule of the hook, the case guarding it goes red ------------------------------
 
@@ -224,3 +331,21 @@ mutate_hook 'a refused hold leaves a comment' test_events_of_the_other_scripts '
 mutate_hook 'a close goes through done when the record holds the task running' test_events_of_the_other_scripts 'w "$1-done" "done" "$TASK" --summary "closed by the old source" --changed-files - --verification - --residual-risk - || return 1' 'return 1'
 mutate_hook 'a captain hold in the backlog is left to fm-captain-hold' test_backlog_verbs '[ "${3:-}" = captain ] || ' ''
 pass 'every rule of the hook has a red mutation proof'
+
+# ---- mutation proofs for the scripts: delete the one hook call, the script's case goes red ---------------------
+
+MSBIN="$TMP_ROOT/mbin"
+mutate_script() {  # <label> <case function> <script> <text of the hook line to delete>
+  rm -rf "$MSBIN"
+  cp -R "$ROOT/bin" "$MSBIN"
+  FRAG="$4" perl -ni -e 'print unless index($_, $ENV{FRAG}) >= 0' "$MSBIN/$3"
+  cmp -s "$ROOT/bin/$3" "$MSBIN/$3" && fail "mutation '$1' changed nothing"
+  bash -n "$MSBIN/$3" 2>/dev/null || fail "mutation '$1' is not valid shell"
+  if ( SBIN="$MSBIN"; "$2" ) >/dev/null 2>&1; then
+    fail "removing the hook call '$1' left $2 green"
+  fi
+  pass "hook call '$1' is needed: $2 goes red without it"
+}
+
+mutate_script 'the worker status command writes the record' test_worker_status_command_writes_the_record fm-brief.sh 'fm-task-shadow.sh'
+mutate_script 'fm-spawn.sh writes the dispatched task' test_spawn_writes_the_record fm-spawn.sh 'fm-task-shadow.sh" dispatched'
