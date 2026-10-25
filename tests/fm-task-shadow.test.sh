@@ -8,10 +8,11 @@
 # shellcheck disable=SC2016 # mutation proofs pass literal source patterns to perl
 set -u
 
-# shellcheck source=tests/lib.sh
-. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# shellcheck source=tests/verify-gate-helpers.sh
+. "$(dirname "${BASH_SOURCE[0]}")/verify-gate-helpers.sh"
 
 TMP_ROOT=$(fm_test_tmproot fm-task-shadow)
+vg_install_gh "$TMP_ROOT/gh"
 
 # ---- the fake writer ----------------------------------------------------------
 
@@ -310,6 +311,20 @@ test_teardown_writes_the_record() {
   pass "teardown: the cleanup and the backlog close reach the record"
 }
 
+test_verify_close_writes_the_record() {
+  local out
+  make_real_case verify-close
+  add_row "$TASK" 'Verify shadow title' ship
+  in_home "$ROOT/bin/fm-tasks-axi.sh" hold "$TASK" --reason "$(printf 'fm-hold-v1:%s' "$(printf '%s' 'verification pending: A2 is pending' | base64 -w0)")" --kind external >/dev/null \
+    || fail "could not hold the row"
+  vg_write_records "$HOME_DIR" "$TASK"
+  : > "$CALLS"
+  out=$(in_home "$SBIN/fm-verify-close.sh" "$TASK" 2>&1) || fail "verify-close failed: $out"
+  assert_contains "$(calls)" "event $TASK comment --note verification record complete (bin/fm-verify-close.sh)" "verify-close writes its close to the record"
+  assert_contains "$(calls)" "approve $TASK" "the backlog close reaches the record"
+  pass "verify-close: the verified close reaches the record"
+}
+
 test_flag_absent_writes_nothing
 test_dispatched_creates_assigns_and_starts
 test_status_lines_map_to_writer_commands
@@ -321,6 +336,7 @@ test_backlog_verbs
 test_spawn_writes_the_record
 test_worker_status_command_writes_the_record
 test_teardown_writes_the_record
+test_verify_close_writes_the_record
 
 # ---- mutation proofs: remove one rule of the hook, the case guarding it goes red ------------------------------
 
@@ -371,3 +387,4 @@ mutate_script 'the worker status command writes the record' test_worker_status_c
 mutate_script 'fm-spawn.sh writes the dispatched task' test_spawn_writes_the_record fm-spawn.sh 'fm-task-shadow.sh" dispatched'
 mutate_script 'fm-teardown.sh writes the cleanup' test_teardown_writes_the_record fm-teardown.sh 'fm-task-shadow.sh" cleaned-up'
 mutate_script 'the backlog transition lib writes a landed close' test_teardown_writes_the_record fm-backlog-transition-lib.sh 'fm_backlog_shadow "$verb"'
+mutate_script 'fm-verify-close.sh writes the verified close' test_verify_close_writes_the_record fm-verify-close.sh 'fm-task-shadow.sh" verified'
