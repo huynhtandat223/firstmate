@@ -44,4 +44,6 @@ bash "$ROOT/bin/fm-task-shadow.sh" answered closing closed
 printf 'working [at=123]: work\n' > "$FM_HOME/state/readywork.status"
 bash "$ROOT/bin/fm-task-shadow.sh" status "$FM_HOME/config" "$FM_HOME/state/readywork.status"
 "$ROOT/bin/fm-task.sh" show readywork --json | jq -e '.state == "running"'
+bash "$ROOT/bin/fm-task-shadow.sh" held verify external 'verification pending: A1 waits'
+"$ROOT/bin/fm-task.sh" show verify --json | jq -e '.state == "review" and .nextActor == "tester"'
 echo 'ok - shadow lifecycle and explicit reopen'

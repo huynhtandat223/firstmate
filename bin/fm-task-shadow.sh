@@ -190,6 +190,10 @@ hold_event() {  # <hold-kind> <reason>: make the record capable of taking this o
     *) w "hold-$key-assign" assign "$TASK" --to "$TASK" || return 0
        w "hold-$key-start" start "$TASK" || return 0 ;;
   esac
+  if printf '%s' "$reason" | grep -qi 'verification pending'; then
+    w "hold-$key-review" done "$TASK" --summary "$reason" --changed-files - --verification 'old source verification pending' --residual-risk - --next-actor tester
+    return 0
+  fi
   case "$kind" in
     captain)
       w "hold-$key" ask "$TASK" --question "$reason" --option 'Decide now' --option 'Decide later' --recommendation - --why 'a captain hold' --next-actor owner ;;
