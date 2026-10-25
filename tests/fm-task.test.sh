@@ -350,6 +350,7 @@ issue_body() {  # <variant>
     v2) a1_line='WHEN a user acts, THE page SHALL answer fast.'; a2_proof='read the row back twice'; a4=1 ;;
     v3) a1_line='WHEN a user acts, THE page SHALL answer fast.'; a1_w='1440'; a2_proof='read the row back twice' ;;
     v4) a1_line='WHEN a user acts, THE page SHALL answer fast.'; a1_w='1440'; a2_proof='read the row back twice'; a4=1 ;;
+    v5) a1_line='WHEN a user acts, THE page SHALL answer fast.'; a2_proof='read the row back twice' ;;
   esac
   printf '## Context\n\nc\n\n## Requirements\n\nr\n\n## Definition of done\n\nd\n\n## Scenarios\n\n'
   scenario A1 user-visible home "$a1_w" "$a1_line" 'click Save'
@@ -1081,6 +1082,25 @@ case_route_stale() {
   [ "$(na)" = firstmate ] || { echo "passes on the latest head left the task with $(na)"; return 1; }
 }
 
+# rows routes a task in review again after it adds, resets or retires rows.
+case_rows_route() {
+  BIN=$1; reset_db
+  local t=tk-rr r
+  mk_running $t >/dev/null; use_issue v1; ft rows $t "$ISSUE" >/dev/null
+  na() { task_row $t | jq -r .nextActor; }
+  ft "done" $t "${DONE_FLAGS[@]}" >/dev/null
+  for r in A1@1440 A1@390 A2@- A3@-; do ft check $t $r --status pass >/dev/null; done
+  [ "$(na)" = firstmate ] || { echo "setup: not routed to firstmate: $(na)"; return 1; }
+  use_issue v2; ft rows $t "$ISSUE"
+  must 'rows with new and reset rows' 0 || return 1
+  [ "$(na)" = worker ] || { echo "rows added and reset rows but the task waits on $(na); want worker"; return 1; }
+  for r in A1@1440 A1@390 A2@-; do ft check $t $r --status pass >/dev/null; done
+  [ "$(na)" = worker ] || { echo "setup: A4 is open but the task waits on $(na)"; return 1; }
+  use_issue v5; ft rows $t "$ISSUE"
+  must 'rows retiring the open row' 0 || return 1
+  [ "$(na)" = firstmate ] || { echo "rows retired the open row but the task waits on $(na); want firstmate"; return 1; }
+}
+
 # A re-sent key carries the values of its first event; a retry with other values is refused.
 case_check_values() {
   BIN=$1; reset_db
@@ -1205,7 +1225,7 @@ case_link_triage() {
   [ "$(task_state tk-lt-c2)" = ready ] || { echo "the parent closing left the child in $(task_state tk-lt-c2)"; return 1; }
 }
 
-CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale"}
+CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route"}
 
 # ---- real command -------------------------------------------------------------------
 
@@ -1282,4 +1302,5 @@ mutate 'a row reset by rows supersedes its older check events' reset_supersedes 
       ok(await http('PATCH', \`/api/fm_task_check/\${row.id}\`, { ...text, ...fresh, nextActor: actorFor(want.surface) }), \`reset the check row" "ok(await http('PATCH', \`/api/fm_task_check/\${row.id}\`, { ...text, ...fresh, nextActor: actorFor(want.surface) }), \`reset the check row"
 mutate 'an owner-check supersedes the older check events of its row' reset_supersedes "extra: { row: rowKey(row), values: { status: 'pending', nextActor: 'owner'" "extra: { row: 'none', values: { status: 'pending', nextActor: 'owner'"
 mutate 'a pass on another head than the latest done is still open for routing' route_stale "(passedOnOtherHead(r, head) ? 'tester' : r.nextActor)" "(r.nextActor)"
+mutate 'rows routes a task in review again' rows_route "set: sets }), () => routeReview(taskId, who));" "set: sets }));"
 pass 'every guarded behavior has a red mutation proof'

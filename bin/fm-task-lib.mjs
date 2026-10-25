@@ -812,7 +812,7 @@ async function cmdRows(args) {
     out(summary);
     return;
   }
-  await write(taskId, who, async () => ({ kind: 'check', note: summary, set: sets }));
+  await write(taskId, who, async () => ({ kind: 'check', note: summary, set: sets }), () => routeReview(taskId, who));
   out(summary);
 }
 
