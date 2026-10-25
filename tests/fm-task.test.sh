@@ -1045,7 +1045,32 @@ case_route_back() {
   [ "$(task_row $t)" = "$row" ] || { echo "reproject changed the routed row"; return 1; }
 }
 
-CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back"}
+# A re-sent key carries the values of its first event; a retry with other values is refused.
+case_check_values() {
+  BIN=$1; reset_db
+  local t=tk-cv ev row
+  ft create $t --title t --kind ship >/dev/null; use_issue v1; ft rows $t "$ISSUE" >/dev/null
+  ft check $t A2@- --status pass --key k-v --evidence e1 --head h1
+  must 'first check' 0 || return 1
+  ft check $t A2@- --status pass --key k-v --evidence e1 --head h1
+  must 'identical re-send' 0 || return 1
+  for ev in "--status fail --evidence e1 --head h1" "--status pass --evidence e2 --head h1" "--status pass --evidence e1 --head h2"; do
+    # shellcheck disable=SC2086 # the words are the arguments
+    ft check $t A2@- --key k-v $ev
+    must "re-send with other values ($ev)" 5 || return 1
+  done
+  ft check $t A3@- --status pass --key k-v --evidence e1 --head h1
+  must 're-send on another row' 5 || return 1
+  db fm_task_check | jq -e '.[] | select(.scenarioId == "A2") | .status == "pass" and .evidence == "e1" and .head == "h1"' >/dev/null || { echo "a refused re-send changed the row"; return 1; }
+  db fm_task_check | jq -e '.[] | select(.scenarioId == "A3") | .status == "pending"' >/dev/null || { echo "a refused re-send changed another row"; return 1; }
+  # the row takes the values stored in its newest event, even when the row was damaged
+  row=$(db fm_task_check | jq -r '.[] | select(.scenarioId == "A2") | .id')
+  api -X PATCH "$BASE/api/fm_task_check/$row" -d '{"status":"fail","evidence":"damaged"}' >/dev/null
+  ft check $t A2@- --status pass --key k-v --evidence e1 --head h1
+  db fm_task_check | jq -e '.[] | select(.scenarioId == "A2") | .status == "pass" and .evidence == "e1"' >/dev/null || { echo "the re-send did not restore the stored values"; return 1; }
+}
+
+CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values"}
 
 # ---- real command -------------------------------------------------------------------
 
@@ -1103,7 +1128,6 @@ mutate 'resume lists the last 10 events' resume 'events.slice(-10)' 'events'
 mutate 'resume gives the last terminal call with its fields' resume 'for (const field of TEMPLATE_FIELDS[last.kind])' 'for (const field of [])'
 mutate 'reproject rebuilds a damaged row' resume 'if (diff.length) {' 'if (false) {'
 mutate 'an API that does not answer is exit 3' connection 'throw new Fail(3, `${method} ${pathname}: no answer' 'throw new Fail(1, `${method} ${pathname}: no answer'
-mutate 'a re-sent check cannot undo a newer result' check_replay 'if (!newest || newest.seq !== result.event.seq) return;' ';'
 mutate 'the last passed row routes the task to firstmate' route 'if (!(await needed())) return;' 'return;'
 mutate 'start waits for an open parent' start_parent 'if (parents.length) throw rule(`start is refused' 'if (false) throw rule(`start is refused'
 mutate 'a user-visible task needs check rows to be approved' approve_head 'if (task.surface === '"'"'user-visible'"'"' && !visible.length)' 'if (false)'
@@ -1114,4 +1138,6 @@ mutate 'check and owner-check refuse a closed task' check_closed 'if (CLOSED.inc
 mutate 'a retired row takes no check' row_retired "if (row.status === 'retired') throw rule(\`check row" "if (false) throw rule(\`check row"
 mutate 'a pass counts for the head it was taken on' done_head "&& !(r.status === 'pass' && (r.head ?? null) === (f.head ?? null))" "&& r.status !== 'pass'"
 mutate 'a row that opens again sends the task back' route_back "return !open.length ? 'firstmate' :" "return 'firstmate'; const unused = !open.length ? 'firstmate' :"
+mutate 'a re-sent key with other values is refused' check_values 'if (differs.length) throw rule(`the key' 'if (false) throw rule(`the key'
+mutate 'a re-sent check cannot undo a newer result' check_replay "const newest = [...(await taskEvents(taskId))].reverse().find((e) => e.kind === 'check' && bodyOf(e).row === rowKey(row));" "const newest = [...(await taskEvents(taskId))].reverse().find((e) => e.kind === 'check' && bodyOf(e).row === rowKey(row) && bodyOf(e).values.status === 'pass');"
 pass 'every guarded behavior has a red mutation proof'

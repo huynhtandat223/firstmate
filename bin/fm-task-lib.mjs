@@ -813,21 +813,34 @@ async function cmdCheck(args) {
   const row = await checkRow(taskId, target);
   const nextActor = oneOf(ACTORS, f['next-actor'] ?? (status === 'pass' ? 'firstmate' : status === 'fail' ? 'worker' : row.nextActor === 'firstmate' ? surfaceActor(row.surface) : row.nextActor), 'next actor');
   if (nextActor === 'owner' && !(await ownerItem(taskId, target))) throw rule(`${rowKey(row)} cannot read next actor owner without its owner item; run owner-check first`);
-  const patch = { status, nextActor, checkedAt: status === 'pending' ? null : new Date().toISOString() };
-  if (f.evidence !== undefined) patch.evidence = f.evidence;
-  if (f.head !== undefined) patch.head = f.head;
+  const values = { status, nextActor, evidence: f.evidence ?? null, head: f.head ?? null, checkedAt: status === 'pending' ? null : new Date().toISOString() };
+  // a re-sent key means the call it already recorded: other values are another call and need another key
+  const prior = await eventByKey(who.key);
+  if (prior) {
+    const stored = bodyOf(prior).values || {};
+    if (prior.taskId !== taskId || prior.kind !== 'check' || bodyOf(prior).row !== rowKey(row)) throw rule(`the key ${who.key} already recorded another call`);
+    const differs = ['status', 'evidence', 'head'].filter((k) => (stored[k] ?? null) !== values[k]);
+    if (f['next-actor'] !== undefined && stored.nextActor !== f['next-actor']) differs.push('nextActor');
+    if (differs.length) throw rule(`the key ${who.key} already recorded this check with other ${differs.join(', ')}; use a new --key for a new result`);
+  }
   await write(taskId, who, async ({ task }) => {
     if (!task) throw rule('no such task');
-    return { kind: 'check', note: `${rowKey(row)} ${status}${f.evidence ? `: ${f.evidence}` : ''}`, extra: { row: rowKey(row) } };
-  }, async (result) => {
-    // a re-sent key finishes its patch only while it is the newest check of this row, so it cannot undo a later result
-    if (result.replayed) {
-      const newest = [...(await taskEvents(taskId))].reverse().find((e) => e.kind === 'check' && bodyOf(e).row === rowKey(row));
-      if (!newest || newest.seq !== result.event.seq) return;
-    }
-    ok(await http('PATCH', `/api/fm_task_check/${row.id}`, patch), `patch the check row ${rowKey(row)}`);
+    return { kind: 'check', note: `${rowKey(row)} ${status}${f.evidence ? `: ${f.evidence}` : ''}`, extra: { row: rowKey(row), values } };
+  }, async () => {
+    await applyNewestCheck(taskId, row);
     await routeReview(taskId, who);
   });
+}
+
+// The row holds the values stored in the newest check event for it, whichever call patches last.
+async function applyNewestCheck(taskId, row) {
+  const newest = [...(await taskEvents(taskId))].reverse().find((e) => e.kind === 'check' && bodyOf(e).row === rowKey(row));
+  const v = newest && bodyOf(newest).values;
+  if (!v) return;
+  const patch = { status: v.status, nextActor: v.nextActor, checkedAt: v.checkedAt };
+  if (v.evidence !== null && v.evidence !== undefined) patch.evidence = v.evidence;
+  if (v.head !== null && v.head !== undefined) patch.head = v.head;
+  ok(await http('PATCH', `/api/fm_task_check/${row.id}`, patch), `patch the check row ${rowKey(row)}`);
 }
 
 // A task in review waits on the actor of its open check rows (worker first, then tester, then owner), and on
