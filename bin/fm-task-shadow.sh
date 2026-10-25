@@ -145,14 +145,20 @@ status_event() {
 }
 
 hold_event() {  # <hold-kind> <reason>: make the record capable of taking this old-source hold
-  local kind=$1 reason key plain current
+  local kind=$1 reason key plain current occurrence
   reason=$2
   case "$reason" in
     fm-hold-v1:*) plain=$(printf '%s' "${reason#fm-hold-v1:}" | base64 -d 2>/dev/null) && reason=$plain ;;
   esac
   reason=$(cut_to "$reason" 1500)
   [ -n "$reason" ] || reason="held ($kind)"
-  key=$(short "$kind|$reason")
+  # Producers run after the source mutation. Its nanosecond mtime identifies a
+  # new occurrence while retries of the same source transition keep their key.
+  occurrence=${3:-}
+  if [ -z "$occurrence" ]; then
+    occurrence=$(stat -c '%y' "$DATA/backlog.md" 2>/dev/null || printf unknown)
+  fi
+  key=$(short "$kind|$reason|$occurrence")
   current=$("$WRITER" show "$TASK" --json 2>/dev/null) || current=''
   if [ -z "$current" ]; then
     w "hold-$key-create" create "$TASK" --title "$(title_of)" --kind other || return 0
@@ -190,7 +196,7 @@ case "$EVENT" in
   status) status_event "$@" ;;
   cleaned-up) w cleaned-up event "$TASK" comment --note 'cleaned up by bin/fm-teardown.sh' ;;
   verified) w verified event "$TASK" comment --note 'verification record complete (bin/fm-verify-close.sh)' ;;
-  held) hold_event "${2:-hold}" "${3:-}" ;;
+  held) hold_event "${2:-hold}" "${3:-}" "${4:-}" ;;
   answered)
     case "${2:-}" in
       released) w answered-released unblock "$TASK" || w answered-released-comment event "$TASK" comment --note 'captain hold released' ;;
