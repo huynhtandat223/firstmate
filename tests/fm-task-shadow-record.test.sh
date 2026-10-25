@@ -10,7 +10,8 @@ printf token > "$TMP_ROOT/token"; chmod 600 "$TMP_ROOT/token"
 node "$ROOT/tests/fm-task-fake-api/server.mjs" "$TMP_ROOT/port" "$ROOT/tests/fm-task-fake-api/schema.json" token &
 PID=$!
 for _ in {1..100}; do [ ! -s "$TMP_ROOT/port" ] || break; sleep .1; done
-export FM_HOME="$TMP_ROOT/home" FM_TASK_TOKEN_FILE="$TMP_ROOT/token" FM_TASK_BASE_URL="http://127.0.0.1:$(<"$TMP_ROOT/port")"
+FM_TASK_BASE_URL="http://127.0.0.1:$(<"$TMP_ROOT/port")"
+export FM_HOME="$TMP_ROOT/home" FM_TASK_TOKEN_FILE="$TMP_ROOT/token" FM_TASK_BASE_URL
 unset FM_TASK_AUTH
 bash "$ROOT/bin/fm-task-shadow.sh" held missing captain 'Choose A'
 "$ROOT/bin/fm-task.sh" show missing --json | jq -e '.state == "blocked" and .nextActor == "owner"'
