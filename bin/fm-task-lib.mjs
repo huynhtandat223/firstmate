@@ -763,6 +763,13 @@ async function cmdRows(args) {
   const counts = { added: 0, reset: 0, retired: 0, updated: 0, unchanged: 0 };
   const fresh = { status: 'pending', evidence: null, head: null, checkedAt: null };
   const actorFor = (surface) => (surface === 'user-visible' ? 'tester' : 'worker');
+  // a row set back to pending gets its own check event, so an older call of that row cannot restore its old result
+  const resetEvent = (key, nextActor) =>
+    append(taskId, { ...who, key: `${who.key}:r:${crypto.createHash('sha1').update(key).digest('hex').slice(0, 10)}` }, async () => ({
+      kind: 'check',
+      note: `${key} reset to pending`,
+      extra: { row: key, values: { status: 'pending', nextActor, evidence: null, head: null, checkedAt: null } },
+    }));
   for (const [key, want] of wanted) {
     const row = have.get(key);
     if (!row) {
@@ -773,10 +780,12 @@ async function cmdRows(args) {
     const changed = row.line !== want.line || row.acceptanceDigest !== want.acceptanceDigest;
     const text = { line: want.line, surface: want.surface, page: want.page, controls: want.controls, data: want.data, proof: want.proof, acceptanceDigest: want.acceptanceDigest };
     if (row.status === 'retired') {
+      await resetEvent(key, actorFor(want.surface));
       ok(await http('PATCH', `/api/fm_task_check/${row.id}`, { ...text, ...fresh, nextActor: actorFor(want.surface) }), `reopen the check row ${key}`);
       await reopenItem(taskId, row);
       counts.added++;
     } else if (changed && row.status === 'pass') {
+      await resetEvent(key, actorFor(want.surface));
       ok(await http('PATCH', `/api/fm_task_check/${row.id}`, { ...text, ...fresh, nextActor: actorFor(want.surface) }), `reset the check row ${key}`);
       await reopenItem(taskId, row);
       counts.reset++;
@@ -809,6 +818,9 @@ async function requireOpenTask(taskId, command) {
   if (CLOSED.includes(task.state)) throw rule(`${command} is refused: ${taskId} is ${task.state}`);
   return task;
 }
+
+// The newest event that sets the values of a check row: a check call, a reset by rows or an owner-check.
+const rowEvent = (events, row) => [...events].reverse().find((e) => (e.kind === 'check' || e.kind === 'owner-check') && bodyOf(e).row === rowKey(row) && bodyOf(e).values);
 
 async function cmdCheck(args) {
   const taskId = taskIdOf(args);
@@ -844,7 +856,7 @@ async function cmdCheck(args) {
 async function applyNewestCheck(taskId, row) {
   let applied = 0;
   for (let round = 0; round < 30; round++) {
-    const newest = [...(await taskEvents(taskId))].reverse().find((e) => e.kind === 'check' && bodyOf(e).row === rowKey(row));
+    const newest = rowEvent(await taskEvents(taskId), row);
     const v = newest && bodyOf(newest).values;
     if (!v || newest.seq === applied) return;
     const patch = { status: v.status, nextActor: v.nextActor, checkedAt: v.checkedAt };
@@ -903,9 +915,9 @@ async function cmdOwnerCheck(args) {
   }
   await write(taskId, who, async ({ task }) => {
     if (!task) throw rule('no such task');
-    return { kind: 'owner-check', note: `${rowKey(row)}: ${f['page-title']} at ${f.url}` };
+    return { kind: 'owner-check', note: `${rowKey(row)}: ${f['page-title']} at ${f.url}`, extra: { row: rowKey(row), values: { status: 'pending', nextActor: 'owner', evidence: row.evidence ?? null, head: row.head ?? null, checkedAt: null } } };
   }, async () => {
-    ok(await http('PATCH', `/api/fm_task_check/${row.id}`, { nextActor: 'owner', status: 'pending', checkedAt: null }), `patch the check row ${rowKey(row)}`);
+    await applyNewestCheck(taskId, row);
     await routeReview(taskId, who);
   });
 }

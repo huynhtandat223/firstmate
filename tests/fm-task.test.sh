@@ -1145,6 +1145,27 @@ case_owner_repeat() {
   [ "$(db fm_owner_check | jq -r '.[0].status')" = pending ] || { echo "rows reset the row but left the item at $(db fm_owner_check | jq -r '.[0].status')"; return 1; }
 }
 
+# A row reset by rows, or reopened by owner-check, supersedes its older check events: a re-sent old key cannot restore the old result.
+case_reset_supersedes() {
+  BIN=$1; reset_db
+  local t=tk-rsup
+  ft create $t --title t --kind ship >/dev/null; use_issue v1; ft rows $t "$ISSUE" >/dev/null
+  st() { db fm_task_check | jq -r --arg s "$1" '.[] | select(.scenarioId == $s) | .status + "/" + .nextActor'; }
+  ft check $t A2@- --status pass --key k-old --evidence first >/dev/null
+  use_issue v2; ft rows $t "$ISSUE" >/dev/null
+  [ "$(st A2)" = pending/worker ] || { echo "rows did not reset A2: $(st A2)"; return 1; }
+  ft check $t A2@- --status pass --key k-old --evidence first
+  must 'old pass re-sent after the reset' 0 || return 1
+  [ "$(st A2)" = pending/worker ] || { echo "a re-sent old pass restored a reset row: $(st A2)"; return 1; }
+  ft check $t A1@1440 --status pass --key k-a1 >/dev/null
+  ft owner-check $t A1@1440 --page-title Home --url 'http://100.88.10.58:5001/#home' --steps '1. open it' --data d --expected e >/dev/null
+  [ "$(db fm_task_check | jq -r '.[] | select(.scenarioId == "A1" and .width == "1440") | .status + "/" + .nextActor')" = pending/owner ] || { echo "owner-check did not reopen A1@1440"; return 1; }
+  ft check $t A1@1440 --status pass --key k-a1
+  must 'old pass re-sent after owner-check' 0 || return 1
+  [ "$(db fm_task_check | jq -r '.[] | select(.scenarioId == "A1" and .width == "1440") | .status + "/" + .nextActor')" = pending/owner ] \
+    || { echo "a re-sent old pass restored a row the owner was asked about"; return 1; }
+}
+
 # A triage child linked to an open parent still reaches ready after assign once the parent has closed.
 case_link_triage() {
   BIN=$1; reset_db
@@ -1164,7 +1185,7 @@ case_link_triage() {
   [ "$(task_state tk-lt-c2)" = ready ] || { echo "the parent closing left the child in $(task_state tk-lt-c2)"; return 1; }
 }
 
-CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage"}
+CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes"}
 
 # ---- real command -------------------------------------------------------------------
 
@@ -1226,15 +1247,18 @@ mutate 'the last passed row routes the task to firstmate' route 'if (!(await nee
 mutate 'start waits for an open parent' start_parent 'if (parents.length) throw rule(`start is refused' 'if (false) throw rule(`start is refused'
 mutate 'a user-visible task needs check rows to be approved' approve_head 'if (task.surface === '"'"'user-visible'"'"' && !visible.length)' 'if (false)'
 mutate 'a pass counts only on the head of the latest done' approve_head 'if (stale.length) throw rule(`approve is refused' 'if (false) throw rule(`approve is refused'
-mutate 'an owner item reopens its row' owner_pending "{ nextActor: 'owner', status: 'pending', checkedAt: null }" "{ nextActor: 'owner' }"
+mutate 'an owner item reopens its row' owner_pending "values: { status: 'pending', nextActor: 'owner'" "values: { status: row.status, nextActor: 'owner'"
 mutate 'rows are refused on a closed task' rows_closed 'if (CLOSED.includes(task.state)) throw rule(`rows is refused' 'if (false) throw rule(`rows is refused'
 mutate 'check and owner-check refuse a closed task' check_closed 'if (CLOSED.includes(task.state)) throw rule(`${command} is refused' 'if (false) throw rule(`${command} is refused'
 mutate 'a retired row takes no check' row_retired "if (row.status === 'retired') throw rule(\`check row" "if (false) throw rule(\`check row"
 mutate 'a pass counts for the head it was taken on' done_head "&& !(r.status === 'pass' && (r.head ?? null) === (f.head ?? null))" "&& r.status !== 'pass'"
 mutate 'a row that opens again sends the task back' route_back "return !open.length ? 'firstmate' :" "return 'firstmate'; const unused = !open.length ? 'firstmate' :"
 mutate 'a re-sent key with other values is refused' check_values 'if (differs.length) throw rule(`the key' 'if (false) throw rule(`the key'
-mutate 'a re-sent check cannot undo a newer result' check_replay "const newest = [...(await taskEvents(taskId))].reverse().find((e) => e.kind === 'check' && bodyOf(e).row === rowKey(row));" "const newest = [...(await taskEvents(taskId))].reverse().find((e) => e.kind === 'check' && bodyOf(e).row === rowKey(row) && bodyOf(e).values.status === 'pass');"
+mutate 'a re-sent check cannot undo a newer result' check_replay "const newest = rowEvent(await taskEvents(taskId), row);" "const newest = rowEvent((await taskEvents(taskId)).filter((e) => bodyOf(e).values?.status === 'pass'), row);"
 mutate 'the newest check event wins over a slower older call' check_parallel 'if (!v || newest.seq === applied) return;' 'if (!v || applied) return;'
 mutate 'an owner-check that changes nothing writes nothing' owner_repeat "row.nextActor === 'owner' && row.status === 'pending') {" "false) {"
 mutate 'a row set to pending reopens its item' owner_repeat "if (v.status === 'pending') await reopenItem(taskId" "if (false) await reopenItem(taskId"
+mutate 'a row reset by rows supersedes its older check events' reset_supersedes "await resetEvent(key, actorFor(want.surface));
+      ok(await http('PATCH', \`/api/fm_task_check/\${row.id}\`, { ...text, ...fresh, nextActor: actorFor(want.surface) }), \`reset the check row" "ok(await http('PATCH', \`/api/fm_task_check/\${row.id}\`, { ...text, ...fresh, nextActor: actorFor(want.surface) }), \`reset the check row"
+mutate 'an owner-check supersedes the older check events of its row' reset_supersedes "extra: { row: rowKey(row), values: { status: 'pending', nextActor: 'owner'" "extra: { row: 'none', values: { status: 'pending', nextActor: 'owner'"
 pass 'every guarded behavior has a red mutation proof'
