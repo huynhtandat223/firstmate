@@ -890,7 +890,19 @@ case_route() {
   [ "$(task_row $t)" = "$row" ] || { echo "reproject changed the routed row"; return 1; }
 }
 
-CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route"}
+# start refuses while a parent is open, even when the link was written but the child's todo event was not.
+case_start_parent() {
+  BIN=$1; reset_db
+  mk_running tk-sp-parent >/dev/null; mk_ready tk-sp-child >/dev/null
+  api -X POST "$BASE/api/fm_task_link" -d '{"parentTaskId":"tk-sp-parent","childTaskId":"tk-sp-child"}' >/dev/null
+  [ "$(task_state tk-sp-child)" = ready ] || { echo "setup: the child is not ready"; return 1; }
+  ft start tk-sp-child
+  must 'start with an open parent' 5 || return 1
+  case $ERR in *tk-sp-parent*) ;; *) echo "the refusal does not name the parent: $ERR"; return 1 ;; esac
+  [ "$(task_state tk-sp-child)" = ready ] || { echo "start moved the child"; return 1; }
+}
+
+CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent"}
 
 # ---- real command -------------------------------------------------------------------
 
@@ -950,4 +962,5 @@ mutate 'reproject rebuilds a damaged row' resume 'if (diff.length) {' 'if (false
 mutate 'an API that does not answer is exit 3' connection 'throw new Fail(3, `${method} ${pathname}: no answer' 'throw new Fail(1, `${method} ${pathname}: no answer'
 mutate 'a re-sent check cannot undo a newer result' check_replay 'if (!newest || newest.seq !== result.event.seq) return;' ';'
 mutate 'the last passed row routes the task to firstmate' route 'if (!wanted(fold(await taskEvents(taskId))) || openRows(await checkRows(taskId)).length) return;' 'return;'
+mutate 'start waits for an open parent' start_parent 'if (parents.length) throw rule(`start is refused' 'if (false) throw rule(`start is refused'
 pass 'every guarded behavior has a red mutation proof'

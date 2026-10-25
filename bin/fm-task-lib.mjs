@@ -561,7 +561,11 @@ const cmdAssign = simple('assign', 'assigned', async (task, args, taskId) => {
   const waiting = (await openParents(taskId)).length > 0;
   return { assignee: args.flags.to, nextActor: 'worker', state: waiting ? 'todo' : 'ready' };
 });
-const cmdStart = simple('start', 'started', async () => ({ state: 'running', nextActor: 'worker', holdUntil: null }));
+const cmdStart = simple('start', 'started', async (task, args, taskId) => {
+  const parents = await openParents(taskId);
+  if (parents.length) throw rule(`start is refused while the task waits on open parents: ${parents.join(', ')}`);
+  return { state: 'running', nextActor: 'worker', holdUntil: null };
+});
 const cmdHeartbeat = simple('heartbeat', 'heartbeat', async () => ({}));
 const cmdUnblock = simple('unblock', 'unblocked', async (task, args, taskId) => {
   const waiting = (await openParents(taskId)).length > 0;
