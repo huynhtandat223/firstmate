@@ -1061,6 +1061,26 @@ case_route_back() {
   [ "$(task_row $t)" = "$row" ] || { echo "reproject changed the routed row"; return 1; }
 }
 
+# A user-visible pass on another head than the latest done is still open: a later check does not undo the routing that done made.
+case_route_stale() {
+  BIN=$1; reset_db
+  local t=tk-rst r
+  mk_running $t >/dev/null; use_issue v1; ft rows $t "$ISSUE" >/dev/null
+  na() { task_row $t | jq -r .nextActor; }
+  ft "done" $t "${DONE_FLAGS[@]}" --head h1 >/dev/null
+  for r in A1@1440 A1@390; do ft check $t $r --status pass --head h1 >/dev/null; done
+  for r in A2@- A3@-; do ft check $t $r --status pass >/dev/null; done
+  [ "$(na)" = firstmate ] || { echo "setup: not routed to firstmate: $(na)"; return 1; }
+  ft changes $t --note again >/dev/null; ft start $t >/dev/null
+  ft "done" $t "${DONE_FLAGS[@]}" --head h2 >/dev/null
+  [ "$(na)" = tester ] || { echo "done on a new head did not wait on the tester: $(na)"; return 1; }
+  ft check $t A3@- --status pass --evidence again
+  must 'a later check' 0 || return 1
+  [ "$(na)" = tester ] || { echo "a later check sent the task to $(na) while the passes sit on head h1: want tester"; return 1; }
+  ft check $t A1@1440 --status pass --head h2 >/dev/null; ft check $t A1@390 --status pass --head h2 >/dev/null
+  [ "$(na)" = firstmate ] || { echo "passes on the latest head left the task with $(na)"; return 1; }
+}
+
 # A re-sent key carries the values of its first event; a retry with other values is refused.
 case_check_values() {
   BIN=$1; reset_db
@@ -1185,7 +1205,7 @@ case_link_triage() {
   [ "$(task_state tk-lt-c2)" = ready ] || { echo "the parent closing left the child in $(task_state tk-lt-c2)"; return 1; }
 }
 
-CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes"}
+CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale"}
 
 # ---- real command -------------------------------------------------------------------
 
@@ -1252,7 +1272,7 @@ mutate 'rows are refused on a closed task' rows_closed 'if (CLOSED.includes(task
 mutate 'check and owner-check refuse a closed task' check_closed 'if (CLOSED.includes(task.state)) throw rule(`${command} is refused' 'if (false) throw rule(`${command} is refused'
 mutate 'a retired row takes no check' row_retired "if (row.status === 'retired') throw rule(\`check row" "if (false) throw rule(\`check row"
 mutate 'a pass counts for the head it was taken on' done_head "&& !(r.status === 'pass' && (r.head ?? null) === (f.head ?? null))" "&& r.status !== 'pass'"
-mutate 'a row that opens again sends the task back' route_back "return !open.length ? 'firstmate' :" "return 'firstmate'; const unused = !open.length ? 'firstmate' :"
+mutate 'a row that opens again sends the task back' route_back "return ['worker', 'tester', 'owner'].find((a) => waiting.includes(a)) ?? 'firstmate';" "return 'firstmate';"
 mutate 'a re-sent key with other values is refused' check_values 'if (differs.length) throw rule(`the key' 'if (false) throw rule(`the key'
 mutate 'a re-sent check cannot undo a newer result' check_replay "const newest = rowEvent(await taskEvents(taskId), row);" "const newest = rowEvent((await taskEvents(taskId)).filter((e) => bodyOf(e).values?.status === 'pass'), row);"
 mutate 'the newest check event wins over a slower older call' check_parallel 'if (!v || newest.seq === applied) return;' 'if (!v || applied) return;'
@@ -1261,4 +1281,5 @@ mutate 'a row set to pending reopens its item' owner_repeat "if (v.status === 'p
 mutate 'a row reset by rows supersedes its older check events' reset_supersedes "await resetEvent(key, actorFor(want.surface));
       ok(await http('PATCH', \`/api/fm_task_check/\${row.id}\`, { ...text, ...fresh, nextActor: actorFor(want.surface) }), \`reset the check row" "ok(await http('PATCH', \`/api/fm_task_check/\${row.id}\`, { ...text, ...fresh, nextActor: actorFor(want.surface) }), \`reset the check row"
 mutate 'an owner-check supersedes the older check events of its row' reset_supersedes "extra: { row: rowKey(row), values: { status: 'pending', nextActor: 'owner'" "extra: { row: 'none', values: { status: 'pending', nextActor: 'owner'"
+mutate 'a pass on another head than the latest done is still open for routing' route_stale "(passedOnOtherHead(r, head) ? 'tester' : r.nextActor)" "(r.nextActor)"
 pass 'every guarded behavior has a red mutation proof'

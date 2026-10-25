@@ -582,6 +582,13 @@ const cmdUnblock = simple('unblock', 'unblocked', async (task, args, taskId) => 
 });
 const cmdChanges = simple('changes', 'changes', async () => ({ state: 'ready', nextActor: 'worker' }), { needNote: true });
 const cmdArchive = simple('archive', 'archived', async () => ({ state: 'archived', nextActor: 'firstmate' }));
+// A user-visible pass counts for the head that was built last: the head of the newest done call.
+async function latestDoneHead(taskId) {
+  const lastDone = [...(await taskEvents(taskId))].reverse().find((e) => e.kind === 'done');
+  return lastDone ? ((await firstRow('fm_event_done', `fmTaskEventId eq ${lastDone.id}`))?.head ?? null) : null;
+}
+const passedOnOtherHead = (row, head) => row.surface === 'user-visible' && row.status === 'pass' && (row.head ?? null) !== head;
+
 const cmdApprove = simple('approve', 'approved', async (task, args, taskId) => {
   const rows = (await checkRows(taskId)).filter((r) => r.status !== 'retired');
   const open = openRows(rows);
@@ -589,9 +596,7 @@ const cmdApprove = simple('approve', 'approved', async (task, args, taskId) => {
   const visible = rows.filter((r) => r.surface === 'user-visible');
   if (task.surface === 'user-visible' && !visible.length) throw rule(`approve is refused: ${taskId} is user-visible and has no check rows; run rows first`);
   if (visible.length) {
-    // a pass counts for the head that was built last: the head of the newest done call
-    const lastDone = [...(await taskEvents(taskId))].reverse().find((e) => e.kind === 'done');
-    const head = lastDone ? ((await firstRow('fm_event_done', `fmTaskEventId eq ${lastDone.id}`))?.head ?? null) : null;
+    const head = await latestDoneHead(taskId);
     const stale = visible.filter((r) => (r.head ?? null) !== head);
     if (stale.length) throw rule(`approve is refused: these user-visible rows passed on another head than the latest done (${head ?? 'none'}): ${stale.map((r) => `${rowKey(r)} (${r.head ?? 'none'})`).join(', ')}`);
   }
@@ -871,19 +876,20 @@ async function applyNewestCheck(taskId, row) {
 
 // A task in review waits on the actor of its open check rows (worker first, then tester, then owner), and on
 // firstmate when none is open. Called after every change of a row.
-const reviewActor = (rows) => {
-  const open = openRows(rows);
-  return !open.length ? 'firstmate' : ['worker', 'tester', 'owner'].find((a) => open.some((r) => r.nextActor === a)) ?? 'firstmate';
+// A user-visible pass on another head than the latest done is open for the tester.
+const reviewActor = (rows, head) => {
+  const waiting = rows.filter((r) => openRows([r]).length || passedOnOtherHead(r, head)).map((r) => (passedOnOtherHead(r, head) ? 'tester' : r.nextActor));
+  return ['worker', 'tester', 'owner'].find((a) => waiting.includes(a)) ?? 'firstmate';
 };
 async function routeReview(taskId, who) {
   const needed = async () => {
     const task = fold(await taskEvents(taskId));
-    const actor = reviewActor(await checkRows(taskId));
+    const actor = reviewActor(await checkRows(taskId), await latestDoneHead(taskId));
     return task?.state === 'review' && task.nextActor !== actor ? actor : null;
   };
   if (!(await needed())) return;
   await append(taskId, { ...who, key: `${who.key}:route:${crypto.randomBytes(3).toString('hex')}` }, async ({ task }) => {
-    const actor = reviewActor(await checkRows(taskId));
+    const actor = reviewActor(await checkRows(taskId), await latestDoneHead(taskId));
     if (task?.state !== 'review' || task.nextActor === actor) throw rule('already routed');
     return { kind: 'routed', note: `check rows are open for ${actor}`, set: { nextActor: actor } };
   }).catch((error) => {
