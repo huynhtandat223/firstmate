@@ -41,4 +41,9 @@ jq -e '.added == 0' "$TMP_ROOT/repeat"
 # Divergence events change lastSeq only, not the old source or projected values.
 "$ROOT/bin/fm-task.sh" show probe --json > "$TMP_ROOT/after"
 diff <(jq 'del(.lastSeq)' "$TMP_ROOT/before") <(jq 'del(.lastSeq)' "$TMP_ROOT/after")
+"$ROOT/bin/fm-task.sh" block external probe --reason wait --next-actor firstmate
+"$ROOT/bin/fm-task.sh" unblock probe
+# No hold remains in the old source; stale blockKind must not count as a difference.
+bash "$ROOT/bin/fm-task-reconcile.sh" once --now 2026-10-25T14:00:00Z > "$TMP_ROOT/normalized"
+jq -e '.added == 0' "$TMP_ROOT/normalized"
 echo 'ok - backfill mapping, history idempotency, reconciliation, no repair'

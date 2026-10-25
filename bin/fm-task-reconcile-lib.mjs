@@ -15,7 +15,7 @@ async function run(opts) {
   for (const t of parseBacklog(opts.home, opts.now)) {
     const row = records.get(t.id);
     if (!row) { missing.push(t.id); continue; }
-    const comparisons = ['state', 'nextActor', 'blockKind', 'assignee'].map(field => ({field, oldSource: t[field] ?? null, record: row[field] ?? null}));
+    const comparisons = ['state', 'nextActor', 'blockKind', 'assignee'].map(field => ({field, oldSource: field === 'blockKind' && !t.holdKind ? null : t[field] ?? null, record: field === 'blockKind' && !t.holdKind ? null : row[field] ?? null}));
     for (const c of checks.filter(c => c.taskId === t.id && c.nextActor === 'owner' && c.status !== 'retired')) {
       if (!owners.some(o => o.taskId === t.id && o.scenarioId === c.scenarioId && o.width === c.width)) comparisons.push({field: `ownerItem:${c.scenarioId}@${c.width}`, oldSource: 'required', record: 'missing'});
     }
