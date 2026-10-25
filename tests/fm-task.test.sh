@@ -1120,7 +1120,7 @@ case_owner_repeat() {
   BIN=$1; reset_db
   local t=tk-or events row_before item_before id
   ft create $t --title t --kind ship >/dev/null; use_issue v1; ft rows $t "$ISSUE" >/dev/null
-  OC=(owner-check $t A1@1440 --page-title Home --url 'http://100.88.10.58:5001/#home' --steps '1. open it' --data d --expected e)
+  OC=(owner-check "$t" A1@1440 --page-title Home --url 'http://100.88.10.58:5001/#home' --steps '1. open it' --data d --expected e)
   ft "${OC[@]}"; must 'owner-check' 0 || return 1
   events=$(count fm_task_event); item_before=$(db fm_owner_check | jq -S -c .); row_before=$(db fm_task_check | jq -S -c .)
   ft "${OC[@]}"; must 'owner-check repeated' 0 || return 1
