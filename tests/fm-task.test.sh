@@ -1162,7 +1162,7 @@ case_check_close() {
   [ "$(cat "$TMP_ROOT/cc.rc")" = 5 ] || { echo "the check behind the approval exited $(cat "$TMP_ROOT/cc.rc"), want 5: $(cat "$TMP_ROOT/cc.out")"; return 1; }
   db fm_task_event | jq -e '[.[] | select(.kind == "check" and (.body | fromjson | .values.evidence == "late"))] | length == 0' >/dev/null \
     || { echo "a check event was stored after the task closed"; return 1; }
-  [ "$(task_state $t)" = done ] || { echo "the task is $(task_state $t), want done"; return 1; }
+  [ "$(task_state $t)" = "done" ] || { echo "the task is $(task_state $t), want done"; return 1; }
 }
 
 # approve judges a row by its newest check event, also while that event's patch is still on its way.
