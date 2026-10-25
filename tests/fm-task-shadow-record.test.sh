@@ -39,4 +39,9 @@ if "$ROOT/bin/fm-task.sh" reopen closed --reason again; then fail 'reopen allowe
 bash "$ROOT/bin/fm-task-shadow.sh" held closing captain 'Close this'
 bash "$ROOT/bin/fm-task-shadow.sh" answered closing closed
 "$ROOT/bin/fm-task.sh" show closing --json | jq -e '.state == "done"'
+"$ROOT/bin/fm-task.sh" create readywork --title Ready --kind ship
+"$ROOT/bin/fm-task.sh" assign readywork --to readywork
+printf 'working [at=123]: work\n' > "$FM_HOME/state/readywork.status"
+bash "$ROOT/bin/fm-task-shadow.sh" status "$FM_HOME/config" "$FM_HOME/state/readywork.status"
+"$ROOT/bin/fm-task.sh" show readywork --json | jq -e '.state == "running"'
 echo 'ok - shadow lifecycle and explicit reopen'

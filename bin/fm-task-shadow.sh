@@ -124,7 +124,16 @@ status_event() {
   case "$state" in
     working)
       w "status-$key" heartbeat "$TASK" --note "$text" \
-        || { w "status-$key-unblock" unblock "$TASK" && w "status-$key-start" start "$TASK" && w "status-$key" heartbeat "$TASK" --note "$text"; } ;;
+        || {
+          local current
+          current=$("$WRITER" show "$TASK" --json 2>/dev/null | jq -r '.state') || return 0
+          case "$current" in
+            blocked|triage) w "status-$key-unblock" unblock "$TASK" || return 0 ;;
+            ready) ;;
+            *) return 0 ;;
+          esac
+          w "status-$key-start" start "$TASK" && w "status-$key" heartbeat "$TASK" --note "$text"
+        } ;;
     done)
       local -a pr=()
       local url
