@@ -17,4 +17,6 @@ bash "$ROOT/bin/fm-task-shadow.sh" held missing captain 'Choose A'
 "$ROOT/bin/fm-task.sh" create queued --title Q --kind ship
 bash "$ROOT/bin/fm-task-shadow.sh" held queued captain 'Choose B'
 "$ROOT/bin/fm-task.sh" show queued --json | jq -e '.state == "blocked" and .nextActor == "owner"'
-echo 'ok - missing and nonrunning task holds survive'
+bash "$ROOT/bin/fm-task-shadow.sh" dispatched fresh ship example/repo pi
+"$ROOT/bin/fm-task.sh" show fresh --json | jq -e '.assignee == "fresh"'
+echo 'ok - holds survive and dispatch uses task identity'

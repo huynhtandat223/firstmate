@@ -76,7 +76,7 @@ test_dispatched_creates_assigns_and_starts() {
   hook dispatched t1 ship r claude || fail "the hook failed"
   assert_equals "$(printf '%s\n' \
     'create t1 --title Build the thing --kind ship --repo r' \
-    'assign t1 --to claude' \
+    'assign t1 --to t1' \
     'start t1')" "$(calls)" "dispatched calls"
   assert_equals "$(printf '%s\n' shadow:t1:create shadow:t1:assign shadow:t1:start)" "$(keys)" "dispatched keys"
   assert_contains "$(cat "$HOME_DIR/state/task-shadow.log")" " t1 dispatched create rc=0" "the writer call is logged"

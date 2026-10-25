@@ -183,9 +183,8 @@ case "$EVENT" in
   dispatched)
     kind=$(record_kind "${2:-}")
     repo=${3:-}
-    harness=${4:-worker}
     w create create "$TASK" --title "$(title_of)" --kind "$kind" ${repo:+--repo "$repo"}
-    w assign assign "$TASK" --to "${harness:-worker}"
+    w assign assign "$TASK" --to "$TASK"
     w start start "$TASK"
     ;;
   status) status_event "$@" ;;
