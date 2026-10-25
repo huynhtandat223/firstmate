@@ -19,4 +19,6 @@ bash "$ROOT/bin/fm-task-shadow.sh" held queued captain 'Choose B'
 "$ROOT/bin/fm-task.sh" show queued --json | jq -e '.state == "blocked" and .nextActor == "owner"'
 bash "$ROOT/bin/fm-task-shadow.sh" dispatched fresh ship example/repo pi
 "$ROOT/bin/fm-task.sh" show fresh --json | jq -e '.assignee == "fresh"'
-echo 'ok - holds survive and dispatch uses task identity'
+bash "$ROOT/bin/fm-task-shadow.sh" held fresh external 'External dependency'
+"$ROOT/bin/fm-task.sh" show fresh --json | jq -e '.blockKind == "dependency"'
+echo 'ok - holds, identity and external mapping'
