@@ -590,7 +590,13 @@ async function latestDoneHead(taskId) {
 const passedOnOtherHead = (row, head) => row.surface === 'user-visible' && row.status === 'pass' && (row.head ?? null) !== head;
 
 const cmdApprove = simple('approve', 'approved', async (task, args, taskId) => {
-  const rows = (await checkRows(taskId)).filter((r) => r.status !== 'retired');
+  // a row holds its newest check event, also while that event's patch is still on its way
+  const events = await taskEvents(taskId);
+  const rows = (await checkRows(taskId)).filter((r) => r.status !== 'retired').map((r) => {
+    const newest = rowEvent(events, r);
+    const v = newest && bodyOf(newest).values;
+    return v ? { ...r, status: v.status, nextActor: v.nextActor, evidence: v.evidence ?? null, head: v.head ?? null } : r;
+  });
   const open = openRows(rows);
   if (open.length) throw rule(`approve is refused while check rows are open: ${open.map((r) => `${rowKey(r)} (${r.status})`).join(', ')}`);
   const visible = rows.filter((r) => r.surface === 'user-visible');
@@ -849,6 +855,7 @@ async function cmdCheck(args) {
   }
   await write(taskId, who, async ({ task }) => {
     if (!task) throw rule('no such task');
+    if (CLOSED.includes(task.state)) throw rule(`check is refused: ${taskId} is ${task.state}`);
     return { kind: 'check', note: `${rowKey(row)} ${status}${f.evidence ? `: ${f.evidence}` : ''}`, extra: { row: rowKey(row), values } };
   }, async () => {
     await applyNewestCheck(taskId, row);

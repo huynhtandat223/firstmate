@@ -53,7 +53,7 @@ for (const [table, def] of Object.entries(SCHEMA)) {
 let log = [];
 let rivals = 0;
 let lose = { mode: '', n: 0 };
-let delay = { table: '', ms: 0, n: 0 };
+let delay = { table: '', ms: 0, n: 0, verb: 'patch' };
 
 const reply = (res, status, body) => {
   res.writeHead(status, { 'content-type': 'application/json' });
@@ -205,7 +205,7 @@ const server = http.createServer((req, res) => {
         return reply(res, 200, lose);
       }
       if (parts[1] === 'delay') {
-        delay = { table: parts[2], ms: Number(url.searchParams.get('ms') || 0), n: Number(url.searchParams.get('n') || 1) };
+        delay = { table: parts[2], ms: Number(url.searchParams.get('ms') || 0), n: Number(url.searchParams.get('n') || 1), verb: url.searchParams.get('verb') || 'patch' };
         return reply(res, 200, delay);
       }
       if (parts[1] === 'drop') {
@@ -217,7 +217,7 @@ const server = http.createServer((req, res) => {
         log = [];
         rivals = 0;
         lose = { mode: '', n: 0 };
-        delay = { table: '', ms: 0, n: 0 };
+        delay = { table: '', ms: 0, n: 0, verb: 'patch' };
         return reply(res, 200, {});
       }
       return reply(res, 404);
@@ -237,12 +237,20 @@ const server = http.createServer((req, res) => {
     const verb = { GET: id ? 'get' : 'list', POST: 'create', PATCH: 'patch', DELETE: 'delete' }[req.method];
     if (!verb || !SCHEMA[table].ops.includes(verb)) return reply(res, 404);
     let out;
+    if (verb === 'list' && delay.n > 0 && delay.verb === 'list' && delay.table === table) {
+      // the read is held before it is answered, so a later call can finish first
+      delay.n--;
+      return setTimeout(() => {
+        const late = list(table, url.searchParams);
+        reply(res, late.status, late.body);
+      }, delay.ms);
+    }
     if (verb === 'list') out = list(table, url.searchParams);
     else if (verb === 'get') {
       const row = db[table].find((r) => r.id === id);
       out = row ? { status: 200, body: { success: true, data: row } } : refusal(404, 'NOT_FOUND', 'not found');
     } else if (verb === 'patch') {
-      if (delay.n > 0 && delay.table === table) {
+      if (delay.n > 0 && delay.verb === 'patch' && delay.table === table) {
         // the patch is held before it is applied, so a later call can finish first
         delay.n--;
         return setTimeout(() => {
@@ -1137,6 +1145,44 @@ case_check_nulls() {
   [ "$(rowv)" = '{"status":"pass","evidence":null,"head":null}' ] || { echo "a new pass kept the older evidence or head: $(rowv)"; return 1; }
 }
 
+# A check cannot be stored behind an approval that closed the task in between, and approve judges the rows from the newest check events.
+case_check_close() {
+  BIN=$1; reset_db
+  local t=tk-cc r pid
+  mk_running $t >/dev/null; use_issue v1; ft rows $t "$ISSUE" >/dev/null
+  ft "done" $t "${DONE_FLAGS[@]}" >/dev/null
+  for r in A1@1440 A1@390 A2@- A3@-; do ft check $t $r --status pass >/dev/null; done
+  # the check has read the open task and waits for its row; the approval lands first
+  curl -s -X POST "$BASE/__x/delay/fm_task_check?ms=800&n=1&verb=list" >/dev/null
+  ( "$BIN/fm-task.sh" check $t A2@- --status fail --evidence late > "$TMP_ROOT/cc.out" 2>&1; echo $? > "$TMP_ROOT/cc.rc" ) &
+  pid=$!
+  sleep 0.3
+  ft approve $t; must 'approve' 0 || return 1
+  wait $pid
+  [ "$(cat "$TMP_ROOT/cc.rc")" = 5 ] || { echo "the check behind the approval exited $(cat "$TMP_ROOT/cc.rc"), want 5: $(cat "$TMP_ROOT/cc.out")"; return 1; }
+  db fm_task_event | jq -e '[.[] | select(.kind == "check" and (.body | fromjson | .values.evidence == "late"))] | length == 0' >/dev/null \
+    || { echo "a check event was stored after the task closed"; return 1; }
+  [ "$(task_state $t)" = done ] || { echo "the task is $(task_state $t), want done"; return 1; }
+}
+
+# approve judges a row by its newest check event, also while that event's patch is still on its way.
+case_approve_newest() {
+  BIN=$1; reset_db
+  local t=tk-an r pid
+  mk_running $t >/dev/null; use_issue v1; ft rows $t "$ISSUE" >/dev/null
+  ft "done" $t "${DONE_FLAGS[@]}" >/dev/null
+  for r in A1@1440 A1@390 A2@- A3@-; do ft check $t $r --status pass >/dev/null; done
+  curl -s -X POST "$BASE/__x/delay/fm_task_check?ms=900&n=1" >/dev/null
+  ( "$BIN/fm-task.sh" check $t A2@- --status fail --evidence late > "$TMP_ROOT/an.out" 2>&1 ) &
+  pid=$!
+  sleep 0.5
+  ft approve $t
+  must 'approve while a failed check is on its way' 5 || return 1
+  wait $pid
+  [ "$(task_state $t)" = review ] || { echo "the task is $(task_state $t) after a refused approve, want review"; return 1; }
+  ft approve $t; must 'approve' 5 || return 1
+}
+
 # A re-sent key carries the values of its first event; a retry with other values is refused.
 case_check_values() {
   BIN=$1; reset_db
@@ -1261,7 +1307,7 @@ case_link_triage() {
   [ "$(task_state tk-lt-c2)" = ready ] || { echo "the parent closing left the child in $(task_state tk-lt-c2)"; return 1; }
 }
 
-CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls"}
+CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest"}
 
 # ---- real command -------------------------------------------------------------------
 
@@ -1342,4 +1388,6 @@ mutate 'rows routes a task in review again' rows_route "set: sets }), () => rout
 mutate 'a re-sent owner-check does not write its item again' owner_replay "const existing = prior ? null : await ownerItem(taskId, target);" "const existing = await ownerItem(taskId, target);"
 mutate 'a re-sent owner-check key with another call is refused' owner_replay "if (prior && (prior.taskId !== taskId ||" "if (false && (prior.taskId !== taskId ||"
 mutate 'a new result clears the head and evidence of an older one' check_nulls "evidence: v.evidence ?? null, head: v.head ?? null };" "...(v.evidence ? { evidence: v.evidence } : {}), ...(v.head ? { head: v.head } : {}) };"
+mutate 'a check on a task that closed meanwhile is refused' check_close "if (CLOSED.includes(task.state)) throw rule(\`check is refused:" "if (false) throw rule(\`check is refused:"
+mutate 'approve judges a row by its newest check event' approve_newest "return v ? { ...r, status: v.status," "return false ? { ...r, status: v.status,"
 pass 'every guarded behavior has a red mutation proof'
