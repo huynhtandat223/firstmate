@@ -906,8 +906,14 @@ async function cmdOwnerCheck(args) {
   const row = await checkRow(taskId, target);
   const item = { taskId, ...target, pageTitle: f['page-title'], url: f.url, steps: f.steps, data: f.data, expected: f.expected, status: 'pending' };
   for (const key of Object.keys(item)) if (item[key] === undefined) delete item[key];
+  const note = `${rowKey(row)}: ${f['page-title']} at ${f.url}`;
+  // a re-sent key means the call it already recorded: its item is written, and a newer verdict stays
+  const prior = await eventByKey(who.key);
+  if (prior && (prior.taskId !== taskId || prior.kind !== 'owner-check' || bodyOf(prior).row !== rowKey(row) || bodyOf(prior).note !== note)) {
+    throw rule(`the key ${who.key} already recorded another call; use a new --key for a new owner-check`);
+  }
   // the item first: a refusal here leaves the check row as it was
-  const existing = await ownerItem(taskId, target);
+  const existing = prior ? null : await ownerItem(taskId, target);
   if (existing) {
     const diff = Object.fromEntries(Object.entries(item).filter(([k, v]) => !['taskId', 'scenarioId', 'width', 'status'].includes(k) && existing[k] !== v));
     // the same item on a row that already waits on the owner: nothing to change
@@ -916,12 +922,12 @@ async function cmdOwnerCheck(args) {
       return;
     }
     if (Object.keys(diff).length || existing.status !== 'pending') ok(await http('PATCH', `/api/fm_owner_check/${existing.id}`, { ...diff, status: 'pending', decidedAt: null }), 'update the owner item');
-  } else {
+  } else if (!prior) {
     ok(await http('POST', '/api/fm_owner_check', item), 'the owner item');
   }
   await write(taskId, who, async ({ task }) => {
     if (!task) throw rule('no such task');
-    return { kind: 'owner-check', note: `${rowKey(row)}: ${f['page-title']} at ${f.url}`, extra: { row: rowKey(row), values: { status: 'pending', nextActor: 'owner', evidence: row.evidence ?? null, head: row.head ?? null, checkedAt: null } } };
+    return { kind: 'owner-check', note, extra: { row: rowKey(row), values: { status: 'pending', nextActor: 'owner', evidence: row.evidence ?? null, head: row.head ?? null, checkedAt: null } } };
   }, async () => {
     await applyNewestCheck(taskId, row);
     await routeReview(taskId, who);

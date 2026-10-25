@@ -1101,6 +1101,29 @@ case_rows_route() {
   [ "$(na)" = firstmate ] || { echo "rows retired the open row but the task waits on $(na); want firstmate"; return 1; }
 }
 
+# A re-sent owner-check key finishes its own call and cannot undo a newer verdict.
+case_owner_replay() {
+  BIN=$1; reset_db
+  local t=tk-ore id events
+  ft create $t --title t --kind ship >/dev/null; use_issue v1; ft rows $t "$ISSUE" >/dev/null
+  OC=(owner-check "$t" A1@1440 --page-title Home --url 'http://100.88.10.58:5001/#home' --steps '1. open it' --data d --expected e)
+  rowst() { db fm_task_check | jq -r '.[] | select(.scenarioId == "A1" and .width == "1440") | .status + "/" + .nextActor'; }
+  ft "${OC[@]}" --key k-oc >/dev/null; must 'owner-check' 0 || return 1
+  id=$(db fm_owner_check | jq -r '.[0].id')
+  api -X PATCH "$BASE/api/fm_owner_check/$id" -d '{"status":"pass"}' >/dev/null
+  ft check $t A1@1440 --status pass --key k-verdict >/dev/null
+  events=$(count fm_task_event)
+  ft "${OC[@]}" --key k-oc; must 'owner-check re-sent' 0 || return 1
+  [ "$(rowst)" = pass/firstmate ] || { echo "a re-sent owner-check undid the newer verdict: $(rowst)"; return 1; }
+  [ "$(db fm_owner_check | jq -r '.[0].status')" = pass ] || { echo "a re-sent owner-check reopened the answered item"; return 1; }
+  [ "$(count fm_task_event)" = "$events" ] || { echo "a re-sent owner-check stored an event"; return 1; }
+  # the same key with another page or another row is another call
+  ft owner-check $t A1@1440 --page-title Other --url 'http://100.88.10.58:5001/#home' --steps s --data d --expected e --key k-oc
+  must 'owner-check re-sent with another page title' 5 || return 1
+  ft "${OC[@]/A1@1440/A1@390}" --key k-oc
+  must 'owner-check re-sent for another row' 5 || return 1
+}
+
 # A re-sent key carries the values of its first event; a retry with other values is refused.
 case_check_values() {
   BIN=$1; reset_db
@@ -1225,7 +1248,7 @@ case_link_triage() {
   [ "$(task_state tk-lt-c2)" = ready ] || { echo "the parent closing left the child in $(task_state tk-lt-c2)"; return 1; }
 }
 
-CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route"}
+CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay"}
 
 # ---- real command -------------------------------------------------------------------
 
@@ -1303,4 +1326,6 @@ mutate 'a row reset by rows supersedes its older check events' reset_supersedes 
 mutate 'an owner-check supersedes the older check events of its row' reset_supersedes "extra: { row: rowKey(row), values: { status: 'pending', nextActor: 'owner'" "extra: { row: 'none', values: { status: 'pending', nextActor: 'owner'"
 mutate 'a pass on another head than the latest done is still open for routing' route_stale "(passedOnOtherHead(r, head) ? 'tester' : r.nextActor)" "(r.nextActor)"
 mutate 'rows routes a task in review again' rows_route "set: sets }), () => routeReview(taskId, who));" "set: sets }));"
+mutate 'a re-sent owner-check does not write its item again' owner_replay "const existing = prior ? null : await ownerItem(taskId, target);" "const existing = await ownerItem(taskId, target);"
+mutate 'a re-sent owner-check key with another call is refused' owner_replay "if (prior && (prior.taskId !== taskId ||" "if (false && (prior.taskId !== taskId ||"
 pass 'every guarded behavior has a red mutation proof'
