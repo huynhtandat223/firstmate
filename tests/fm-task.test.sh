@@ -1004,7 +1004,25 @@ case_row_retired() {
   [ "$(count fm_owner_check)" = 0 ] || { echo "an owner item was stored for a retired row"; return 1; }
 }
 
-CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired"}
+# done waits on the tester unless every user-visible pass is on the head of this done.
+case_done_head() {
+  BIN=$1; reset_db
+  local t r
+  local -A HEADOF=([tk-dh1]=h1 [tk-dh2]=h1)
+  use_issue v1
+  for t in tk-dh1 tk-dh2 tk-dh3; do
+    mk_running $t >/dev/null; ft rows $t "$ISSUE" >/dev/null
+    for r in A1@1440 A1@390 A2@- A3@-; do ft check $t $r --status pass ${HEADOF[$t]:+--head "${HEADOF[$t]}"} >/dev/null; done
+  done
+  ft "done" tk-dh1 "${DONE_FLAGS[@]}" --head h2 >/dev/null
+  [ "$(task_row tk-dh1 | jq -r .nextActor)" = tester ] || { echo "a pass on h1 counted for a done on h2: $(task_row tk-dh1 | jq -c '{state,nextActor}')"; return 1; }
+  ft "done" tk-dh2 "${DONE_FLAGS[@]}" --head h1 >/dev/null
+  [ "$(task_row tk-dh2 | jq -r .nextActor)" = firstmate ] || { echo "a pass on the same head did not count: $(task_row tk-dh2 | jq -c '{state,nextActor}')"; return 1; }
+  ft "done" tk-dh3 "${DONE_FLAGS[@]}" >/dev/null
+  [ "$(task_row tk-dh3 | jq -r .nextActor)" = firstmate ] || { echo "passes with no head and a done with no head should match: $(task_row tk-dh3 | jq -c '{state,nextActor}')"; return 1; }
+}
+
+CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head"}
 
 # ---- real command -------------------------------------------------------------------
 
@@ -1071,4 +1089,5 @@ mutate 'an owner item reopens its row' owner_pending "{ nextActor: 'owner', stat
 mutate 'rows are refused on a closed task' rows_closed 'if (CLOSED.includes(task.state)) throw rule(`rows is refused' 'if (false) throw rule(`rows is refused'
 mutate 'check and owner-check refuse a closed task' check_closed 'if (CLOSED.includes(task.state)) throw rule(`${command} is refused' 'if (false) throw rule(`${command} is refused'
 mutate 'a retired row takes no check' row_retired "if (row.status === 'retired') throw rule(\`check row" "if (false) throw rule(\`check row"
+mutate 'a pass counts for the head it was taken on' done_head "&& !(r.status === 'pass' && (r.head ?? null) === (f.head ?? null))" "&& r.status !== 'pass'"
 pass 'every guarded behavior has a red mutation proof'

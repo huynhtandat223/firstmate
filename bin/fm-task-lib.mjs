@@ -623,7 +623,7 @@ async function cmdDone(args) {
   return write(taskId, who, async ({ task }) => {
     guard('done', task);
     const rows = await checkRows(taskId);
-    const waitingOnTester = rows.some((r) => r.surface === 'user-visible' && r.status !== 'pass' && r.status !== 'retired');
+    const waitingOnTester = rows.some((r) => r.surface === 'user-visible' && r.status !== 'retired' && !(r.status === 'pass' && (r.head ?? null) === (f.head ?? null)));
     const child = { summary: f.summary, changedFiles: f['changed-files'], verification: f.verification, residualRisk: f['residual-risk'], rows: f.rows ?? rowsJson(rows), prUrl: f['pr-url'], head: f.head };
     for (const key of Object.keys(child)) if (child[key] === undefined) delete child[key];
     const set = { state: 'review', nextActor: nextActor ?? (waitingOnTester ? 'tester' : 'firstmate'), blockKind: null, blockReason: null, blockRepeats: 0, holdUntil: null };
