@@ -1,0 +1,846 @@
+#!/usr/bin/env bash
+# Behavior tests for bin/fm-task.sh, the one writer and reader of the task contract.
+#
+# Every case drives the real command against a local stand-in for Dev 5001 (a small
+# HTTP server written below). The stand-in applies the rules the published tables
+# carry: required and length rules on a root row and on each deep-insert child,
+# unique keys answering 409 with details.existingId, a missing int stored as 0,
+# server values, an undeclared verb answering 404, and OData $filter/$orderby/$top.
+# It also counts requests, so a case can show that an event and its child travel in one.
+# The same command runs against the real 5001 on probe rows for the scenario proofs
+# (tr10 to tr15); that run is recorded with the delivery, not repeated here.
+#
+# Each case takes a bin directory. The mutation proofs at the end copy the command,
+# remove one guard, and show the case that guards it go red.
+# shellcheck disable=SC2016 # mutation proofs pass literal source patterns to perl
+set -u
+# shellcheck source=tests/lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
+command -v node >/dev/null 2>&1 || { printf 'skip - node is not installed\n'; exit 0; }
+command -v jq >/dev/null 2>&1 || fail 'jq is required'
+command -v curl >/dev/null 2>&1 || fail 'curl is required'
+
+TMP_ROOT=$(fm_test_tmproot fm-task)
+mkdir -p "$TMP_ROOT/fakebin"
+TOKEN="tok-$$-$RANDOM"
+printf '%s\n' "$TOKEN" > "$TMP_ROOT/token"
+chmod 600 "$TMP_ROOT/token"
+
+# ---- the stand-in for Dev 5001 ------------------------------------------------
+
+cat > "$TMP_ROOT/schema.json" <<'JSON'
+{"fm_task":{"ops":["list","get","create","patch"],"f":{"assignee":{"t":"s","m":64},"blockKind":{"t":"s","n":1,"m":32},"blockReason":{"t":"s","n":1,"m":2000},"blockRepeats":{"t":"i"},"createdAt":{"t":"d","sv":"now"},"createdBy":{"t":"s","m":64,"sv":"callerId"},"holdUntil":{"t":"d","n":1},"issueUrl":{"t":"s","n":1,"m":2048},"kind":{"t":"s","m":32},"lastSeq":{"t":"i"},"nextActor":{"t":"s","m":32},"prUrl":{"t":"s","n":1,"m":2048},"repo":{"t":"s","n":1,"m":200},"state":{"t":"s","m":32},"surface":{"t":"s","n":1,"m":32},"taskId":{"t":"s","m":128},"title":{"t":"s","m":300}},"u":[["taskId"]]},"fm_task_event":{"ops":["list","get","create"],"f":{"actor":{"t":"s","m":64},"actorRole":{"t":"s","m":32},"body":{"t":"s","m":8000},"createdAt":{"t":"d","sv":"now"},"createdBy":{"t":"s","m":64,"sv":"callerId"},"idempotencyKey":{"t":"s","m":200},"kind":{"t":"s","m":32},"seq":{"t":"i"},"taskId":{"t":"s","m":128}},"u":[["seq"],["idempotencyKey"]]},"fm_event_done":{"ops":["list","get","create"],"f":{"changedFiles":{"t":"s","m":4000},"head":{"t":"s","n":1,"m":64},"prUrl":{"t":"s","n":1,"m":2048},"residualRisk":{"t":"s","m":2000},"rows":{"t":"s"},"summary":{"t":"s","m":4000},"verification":{"t":"s","m":4000}},"u":[["fmTaskEventId"]],"parent":["fmTaskEvent","done"]},"fm_event_question":{"ops":["list","get","create"],"f":{"document":{"t":"s","n":1,"m":2048},"options":{"t":"s","m":8000},"question":{"t":"s","m":2000},"recommendation":{"t":"s","m":2000},"why":{"t":"s","m":4000}},"u":[["fmTaskEventId"]],"parent":["fmTaskEvent","question"]},"fm_event_block":{"ops":["list","get","create"],"f":{"blockKind":{"t":"s","m":32},"nextActor":{"t":"s","m":32},"reason":{"t":"s","m":2000},"until":{"t":"d","n":1}},"u":[["fmTaskEventId"]],"parent":["fmTaskEvent","block"]},"fm_event_image":{"ops":["list","get","create"],"f":{"content":{"t":"s"},"label":{"t":"s","m":200},"mediaType":{"t":"s","m":32},"position":{"t":"i","n":1}},"u":[],"parent":["fmTaskEvent","images"]},"fm_task_check":{"ops":["list","get","create","patch"],"f":{"acceptanceDigest":{"t":"s","m":128},"checkedAt":{"t":"d","n":1},"controls":{"t":"s","m":2000},"data":{"t":"s","m":2000},"evidence":{"t":"s","n":1,"m":4000},"head":{"t":"s","n":1,"m":64},"line":{"t":"s","m":4000},"nextActor":{"t":"s","m":32},"page":{"t":"s","m":200},"proof":{"t":"s","m":4000},"scenarioId":{"t":"s","m":64},"status":{"t":"s","m":32},"surface":{"t":"s","m":32},"taskId":{"t":"s","m":128},"width":{"t":"s","m":32}},"u":[["taskId","scenarioId","width"]]},"fm_owner_check":{"ops":["list","get","create","patch"],"f":{"data":{"t":"s","m":4000},"decidedAt":{"t":"d","n":1},"expected":{"t":"s","m":4000},"note":{"t":"s","n":1,"m":4000},"pageTitle":{"t":"s","m":200},"scenarioId":{"t":"s","m":64},"status":{"t":"s","m":16},"steps":{"t":"s","m":8000},"taskId":{"t":"s","m":128},"url":{"t":"s","m":2048},"width":{"t":"s","m":32}},"u":[["taskId","scenarioId","width"]]},"fm_task_link":{"ops":["list","get","create","delete"],"f":{"childTaskId":{"t":"s","m":128},"parentTaskId":{"t":"s","m":128}},"u":[["parentTaskId","childTaskId"]]},"fm_task_delivery":{"ops":["list","get","create"],"f":{"consumer":{"t":"s","m":64},"deliveredAt":{"t":"d","sv":"now"},"seq":{"t":"i"}},"u":[["consumer","seq"]]}}
+JSON
+
+cat > "$TMP_ROOT/fake-api.mjs" <<'JS'
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import http from 'node:http';
+
+const [portFile, schemaFile, token] = process.argv.slice(2);
+const SCHEMA = JSON.parse(fs.readFileSync(schemaFile, 'utf8'));
+const camel = (s) => s.split('_').map((p, i) => (i ? p[0].toUpperCase() + p.slice(1) : p)).join('');
+const pascal = (s) => s[0].toUpperCase() + s.slice(1);
+const db = {};
+const NAVS = {};
+for (const table of Object.keys(SCHEMA)) db[table] = [];
+for (const [table, def] of Object.entries(SCHEMA)) {
+  if (!def.parent) continue;
+  const parent = Object.keys(SCHEMA).find((t) => camel(t) === def.parent[0]);
+  (NAVS[parent] ||= {})[def.parent[1]] = table;
+}
+let log = [];
+let rivals = 0;
+let lose = { mode: '', n: 0 };
+
+const reply = (res, status, body) => {
+  res.writeHead(status, { 'content-type': 'application/json' });
+  res.end(body === undefined ? '' : JSON.stringify(body));
+};
+const refusal = (status, errorCode, message, details = null) => ({ status, body: { success: false, data: null, errorCode, message, details } });
+
+function normalize(table, body, partial) {
+  const errors = {};
+  const row = {};
+  for (const [name, f] of Object.entries(SCHEMA[table].f)) {
+    const present = Object.prototype.hasOwnProperty.call(body, name);
+    if (f.sv) {
+      if (present) errors[pascal(name)] = 'INVALID_WRITE';
+      continue;
+    }
+    if (!present) {
+      if (partial) continue;
+      if (f.t === 'i') row[name] = 0;
+      else if (f.n) row[name] = null;
+      else errors[pascal(name)] = `The ${pascal(name)} field is required.`;
+      continue;
+    }
+    const v = body[name];
+    if (v === null) {
+      if (f.n) row[name] = null;
+      else errors[pascal(name)] = `The ${pascal(name)} field is required.`;
+      continue;
+    }
+    if (f.t === 's' && typeof v !== 'string') errors[pascal(name)] = `The ${pascal(name)} field must be a string.`;
+    else if (f.t === 'i' && !Number.isInteger(v)) errors[pascal(name)] = `The ${pascal(name)} field must be an integer.`;
+    else if (f.t === 'd' && Number.isNaN(Date.parse(v))) errors[pascal(name)] = `The ${pascal(name)} field must be a date.`;
+    else if (f.m && typeof v === 'string' && v.length > f.m) errors[pascal(name)] = `The field ${pascal(name)} must be a string with a maximum length of ${f.m}.`;
+    else row[name] = v;
+  }
+  return { errors, row };
+}
+
+function conflict(table, row, exceptId) {
+  for (const group of SCHEMA[table].u) {
+    const hit = db[table].find((r) => r.id !== exceptId && group.every((k) => r[k] === row[k]));
+    if (hit) return refusal(409, 'UNIQUE_KEY_CONFLICT', `A ${table} row with the same (${group.join(', ')}) already exists.`, { key: group, existingId: hit.id });
+  }
+  return null;
+}
+
+function create(table, body) {
+  const { errors, row } = normalize(table, body, false);
+  const children = [];
+  for (const [nav, childTable] of Object.entries(NAVS[table] || {})) {
+    if (body[nav] === undefined) continue;
+    if (!Array.isArray(body[nav])) {
+      errors[pascal(nav)] = 'must be an array';
+      continue;
+    }
+    body[nav].forEach((child, i) => {
+      const n = normalize(childTable, child, false);
+      for (const [k, v] of Object.entries(n.errors)) errors[`${pascal(nav)}[${i}].${k}`] = v;
+      children.push([childTable, n.row]);
+    });
+  }
+  if (Object.keys(errors).length) return refusal(400, 'VALIDATION_ERROR', 'One or more validation errors occurred.', errors);
+  const clash = conflict(table, row, null);
+  if (clash) return clash;
+  const id = crypto.randomUUID();
+  const stored = { id, ...row };
+  for (const [name, f] of Object.entries(SCHEMA[table].f)) {
+    if (f.sv === 'now') stored[name] = new Date().toISOString();
+    if (f.sv === 'callerId') stored[name] = 'caller-1';
+  }
+  db[table].push(stored);
+  for (const [childTable, childRow] of children) {
+    const child = { id: crypto.randomUUID(), ...childRow, fmTaskEventId: id };
+    for (const [name, f] of Object.entries(SCHEMA[childTable].f)) if (f.sv === 'now') child[name] = new Date().toISOString();
+    db[childTable].push(child);
+  }
+  return { status: 201, body: { success: true, data: stored, errorCode: null, message: null, details: null } };
+}
+
+function patch(table, id, body) {
+  const target = db[table].find((r) => r.id === id);
+  if (!target) return refusal(404, 'NOT_FOUND', `${table} ${id} not found.`);
+  const { errors, row } = normalize(table, body, true);
+  if (Object.keys(errors).length) return refusal(400, 'VALIDATION_ERROR', 'One or more validation errors occurred.', errors);
+  const next = { ...target, ...row };
+  const clash = conflict(table, next, id);
+  if (clash) return clash;
+  Object.assign(target, row);
+  return { status: 200, body: { success: true, data: target, errorCode: null, message: null, details: null } };
+}
+
+const literal = (text) => {
+  if (/^'.*'$/s.test(text)) return text.slice(1, -1).replaceAll("''", "'");
+  if (text === 'true') return true;
+  if (text === 'false') return false;
+  if (text === 'null') return null;
+  return Number(text);
+};
+
+function list(table, query) {
+  let rows = db[table];
+  const filter = query.get('$filter');
+  if (filter) {
+    for (const clause of filter.split(/ and /)) {
+      const m = /^(\w+) (eq|ne|gt|ge|lt|le) (.+)$/s.exec(clause.trim());
+      if (!m || !(m[1] in SCHEMA[table].f || m[1] === 'id' || m[1] === 'fmTaskEventId')) return refusal(400, 'INVALID_QUERY', `Could not find a property named '${m ? m[1] : clause}' on type ${table}.`);
+      const want = literal(m[3]);
+      const op = { eq: (a) => a === want, ne: (a) => a !== want, gt: (a) => a > want, ge: (a) => a >= want, lt: (a) => a < want, le: (a) => a <= want }[m[2]];
+      rows = rows.filter((r) => op(r[m[1]]));
+    }
+  }
+  const order = query.get('$orderby');
+  if (order) {
+    const [field, dir] = order.split(' ');
+    rows = [...rows].sort((a, b) => (a[field] > b[field] ? 1 : a[field] < b[field] ? -1 : 0) * (dir === 'desc' ? -1 : 1));
+  }
+  const top = query.has('$top') ? Number(query.get('$top')) : 100;
+  if (top > 100) return refusal(400, 'INVALID_QUERY', `The limit of '100' for Top query has been exceeded. The value from the incoming request is '${top}'.`);
+  const skip = Number(query.get('$skip') || 0);
+  const out = { value: rows.slice(skip, skip + top) };
+  if (query.get('$count') === 'true') out['@odata.count'] = rows.length;
+  return { status: 200, body: out };
+}
+
+const server = http.createServer((req, res) => {
+  const chunks = [];
+  req.on('data', (c) => chunks.push(c));
+  req.on('end', () => {
+    const url = new URL(req.url, 'http://x');
+    const raw = Buffer.concat(chunks).toString('utf8');
+    const parts = url.pathname.split('/').filter(Boolean);
+    if (parts[0] === '__x') {
+      if (parts[1] === 'rows') return reply(res, 200, db[parts[2]] || []);
+      if (parts[1] === 'log') {
+        if (req.method === 'POST') log = [];
+        return reply(res, 200, log);
+      }
+      if (parts[1] === 'rival') {
+        rivals = Number(url.searchParams.get('n') || 0);
+        return reply(res, 200, { rivals });
+      }
+      if (parts[1] === 'lose') {
+        lose = { mode: url.searchParams.get('mode') || '', n: Number(url.searchParams.get('n') || 1) };
+        return reply(res, 200, lose);
+      }
+      if (parts[1] === 'drop') {
+        db[parts[2]] = db[parts[2]].filter((r) => r.id !== parts[3]);
+        return reply(res, 200, {});
+      }
+      if (parts[1] === 'reset') {
+        for (const t of Object.keys(db)) db[t] = [];
+        log = [];
+        rivals = 0;
+        lose = { mode: '', n: 0 };
+        return reply(res, 200, {});
+      }
+      return reply(res, 404);
+    }
+    let body = {};
+    try {
+      body = raw ? JSON.parse(raw) : {};
+    } catch {
+      return reply(res, 400, { success: false, errorCode: 'INVALID_JSON' });
+    }
+    log.push({ method: req.method, path: url.pathname, body });
+    const bearer = req.headers.authorization === `Bearer ${token}`;
+    const cookie = /(?:^|;\s*)cfw\.auth\.session=([^;]*)/.exec(req.headers.cookie || '')?.[1] === token;
+    if (!bearer && !cookie) return reply(res, 401, { success: false, data: null, errorCode: 'API_REQUIRES_SIGN_IN', message: 'requires a signed-in caller' });
+    const [api, table, id] = parts;
+    if (api !== 'api' || !SCHEMA[table]) return reply(res, 404);
+    const verb = { GET: id ? 'get' : 'list', POST: 'create', PATCH: 'patch', DELETE: 'delete' }[req.method];
+    if (!verb || !SCHEMA[table].ops.includes(verb)) return reply(res, 404);
+    let out;
+    if (verb === 'list') out = list(table, url.searchParams);
+    else if (verb === 'get') {
+      const row = db[table].find((r) => r.id === id);
+      out = row ? { status: 200, body: { success: true, data: row } } : refusal(404, 'NOT_FOUND', 'not found');
+    } else if (verb === 'patch') out = patch(table, id, body);
+    else if (verb === 'delete') {
+      db[table] = db[table].filter((r) => r.id !== id);
+      return reply(res, 204);
+    } else {
+      if (table === 'fm_task_event' && lose.n > 0 && lose.mode === 'before') {
+        lose.n--;
+        return reply(res, 503, { success: false, errorCode: 'UNAVAILABLE' });
+      }
+      if (table === 'fm_task_event' && rivals > 0) {
+        rivals--;
+        const top = Math.max(0, ...db.fm_task_event.map((r) => r.seq));
+        create('fm_task_event', { seq: top + 1, taskId: 'rival', kind: 'comment', actorRole: 'system', actor: 'rival', body: '{}', idempotencyKey: `rival-${crypto.randomUUID()}` });
+      }
+      out = create(table, body);
+      if (table === 'fm_task_event' && lose.n > 0 && lose.mode === 'after') {
+        lose.n--;
+        return reply(res, 503, { success: false, errorCode: 'UNAVAILABLE' });
+      }
+    }
+    return reply(res, out.status, out.body);
+  });
+});
+server.listen(0, '127.0.0.1', () => fs.writeFileSync(portFile, String(server.address().port)));
+const parent = process.ppid;
+setInterval(() => {
+  try {
+    process.kill(parent, 0);
+  } catch {
+    process.exit(0);
+  }
+}, 1000).unref();
+setTimeout(() => process.exit(0), 20 * 60 * 1000).unref();
+JS
+
+cat > "$TMP_ROOT/fakebin/gh" <<'SH'
+#!/usr/bin/env bash
+[ "${1:-}" = issue ] && [ "${2:-}" = view ] && [ "${4:-}" = --json ] && [ "${5:-}" = body ] || exit 2
+jq -Rs '{body: .}' "$FAKE_GH_BODY_FILE"
+SH
+chmod +x "$TMP_ROOT/fakebin/gh"
+
+node "$TMP_ROOT/fake-api.mjs" "$TMP_ROOT/port" "$TMP_ROOT/schema.json" "$TOKEN" &
+for _ in $(seq 1 100); do [ -s "$TMP_ROOT/port" ] && break; sleep 0.1; done
+[ -s "$TMP_ROOT/port" ] || fail 'the stand-in API did not start'
+PORT=$(cat "$TMP_ROOT/port")
+BASE="http://127.0.0.1:$PORT"
+FAKE_PID=$!
+trap 'kill "$FAKE_PID" 2>/dev/null; fm_test_cleanup' EXIT
+
+export FM_TASK_BASE_URL="$BASE" FM_TASK_TOKEN_FILE="$TMP_ROOT/token" FM_TASK_ACTOR=tester-bot
+export FM_ACCEPTANCE_GH="$TMP_ROOT/fakebin/gh" FAKE_GH_BODY_FILE="$TMP_ROOT/issue.body"
+unset FM_TASK_AUTH FM_TASK_ROLE
+ISSUE=https://github.com/example/repo/issues/1
+
+# ---- helpers ----------------------------------------------------------------------
+
+BIN=$ROOT/bin
+OUT='' ERR='' RC=0
+
+ft() {  # <args...>: run the command; OUT, ERR and RC hold its stdout, stderr and exit code
+  OUT=$("$BIN/fm-task.sh" "$@" 2>"$TMP_ROOT/err")
+  RC=$?
+  ERR=$(cat "$TMP_ROOT/err")
+  return "$RC"
+}
+db() { curl -s "$BASE/__x/rows/$1"; }                       # all rows of a table
+api() { curl -s -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' "$@"; }
+reset_db() { curl -s -X POST "$BASE/__x/reset" >/dev/null; }
+posts() { curl -s "$BASE/__x/log" | jq --arg m "$1" --arg p "/api/$2" '[.[] | select(.method == $m and .path == $p)] | length'; }
+log_reset() { curl -s -X POST "$BASE/__x/log" >/dev/null; }
+task_row() { db fm_task | jq -c --arg t "$1" '.[] | select(.taskId == $t)'; }
+task_state() { task_row "$1" | jq -r .state; }
+count() { db "$1" | jq length; }
+seq_of() { sed -n 's/^seq=\([0-9][0-9]*\).*/\1/p' <<<"$OUT" | head -1; }
+must() {  # <label> <expected-rc>: the last ft call exited with the code
+  [ "$RC" -eq "$2" ] || { echo "$1: exit $RC, want $2: out=[$OUT] err=[$ERR]"; return 1; }
+}
+
+DONE_FLAGS=(--summary 'Built it' --changed-files 'bin/fm-task.sh' --verification 'ran the tests' --residual-risk 'none known')
+ASK_FLAGS=(--question 'Which one?' --option 'Option A' --option 'Option B' --recommendation 'Option A' --why 'Both work; A is simpler')
+
+mk_ready() { ft create "$1" --title "Task $1" --kind ship --repo example/repo && ft assign "$1" --to worker-1; }
+mk_running() { mk_ready "$1" && ft start "$1"; }
+
+# ---- issue bodies for the rows cases ----------------------------------------------
+
+scenario() {  # <id> <surface> <page> <widths> <line> <proof>
+  printf -- '- [ ] %s %s\n' "$1" "$5"
+  printf '  - page: %s\n  - widths: %s\n' "$3" "$4"
+  if [ "$3" = - ]; then printf '  - controls: -\n'; else printf '  - controls: button "Save"; textbox "Name"\n'; fi
+  printf '  - env: Dev 5001\n  - proof: %s\n  - data: the probe row\n  - mock: none\n  - surface: %s\n' "$6" "$2"
+}
+issue_body() {  # <variant>
+  local a1_line='WHEN a user acts, THE page SHALL answer.' a1_w='1440, 390' a2_proof='read the row back' a4=0
+  case $1 in
+    v2) a1_line='WHEN a user acts, THE page SHALL answer fast.'; a2_proof='read the row back twice'; a4=1 ;;
+    v3) a1_line='WHEN a user acts, THE page SHALL answer fast.'; a1_w='1440'; a2_proof='read the row back twice' ;;
+    v4) a1_line='WHEN a user acts, THE page SHALL answer fast.'; a1_w='1440'; a2_proof='read the row back twice'; a4=1 ;;
+  esac
+  printf '## Context\n\nc\n\n## Requirements\n\nr\n\n## Definition of done\n\nd\n\n## Scenarios\n\n'
+  scenario A1 user-visible home "$a1_w" "$a1_line" 'click Save'
+  scenario A2 internal - - 'WHEN the writer runs, THE row SHALL be stored.' "$a2_proof"
+  scenario A3 internal - - 'WHEN the writer fails, THE row SHALL stay.' 'run it twice'
+  [ "$a4" = 0 ] || scenario A4 internal - - 'WHEN the key repeats, THE first row SHALL return.' 'send twice'
+  printf '\n## Mockup\n\nnone\n\n## Links\n\nl\n\n## Decisions\n\nx\n'
+}
+use_issue() { issue_body "$1" > "$TMP_ROOT/issue.body"; }
+
+# ---- cases: each returns 0 when the behavior holds -------------------------------
+
+# TR10: a terminal call stores its event and child in one request and prints the seq;
+# a missing template field prints the API's field and stores nothing.
+case_terminal() {
+  BIN=$1; reset_db
+  local t=tk10 id seq child events dones before f field
+  mk_running $t >/dev/null || { echo "setup: $ERR"; return 1; }
+  log_reset
+  ft done $t "${DONE_FLAGS[@]}" --pr-url https://example.com/pr/1 --head abc123
+  must 'done' 0 || return 1
+  seq=$(seq_of); [ -n "$seq" ] || { echo "no seq printed: $OUT"; return 1; }
+  id=$(db fm_task_event | jq -r --argjson s "$seq" '.[] | select(.seq == $s and .kind == "done" and .taskId == "tk10") | .id')
+  [ -n "$id" ] || { echo "no done event at seq $seq"; return 1; }
+  child=$(db fm_event_done | jq -c --arg id "$id" '.[] | select(.fmTaskEventId == $id)')
+  jq -e '.summary == "Built it" and .changedFiles == "bin/fm-task.sh" and .verification == "ran the tests" and .residualRisk == "none known" and .prUrl == "https://example.com/pr/1" and .head == "abc123" and (.rows | type == "string")' <<<"$child" >/dev/null \
+    || { echo "stored done child: $child"; return 1; }
+  [ "$(posts POST fm_task_event)" = 1 ] && [ "$(posts POST fm_event_done)" = 0 ] || { echo "the event and its child did not travel in one request"; return 1; }
+  curl -s "$BASE/__x/log" | jq -e '[.[] | select(.method == "POST" and .path == "/api/fm_task_event")][0].body | (.done | length) == 1 and .seq == '"$seq" >/dev/null \
+    || { echo "the event request does not carry the done child"; return 1; }
+  [ "$(task_state $t)" = review ] || { echo "done did not move the task to review: $(task_state $t)"; return 1; }
+  # ask: one request, options stored as a JSON list, the task waits on its next actor
+  mk_running tk10a >/dev/null; log_reset
+  ft ask tk10a "${ASK_FLAGS[@]}"
+  must 'ask' 0 || return 1
+  id=$(db fm_task_event | jq -r --argjson s "$(seq_of)" '.[] | select(.seq == $s and .kind == "needs-decision") | .id')
+  [ -n "$id" ] || { echo "no needs-decision event"; return 1; }
+  db fm_event_question | jq -e --arg id "$id" '.[] | select(.fmTaskEventId == $id) | .question == "Which one?" and (.options | fromjson) == ["Option A","Option B"] and .recommendation == "Option A" and .why == "Both work; A is simpler"' >/dev/null \
+    || { echo "stored question child wrong"; return 1; }
+  [ "$(posts POST fm_event_question)" = 0 ] || { echo "question child was posted on its own"; return 1; }
+  [ "$(task_state tk10a)" = blocked ] || { echo "ask did not block the task"; return 1; }
+  # block: one request, the child carries kind, reason, next actor and until
+  mk_running tk10b >/dev/null; log_reset
+  ft block transient tk10b --reason 'waiting for the deploy' --next-actor firstmate --until 2026-10-26T08:00:00Z
+  must 'block' 0 || return 1
+  id=$(db fm_task_event | jq -r --argjson s "$(seq_of)" '.[] | select(.seq == $s and .kind == "blocked") | .id')
+  [ -n "$id" ] || { echo "no blocked event"; return 1; }
+  db fm_event_block | jq -e --arg id "$id" '.[] | select(.fmTaskEventId == $id) | .blockKind == "transient" and .reason == "waiting for the deploy" and .nextActor == "firstmate" and (.until | startswith("2026-10-26T08:00:00"))' >/dev/null \
+    || { echo "stored block child wrong"; return 1; }
+  [ "$(posts POST fm_event_block)" = 0 ] || { echo "block child was posted on its own"; return 1; }
+  # a missing template field: the API's field is printed, nothing is stored, the task stays
+  for field in summary changed-files verification residual-risk; do
+    mk_running "tk10m-$field" >/dev/null
+    events=$(count fm_task_event); dones=$(count fm_event_done)
+    args=(); skip=0
+    for f in "${DONE_FLAGS[@]}"; do
+      if [ "$skip" = 1 ]; then skip=0; continue; fi
+      if [ "$f" = "--$field" ]; then skip=1; continue; fi
+      args+=("$f")
+    done
+    ft done "tk10m-$field" "${args[@]}"
+    must "done without --$field" 4 || return 1
+    case $(tr 'A-Z' 'a-z' <<<"$ERR" | tr -d '-') in *"$(tr -d '-' <<<"$field")"*) ;; *) echo "the refusal does not name $field: $ERR"; return 1 ;; esac
+    [ "$(count fm_task_event)" = "$events" ] && [ "$(count fm_event_done)" = "$dones" ] || { echo "a refused done stored rows (missing $field)"; return 1; }
+    [ "$(task_state "tk10m-$field")" = running ] || { echo "a refused done moved the task"; return 1; }
+  done
+  mk_running tk10q >/dev/null; events=$(count fm_task_event)
+  ft ask tk10q --option A --option B --recommendation A --why w
+  must 'ask without --question' 4 || return 1
+  case $ERR in *Question*) ;; *) echo "the refusal does not name Question: $ERR"; return 1 ;; esac
+  mk_running tk10r >/dev/null
+  ft block transient tk10r --next-actor firstmate
+  must 'block without --reason' 4 || return 1
+  case $ERR in *Reason*) ;; *) echo "the refusal does not name Reason: $ERR"; return 1 ;; esac
+  before=$(count fm_event_block)
+  ft block transient tk10r --reason r --next-actor firstmate --until not-a-date
+  [ "$RC" -ne 0 ] && [ "$(count fm_event_block)" = "$before" ] || { echo "a bad --until was stored"; return 1; }
+  ft ask tk10q --question q --option only --recommendation only --why w
+  [ "$RC" -eq 5 ] || { echo "one option: exit $RC, want 5: $ERR"; return 1; }
+  ft ask tk10q --question q --option 1 --option 2 --option 3 --option 4 --option 5 --option 6 --option 7 --recommendation 1 --why w
+  [ "$RC" -eq 5 ] || { echo "seven options: exit $RC, want 5: $ERR"; return 1; }
+  ft done tk10q --summary '' --changed-files f --verification v --residual-risk r
+  [ "$RC" -ne 0 ] && ! grep -q '^seq=' <<<"$OUT" || { echo "an empty --summary was stored"; return 1; }
+}
+
+# TR11: 20 writers at once get consecutive seq values, a re-send returns the first event,
+# a rival writer that takes the seq first is retried past, and a lost answer is not stored twice.
+case_concurrent() {
+  BIN=$1; reset_db
+  local t=tk11 i first seqs want n
+  local -a pids=()
+  ft create $t --title t --kind ship >/dev/null || { echo "setup: $ERR"; return 1; }
+  rm -f "$TMP_ROOT"/par.*
+  for i in $(seq 1 20); do
+    ( "$BIN/fm-task.sh" comment $t --note "c$i" > "$TMP_ROOT/par.$i" 2>&1; echo $? > "$TMP_ROOT/par.$i.rc" ) &
+    pids+=($!)
+  done
+  wait "${pids[@]}"
+  for i in $(seq 1 20); do
+    [ "$(cat "$TMP_ROOT/par.$i.rc" 2>/dev/null)" = 0 ] || { echo "writer $i failed: $(cat "$TMP_ROOT/par.$i" 2>&1)"; return 1; }
+  done
+  seqs=$(db fm_task_event | jq -c '[.[].seq] | sort')
+  want=$(jq -nc '[range(1; 22)]')
+  [ "$seqs" = "$want" ] || { echo "seq values are not 1..21 with no gap: $seqs"; return 1; }
+  [ "$(db fm_task_event | jq '[.[] | select(.kind == "comment")] | length')" = 20 ] || { echo "a comment was lost"; return 1; }
+  [ "$(task_row $t | jq .lastSeq)" = 21 ] || { echo "the task row does not show seq 21: $(task_row $t)"; return 1; }
+  # a re-send with the same key returns the first event
+  ft comment $t --note once --key k-once
+  must 'first send' 0 || return 1
+  first=$(seq_of); n=$(count fm_task_event)
+  ft comment $t --note once --key k-once
+  must 're-send' 0 || return 1
+  [ "$(seq_of)" = "$first" ] || { echo "the re-send returned seq $(seq_of), not $first"; return 1; }
+  [ "$(count fm_task_event)" = "$n" ] || { echo "the re-send stored a second event"; return 1; }
+  # a rival takes the next seq three times: the writer retries past it
+  curl -s -X POST "$BASE/__x/rival?n=3" >/dev/null
+  n=$(count fm_task_event)
+  ft comment $t --note after --key k-after
+  must 'after rivals' 0 || return 1
+  [ "$(seq_of)" = $((n + 3 + 1)) ] || { echo "seq after three rivals is $(seq_of), want $((n + 4))"; return 1; }
+  # the answer is lost before the event is stored: nothing stored, exit 3, a re-run stores it once
+  n=$(count fm_task_event)
+  curl -s -X POST "$BASE/__x/lose?mode=before&n=1" >/dev/null
+  ft comment $t --note lost-before --key k-before
+  must 'lost before' 3 || return 1
+  [ "$(count fm_task_event)" = "$n" ] || { echo "an event was stored though the request was refused"; return 1; }
+  ft comment $t --note lost-before --key k-before
+  must 're-run after lost-before' 0 || return 1
+  # the event is stored but the answer is lost: the lookup by key finds it, no second event
+  n=$(count fm_task_event)
+  curl -s -X POST "$BASE/__x/lose?mode=after&n=1" >/dev/null
+  ft comment $t --note lost-after --key k-after-lost
+  must 'lost after' 0 || return 1
+  [ "$(count fm_task_event)" = $((n + 1)) ] || { echo "a lost answer stored the event $(( $(count fm_task_event) - n )) times"; return 1; }
+  [ "$(seq_of)" = "$(db fm_task_event | jq '[.[] | select(.idempotencyKey == "k-after-lost")][0].seq')" ] || { echo "the printed seq is not the stored one"; return 1; }
+}
+
+# TR12: the Hermes transitions, every state x command pair, then the block-repeat and parent rules.
+declare -A EXPECT
+for s in triage todo ready running blocked review done archived; do
+  for c in assign start heartbeat done ask block unblock approve changes archive comment; do EXPECT[$s:$c]=-; done
+done
+EXPECT[triage:assign]=ready;   EXPECT[triage:unblock]=ready;   EXPECT[triage:archive]=archived;   EXPECT[triage:comment]=triage
+EXPECT[todo:assign]=todo;      EXPECT[todo:archive]=archived;  EXPECT[todo:comment]=todo
+EXPECT[ready:assign]=ready;    EXPECT[ready:start]=running;    EXPECT[ready:archive]=archived;    EXPECT[ready:comment]=ready
+EXPECT[running:heartbeat]=running; EXPECT[running:done]=review; EXPECT[running:ask]=blocked;      EXPECT[running:block]=blocked
+EXPECT[running:comment]=running
+EXPECT[blocked:unblock]=ready; EXPECT[blocked:archive]=archived; EXPECT[blocked:comment]=blocked
+EXPECT[review:approve]=done;   EXPECT[review:changes]=ready;  EXPECT[review:archive]=archived;   EXPECT[review:comment]=review
+EXPECT[done:archive]=archived; EXPECT[done:comment]=done
+EXPECT[archived:comment]=archived
+CMDS='assign start heartbeat done ask block unblock approve changes archive comment'
+
+put_in_state() {  # <task> <state>
+  local t=$1
+  case $2 in
+    triage) ft create "$t" --title "T $t" --kind ship ;;
+    todo) ft create "$t-parent" --title "P $t" --kind ship >/dev/null && ft create "$t" --title "T $t" --kind ship --after "$t-parent" ;;
+    ready) mk_ready "$t" ;;
+    running) mk_running "$t" ;;
+    blocked) mk_running "$t" && ft block transient "$t" --reason waiting --next-actor firstmate ;;
+    review) mk_running "$t" && ft done "$t" "${DONE_FLAGS[@]}" ;;
+    done) mk_running "$t" && ft done "$t" "${DONE_FLAGS[@]}" && ft approve "$t" ;;
+    archived) ft create "$t" --title "T $t" --kind ship && ft archive "$t" ;;
+  esac
+}
+run_command() {  # <task> <command>
+  case $2 in
+    assign) ft assign "$1" --to worker-2 ;;
+    done) ft done "$1" "${DONE_FLAGS[@]}" ;;
+    ask) ft ask "$1" "${ASK_FLAGS[@]}" ;;
+    block) ft block transient "$1" --reason waiting --next-actor firstmate ;;
+    changes) ft changes "$1" --note 'fix the label' ;;
+    comment) ft comment "$1" --note hi ;;
+    *) ft "$2" "$1" ;;
+  esac
+}
+
+case_transitions() {
+  BIN=$1; reset_db
+  local s c t want allowed events state listed n=0
+  for s in triage todo ready running blocked review done archived; do
+    allowed=''
+    for c in $CMDS; do [ "${EXPECT[$s:$c]}" = - ] || allowed="$allowed $c"; done
+    for c in $CMDS; do
+      n=$((n + 1)); t="tr12-$n"
+      put_in_state "$t" "$s" >/dev/null || { echo "setup $s: $ERR"; return 1; }
+      [ "$(task_state "$t")" = "$s" ] || { echo "setup left $t in $(task_state "$t"), want $s"; return 1; }
+      events=$(count fm_task_event); want=${EXPECT[$s:$c]}
+      run_command "$t" "$c"
+      if [ "$want" = - ]; then
+        must "$c from $s" 5 || return 1
+        listed=$(sed -n 's/.*allowed from [a-z]*: *//p' <<<"$ERR" | head -1 | tr -d ',' | tr ' ' '\n' | sort | tr '\n' ' ')
+        [ "$listed" = "$(tr ' ' '\n' <<<"$allowed" | sed '/^$/d' | sort | tr '\n' ' ')" ] || { echo "$c from $s lists [$listed], want [$allowed]: $ERR"; return 1; }
+        [ "$(count fm_task_event)" = "$events" ] || { echo "a refused $c from $s stored an event"; return 1; }
+        [ "$(task_state "$t")" = "$s" ] || { echo "a refused $c from $s moved the task"; return 1; }
+      else
+        must "$c from $s" 0 || return 1
+        [ "$(task_state "$t")" = "$want" ] || { echo "$c from $s gave $(task_state "$t"), want $want"; return 1; }
+      fi
+    done
+  done
+  return 0
+}
+
+case_block_rules() {
+  BIN=$1; reset_db
+  local t=tk12b row i
+  # a third block of one kind goes to triage; a different kind starts the count again
+  mk_running $t >/dev/null
+  for i in 1 2; do
+    ft block transient $t --reason "try $i" --next-actor firstmate; must "block $i" 0 || return 1
+    [ "$(task_state $t)" = blocked ] || { echo "block $i: $(task_state $t)"; return 1; }
+    ft unblock $t; must "unblock $i" 0 || return 1
+    ft start $t; must "start $i" 0 || return 1
+  done
+  ft block transient $t --reason 'try 3' --next-actor firstmate; must 'block 3' 0 || return 1
+  row=$(task_row $t)
+  [ "$(jq -r .state <<<"$row")" = triage ] && [ "$(jq -r .nextActor <<<"$row")" = firstmate ] && [ "$(jq -r .blockRepeats <<<"$row")" = 3 ] \
+    || { echo "the third block of one kind did not go to triage: $row"; return 1; }
+  t=tk12c; mk_running $t >/dev/null
+  ft block transient $t --reason a --next-actor firstmate >/dev/null; ft unblock $t >/dev/null; ft start $t >/dev/null
+  ft block external $t --reason b --next-actor firstmate >/dev/null; ft unblock $t >/dev/null; ft start $t >/dev/null
+  ft block transient $t --reason c --next-actor firstmate >/dev/null
+  row=$(task_row $t)
+  [ "$(jq -r .state <<<"$row")" = blocked ] && [ "$(jq -r .blockRepeats <<<"$row")" = 1 ] || { echo "a different kind did not start the count again: $row"; return 1; }
+  # a done call ends the streak
+  t=tk12d; mk_running $t >/dev/null
+  ft block transient $t --reason a --next-actor firstmate >/dev/null; ft unblock $t >/dev/null; ft start $t >/dev/null
+  ft done $t "${DONE_FLAGS[@]}" >/dev/null
+  [ "$(task_row $t | jq -r .blockRepeats)" = 0 ] || { echo "done did not reset the block count: $(task_row $t)"; return 1; }
+  return 0
+}
+
+case_parents() {
+  BIN=$1; reset_db
+  local p=tk12p c=tk12c1 events links
+  mk_running $p >/dev/null; mk_running $c >/dev/null
+  # a dependency waits in todo on an open parent
+  ft block dependency $c --on $p --reason 'needs the parent' --next-actor worker
+  must 'block dependency' 0 || return 1
+  [ "$(task_state $c)" = todo ] || { echo "a dependency did not wait in todo: $(task_state $c)"; return 1; }
+  db fm_task_link | jq -e --arg p $p --arg c $c 'any(.[]; .parentTaskId == $p and .childTaskId == $c)' >/dev/null || { echo "no link row for the dependency"; return 1; }
+  ft start $c
+  must 'start a waiting task' 5 || return 1
+  ft assign $c --to worker-9
+  must 'assign a waiting task' 0 || return 1
+  [ "$(task_state $c)" = todo ] || { echo "assign took a waiting task out of todo: $(task_state $c)"; return 1; }
+  # the parent finishing releases the child to ready, with an event
+  ft done $p "${DONE_FLAGS[@]}" >/dev/null; ft approve $p >/dev/null
+  [ "$(task_state $c)" = ready ] || { echo "the child was not released when the parent was approved: $(task_state $c)"; return 1; }
+  db fm_task_event | jq -e --arg c $c 'any(.[]; .taskId == $c and .kind == "promoted")' >/dev/null || { echo "no promoted event for the released child"; return 1; }
+  # a dependency needs an open parent that exists
+  mk_running tk12c2 >/dev/null
+  ft block dependency tk12c2 --on $p --reason r --next-actor worker
+  must 'dependency on a done parent' 5 || return 1
+  ft block dependency tk12c2 --on no-such-task --reason r --next-actor worker
+  must 'dependency on a missing parent' 5 || return 1
+  ft block dependency tk12c2 --reason r --next-actor worker
+  [ "$RC" -ne 0 ] && [ "$(task_state tk12c2)" = running ] || { echo "a dependency with no --on was stored"; return 1; }
+  # create --after an open parent waits; a link cannot make a cycle
+  mk_running tk12p2 >/dev/null
+  ft create tk12c3 --title c3 --kind ship --after tk12p2
+  must 'create --after' 0 || return 1
+  [ "$(task_state tk12c3)" = todo ] || { echo "create --after an open parent: $(task_state tk12c3)"; return 1; }
+  ft link tk12c3 tk12p2
+  must 'link cycle' 5 || return 1
+  ft link tk12p2 tk12p2
+  must 'link to itself' 5 || return 1
+  links=$(count fm_task_link); events=$(count fm_task_event)
+  ft link tk12p2 tk12c3
+  must 'repeat link' 0 || return 1
+  [ "$(count fm_task_link)" = "$links" ] && [ "$(count fm_task_event)" = "$events" ] || { echo "a repeat link stored again"; return 1; }
+}
+
+# The value lists the API cannot check.
+case_value_lists() {
+  BIN=$1; reset_db
+  local before
+  mk_running tk-vl >/dev/null
+  before=$(count fm_task_event)
+  ft block nonsense tk-vl --reason r --next-actor firstmate;      must 'block kind' 5 || return 1
+  ft block transient tk-vl --reason r --next-actor nobody;        must 'next actor' 5 || return 1
+  ft comment tk-vl --note x --role boss;                           must 'role' 5 || return 1
+  ft create tk-vl2 --title t --kind weird;                         must 'task kind' 5 || return 1
+  ft event tk-vl bogus --note x;                                   must 'event kind' 5 || return 1
+  ft event tk-vl done --note x;                                    must 'terminal kind through event' 5 || return 1
+  ft event tk-vl blocked --note x;                                 must 'blocked through event' 5 || return 1
+  ft done tk-vl "${DONE_FLAGS[@]}" --next-actor owner;             must 'done next actor' 5 || return 1
+  ft check tk-vl A1@- --status maybe;                              must 'check status' 5 || return 1
+  ft create 'bad id!' --title t --kind ship;                       must 'task id' 2 || return 1
+  ft create tk-vl --title t --kind ship;                           must 'duplicate task' 5 || return 1
+  ft comment tk-vl --note x --key "$(printf 'k%.0s' $(seq 1 201))"; must 'long key' 2 || return 1
+  ft create tk-long --title "$(printf 't%.0s' $(seq 1 301))" --kind ship; must 'long title' 5 || return 1
+  ft bogus-command;                                                must 'unknown command' 2 || return 1
+  ft comment tk-vl --nonsense 1;                                   must 'unknown flag' 2 || return 1
+  [ "$(count fm_task_event)" = "$before" ] || { echo "a refused call stored an event"; return 1; }
+  [ "$(task_row tk-long)" = '' ] || { echo "a refused create stored a task"; return 1; }
+}
+
+# TR13: one check row per scenario x width; a re-run adds, retires and resets.
+case_rows() {
+  BIN=$1; reset_db
+  local t=tk13 checks n events row
+  ft create $t --title t --kind ship >/dev/null
+  use_issue v1
+  ft rows $t "$ISSUE"
+  must 'rows' 0 || return 1
+  checks=$(db fm_task_check)
+  [ "$(jq length <<<"$checks")" = 4 ] || { echo "want 4 rows (A1 x2 widths, A2, A3), got: $(jq -c '[.[] | .scenarioId + "@" + .width]' <<<"$checks")"; return 1; }
+  jq -e 'all(.[]; .taskId == "tk13" and .status == "pending" and (.acceptanceDigest | test("^[0-9a-f]{64}$")))' <<<"$checks" >/dev/null || { echo "row fields: $(jq -c '.[0]' <<<"$checks")"; return 1; }
+  jq -e '[.[] | select(.scenarioId == "A1") | .nextActor] == ["tester","tester"] and ([.[] | select(.scenarioId != "A1") | .nextActor] | unique) == ["worker"]' <<<"$checks" >/dev/null || { echo "next actors: $(jq -c '[.[] | [.scenarioId, .width, .nextActor]]' <<<"$checks")"; return 1; }
+  jq -e '(.[] | select(.scenarioId == "A1" and .width == "1440")) | .line == "WHEN a user acts, THE page SHALL answer." and .surface == "user-visible" and .page == "home" and .proof == "click Save"' <<<"$checks" >/dev/null || { echo "row content wrong"; return 1; }
+  # a re-run with the issue unchanged stores nothing and keeps results
+  ft check $t A1@1440 --status pass --evidence 'tester record 1'; must 'check pass' 0 || return 1
+  ft check $t A2@- --status pass --evidence 'unit run'; must 'check pass A2' 0 || return 1
+  ft check $t A3@- --status fail --evidence 'red'; must 'check fail A3' 0 || return 1
+  events=$(count fm_task_event)
+  ft rows $t "$ISSUE"
+  must 'rows again' 0 || return 1
+  [ "$(count fm_task_event)" = "$events" ] && [ "$(count fm_task_check)" = 4 ] || { echo "an unchanged re-run stored something"; return 1; }
+  db fm_task_check | jq -e '([.[] | .status] | sort) == ["fail","pass","pass","pending"]' >/dev/null || { echo "an unchanged re-run changed a result"; return 1; }
+  # the issue is edited: A1's line changes (passed row resets), A2's proof changes (digest only), A4 is new
+  use_issue v2
+  ft rows $t "$ISSUE"
+  must 'rows after edit' 0 || return 1
+  checks=$(db fm_task_check)
+  [ "$(jq length <<<"$checks")" = 5 ] || { echo "the new scenario was not added: $(jq length <<<"$checks") rows"; return 1; }
+  row=$(jq -c '.[] | select(.scenarioId == "A1" and .width == "1440")' <<<"$checks")
+  [ "$(jq -r .status <<<"$row")" = pending ] && [ "$(jq -r .line <<<"$row")" = 'WHEN a user acts, THE page SHALL answer fast.' ] || { echo "a passed row with a new line was not reset: $row"; return 1; }
+  row=$(jq -c '.[] | select(.scenarioId == "A2")' <<<"$checks")
+  [ "$(jq -r .status <<<"$row")" = pending ] || { echo "a passed row with a new digest and the same line was not reset: $row"; return 1; }
+  [ "$(jq -r '.[] | select(.scenarioId == "A3") | .status' <<<"$checks")" = fail ] || { echo "an unchanged row was touched"; return 1; }
+  # a passed row stays passed when only another row changes
+  ft check $t A2@- --status pass --evidence again >/dev/null
+  # scenarios and widths leave the issue: their rows are retired, not deleted
+  use_issue v3
+  ft rows $t "$ISSUE"
+  must 'rows after removal' 0 || return 1
+  checks=$(db fm_task_check)
+  [ "$(jq length <<<"$checks")" = 5 ] || { echo "a retired row was deleted"; return 1; }
+  [ "$(jq -r '.[] | select(.scenarioId == "A4") | .status' <<<"$checks")" = retired ] && [ "$(jq -r '.[] | select(.scenarioId == "A1" and .width == "390") | .status' <<<"$checks")" = retired ] \
+    || { echo "removed ids were not retired: $(jq -c '[.[] | [.scenarioId, .width, .status]]' <<<"$checks")"; return 1; }
+  [ "$(jq -r '.[] | select(.scenarioId == "A2") | .status' <<<"$checks")" = pass ] || { echo "a passed row with no change was reset"; return 1; }
+  # an id that comes back is open again
+  use_issue v4
+  ft rows $t "$ISSUE"
+  [ "$(db fm_task_check | jq -r '.[] | select(.scenarioId == "A4") | .status')" = pending ] || { echo "a returned id stayed retired"; return 1; }
+  [ "$(count fm_task_check)" = 5 ] || { echo "a returned id made a second row"; return 1; }
+  # a refused issue stores nothing
+  printf 'no scenarios here\n' > "$TMP_ROOT/issue.body"
+  events=$(count fm_task_event)
+  ft rows $t "$ISSUE"
+  [ "$RC" -ne 0 ] && [ "$(count fm_task_event)" = "$events" ] || { echo "a refused issue was stored"; return 1; }
+  # an open row blocks the approval
+  mk_running tk13b >/dev/null; use_issue v1; ft rows tk13b "$ISSUE" >/dev/null
+  ft done tk13b "${DONE_FLAGS[@]}" >/dev/null
+  ft approve tk13b
+  must 'approve with open rows' 5 || return 1
+  [ "$(task_state tk13b)" = review ] || { echo "approve moved a task with open rows"; return 1; }
+}
+
+# TR15: an owner item is created with its check row's next actor; a refused item leaves the row alone.
+case_owner() {
+  BIN=$1; reset_db
+  local t=tk15 row
+  ft create $t --title t --kind ship >/dev/null; use_issue v1; ft rows $t "$ISSUE" >/dev/null
+  ft owner-check $t A1@1440 --page-title 'Home page' --steps '1. open it' --data 'the probe row' --expected 'it loads'
+  must 'owner-check without --url' 4 || return 1
+  case $ERR in *Url*) ;; *) echo "the refusal does not name Url: $ERR"; return 1 ;; esac
+  ft owner-check $t A1@1440 --page-title 'Home page' --url 'http://100.88.10.58:5001/#home' --data 'the probe row' --expected 'it loads'
+  must 'owner-check without --steps' 4 || return 1
+  case $ERR in *Steps*) ;; *) echo "the refusal does not name Steps: $ERR"; return 1 ;; esac
+  [ "$(count fm_owner_check)" = 0 ] || { echo "a refused owner item was stored"; return 1; }
+  row=$(db fm_task_check | jq -c '.[] | select(.scenarioId == "A1" and .width == "1440")')
+  [ "$(jq -r .nextActor <<<"$row")" = tester ] || { echo "a refused owner item changed the check row: $row"; return 1; }
+  ft owner-check $t A1@1440 --page-title 'Home page' --url '' --steps '1. open it' --data d --expected e
+  [ "$RC" -ne 0 ] && [ "$(count fm_owner_check)" = 0 ] || { echo "an empty --url was stored"; return 1; }
+  ft owner-check $t A1@1440 --page-title 'Home page' --url 'http://100.88.10.58:5001/#home' --steps '1. open it' --data 'the probe row' --expected 'it loads'
+  must 'owner-check' 0 || return 1
+  db fm_owner_check | jq -e '.[0] | .taskId == "tk15" and .scenarioId == "A1" and .width == "1440" and .pageTitle == "Home page" and .url == "http://100.88.10.58:5001/#home" and .steps == "1. open it" and .data == "the probe row" and .expected == "it loads" and .status == "pending"' >/dev/null \
+    || { echo "owner item wrong: $(db fm_owner_check | jq -c '.[0]')"; return 1; }
+  [ "$(db fm_task_check | jq -r '.[] | select(.scenarioId == "A1" and .width == "1440") | .nextActor')" = owner ] || { echo "the check row does not read owner"; return 1; }
+  # no check row can read owner without its item
+  ft check $t A2@- --status pending --next-actor owner
+  must 'check next actor owner without an item' 5 || return 1
+  ft check $t A1@1440 --status pending --next-actor owner
+  must 'check next actor owner with its item' 0 || return 1
+  ft owner-check $t NOPE@- --page-title p --url u --steps s --data d --expected e
+  must 'owner-check for a missing row' 5 || return 1
+  db fm_task_check | jq -e --argjson items "$(db fm_owner_check)" 'all(.[]; .nextActor != "owner" or (. as $r | any($items[]; .taskId == $r.taskId and .scenarioId == $r.scenarioId and .width == $r.width)))' >/dev/null \
+    || { echo "a check row reads owner with no owner item"; return 1; }
+  # the same call again finds its item and is not an error
+  ft owner-check $t A1@1440 --page-title 'Home page' --url 'http://100.88.10.58:5001/#home' --steps '1. open it' --data 'the probe row' --expected 'it loads'
+  must 'owner-check again' 0 || return 1
+  [ "$(count fm_owner_check)" = 1 ] || { echo "owner-check again made a second item"; return 1; }
+}
+
+# TR14: resume gives the record in one screen; reproject rebuilds a damaged row from events.
+case_resume() {
+  BIN=$1; reset_db
+  local t=tk14 lines events_shown row id before
+  ft create $t --title 'Resume me' --kind ship --repo example/repo --issue "$ISSUE" --surface internal >/dev/null
+  use_issue v1; ft rows $t "$ISSUE" >/dev/null
+  ft assign $t --to worker-1 >/dev/null; ft start $t >/dev/null
+  ft heartbeat $t --note one >/dev/null; ft heartbeat $t --note two >/dev/null
+  ft done $t "${DONE_FLAGS[@]}" --pr-url https://example.com/pr/9 --head deadbeef >/dev/null
+  ft resume $t
+  must 'resume after done' 0 || return 1
+  for want in 'state=review' 'assignee=worker-1' 'next=tester' 'Built it' 'bin/fm-task.sh' 'ran the tests' 'none known' 'https://example.com/pr/9' 'deadbeef' 'A1@1440' 'A2@-' 'A3@-'; do
+    case $OUT in *"$want"*) ;; *) echo "resume lacks '$want':"; echo "$OUT"; return 1 ;; esac
+  done
+  lines=$(wc -l <<<"$OUT" | tr -d ' ')
+  [ "$lines" -le 60 ] || { echo "resume is $lines lines, more than one screen"; return 1; }
+  ft changes $t --note 'fix the label' >/dev/null; ft start $t >/dev/null
+  ft ask $t "${ASK_FLAGS[@]}" >/dev/null
+  ft resume $t
+  must 'resume after ask' 0 || return 1
+  for want in 'state=blocked' 'needs-decision' 'Which one?' 'Option A' 'Option B' 'Both work; A is simpler'; do
+    case $OUT in *"$want"*) ;; *) echo "resume lacks '$want':"; echo "$OUT"; return 1 ;; esac
+  done
+  case $OUT in *'Built it'*) echo "resume shows the older done call as the last terminal call"; return 1 ;; esac
+  events_shown=$(grep -c '^  #[0-9]' <<<"$OUT")
+  [ "$events_shown" = 10 ] || { echo "resume lists $events_shown events, want the last 10:"; echo "$OUT"; return 1; }
+  [ "$(wc -l <<<"$OUT" | tr -d ' ')" -le 60 ] || { echo "resume is more than one screen"; return 1; }
+  case $OUT in *'open check rows'*|*'OPEN CHECK ROWS'*) ;; *) echo "resume has no open check rows section"; return 1 ;; esac
+  # reproject: a damaged row is rebuilt from the events alone
+  row=$(task_row $t); id=$(jq -r .id <<<"$row"); before=$(count fm_task_event)
+  api -X PATCH "$BASE/api/fm_task/$id" -d '{"state":"archived","nextActor":"owner","title":"garbage","assignee":"nobody","lastSeq":0,"blockRepeats":9,"prUrl":"x"}' >/dev/null
+  [ "$(task_state $t)" = archived ] || { echo "the test could not damage the row"; return 1; }
+  ft reproject $t
+  must 'reproject' 0 || return 1
+  [ "$(jq -S 'del(.updatedAt)' <<<"$(task_row $t)")" = "$(jq -S 'del(.updatedAt)' <<<"$row")" ] || { echo "reproject did not restore the row:"; echo "want $row"; echo "got  $(task_row $t)"; return 1; }
+  [ "$(count fm_task_event)" = "$before" ] || { echo "reproject wrote an event"; return 1; }
+  # a task row that is gone is created again
+  curl -s -X POST "$BASE/__x/drop/fm_task/$id" >/dev/null
+  [ -z "$(task_row $t)" ] || { echo "the test could not drop the row"; return 1; }
+  ft reproject $t
+  must 'reproject a missing row' 0 || return 1
+  [ "$(task_state $t)" = blocked ] || { echo "reproject did not create the missing row: $(task_row $t)"; return 1; }
+  ft resume no-such-task
+  must 'resume of a missing task' 5 || return 1
+}
+
+# A 5001 that does not answer is exit 3; a bad token file or token is refused with its reason.
+case_connection() {
+  BIN=$1; reset_db
+  local cmd saved=$FM_TASK_BASE_URL
+  export FM_TASK_BASE_URL=http://127.0.0.1:1
+  for cmd in "show tk" "resume tk" "list" "create tk --title t --kind ship" "comment tk --note x"; do
+    # shellcheck disable=SC2086 # the words are the arguments
+    ft $cmd
+    if [ "$RC" -ne 3 ] || grep -q '^seq=' <<<"$OUT"; then export FM_TASK_BASE_URL=$saved; echo "$cmd with no answer: exit $RC out=[$OUT] err=[$ERR]"; return 1; fi
+  done
+  export FM_TASK_BASE_URL=$saved
+  FM_TASK_TOKEN_FILE="$TMP_ROOT/no-such-token" ft list
+  must 'missing token file' 2 || return 1
+  cp "$TMP_ROOT/token" "$TMP_ROOT/token.open"; chmod 644 "$TMP_ROOT/token.open"
+  FM_TASK_TOKEN_FILE="$TMP_ROOT/token.open" ft list
+  must 'token file open to others' 2 || return 1
+  printf 'wrong\n' > "$TMP_ROOT/token.bad"; chmod 600 "$TMP_ROOT/token.bad"
+  FM_TASK_TOKEN_FILE="$TMP_ROOT/token.bad" ft list
+  must 'wrong token' 4 || return 1
+  case $ERR in *401*) ;; *) echo "a wrong token does not show the HTTP status: $ERR"; return 1 ;; esac
+  case $OUT$ERR in *"$TOKEN"*) echo "the token is printed"; return 1 ;; esac
+  FM_TASK_AUTH=cookie ft list
+  must 'cookie auth' 0 || return 1
+}
+
+# Reads, links, free events and images.
+case_reads_and_images() {
+  BIN=$1; reset_db
+  local png="$TMP_ROOT/pixel.png" id
+  printf '\x89PNG\r\n\x1a\n0000' > "$png"
+  mk_ready tk-r1 >/dev/null; ft create tk-r2 --title second --kind scout >/dev/null
+  ft show tk-r1 --json
+  must 'show' 0 || return 1
+  jq -e '.taskId == "tk-r1" and .state == "ready" and .assignee == "worker-1"' <<<"$OUT" >/dev/null || { echo "show --json: $OUT"; return 1; }
+  ft list --state ready
+  must 'list' 0 || return 1
+  case $OUT in *tk-r1*) ;; *) echo "list lacks tk-r1: $OUT"; return 1 ;; esac
+  case $OUT in *tk-r2*) echo "list --state ready shows a triage task"; return 1 ;; esac
+  ft list --json
+  jq -e 'length == 2' <<<"$OUT" >/dev/null || { echo "list --json: $OUT"; return 1; }
+  ft event tk-r1 steer --note 'use the other base'
+  must 'event steer' 0 || return 1
+  db fm_task_event | jq -e 'any(.[]; .kind == "steer" and .taskId == "tk-r1")' >/dev/null || { echo "no steer event"; return 1; }
+  log_reset
+  ft comment tk-r1 --note 'see the picture' --image "$png" --image-label 'a pixel'
+  must 'comment with an image' 0 || return 1
+  id=$(db fm_task_event | jq -r --argjson s "$(seq_of)" '.[] | select(.seq == $s) | .id')
+  db fm_event_image | jq -e --arg id "$id" '.[] | select(.fmTaskEventId == $id) | .label == "a pixel" and .mediaType == "image/png" and .position == 1 and (.content | length > 0)' >/dev/null || { echo "image child wrong"; return 1; }
+  [ "$(posts POST fm_event_image)" = 0 ] || { echo "the image was posted on its own"; return 1; }
+  ft comment tk-r1 --note x --image "$png"
+  [ "$RC" -ne 0 ] || { echo "an image with no label was accepted"; return 1; }
+  head -c 2200000 /dev/zero > "$TMP_ROOT/big.png"
+  ft comment tk-r1 --note x --image "$TMP_ROOT/big.png" --image-label big
+  [ "$RC" -ne 0 ] || { echo "an image over 2 MiB was accepted"; return 1; }
+  ft heartbeat tk-r1
+  must 'heartbeat from ready' 5 || return 1
+  FM_TASK_ID=tk-r1 ft comment --note 'task from the environment'
+  must 'task from FM_TASK_ID' 0 || return 1
+}
+
+CASES="terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images"
+
+# ---- real command -------------------------------------------------------------------
+
+for c in $CASES; do
+  out=$(case_"$c" "$ROOT/bin" 2>&1) || fail "case $c failed on the real command: $out"
+  pass "fm-task $c"
+done
+
+pass 'every behavior case passes on the real command'
+
