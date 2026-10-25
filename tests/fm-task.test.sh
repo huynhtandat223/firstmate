@@ -871,7 +871,26 @@ case_check_replay() {
   [ "$(st)" = fail ] || { echo "the latest check re-sent did not finish its patch: $(st)"; return 1; }
 }
 
-CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay"}
+# When the last open row of a task in review passes, the task is routed to firstmate.
+case_route() {
+  BIN=$1; reset_db
+  local t=tk-route row
+  mk_running $t >/dev/null; use_issue v1; ft rows $t "$ISSUE" >/dev/null
+  ft "done" $t "${DONE_FLAGS[@]}" >/dev/null
+  [ "$(task_row $t | jq -r .nextActor)" = tester ] || { echo "done with user-visible rows open should wait on the tester: $(task_row $t)"; return 1; }
+  ft check $t A1@1440 --status pass >/dev/null; ft check $t A1@390 --status pass >/dev/null; ft check $t A2@- --status pass >/dev/null
+  [ "$(task_row $t | jq -r .nextActor)" = tester ] || { echo "routed before the last row passed"; return 1; }
+  ft check $t A3@- --status pass
+  must 'last pass' 0 || return 1
+  [ "$(task_row $t | jq -r .nextActor)" = firstmate ] || { echo "the task stays with $(task_row $t | jq -r .nextActor) after the last row passed"; return 1; }
+  ft list --actor firstmate
+  case $OUT in *$t*) ;; *) echo "list --actor firstmate misses the task: $OUT"; return 1 ;; esac
+  # the projection still equals the fold of the events
+  row=$(task_row $t); ft reproject $t >/dev/null
+  [ "$(task_row $t)" = "$row" ] || { echo "reproject changed the routed row"; return 1; }
+}
+
+CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route"}
 
 # ---- real command -------------------------------------------------------------------
 
@@ -930,4 +949,5 @@ mutate 'resume gives the last terminal call with its fields' resume 'for (const 
 mutate 'reproject rebuilds a damaged row' resume 'if (diff.length) {' 'if (false) {'
 mutate 'an API that does not answer is exit 3' connection 'throw new Fail(3, `${method} ${pathname}: no answer' 'throw new Fail(1, `${method} ${pathname}: no answer'
 mutate 'a re-sent check cannot undo a newer result' check_replay 'if (!newest || newest.seq !== result.event.seq) return;' ';'
+mutate 'the last passed row routes the task to firstmate' route 'if (!wanted(fold(await taskEvents(taskId))) || openRows(await checkRows(taskId)).length) return;' 'return;'
 pass 'every guarded behavior has a red mutation proof'

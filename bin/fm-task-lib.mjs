@@ -489,7 +489,10 @@ async function write(taskId, who, build, after) {
   let projected;
   try {
     projected = await project(taskId);
-    if (after) await after(result);
+    if (after) {
+      await after(result);
+      projected = await project(taskId);
+    }
   } catch (error) {
     if (error instanceof Fail) {
       out(`seq=${result.event.seq} task=${taskId} event=${result.event.kind} (stored; the follow-up write failed)`);
@@ -797,6 +800,19 @@ async function cmdCheck(args) {
       if (!newest || newest.seq !== result.event.seq) return;
     }
     ok(await http('PATCH', `/api/fm_task_check/${row.id}`, patch), `patch the check row ${rowKey(row)}`);
+    await routeToFirstmate(taskId, who);
+  });
+}
+
+// A task in review whose check rows are all closed waits on firstmate, not on the tester.
+async function routeToFirstmate(taskId, who) {
+  const wanted = (task) => task?.state === 'review' && task.nextActor !== 'firstmate';
+  if (!wanted(fold(await taskEvents(taskId))) || openRows(await checkRows(taskId)).length) return;
+  await append(taskId, { ...who, key: `${who.key}:route` }, async ({ task }) => {
+    if (!wanted(task)) throw rule('already routed');
+    return { kind: 'routed', note: 'every check row is closed', set: { nextActor: 'firstmate' } };
+  }).catch((error) => {
+    if (!(error instanceof Fail && error.code === 5)) throw error;
   });
 }
 
