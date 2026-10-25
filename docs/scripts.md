@@ -111,6 +111,9 @@ The shared no-mistakes gate lifecycle boundary is summarized in [architecture.md
 | `fm-ff-lib.sh`           | Shared guarded fast-forward/reconcile helper for origin pulls and secondmate syncs, with durable divergence markers |
 | `fm-lock-lib.sh`         | Shared "is this git lock provably abandoned?" proof used by teardown and fleet-sync   |
 | `fm-config-inherit-lib.sh` | Shared primary-to-secondmate inherited local-material propagation and config-reread delivery |
+| `fm-task-backfill.sh` | Import old task sources and keyed history in shadow; see `--help` |
+| `fm-task-reconcile.sh` | Report old-source differences as keyed divergence events without repair |
+| `fm-state-metrics` | Compute MR1 to MR5 and sample Waiting cards separately from the read-only trace |
 | `fm-tasks-axi.sh`        | Run `tasks-axi` against this home's backlog from any working directory               |
 | `fm-tasks-axi-lib.sh`    | Shared backlog-backend selector and `tasks-axi` compatibility probe                  |
 | `fm-backlog-transition-lib.sh` | Pair task-record changes with their backlog transitions and replay interrupted closes |

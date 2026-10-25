@@ -1,0 +1,99 @@
+#!/usr/bin/env node
+// Usage: fm-state-metrics [--metric MR1|MR2|MR3|MR4|MR5] [--trace FILE] [--shadow FILE]
+//        fm-state-metrics sample|sampler [--every 1800] [--for 86400] [--home HOME]
+//        [--planner-home HOME] [--feed http://127.0.0.1:5015] [--shadow FILE]
+// Computes the spec's before-window metrics with attributable ids. The trace is
+// read only. Only sample/sampler append to the separate shadow file. An unavailable
+// record or feed is an error, never a zero count. Does not publish or change tasks.
+import fs from 'node:fs';
+import path from 'node:path';
+import {parseBacklog, read, entries, table} from './fm-task-sources-lib.mjs';
+const argv = process.argv.slice(2);
+if (argv.includes('--help')) { console.log('Usage: fm-state-metrics [--metric MR1..MR5] [--trace FILE] [--shadow FILE]\n       fm-state-metrics sample|sampler [--every 1800] [--for 86400] [--home HOME] [--planner-home HOME] [--feed URL] [--shadow FILE]'); process.exit(0); }
+const mode = argv[0] && !argv[0].startsWith('--') ? argv.shift() : 'report';
+const opts = {home: process.env.FM_HOME || process.cwd(), every: 1800, for: 86400, feed: 'http://127.0.0.1:5015'};
+for (let i = 0; i < argv.length; i += 2) {
+  const key = argv[i].slice(2);
+  if (!['home', 'planner-home', 'trace', 'shadow', 'metric', 'every', 'for', 'feed'].includes(key) || !argv[i+1]) throw new Error(`invalid option ${argv[i]}`);
+  opts[key] = argv[i+1];
+}
+const trace = opts.trace || path.join(opts.home, 'data/state-trace/samples.jsonl');
+const shadow = opts.shadow || path.join(opts.home, 'data/state-metrics/shadow.jsonl');
+const lines = file => read(file).split('\n').filter(Boolean).map(s => JSON.parse(s));
+const flight = t => ['in_flight', 'in-flight', 'In flight'].includes(t.state);
+function metrics(samples, shadows) {
+  const groups = new Map();
+  for (const t of samples) { if (!groups.has(t.at)) groups.set(t.at, []); groups.get(t.at).push(t); }
+  const windows = [...groups].sort((a,b) => a[0] - b[0]);
+  const unique = new Set(), baseline = new Set(), violations = [], broken = [];
+  let previous = new Map(), taskSamples = 0, divergentTaskSamples = 0;
+  let firstWithoutMeta = [];
+  windows.forEach(([at, rows], index) => {
+    if (index === 0) firstWithoutMeta = rows.filter(t => flight(t) && !t.meta).map(t => t.id).sort();
+    for (const t of rows) {
+      taskSamples++;
+      for (const field of ['status_at', 'turn_end_at']) {
+        if (!t[field]) continue;
+        const key = `${t.id}:${field}:${t[field]}`;
+        if (!index) baseline.add(key); else if (!baseline.has(key)) unique.add(key);
+      }
+      const prev = previous.get(t.id);
+      if (t.meta && prev?.meta && t.turn_end_at > prev.turn_end_at && t.status_at <= prev.status_at) violations.push({id: t.id, at, previous: prev.at});
+      const rules = [];
+      if (flight(t) && !t.meta) rules.push('in-flight-without-meta');
+      if (t.meta && !flight(t)) rules.push('meta-without-in-flight');
+      if (flight(t) && t.held && t.meta) rules.push('held-in-flight');
+      if (t.tester === 'verified' && !t.approved && prev?.tester === 'verified' && !prev.approved) rules.push('verified-without-approval');
+      if (t.approved && flight(t)) rules.push('approved-in-flight');
+      if (rules.length) divergentTaskSamples++;
+      for (const rule of rules) broken.push({id: t.id, at, rule});
+    }
+    previous = new Map(rows.map(t => [t.id, t]));
+  });
+  const D = windows.length ? Math.max(...windows.at(-1)[1].map(t => t.seq)) - Math.max(...windows[0][1].map(t => t.seq)) : 0;
+  const misses = [], stale = [];
+  for (const s of shadows) {
+    for (const item of s.items) if (item.open && !s.cards.some(c => c.key === item.key)) misses.push({...item, at: s.at});
+    for (const card of s.cards) if (!s.items.some(i => i.key === card.key && i.open)) stale.push({...card, at: s.at});
+  }
+  return {MR1: {value: D ? 1 - unique.size / D : null, D, U: unique.size, ids: [...unique].sort()}, MR2: {count: violations.length, ids: violations}, MR3: {count: broken.length, taskSamples, divergentTaskSamples, rate: taskSamples ? divergentTaskSamples/taskSamples : null, firstWithoutMeta, ids: broken}, MR4: {count: shadows.length ? misses.length : null, samples: shadows.length, ids: misses}, MR5: {count: shadows.length ? stale.length : null, samples: shadows.length, ids: stale}};
+}
+async function sample() {
+  const rows = parseBacklog(opts.home);
+  const items = rows.map(t => ({id: t.id, key: `hold:${t.id}`, open: t.section !== 'Done' && t.holdKind === 'captain'}));
+  const planner = opts['planner-home'] || opts.home;
+  for (const id of entries(path.join(planner, 'data/plans'))) {
+    const file = path.join(planner, 'data/plans', id, 'plan.html');
+    if (!fs.existsSync(file)) continue;
+    const stat = fs.statSync(file);
+    const decisions = lines(path.join(opts.home, 'data/firstmate-board/plans', `${id}.jsonl`));
+    const last = decisions.at(-1);
+    items.push({id, key: `plan:${id}`, open: !(last && Date.parse(last.at) > stat.mtimeMs && last.decision)});
+  }
+  const checks = await table('fm_task_check');
+  const owners = await table('fm_owner_check');
+  const tasks = await table('fm_task');
+  for (const o of owners) items.push({id: o.taskId, key: `owner:${o.taskId}:${o.scenarioId}@${o.width}`, open: o.status === 'pending' && checks.some(c => c.taskId === o.taskId && c.scenarioId === o.scenarioId && c.width === o.width && c.nextActor === 'owner' && c.status === 'pending') && !tasks.some(t => t.taskId === o.taskId && ['done','archived'].includes(t.state))});
+  const response = await fetch(`${opts.feed.replace(/\/$/, '')}/inbox`, {signal: AbortSignal.timeout(20000)});
+  if (!response.ok) throw new Error(`inbox HTTP ${response.status}`);
+  const feed = await response.json();
+  const raw = Array.isArray(feed) ? feed : feed.inbox;
+  if (!Array.isArray(raw)) throw new Error('inbox has no items array');
+  const cards = raw.map(c => { const id = c.task || c.taskId || c.id; return {id, key: c.key || `${c.kind === 'plan' ? 'plan' : 'hold'}:${id}`}; });
+  const result = {at: Math.floor(Date.now()/1000), items, cards};
+  fs.mkdirSync(path.dirname(shadow), {recursive:true});
+  fs.appendFileSync(shadow, JSON.stringify(result)+'\n');
+  console.log(JSON.stringify(result));
+}
+try {
+  if (mode === 'report') {
+    if (!fs.existsSync(trace)) throw new Error(`missing trace: ${trace}`);
+    const result = metrics(lines(trace), lines(shadow));
+    if (opts.metric && !result[opts.metric]) throw new Error('unknown metric');
+    console.log(JSON.stringify(opts.metric ? {[opts.metric]:result[opts.metric]} : result, null, 2));
+  } else if (mode === 'sample' || mode === 'sampler') {
+    if (!(Number(opts.every)>0 && Number(opts.for)>0)) throw new Error('interval and duration must be positive');
+    const until = Date.now() + Number(opts.for)*1000;
+    do { await sample(); if (mode === 'sample' || Date.now() >= until) break; await new Promise(r => setTimeout(r, Math.min(Number(opts.every)*1000, until-Date.now()))); } while (true);
+  } else throw new Error('unknown command');
+} catch (e) { console.error(e.message); process.exitCode = 1; }

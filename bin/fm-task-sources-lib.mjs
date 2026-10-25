@@ -12,14 +12,14 @@ export async function table(name) {
   if (!token || /[\r\n"\\\\]/.test(token)) throw new Error('invalid token file');
   const headers = process.env.FM_TASK_AUTH === 'cookie' ? {cookie: `cfw.auth.session=${token}`} : {authorization: `Bearer ${token}`};
   const rows = [];
-  for (let skip = 0; ; skip += 500) {
-    const url = `${(process.env.FM_TASK_BASE_URL || 'http://127.0.0.1:5001').replace(/\\/$/, '')}/api/${name}?$top=500&$skip=${skip}&$orderby=id`;
+  for (let skip = 0; ; skip += 100) {
+    const url = `${(process.env.FM_TASK_BASE_URL || 'http://127.0.0.1:5001').replace(/\/$/, '')}/api/${name}?$top=100&$skip=${skip}&$orderby=id`;
     const response = await fetch(url, {headers, signal: AbortSignal.timeout(20000)});
     if (!response.ok) throw new Error(`${name}: HTTP ${response.status}`);
     const page = (await response.json()).value;
     if (!Array.isArray(page)) throw new Error(`${name}: missing rows`);
     rows.push(...page);
-    if (page.length < 500) return rows;
+    if (page.length < 100) return rows;
   }
 }
 import {spawnSync} from 'node:child_process';
@@ -87,7 +87,7 @@ export function history(home, t, sourceHomes = []) {
     if ([row.task, row.taskId, row.id].includes(t.id)) add(ledger, line, 'deploy');
   }
   for (const root of [home, ...sourceHomes]) {
-    for (const relative of [`data/${t.id}/notes.md`, `data/plans/${t.id}/decisions.jsonl`, `data/plans/${t.id}/decision.jsonl`, `data/firstmate-board/plans/${t.id}.jsonl`, `data/${t.id}/tester-record.md`, `data/${t.id}/record.md`]) {
+    for (const relative of [`data/${t.id}/notes.md`, `data/plans/${t.id}/decisions.jsonl`, `data/plans/${t.id}/decision.jsonl`, `data/firstmate-board/plans/${t.id}.jsonl`, `data/${t.id}/tester-record.md`, `data/${t.id}/record.md`, `data/${t.id}/verify.md`, `data/verify/${t.id}.md`]) {
       const file = path.join(root, relative);
       add(file, read(file));
     }
