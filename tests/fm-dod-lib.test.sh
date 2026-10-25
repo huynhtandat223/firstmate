@@ -21,6 +21,18 @@ write_merge_marker() {  # <state> <id> <provider> <host> <path> <number>
   chmod 600 "$1/$2.pr-poll-merge-notified"
 }
 
+test_user_visible_evidence_paths_use_supervising_home() {
+  local out home="$TMP_ROOT/supervising-home"
+  out=$(FM_HOME="$home" fm_dod_block direct-PR example fm/example none main '' user-visible) || fail "user-visible DoD did not render"
+  case "$out" in *"Write your evidence to $home/data/example/notes.md."*) ;; *) fail "worker evidence path is not supervising-home absolute: $out" ;; esac
+  case "$out" in *"firstmate's approval in $home/data/example/verify.md."*) ;; *) fail "approval path is not supervising-home absolute: $out" ;; esac
+  out=$(FM_HOME="$home" DATA="$TMP_ROOT/custom-data" fm_dod_block direct-PR example fm/example none main '' user-visible) || fail "overridden-data DoD did not render"
+  case "$out" in *"Write your evidence to $TMP_ROOT/custom-data/example/notes.md."*) ;; *) fail "worker evidence ignores DATA override: $out" ;; esac
+  case "$out" in *"firstmate's approval in $TMP_ROOT/custom-data/example/verify.md."*) ;; *) fail "approval ignores DATA override: $out" ;; esac
+  pass "user-visible evidence and approval paths use the supervising home and DATA override"
+}
+test_user_visible_evidence_paths_use_supervising_home
+
 test_scout_done_is_not_gated() {
   local repo wt
   repo="$TMP_ROOT/scout-repo"

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Move a "verification pending" backlog row to Done once its verification record is complete.
+# Move a "verification pending" backlog row to Done from the Tester's own-home record and
+# firstmate's approval through fm-verify-gate-lib.sh, without copying the Tester's record.
 #
 # Usage: fm-verify-close.sh <task-id>
 #
@@ -8,7 +9,7 @@
 # "verification pending: <missing items>". This is the one command that closes such a row:
 #   - The row must be open and held with a "verification pending:" reason, and that hold must be
 #     external. A Done row, an unheld row, a captain hold or any other hold is refused unchanged.
-#   - A complete record (bin/fm-verify-gate-lib.sh owns the check; nothing here parses verify.md)
+#   - Complete records (bin/fm-verify-gate-lib.sh owns the check; nothing here parses them)
 #     runs `tasks-axi done`, which closes the held row and clears its hold in one mutation. The PR link teardown recorded stays on the row.
 #   - An incomplete record is refused: the missing items are printed and the hold reason is
 #     refreshed to them, so the row never shows a stale snapshot.
@@ -58,7 +59,7 @@ if [ -n "$problems" ]; then
   items=$(printf '%s\n' "$problems" | awk '{ printf "%s%s", sep, $0; sep = "; " }')
   fm_backlog_mutate "$DATA" hold "$ID" --reason "$(fm_hold_reason_encode "$PREFIX$items")" --kind external \
     || echo "warning: the hold reason of $ID could not be refreshed ($FM_BACKLOG_TRANSITION_ERROR)" >&2
-  printf 'REFUSED: %s/%s/verify.md is not complete; %s stays held as verification pending.\n' "$DATA" "$ID" "$ID" >&2
+  printf 'REFUSED: verification records for %s/%s are not complete; %s stays held as verification pending.\n' "$DATA" "$ID" "$ID" >&2
   printf '%s\n' "$problems" | sed 's/^/  - /' >&2
   exit 1
 fi
