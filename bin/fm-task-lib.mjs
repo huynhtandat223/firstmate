@@ -789,8 +789,13 @@ async function cmdCheck(args) {
   if (f.head !== undefined) patch.head = f.head;
   await write(taskId, who, async ({ task }) => {
     if (!task) throw rule('no such task');
-    return { kind: 'check', note: `${rowKey(row)} ${status}${f.evidence ? `: ${f.evidence}` : ''}` };
-  }, async () => {
+    return { kind: 'check', note: `${rowKey(row)} ${status}${f.evidence ? `: ${f.evidence}` : ''}`, extra: { row: rowKey(row) } };
+  }, async (result) => {
+    // a re-sent key finishes its patch only while it is the newest check of this row, so it cannot undo a later result
+    if (result.replayed) {
+      const newest = [...(await taskEvents(taskId))].reverse().find((e) => e.kind === 'check' && bodyOf(e).row === rowKey(row));
+      if (!newest || newest.seq !== result.event.seq) return;
+    }
     ok(await http('PATCH', `/api/fm_task_check/${row.id}`, patch), `patch the check row ${rowKey(row)}`);
   });
 }

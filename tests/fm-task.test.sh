@@ -852,7 +852,26 @@ case_reads_and_images() {
   must 'task from FM_TASK_ID' 0 || return 1
 }
 
-CASES="terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images"
+# A re-sent check must not undo a newer result for the same row.
+case_check_replay() {
+  BIN=$1; reset_db
+  local t=tk-replay row
+  ft create $t --title t --kind ship >/dev/null; use_issue v1; ft rows $t "$ISSUE" >/dev/null
+  st() { db fm_task_check | jq -r '.[] | select(.scenarioId == "A2") | .status'; }
+  ft check $t A2@- --status pass --key k-pass --evidence first; must 'pass' 0 || return 1
+  ft check $t A2@- --status fail --key k-fail --evidence second; must 'fail' 0 || return 1
+  ft check $t A2@- --status pass --key k-pass --evidence first
+  must 'old pass re-sent' 0 || return 1
+  [ "$(st)" = fail ] || { echo "a re-sent old pass overwrote the newer fail: $(st)"; return 1; }
+  # the latest check re-sent still finishes its patch
+  row=$(db fm_task_check | jq -r '.[] | select(.scenarioId == "A2") | .id')
+  api -X PATCH "$BASE/api/fm_task_check/$row" -d '{"status":"pending"}' >/dev/null
+  ft check $t A2@- --status fail --key k-fail --evidence second
+  must 'latest re-sent' 0 || return 1
+  [ "$(st)" = fail ] || { echo "the latest check re-sent did not finish its patch: $(st)"; return 1; }
+}
+
+CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay"}
 
 # ---- real command -------------------------------------------------------------------
 
@@ -860,6 +879,9 @@ for c in $CASES; do
   out=$(case_"$c" "$ROOT/bin" 2>&1) || fail "case $c failed on the real command: $out"
   pass "fm-task $c"
 done
+
+# FM_TASK_CASES="a b" runs just those cases and skips the mutation proofs.
+[ -z "${FM_TASK_CASES:-}" ] || exit 0
 
 # ---- mutation proofs: remove one guard, the case guarding it goes red -----------------------
 
@@ -907,4 +929,5 @@ mutate 'resume lists the last 10 events' resume 'events.slice(-10)' 'events'
 mutate 'resume gives the last terminal call with its fields' resume 'for (const field of TEMPLATE_FIELDS[last.kind])' 'for (const field of [])'
 mutate 'reproject rebuilds a damaged row' resume 'if (diff.length) {' 'if (false) {'
 mutate 'an API that does not answer is exit 3' connection 'throw new Fail(3, `${method} ${pathname}: no answer' 'throw new Fail(1, `${method} ${pathname}: no answer'
+mutate 'a re-sent check cannot undo a newer result' check_replay 'if (!newest || newest.seq !== result.event.seq) return;' ';'
 pass 'every guarded behavior has a red mutation proof'
