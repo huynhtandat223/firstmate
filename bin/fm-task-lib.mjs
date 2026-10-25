@@ -576,8 +576,18 @@ const cmdUnblock = simple('unblock', 'unblocked', async (task, args, taskId) => 
 const cmdChanges = simple('changes', 'changes', async () => ({ state: 'ready', nextActor: 'worker' }), { needNote: true });
 const cmdArchive = simple('archive', 'archived', async () => ({ state: 'archived', nextActor: 'firstmate' }));
 const cmdApprove = simple('approve', 'approved', async (task, args, taskId) => {
-  const open = openRows(await checkRows(taskId));
+  const rows = (await checkRows(taskId)).filter((r) => r.status !== 'retired');
+  const open = openRows(rows);
   if (open.length) throw rule(`approve is refused while check rows are open: ${open.map((r) => `${rowKey(r)} (${r.status})`).join(', ')}`);
+  const visible = rows.filter((r) => r.surface === 'user-visible');
+  if (task.surface === 'user-visible' && !visible.length) throw rule(`approve is refused: ${taskId} is user-visible and has no check rows; run rows first`);
+  if (visible.length) {
+    // a pass counts for the head that was built last: the head of the newest done call
+    const lastDone = [...(await taskEvents(taskId))].reverse().find((e) => e.kind === 'done');
+    const head = lastDone ? ((await firstRow('fm_event_done', `fmTaskEventId eq ${lastDone.id}`))?.head ?? null) : null;
+    const stale = visible.filter((r) => (r.head ?? null) !== head);
+    if (stale.length) throw rule(`approve is refused: these user-visible rows passed on another head than the latest done (${head ?? 'none'}): ${stale.map((r) => `${rowKey(r)} (${r.head ?? 'none'})`).join(', ')}`);
+  }
   return { state: 'done', nextActor: 'firstmate', blockKind: null, blockReason: null, blockRepeats: 0, holdUntil: null };
 });
 

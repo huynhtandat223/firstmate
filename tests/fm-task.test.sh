@@ -902,7 +902,37 @@ case_start_parent() {
   [ "$(task_state tk-sp-child)" = ready ] || { echo "start moved the child"; return 1; }
 }
 
-CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent"}
+# approve needs rows for a user-visible task, passed on the head of the latest done.
+case_approve_head() {
+  BIN=$1; reset_db
+  local t=tk-ah r
+  ft create tk-ah0 --title t --kind ship --surface user-visible >/dev/null; ft assign tk-ah0 --to w >/dev/null; ft start tk-ah0 >/dev/null
+  ft "done" tk-ah0 "${DONE_FLAGS[@]}" >/dev/null
+  ft approve tk-ah0
+  must 'approve a user-visible task with no rows' 5 || return 1
+  case $ERR in *'no check rows'*) ;; *) echo "the refusal does not say the rows are missing: $ERR"; return 1 ;; esac
+  [ "$(task_state tk-ah0)" = review ] || { echo "approve moved a user-visible task with no rows"; return 1; }
+  mk_running $t >/dev/null; use_issue v1; ft rows $t "$ISSUE" >/dev/null
+  ft "done" $t "${DONE_FLAGS[@]}" --head h1 >/dev/null
+  for r in A1@1440 A1@390 A2@- A3@-; do ft check $t $r --status pass --head h1 >/dev/null; done
+  ft approve $t
+  must 'approve on the head of the done' 0 || return 1
+  # new work: changes, a new done on head h2, and the old passes no longer count
+  mk_running tk-ah2 >/dev/null; ft rows tk-ah2 "$ISSUE" >/dev/null
+  ft "done" tk-ah2 "${DONE_FLAGS[@]}" --head h1 >/dev/null
+  for r in A1@1440 A1@390 A2@- A3@-; do ft check tk-ah2 $r --status pass --head h1 >/dev/null; done
+  ft changes tk-ah2 --note again >/dev/null; ft start tk-ah2 >/dev/null
+  ft "done" tk-ah2 "${DONE_FLAGS[@]}" --head h2 >/dev/null
+  ft approve tk-ah2
+  must 'approve on an older head' 5 || return 1
+  case $ERR in *A1@1440*A1@390*|*A1@390*A1@1440*) ;; *) echo "the refusal does not name each stale row: $ERR"; return 1 ;; esac
+  case $ERR in *A2@-*) echo "the refusal names an internal row: $ERR"; return 1 ;; esac
+  for r in A1@1440 A1@390; do ft check tk-ah2 $r --status pass --head h2 >/dev/null; done
+  ft approve tk-ah2
+  must 'approve after the rows pass on h2' 0 || return 1
+}
+
+CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head"}
 
 # ---- real command -------------------------------------------------------------------
 
@@ -963,4 +993,6 @@ mutate 'an API that does not answer is exit 3' connection 'throw new Fail(3, `${
 mutate 'a re-sent check cannot undo a newer result' check_replay 'if (!newest || newest.seq !== result.event.seq) return;' ';'
 mutate 'the last passed row routes the task to firstmate' route 'if (!wanted(fold(await taskEvents(taskId))) || openRows(await checkRows(taskId)).length) return;' 'return;'
 mutate 'start waits for an open parent' start_parent 'if (parents.length) throw rule(`start is refused' 'if (false) throw rule(`start is refused'
+mutate 'a user-visible task needs check rows to be approved' approve_head 'if (task.surface === '"'"'user-visible'"'"' && !visible.length)' 'if (false)'
+mutate 'a pass counts only on the head of the latest done' approve_head 'if (stale.length) throw rule(`approve is refused' 'if (false) throw rule(`approve is refused'
 pass 'every guarded behavior has a red mutation proof'
