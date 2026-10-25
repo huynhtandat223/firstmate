@@ -101,6 +101,12 @@ record_kind() {
 
 # approve, or done then approve when the record still holds the task running
 close_task() {
+  local current
+  current=$("$WRITER" show "$TASK" --json 2>/dev/null | jq -r '.state') || return 0
+  case "$current" in
+    blocked|triage) w "$1-unblock" unblock "$TASK" || return 0; w "$1-start" start "$TASK" || return 0 ;;
+    ready) w "$1-start" start "$TASK" || return 0 ;;
+  esac
   w "$1-approve" approve "$TASK" && return 0
   w "$1-done" "done" "$TASK" --summary "closed by the old source" --changed-files - --verification - --residual-risk - || return 1
   w "$1-approve" approve "$TASK"

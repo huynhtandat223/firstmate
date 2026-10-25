@@ -36,4 +36,7 @@ bash "$ROOT/bin/fm-task-shadow.sh" held repeat captain 'Same reason' occurrence-
 if "$ROOT/bin/fm-task.sh" reopen closed --reason again; then fail 'reopen allowed from ready'; fi
 "$ROOT/bin/fm-task.sh" archive closed
 if "$ROOT/bin/fm-task.sh" reopen closed --reason again; then fail 'reopen allowed from archived'; fi
+bash "$ROOT/bin/fm-task-shadow.sh" held closing captain 'Close this'
+bash "$ROOT/bin/fm-task-shadow.sh" answered closing closed
+"$ROOT/bin/fm-task.sh" show closing --json | jq -e '.state == "done"'
 echo 'ok - shadow lifecycle and explicit reopen'
