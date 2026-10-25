@@ -325,6 +325,29 @@ test_verify_close_writes_the_record() {
   pass "verify-close: the verified close reaches the record"
 }
 
+test_captain_hold_writes_the_record() {
+  local out
+  make_real_case captain-hold
+  fm_test_tasks_toml "$HOME_DIR/.tasks.toml"
+  printf '%s\n' '## In flight' '' '## Queued' '' '## Done' > "$HOME_DIR/data/backlog.md"
+  out=$(in_home "$SBIN/fm-captain-hold.sh" hold "$TASK" --title 'Pick a path' --reason 'which path do we take?' 2>&1) || fail "captain hold failed: $out"
+  assert_equals "ask $TASK --question which path do we take? --option Decide now --option Decide later --recommendation - --why a captain hold --next-actor owner" "$(calls)" "the hold reaches the record"
+  assert_equals "$TASK" "$out" "the hold still prints the task id"
+  printf 'Take the first path.\n' > "$CASE_DIR/decision.md"
+  : > "$CALLS"
+  out=$(in_home "$SBIN/fm-captain-hold.sh" answer "$TASK" --decision-file "$CASE_DIR/decision.md" 2>&1) || fail "captain answer failed: $out"
+  assert_equals "approve $TASK" "$(calls)" "the answer closes the task in the record"
+  make_real_case captain-hold-release
+  fm_test_tasks_toml "$HOME_DIR/.tasks.toml"
+  printf '%s\n' '## In flight' '' '## Queued' '' '## Done' > "$HOME_DIR/data/backlog.md"
+  in_home "$SBIN/fm-captain-hold.sh" hold "$TASK" --title 'Gate' --reason 'may we proceed?' >/dev/null || fail "captain hold failed"
+  printf 'Proceed.\n' > "$CASE_DIR/decision.md"
+  : > "$CALLS"
+  out=$(in_home "$SBIN/fm-captain-hold.sh" answer "$TASK" --decision-file "$CASE_DIR/decision.md" --release 2>&1) || fail "captain release failed: $out"
+  assert_equals "unblock $TASK" "$(calls)" "a released hold unblocks the task in the record"
+  pass "captain hold: the hold, the closing answer and the release reach the record"
+}
+
 test_flag_absent_writes_nothing
 test_dispatched_creates_assigns_and_starts
 test_status_lines_map_to_writer_commands
@@ -337,6 +360,7 @@ test_spawn_writes_the_record
 test_worker_status_command_writes_the_record
 test_teardown_writes_the_record
 test_verify_close_writes_the_record
+test_captain_hold_writes_the_record
 
 # ---- mutation proofs: remove one rule of the hook, the case guarding it goes red ------------------------------
 
@@ -388,3 +412,6 @@ mutate_script 'fm-spawn.sh writes the dispatched task' test_spawn_writes_the_rec
 mutate_script 'fm-teardown.sh writes the cleanup' test_teardown_writes_the_record fm-teardown.sh 'fm-task-shadow.sh" cleaned-up'
 mutate_script 'the backlog transition lib writes a landed close' test_teardown_writes_the_record fm-backlog-transition-lib.sh 'fm_backlog_shadow "$verb"'
 mutate_script 'fm-verify-close.sh writes the verified close' test_verify_close_writes_the_record fm-verify-close.sh 'fm-task-shadow.sh" verified'
+mutate_script 'fm-captain-hold.sh writes the hold' test_captain_hold_writes_the_record fm-captain-hold.sh 'shadow_record held'
+mutate_script 'fm-captain-hold.sh writes the closing answer' test_captain_hold_writes_the_record fm-captain-hold.sh 'shadow_record answered "$1" closed'
+mutate_script 'fm-captain-hold.sh writes the release' test_captain_hold_writes_the_record fm-captain-hold.sh 'shadow_record answered "$1" released'
