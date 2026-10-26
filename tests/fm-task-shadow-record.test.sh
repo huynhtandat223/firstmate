@@ -13,7 +13,9 @@ for _ in {1..100}; do [ ! -s "$TMP_ROOT/port" ] || break; sleep .1; done
 FM_TASK_BASE_URL="http://127.0.0.1:$(<"$TMP_ROOT/port")"
 export FM_HOME="$TMP_ROOT/home" FM_TASK_TOKEN_FILE="$TMP_ROOT/token" FM_TASK_BASE_URL
 unset FM_TASK_AUTH
+printf '## Queued\n- [ ] missing - Missing ship (kind: ship)\n' > "$FM_HOME/data/backlog.md"
 bash "$ROOT/bin/fm-task-shadow.sh" held missing captain 'Choose A'
+"$ROOT/bin/fm-task.sh" show missing --json | jq -e '.kind == "ship"'
 "$ROOT/bin/fm-task.sh" show missing --json | jq -e '.state == "blocked" and .nextActor == "owner"'
 "$ROOT/bin/fm-task.sh" create queued --title Q --kind ship
 bash "$ROOT/bin/fm-task-shadow.sh" held queued captain 'Choose B'

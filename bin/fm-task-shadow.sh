@@ -179,7 +179,7 @@ hold_event() {  # <hold-kind> <reason>: make the record capable of taking this o
   key=$(short "$kind|$reason|$occurrence")
   current=$("$WRITER" show "$TASK" --json 2>/dev/null) || current=''
   if [ -z "$current" ]; then
-    w "hold-$key-create" create "$TASK" --title "$(title_of)" --kind other || return 0
+    w "hold-$key-create" create "$TASK" --title "$(title_of)" --kind "$(record_kind "$(grep -m1 -- "^- \[.\] $TASK - " "$DATA/backlog.md" 2>/dev/null | sed -n 's/.*(kind: \([^)]*\)).*/\1/p')")" || return 0
     current='{"state":"triage"}'
   fi
   current=$(printf '%s' "$current" | jq -r '.state // "running"' 2>/dev/null) || current=running
