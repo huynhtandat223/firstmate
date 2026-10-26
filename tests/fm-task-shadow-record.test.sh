@@ -46,6 +46,10 @@ bash "$ROOT/bin/fm-task-shadow.sh" answered closing closed
 "$ROOT/bin/fm-task.sh" import todoclose --title Todo --kind ship --state todo --assignee todoclose --next-actor firstmate
 bash "$ROOT/bin/fm-task-shadow.sh" backlog 'done' todoclose
 "$ROOT/bin/fm-task.sh" show todoclose --json | jq -e '.state == "done"'
+"$ROOT/bin/fm-task.sh" create openparent --title Parent --kind ship
+"$ROOT/bin/fm-task.sh" create linkedclose --title Linked --kind ship --after openparent
+bash "$ROOT/bin/fm-task-shadow.sh" backlog 'done' linkedclose
+"$ROOT/bin/fm-task.sh" show linkedclose --json | jq -e '.state == "archived"'
 "$ROOT/bin/fm-task.sh" create readywork --title Ready --kind ship
 "$ROOT/bin/fm-task.sh" assign readywork --to readywork
 printf 'working [at=123]: work\n' > "$FM_HOME/state/readywork.status"
