@@ -7801,7 +7801,9 @@ test_pi_turnend_semantic_continue_scenarios() {
   [ ! -e "$state/.turnend-continues-tc" ] || fail 'PC2: busy terminal line retained continue budget'
   "$ROOT/bin/fm-busy-event.sh" apply "$state" tc idle --gen "$gen" --source pi-ext --event agent-settled
   turnend_check_task tc
-  case "$TURNEND_VERDICT" in continue-*|wake-verb) fail 'PC2: settle continued or repeated terminal wake' ;; esac
+  [ "$TURNEND_VERDICT" = wake-settled ] || fail "PC2: terminal settle must be silent, got $TURNEND_VERDICT"
+  turnend_check_task tc
+  [ "$TURNEND_VERDICT" = ping-1 ] || fail 'PC2: later missing turn must keep format reminder'
   TC_EMPTY_AFTER=999; printf 0 > "$dir/reads"
   turnend_check_task tc
   [ "$TURNEND_VERDICT" = composer ] || fail 'PC4: unknown did not keep composer wake'

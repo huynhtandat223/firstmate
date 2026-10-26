@@ -2581,6 +2581,9 @@ turnend_check_task() {  # <task>
             return 0
           fi
           rm -f "$pingf" "$continuef"
+          if ! : > "$STATE/.turnend-wake-settle-$task"; then
+            TURNEND_WHY='wake-settle bookkeeping unwritable'; return 0
+          fi
           TURNEND_VERDICT=wake-verb
         else
           TURNEND_VERDICT=busy
@@ -2615,6 +2618,11 @@ turnend_check_task() {  # <task>
   size=${size%% *}
   TURNEND_SIZE=$size
   verdict=${verdict%% *}
+  # Consume only the immediate empty notification after a surfaced wake verb.
+  if [ -f "$STATE/.turnend-wake-settle-$task" ]; then
+    rm -f "$STATE/.turnend-wake-settle-$task"
+    if [ "$verdict" = missing ]; then TURNEND_VERDICT=wake-settled; return 0; fi
+  fi
   # Any newly appended state line ends the old continuation wait.
   if [ "$verdict" != missing ]; then rm -f "$continuef"; fi
   # A continuation wait retains the last working verdict when no new line lands.
@@ -2645,6 +2653,11 @@ turnend_check_task() {  # <task>
         return 0
       fi
       rm -f "$pingf"
+      if [ "$verdict" = wake-verb ]; then
+        if ! : > "$STATE/.turnend-wake-settle-$task"; then
+          TURNEND_WHY='wake-settle bookkeeping unwritable'; return 0
+        fi
+      fi
       TURNEND_VERDICT=$verdict
       return 0
       ;;
@@ -2750,7 +2763,7 @@ worker_turn_end_checks() {
                     dropped_status="$dropped_status $id"
                     TURNEND_COMMITS="${TURNEND_COMMITS}${id}"$'\t'"${TURNEND_SIZE}"$'\t'"${TURNEND_IDENT}"$'\n'
                     ;;
-                  busy) ;;
+                  busy|wake-settled) ;;
                   wake-verb)
                     TURNEND_FORCE_FILES="$TURNEND_FORCE_FILES $f"
                     ;;
@@ -2769,7 +2782,7 @@ worker_turn_end_checks() {
                 ;;
             esac
             case " $decided " in
-              *" $id:busy "*|*" $id:continue-1 "*|*" $id:continue-2 "*|*" $id:continue-3 "*|*" $id:continue-escalated "*|*" $id:valid-working "*|*" $id:valid-paused "*|*" $id:ping-1 "*|*" $id:ping-2 "*|*" $id:ping-3 "*|*" $id:ping-escalated "*)
+              *" $id:wake-settled "*|*" $id:busy "*|*" $id:continue-1 "*|*" $id:continue-2 "*|*" $id:continue-3 "*|*" $id:continue-escalated "*|*" $id:valid-working "*|*" $id:valid-paused "*|*" $id:ping-1 "*|*" $id:ping-2 "*|*" $id:ping-3 "*|*" $id:ping-escalated "*)
                 printf '%s' "$sig" > "$sf"
                 continue
                 ;;
