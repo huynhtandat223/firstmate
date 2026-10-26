@@ -93,6 +93,13 @@ for ((n=0;n<60;n++)); do
 done
 [ -f "$helper/data/cadence.txt" ] || fail 'real cadence did not awaken the assistance'
 pass 'registered process-event cadence wakes the real assistance'
+# A named open task proves proposal and rotation context against the real record.
+probe="cfw-1675-t4-probe-rotation-$(date +%s)"
+"$code/bin/fm-task.sh" create "$probe" --title 'Assistance rotation probe' --kind other
+"$code/bin/fm-task.sh" assign "$probe" --to sample
+"$code/bin/fm-task.sh" start "$probe"
+FM_HOME="$helper" "$code/bin/fm-assistance.sh" propose 'Named probe report' 'Rotation proof' 'record resume' "{\"name\":\"Sample source\",\"id\":\"system:sample\",\"task\":\"$probe\"}"
+printf 'evidence: named probe=%s\n' "$probe"
 # Force the accepted threshold through the real hook, not a parent handoff.
 session=$(<"$helper/state/assistance-session")
 jq -n --arg session "$session" '{session_id:$session,context_window:{context_window_size:100000,used_percentage:40}}' |
@@ -110,6 +117,10 @@ done
 [ -f "$helper/data/continued.txt" ] || fail 'fresh session did not continue'
 [ "$(<"$helper/state/assistance-session")" != "$session" ] || fail 'continuation used the old context'
 [ -s "$helper/data/assistance-stow.md" ] && [ -s "$helper/data/assistance-handoff.md" ] || fail 'rotation lost artifacts'
+grep -F "TASK $probe " "$helper/data/assistance-task-resume.md" >/dev/null || fail 'rotation did not resume its named open task'
+"$code/bin/fm-task.sh" resume "$probe"
+"$code/bin/fm-task.sh" block transient "$probe" --reason 'Probe complete; final scoped cleanup pending' --next-actor firstmate
+"$code/bin/fm-task.sh" archive "$probe"
 pass 'forced 40-percent request produced stow, handoff and a fresh continuing Claude session'
 # Simulate process loss while enabled, then use the same recovery entry as startup.
 # shellcheck source=bin/fm-backend.sh
