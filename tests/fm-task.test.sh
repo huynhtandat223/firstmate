@@ -443,6 +443,11 @@ case_terminal() {
   # TR32: a replayed stream and a fresh process do not enqueue twice.
   ft deliver tk10 --consumer test-firstmate
   must 'deliver events' 0 || return 1
+  [ "$(count fm_task_delivery)" = 0 ] || { echo 'activation replayed historical events'; return 1; }
+  ft comment tk10 --note 'event after activation'
+  must 'new event' 0 || return 1
+  ft deliver tk10 --consumer test-firstmate
+  must 'deliver after activation' 0 || return 1
   local deliveries
   deliveries=$(count fm_task_delivery)
   [ "$deliveries" -gt 0 ] || { echo 'no delivery rows'; return 1; }
