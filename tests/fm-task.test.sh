@@ -406,6 +406,12 @@ case_terminal() {
   must 'replay delivery' 0 || return 1
   [ "$(wc -l < "$FM_HOME/state/.wake-queue")" = "$wake_rows" ] || { echo 'replay duplicated wake rows'; return 1; }
   [ "$(count fm_task_delivery)" = "$deliveries" ] || { echo 'replay duplicated deliveries'; return 1; }
+  # Every ft invocation starts a fresh process: this is a delivery restart.
+  ft comment tk10 --note 'event after delivery restart'
+  must 'new event after restart' 0 || return 1
+  ft deliver tk10 --consumer test-firstmate
+  must 'deliver new event after restart' 0 || return 1
+  [ "$(wc -l < "$FM_HOME/state/.wake-queue")" -eq "$((wake_rows + 1))" ] || { echo 'restart did not queue exactly the new event'; return 1; }
   # TR31: a status line cannot satisfy a terminal call; a heartbeat is not terminal.
   mk_running tk31 >/dev/null || return 1
   printf 'done: legacy-only\n' > "$FM_HOME/state/tk31.status"
