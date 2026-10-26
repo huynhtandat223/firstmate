@@ -2,6 +2,7 @@
 # Public-command tests for shadow backfill and reconciliation.
 set -euo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+BIN=${FM_TASK_SOURCES_BIN:-$ROOT/bin}
 TMP_ROOT=$(fm_test_tmproot fm-task-sources)
 trap 'kill "${PID:-0}" 2>/dev/null || true; fm_test_cleanup' EXIT
 mkdir -p "$TMP_ROOT/home/data" "$TMP_ROOT/home/state/probe.inbox/handled"
@@ -24,10 +25,10 @@ cat > "$FM_HOME/data/backlog.md" <<'EOF'
 EOF
 printf 'working [at=123]: doing work\n' > "$FM_HOME/state/probe.status"
 printf 'one instruction\n' > "$FM_HOME/state/probe.inbox/handled/1.msg"
-bash "$ROOT/bin/fm-task-backfill.sh" --now 2026-10-25T14:00:00Z --dry-run > "$TMP_ROOT/dry"
+bash "$BIN/fm-task-backfill.sh" --now 2026-10-25T14:00:00Z --dry-run > "$TMP_ROOT/dry"
 grep -q 'running=1' "$TMP_ROOT/dry"
-bash "$ROOT/bin/fm-task-backfill.sh" --now 2026-10-25T14:00:00Z > "$TMP_ROOT/first"
-bash "$ROOT/bin/fm-task-backfill.sh" --now 2026-10-25T14:00:00Z > "$TMP_ROOT/second"
+bash "$BIN/fm-task-backfill.sh" --now 2026-10-25T14:00:00Z > "$TMP_ROOT/first"
+bash "$BIN/fm-task-backfill.sh" --now 2026-10-25T14:00:00Z > "$TMP_ROOT/second"
 grep -q '^0 added' "$TMP_ROOT/second"
 "$ROOT/bin/fm-task.sh" list --json > "$TMP_ROOT/list"
 jq -e 'length == 4 and any(.[]; .taskId == "owner" and .blockKind == "needs-decision" and .nextActor == "owner") and any(.[]; .taskId == "future" and .state == "todo")' "$TMP_ROOT/list"
@@ -51,4 +52,10 @@ JS
 # No hold remains in the old source; stale blockKind must not count as a difference.
 bash "$ROOT/bin/fm-task-reconcile.sh" once --now 2026-10-25T14:00:00Z > "$TMP_ROOT/normalized"
 jq -e '.added == 0' "$TMP_ROOT/normalized"
-echo 'ok - backfill mapping, history idempotency, reconciliation, no repair'
+# A check awaiting its owner must have a matching owner checklist item.
+curl -fsS -H 'Authorization: Bearer token' -H 'content-type: application/json' -X POST "$FM_TASK_BASE_URL/api/fm_task_check" --data '{"taskId":"probe","scenarioId":"OWNER","width":"-","line":"Owner check","surface":"internal","page":"-","controls":"-","data":"probe","proof":"manual","status":"pending","nextActor":"owner","acceptanceDigest":"probe"}' > /dev/null
+bash "$BIN/fm-task-reconcile.sh" once --now 2026-10-25T14:00:00Z > "$TMP_ROOT/pairing"
+jq -e '.added == 1' "$TMP_ROOT/pairing"
+bash "$ROOT/bin/fm-task-reconcile.sh" once --now 2026-10-25T14:00:00Z > "$TMP_ROOT/pairing-repeat"
+jq -e '.added == 0' "$TMP_ROOT/pairing-repeat"
+echo 'ok - backfill mapping, history idempotency, reconciliation, no repair, owner pairing'
