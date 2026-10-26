@@ -2566,7 +2566,7 @@ turnend_check_task() {  # <task>
   fi
   if ! grep -q '^Terminal call:' "$FM_HOME/data/$task/brief.md" 2>/dev/null ||
     ! fm_run_timed 2 "$SCRIPT_DIR/fm-task.sh" show "$task" --json >/dev/null 2>&1; then
-    verdict=$(turnend_state_line_verdict "$task") || { TURNEND_WHY='legacy status unreadable'; return 0; }
+    verdict=$(turnend_state_line_verdict "$task") || { TURNEND_WHY='status file unreadable'; return 0; }
   size=${verdict#* }
   TURNEND_IDENT=${size#* }
   size=${size%% *}
