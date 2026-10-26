@@ -30,6 +30,10 @@
 //   check    <task> <id>@<width> --status pending|pass|fail [--evidence E] [--head H] [--next-actor A]
 //   owner-check <task> <id>@<width> --page-title --url --steps --data --expected   (sets next actor owner;
 //            a row that has an item needs --url and --steps again; a re-sent --key never writes the item twice)
+//   turn-end <task> --turn TOKEN             check a durable turn generation; heartbeat is not terminal
+//   deliver  <task> --consumer NAME           claim each event in fm_task_delivery, then append a wake
+//            FM_HOME is required; delivery is scoped to this task, never a whole foreign fleet.
+//            A crash between claim and queue append requires operator reconciliation (no duplicate claim).
 //   show     <task> [--json]   list [--state S] [--actor A] [--json]   resume <task>   reproject <task>
 // Every write takes --key K (the idempotency key; a re-send returns the first event), --actor NAME
 // (default FM_TASK_ACTOR, FM_TASK_ID, then the login name) and --role (default FM_TASK_ROLE, then the
@@ -58,6 +62,8 @@
 // FM_TASK_AUTH=bearer|cookie (cookie sends the token as the cfw.auth.session cookie, for a SysAdmin session
 // until the notify-firstmate grant lands); FM_TASK_ACCEPTANCE (the acceptance parser, default fm-acceptance.mjs
 // beside this file). The token is read from the file and sent as a header, never printed.
+// FM_HOME (and optional FM_STATE_OVERRIDE) selects the legacy status view and durable turn cursor.
+// Terminal calls and heartbeat keep that view written until T7; --key replays append no second line.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -267,6 +273,8 @@ const SPECS = {
   list: { pos: [], flags: { state: 's', actor: 's' } },
   resume: { pos: ['task'], flags: {} },
   reproject: { pos: ['task'], flags: {} },
+  'turn-end': { pos: ['task'], flags: { turn: 's' } },
+  deliver: { pos: ['task'], flags: { consumer: 's' } },
 };
 
 function parseArgs(command, argv) {
@@ -508,8 +516,25 @@ async function write(taskId, who, build, after) {
     }
     throw error;
   }
+  await legacyStatus(result.event);
   reportWrite(result, projected?.task);
   return { result, task: projected?.task };
+}
+
+// The legacy view remains written until T7. A replay does not append twice.
+async function legacyStatus(event) {
+  if (!process.env.FM_HOME || !['done', 'needs-decision', 'blocked', 'heartbeat'].includes(event.kind)) return;
+  const state = process.env.FM_STATE_OVERRIDE || path.join(process.env.FM_HOME, 'state');
+  fs.mkdirSync(state, { recursive: true });
+  const file = path.join(state, `${event.taskId}.status`);
+  const marker = `[event=${event.seq}]`;
+  const prior = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
+  if (prior.split('\n').some((line) => line.includes(marker))) return;
+  const body = bodyOf(event);
+  const verb = event.kind === 'heartbeat' ? 'working' : event.kind;
+  const child = event.kind === 'done' ? await firstRow('fm_event_done', `fmTaskEventId eq ${event.id}`) : null;
+  const note = body.note || child?.summary || body.set?.blockReason || `${event.kind} recorded`;
+  fs.appendFileSync(file, `${verb} [at=${Math.floor(Date.now() / 1000)}]: ${String(note).replace(/[\r\n]/g, ' ')} ${marker}\n`);
 }
 
 // ---- commands ---------------------------------------------------------------------------------------------
@@ -1035,7 +1060,55 @@ async function cmdResume(args) {
   for (const line of lines) out(line);
 }
 
+// A turn token is the durable hook generation, not a status-file byte offset.
+async function cmdTurnEnd(args) {
+  const taskId = taskIdOf(args);
+  const turn = args.flags.turn;
+  if (!turn) throw usage('turn-end needs --turn');
+  const events = await taskEvents(taskId);
+  const task = fold(events);
+  if (!task) throw rule(`no such task ${taskId}`);
+  const state = process.env.FM_STATE_OVERRIDE || (process.env.FM_HOME && path.join(process.env.FM_HOME, 'state'));
+  if (!state) throw usage('turn-end requires FM_HOME');
+  fs.mkdirSync(state, { recursive: true });
+  const cursor = path.join(state, `.task-turn-${taskId}.json`);
+  let prior = { seq: 0, count: 0 };
+  if (fs.existsSync(cursor)) prior = JSON.parse(fs.readFileSync(cursor, 'utf8'));
+  if (prior.turn === turn) return out(prior.verdict);
+  const terminal = events.some((e) => e.seq > prior.seq && TERMINAL[e.kind]);
+  let count = terminal ? 0 : prior.count + 1;
+  let verdict = terminal ? 'wake-verb' : `ping-${Math.min(count, 3)}`;
+  if (!terminal) {
+    await cmdEvent({ pos: { task: taskId, kind: 'protocol_violation' }, flags: { key: `turn:${taskId}:${turn}`, note: 'Turn ended without a terminal call', actor: 'turn-end-checker', role: 'system' } });
+    if (count >= 3) {
+      await write(taskId, { key: `turn-block:${taskId}:${turn}`, actor: 'turn-end-checker', role: 'system' }, async () => ({ kind: 'blocked', note: 'Three turns without a terminal call', set: { state: 'blocked', nextActor: 'firstmate', blockKind: 'capability', blockReason: 'Three turns without a terminal call', blockRepeats: count }, children: { block: [{ blockKind: 'capability', reason: 'Three turns without a terminal call', nextActor: 'firstmate' }] } }));
+      verdict = 'ping-exhausted';
+    }
+  }
+  fs.writeFileSync(cursor, JSON.stringify({ turn, seq: (await taskEvents(taskId)).at(-1).seq, count, verdict }));
+  out(verdict);
+}
+
+async function cmdDeliver(args) {
+  const consumer = args.flags.consumer;
+  if (!consumer || consumer.length > 64) throw usage('deliver needs --consumer (up to 64 characters)');
+  if (!process.env.FM_HOME) throw usage('deliver requires FM_HOME');
+  const delivered = await listAll('fm_task_delivery', { filter: `consumer eq ${lit(consumer)}`, orderby: 'seq' });
+  const seen = new Set(delivered.map((r) => r.seq));
+  const events = await taskEvents(taskIdOf(args));
+  for (const event of events) {
+    if (seen.has(event.seq)) continue;
+    const res = await http('POST', '/api/fm_task_delivery', { consumer, seq: event.seq });
+    if (res.status === 409) continue;
+    ok(res, 'claim event delivery');
+    const queued = spawnSync('bash', ['-c', 'source "$1/fm-wake-lib.sh"; fm_wake_append check "$2" "$3"', 'task-delivery', HERE, `task-event-${event.seq}`, `task event ${event.seq}: ${event.taskId} ${event.kind}`], { encoding: 'utf8', env: process.env });
+    if (queued.status !== 0) throw new Fail(3, `delivery ${event.seq} claimed but wake append failed: ${queued.stderr}`);
+    out(`delivered ${consumer} seq=${event.seq}`);
+  }
+}
+
 const COMMANDS = {
+  'turn-end': cmdTurnEnd, deliver: cmdDeliver,
   create: cmdCreate, assign: cmdAssign, start: cmdStart, heartbeat: cmdHeartbeat, done: cmdDone, ask: cmdAsk, block: cmdBlock,
   unblock: cmdUnblock, approve: cmdApprove, changes: cmdChanges, archive: cmdArchive, comment: cmdComment, event: cmdEvent,
   link: cmdLink, rows: cmdRows, check: cmdCheck, 'owner-check': cmdOwnerCheck, show: cmdShow, list: cmdList, resume: cmdResume, reproject: cmdReproject,

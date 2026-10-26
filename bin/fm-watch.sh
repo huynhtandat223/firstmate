@@ -698,7 +698,7 @@ signal_turnend_panes_churned() {  # <file> ...
     base=${f##*/}
     case "$base" in
       *.status)     return 1 ;;
-      *.turn-ended) task=${base%.turn-ended}; kind=turn-ended ;;
+      *.turn-ended) task=${base%.turn-ended}; kind='turn-ended' ;;
       *)            return 1 ;;
     esac
     [ -n "$task" ] || return 1
@@ -2434,7 +2434,7 @@ turnend_quota_text() {  # <plain pane tail>
 # The fixed ping text. It names the task's status file and the verbs with their
 # shapes; it is a format reminder, never new work.
 turnend_ping_text() {  # <task>
-  printf 'Your turn ended with no valid state line in %s/%s.status. Append exactly one line there, then continue your task: "working: <what you are doing>", "paused: <why> until <YYYY-MM-DDTHH:MMZ>", "done: <PR URL> head <sha>", "blocked: <why>", or "needs-decision: <options>". This is a format reminder, not new work.' "$STATE" "$1"
+  printf 'Terminal call: end this turn with bin/fm-task.sh done|ask|block %s and its required template fields (see --help). Read bin/fm-task.sh resume %s first. heartbeat reports activity and does not end a turn. This is a format reminder, not new work.' "$1" "$1"
 }
 
 # Fire-and-forget through the steering inbox, the way secondmate_ring_to_drain
@@ -2516,10 +2516,9 @@ EOF
 # Decide one worker's turn end. Sets TURNEND_VERDICT, TURNEND_WHY (the failure
 # an `error` verdict names) and TURNEND_TAIL (the last lines of the pane).
 turnend_check_task() {  # <task>
-  local task=$1 meta w backend label astate plain cstate verdict size count pingf seenf
+  local task=$1 meta w backend label astate plain cstate verdict
   TURNEND_VERDICT=error; TURNEND_WHY=''; TURNEND_TAIL=''; TURNEND_SIZE=''; TURNEND_IDENT=''
   meta="$STATE/$task.meta"
-  pingf="$STATE/.turnend-pings-$task"; seenf="$STATE/.turnend-seen-$task"
   w=$(fm_meta_get "$meta" window)
   if [ -z "$w" ]; then
     TURNEND_WHY='no window recorded for the task'
@@ -2560,55 +2559,22 @@ turnend_check_task() {  # <task>
     TURNEND_WHY="composer $cstate"
     return 0
   fi
-  if ! verdict=$(turnend_state_line_verdict "$task"); then
-    TURNEND_WHY='status file unreadable'
+  if ! verdict=$(FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task.sh" turn-end "$task" --turn "$(stat_mtime "$STATE/$task.turn-ended")"); then
+    TURNEND_WHY='task record unreadable'
     return 0
   fi
-  size=${verdict#* }
-  TURNEND_IDENT=${size#* }
-  size=${size%% *}
-  TURNEND_SIZE=$size
-  verdict=${verdict%% *}
+  verdict=$(printf '%s\n' "$verdict" | tail -n 1)
   case "$verdict" in
-    valid-working|valid-paused|wake-verb)
-      if ! printf '%s' "$size" > "$seenf" 2>/dev/null; then
-        TURNEND_WHY='turn-end cursor unwritable'
-        return 0
+    wake-verb) TURNEND_VERDICT=wake-verb; return 0 ;;
+    ping-exhausted) TURNEND_VERDICT=ping-exhausted; return 0 ;;
+    ping-*)
+      if ! turnend_send_ping "$task" "$w" "$backend" "$label"; then
+        TURNEND_WHY='ping delivery failed'; return 0
       fi
-      rm -f "$pingf"
-      TURNEND_VERDICT=$verdict
-      return 0
-      ;;
+      TURNEND_VERDICT=$verdict; return 0 ;;
+    *) TURNEND_WHY='invalid record checker response'; return 0 ;;
   esac
-  # Missing or malformed: ping up to TURNEND_PING_MAX times per wait, then wake.
-  count=$(cat "$pingf" 2>/dev/null || true)
-  case "$count" in ''|*[!0-9]*) count=0 ;; esac
-  if ! printf '%s' "$size" > "$seenf" 2>/dev/null; then
-    TURNEND_WHY='turn-end cursor unwritable'
-    return 0
-  fi
-  # Once the wake with the pane tail has gone (count past the maximum), the rest
-  # of the wait is firstmate's to read: later malformed turn ends wake nothing,
-  # and a valid state line resets the wait.
-  if [ "$count" -gt "$TURNEND_PING_MAX" ]; then
-    TURNEND_VERDICT=ping-escalated
-    return 0
-  fi
-  if [ "$count" -eq "$TURNEND_PING_MAX" ]; then
-    # The escalation is recorded by the caller once its wake row is queued.
-    TURNEND_VERDICT=ping-exhausted
-    return 0
-  fi
-  count=$((count + 1))
-  if ! printf '%s' "$count" > "$pingf" 2>/dev/null; then
-    TURNEND_WHY='ping bookkeeping unwritable'
-    return 0
-  fi
-  if ! turnend_send_ping "$task" "$w" "$backend" "$label"; then
-    TURNEND_WHY='ping delivery failed'
-    return 0
-  fi
-  TURNEND_VERDICT="ping-$count"
+
 }
 
 # A ping answers a missing or malformed line, so that task's status change in the
@@ -3406,6 +3372,13 @@ resurface_after_downtime() {
 }
 
 while :; do
+  # Scope delivery to this home's direct task records, never another home's events.
+  for task_meta in "$STATE"/*.meta; do
+    [ -f "$task_meta" ] || continue
+    task_id=${task_meta##*/}; task_id=${task_id%.meta}
+    task_consumer="firstmate-${FM_HOME##*/}"
+    FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task.sh" deliver "$task_id" --consumer "$task_consumer" >/dev/null 2>&1 || true
+  done
   # Home-gone exit: a deleted home, state directory, or code root means this
   # watcher's world is gone (a torn-down temporary home or a discarded
   # disposable checkout). Exit with a logged reason rather than writing state

@@ -21,6 +21,7 @@
 # takes the same per-record lock around that check and the delete.
 #   fm-assistance.sh recover
 #   fm-assistance.sh propose <title> <why> <evidence> <from-json>
+#     from-json carries name/id and optional task: the named task receives a comment event.
 # from-json is {name,id}, copied from the captured message. For old records use
 # {"name":"sender unknown","id":"unknown"}; non-message proposals name a source.
 #   fm-assistance.sh record <inbox-id>
@@ -187,7 +188,7 @@ start() {
   trap - EXIT
 }
 propose() {
-  local name parent
+  local name parent task
   jq -e 'type == "object" and ([.name,.id] | all(type == "string" and test("\\S")))' <<< "$4" >/dev/null || die 'sender requires name and id'
   [ -f "$FM_HOME/.fm-assistance-home" ] || die 'proposal command requires an assistance home'
   name=$(<"$FM_HOME/.fm-assistance-home")
@@ -196,6 +197,11 @@ propose() {
   [ "$FM_SECONDMATE_PARENT_ROUTE" = local ] || die 'assistance requires a local parent'
   parent=$FM_SECONDMATE_PARENT_HOME
   [ -d "$parent" ] || die 'assistance parent binding is unavailable'
+  task=$(jq -r '.task // empty' <<< "$4")
+  if [ -n "$task" ]; then
+    "$SCRIPT_DIR/fm-task.sh" event "$task" comment --role assistance --actor "$name" \
+      --note "Proposal: $1. Why: $2. Evidence: $3" || return 1
+  fi
   # Text is data, never a shell instruction. Only the parent records backlog work.
   jq -cn --arg assistance "$name" --arg title "$1" --arg why "$2" --arg evidence "$3" --argjson from "$4" \
     '{assistance:$assistance,title:$title,why:$why,evidence:$evidence,from:$from}' |

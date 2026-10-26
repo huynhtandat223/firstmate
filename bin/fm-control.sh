@@ -1104,7 +1104,8 @@ record_note() {
         echo "uncommitted change are exactly as the previous worker left them."
         echo
         inbox_q=$(printf '%s' "$STATE/$ID.inbox" | sed "s/'/'\\\\''/g")
-        echo "First, check your instruction inbox: list it with"
+        echo "First read the task record with \`$SCRIPT_DIR/fm-task.sh resume $ID\`. Name that state in your first terminal call's note."
+        echo "Then check your instruction inbox: list it with"
         echo "\`find '$inbox_q' -maxdepth 1 -name '*.msg' 2>/dev/null | sort -V\`, act on"
         echo "each message in numeric order, then mv each handled file into"
         echo "'$inbox_q/handled/'. A steer sent before the relaunch survives there."

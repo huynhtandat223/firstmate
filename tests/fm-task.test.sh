@@ -375,11 +375,15 @@ use_issue() { issue_body "$1" > "$TMP_ROOT/issue.body"; }
 # a missing template field prints the API's field and stores nothing.
 case_terminal() {
   BIN=$1; reset_db
+  export FM_HOME="$TMP_ROOT/terminal-home"
+  mkdir -p "$FM_HOME/state"
+  rm -f "$FM_HOME/state/tk10.status"
   local t=tk10 id seq child events dones before f field
   mk_running $t >/dev/null || { echo "setup: $ERR"; return 1; }
   log_reset
   ft "done" $t "${DONE_FLAGS[@]}" --pr-url https://example.com/pr/1 --head abc123
   must 'done' 0 || return 1
+  grep -q '^done \[at=[0-9]*\]: Built it' "$FM_HOME/state/tk10.status" || { echo 'done did not write legacy status'; return 1; }
   seq=$(seq_of); [ -n "$seq" ] || { echo "no seq printed: $OUT"; return 1; }
   id=$(db fm_task_event | jq -r --argjson s "$seq" '.[] | select(.seq == $s and .kind == "done" and .taskId == "tk10") | .id')
   [ -n "$id" ] || { echo "no done event at seq $seq"; return 1; }
@@ -390,6 +394,31 @@ case_terminal() {
   curl -s "$BASE/__x/log" | jq -e '[.[] | select(.method == "POST" and .path == "/api/fm_task_event")][0].body | (.done | length) == 1 and .seq == '"$seq" >/dev/null \
     || { echo "the event request does not carry the done child"; return 1; }
   [ "$(task_state $t)" = review ] || { echo "done did not move the task to review: $(task_state $t)"; return 1; }
+  # TR32: a replayed stream and a fresh process do not enqueue twice.
+  ft deliver tk10 --consumer test-firstmate
+  must 'deliver events' 0 || return 1
+  local deliveries
+  deliveries=$(count fm_task_delivery)
+  [ "$deliveries" -gt 0 ] || { echo 'no delivery rows'; return 1; }
+  ft deliver tk10 --consumer test-firstmate
+  must 'replay delivery' 0 || return 1
+  [ "$(count fm_task_delivery)" = "$deliveries" ] || { echo 'replay duplicated deliveries'; return 1; }
+  # TR31: a status line cannot satisfy a terminal call; a heartbeat is not terminal.
+  mk_running tk31 >/dev/null || return 1
+  printf 'done: legacy-only\n' > "$FM_HOME/state/tk31.status"
+  ft turn-end tk31 --turn first
+  must 'missed terminal' 0 || return 1
+  [[ "$OUT" = *ping-1 ]] || { echo "expected ping-1: $OUT"; return 1; }
+  local violations
+  violations=$(db fm_task_event | jq '[.[] | select(.taskId == "tk31" and .kind == "protocol_violation")] | length')
+  ft turn-end tk31 --turn first
+  must 'same turn replay' 0 || return 1
+  [ "$(db fm_task_event | jq '[.[] | select(.taskId == "tk31" and .kind == "protocol_violation")] | length')" = "$violations" ] || return 1
+  ft turn-end tk31 --turn second
+  must 'second missed terminal' 0 || return 1
+  ft turn-end tk31 --turn third
+  must 'third missed terminal' 0 || return 1
+  db fm_task | jq -e '.[] | select(.taskId == "tk31") | .blockKind == "capability" and .nextActor == "firstmate" and .state == "blocked"' >/dev/null || return 1
   # ask: one request, options stored as a JSON list, the task waits on its next actor
   mk_running tk10a >/dev/null; log_reset
   ft ask tk10a "${ASK_FLAGS[@]}"
