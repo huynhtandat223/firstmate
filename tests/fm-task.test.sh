@@ -307,7 +307,7 @@ jq -Rs '{body: .}' "$FAKE_GH_BODY_FILE"
 SH
 chmod +x "$TMP_ROOT/fakebin/gh"
 
-node "$FAKE_API/server.mjs" "$TMP_ROOT/port" "$FAKE_API/schema.json" "$TOKEN" &
+node "$TMP_ROOT/fake-api.mjs" "$TMP_ROOT/port" "$TMP_ROOT/schema.json" "$TOKEN" &
 for _ in $(seq 1 100); do [ -s "$TMP_ROOT/port" ] && break; sleep 0.1; done
 [ -s "$TMP_ROOT/port" ] || fail 'the stand-in API did not start'
 PORT=$(cat "$TMP_ROOT/port")
