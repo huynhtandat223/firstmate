@@ -106,6 +106,8 @@ close_task() {
   case "$current" in
     blocked|triage) w "$1-unblock" unblock "$TASK" || return 0; w "$1-start" start "$TASK" || return 0 ;;
     ready) w "$1-start" start "$TASK" || return 0 ;;
+    todo) w "$1-assign" assign "$TASK" --to "$TASK" || return 0
+          w "$1-start" start "$TASK" || return 0 ;;
   esac
   w "$1-approve" approve "$TASK" && return 0
   w "$1-done" "done" "$TASK" --summary "closed by the old source" --changed-files - --verification - --residual-risk - || return 1
