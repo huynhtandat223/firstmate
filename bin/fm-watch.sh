@@ -698,7 +698,7 @@ signal_turnend_panes_churned() {  # <file> ...
     base=${f##*/}
     case "$base" in
       *.status)     return 1 ;;
-      *.turn-ended) task=${base%.turn-ended}; kind='turn-ended' ;;
+      *.turn-ended) task=${base%.turn-ended}; kind=turn-ended ;;
       *)            return 1 ;;
     esac
     [ -n "$task" ] || return 1
@@ -2573,6 +2573,14 @@ turnend_check_task() {  # <task>
       if [ "$semantic" = 'busy pi-ext' ]; then
         verdict=$(turnend_state_line_verdict "$task") || { TURNEND_WHY='status file unreadable'; return 0; }
         if [ "${verdict%% *}" = wake-verb ]; then
+          size=${verdict#* }
+          TURNEND_IDENT=${size#* }
+          TURNEND_SIZE=${size%% *}
+          if ! printf '%s' "$TURNEND_SIZE" > "$seenf" 2>/dev/null; then
+            TURNEND_WHY='turn-end cursor unwritable'
+            return 0
+          fi
+          rm -f "$pingf"
           TURNEND_VERDICT=wake-verb
         else
           TURNEND_VERDICT=busy

@@ -7769,6 +7769,9 @@ test_pi_turnend_semantic_continue_scenarios() {
   tc_status "$dir" 'done: result ready'
   turnend_check_task tc
   [ "$TURNEND_VERDICT" = wake-verb ] || fail "PC2: expected wake-verb, got $TURNEND_VERDICT"
+  [ "$TURNEND_SIZE" = "$(wc -c < "$state/tc.status" | tr -d ' ')" ] || fail 'PC2: busy wake did not record classified size'
+  turnend_check_task tc
+  [ "$TURNEND_VERDICT" = busy ] || fail 'PC2: second busy turn repeated the same wake verb'
   rm -f "$state/.turnend-seen-tc" "$state/tc.status"
   tc_status "$dir" 'working: writing tests'
   "$ROOT/bin/fm-busy-event.sh" apply "$state" tc idle --gen "$gen" --source pi-ext --event agent-settled
@@ -7966,7 +7969,7 @@ test_turn_ends_after_the_escalation_wake_nothing_until_a_valid_line() {
   tc_round_quiet "$dir" || fail "a valid line after the escalation woke the watcher"
   tc_round_quiet "$dir" || fail "the next missing turn end woke the watcher"
   tc_verdict_logged "$state" continue-1 || fail "the working line did not start continuation"
-  pass "turn ends after the escalation wake nothing, and a valid state line starts a fresh wait with ping 1"
+  pass "turn ends after escalation stay silent, and a new working line starts continuation"
 }
 
 test_a_valid_line_after_pings_resets_the_ping_count() {
@@ -7981,7 +7984,7 @@ test_a_valid_line_after_pings_resets_the_ping_count() {
   tc_round_quiet "$dir" || fail "the next missing turn end woke the watcher"
   tc_verdict_logged "$state" continue-2 || fail "the next turn end did not continue"
   [ "$(tc_pings "$state")" -eq 4 ] || fail "the reset wait did not send two continue reminders"
-  pass "a valid state line resets the ping count, so the next missing turn end is ping 1 again"
+  pass "a working line clears the format-reminder count and starts a separate continue budget"
 }
 
 test_turn_end_that_must_not_be_pinged_wakes_at_once_with_the_pane_tail() {
