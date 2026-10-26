@@ -429,7 +429,10 @@ case_terminal() {
   log_reset
   ft "done" $t "${DONE_FLAGS[@]}" --pr-url https://example.com/pr/1 --head abc123
   must 'done' 0 || return 1
-  grep -q '^done \[at=[0-9]*\]: Built it' "$FM_HOME/state/tk10.status" || { echo 'done did not write legacy status'; return 1; }
+  grep -q '^done \[at=[0-9]*\]: PR https://example.com/pr/1 Built it' "$FM_HOME/state/tk10.status" || { echo 'done did not write legacy status'; return 1; }
+  local parsed_pr
+  parsed_pr=$(bash -c 'source "$1/fm-dod-lib.sh"; fm_dod_pr_url_from_done_note "$2"' _ "$ROOT/bin" "$(tail -n 1 "$FM_HOME/state/tk10.status" | cut -d: -f2- | sed 's/^ //')") || return 1
+  [ "$parsed_pr" = https://example.com/pr/1 ] || { echo 'legacy PR parser lost URL'; return 1; }
   seq=$(seq_of); [ -n "$seq" ] || { echo "no seq printed: $OUT"; return 1; }
   id=$(db fm_task_event | jq -r --argjson s "$seq" '.[] | select(.seq == $s and .kind == "done" and .taskId == "tk10") | .id')
   [ -n "$id" ] || { echo "no done event at seq $seq"; return 1; }

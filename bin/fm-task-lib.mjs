@@ -548,7 +548,8 @@ async function legacyStatus(event) {
   const paused = event.kind === 'blocked' && body.set?.blockKind === 'transient' && body.set?.holdUntil;
   const verb = event.kind === 'unblocked' ? 'resolved' : paused ? 'paused' : event.kind === 'heartbeat' ? 'working' : event.kind;
   const child = event.kind === 'done' ? await firstRow('fm_event_done', `fmTaskEventId eq ${event.id}`) : null;
-  const note = body.note || child?.summary || body.set?.blockReason || `${event.kind} recorded`;
+  const summary = body.note || child?.summary || body.set?.blockReason || `${event.kind} recorded`;
+  const note = event.kind === 'done' && body.set?.prUrl ? `PR ${body.set.prUrl} ${summary}` : summary;
   fs.appendFileSync(file, `${verb} [at=${Math.floor(Date.now() / 1000)}]: ${String(note).replace(/[\r\n]/g, ' ')}${paused ? ` until ${body.set.holdUntil}` : ''} ${marker}\n`);
 }
 
