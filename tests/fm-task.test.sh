@@ -422,6 +422,9 @@ case_terminal() {
   ft turn-end tk31 --turn third
   must 'third missed terminal' 0 || return 1
   db fm_task | jq -e '.[] | select(.taskId == "tk31") | .blockKind == "capability" and .nextActor == "firstmate" and .state == "blocked"' >/dev/null || return 1
+  ft turn-end tk31 --turn fourth
+  must 'fourth missed terminal' 0 || return 1
+  [ "$(db fm_task_event | jq '[.[] | select(.taskId == "tk31" and .kind == "blocked")] | length')" = 1 ] || { echo 'capability block repeated'; return 1; }
   # ask: one request, options stored as a JSON list, the task waits on its next actor
   mk_running tk10a >/dev/null; log_reset
   ft ask tk10a "${ASK_FLAGS[@]}"
@@ -1462,4 +1465,5 @@ mutate 'a check on a task that closed meanwhile is refused' check_close "if (CLO
 mutate 'approve judges a row by its newest check event' approve_newest "return v ? { ...r, status: v.status," "return false ? { ...r, status: v.status,"
 mutate 'an owner-check update needs --url and --steps' owner_update "if (missing.length) throw rule(" "if (false) throw rule("
 mutate 'an owner-check on a task that closed meanwhile is refused' owner_close "if (CLOSED.includes(task.state)) throw rule(\`owner-check is refused:" "if (false) throw rule(\`owner-check is refused:"
+mutate 'capability block is emitted once' terminal 'if (count === 3) {' 'if (count >= 3) {'
 pass 'every guarded behavior has a red mutation proof'
