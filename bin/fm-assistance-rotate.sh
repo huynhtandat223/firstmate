@@ -46,7 +46,7 @@ tasks=$(jq -r --arg name "$name" '.[] | select(.assignee == $name and .state != 
 while IFS= read -r task; do
   [ -n "$task" ] || continue
   if ! "$SCRIPT_DIR/fm-task.sh" resume "$task" >> "$resume_tmp"; then
-    printf '\nRetry bin/fm-task.sh resume %s in the fresh session.\n' "$task" >> "$resume_tmp"
+    printf '\nRetry %s/fm-task.sh resume %s in the fresh session.\n' "$SCRIPT_DIR" "$task" >> "$resume_tmp"
   fi
 done <<< "$tasks"
 mv "$resume_tmp" "$resume_file"
@@ -89,7 +89,7 @@ done
 for ((attempt=0; attempt<60; attempt++)); do
   if [ "$(<"$STATE/assistance-session")" != "$session" ]; then
     rm -f "$request"
-    fm_backend_send_text_submit herdr "$endpoint" "First run bin/fm-task.sh resume for each task in $FM_HOME/data/assistance-task-resume.md. Then read $FM_HOME/data/charter.md and $FM_HOME/data/assistance-handoff.md and continue from Next action." 3 0.2 1.2
+    fm_backend_send_text_submit herdr "$endpoint" "First run $SCRIPT_DIR/fm-task.sh resume for each task in $FM_HOME/data/assistance-task-resume.md. Then read $FM_HOME/data/charter.md and $FM_HOME/data/assistance-handoff.md and continue from Next action." 3 0.2 1.2
     echo 'rotation: fresh session continuing from persisted handoff'
     exit 0
   fi
