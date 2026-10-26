@@ -186,7 +186,11 @@ hold_event() {  # <hold-kind> <reason>: make the record capable of taking this o
   if [ "$current" = blocked ]; then
     local prior
     prior=$("$WRITER" show "$TASK" --json 2>/dev/null)
-    if [ "$(printf '%s' "$prior" | jq -r '.blockReason')" = "$reason" ]; then
+    local mapped_kind=transient mapped_actor=firstmate
+    case "$kind" in captain) mapped_kind=needs-decision; mapped_actor=owner ;; external) mapped_kind=external ;; esac
+    if [ "$(printf '%s' "$prior" | jq -r '.blockReason')" = "$reason" ] \
+      && [ "$(printf '%s' "$prior" | jq -r '.blockKind')" = "$mapped_kind" ] \
+      && [ "$(printf '%s' "$prior" | jq -r '.nextActor')" = "$mapped_actor" ]; then
       return 0
     fi
   fi

@@ -17,6 +17,8 @@ printf '## Queued\n- [ ] missing - Missing ship (kind: ship)\n' > "$FM_HOME/data
 bash "$ROOT/bin/fm-task-shadow.sh" held missing captain 'Choose A'
 "$ROOT/bin/fm-task.sh" show missing --json | jq -e '.kind == "ship"'
 "$ROOT/bin/fm-task.sh" show missing --json | jq -e '.state == "blocked" and .nextActor == "owner"'
+bash "$ROOT/bin/fm-task-shadow.sh" held missing external 'Choose A' changed-kind
+"$ROOT/bin/fm-task.sh" show missing --json | jq -e '.blockKind == "external" and .nextActor == "firstmate"'
 "$ROOT/bin/fm-task.sh" create queued --title Q --kind ship
 bash "$ROOT/bin/fm-task-shadow.sh" held queued captain 'Choose B'
 "$ROOT/bin/fm-task.sh" show queued --json | jq -e '.state == "blocked" and .nextActor == "owner"'
