@@ -1075,7 +1075,9 @@ async function cmdTurnEnd(args) {
   let prior = { seq: 0, count: 0 };
   if (fs.existsSync(cursor)) prior = JSON.parse(fs.readFileSync(cursor, 'utf8'));
   if (prior.turn === turn) return out(prior.verdict);
-  const terminal = events.some((e) => e.seq > prior.seq && TERMINAL[e.kind]);
+  const started = [...events].reverse().find((e) => e.kind === 'started');
+  const anchor = Math.max(prior.seq, started?.seq ?? 0);
+  const terminal = events.some((e) => e.seq > anchor && TERMINAL[e.kind]);
   let count = terminal ? 0 : prior.count + 1;
   let verdict = terminal ? 'wake-verb' : `ping-${Math.min(count, 3)}`;
   if (!terminal) {
