@@ -33,7 +33,7 @@
 //   rows     <task> <issue-url>              one check row per scenario x width from fm-acceptance.mjs
 //   check    <task> <id>@<width> --status pending|pass|fail [--evidence E] [--head H] [--next-actor A]
 //   owner-check <task> <id>@<width> --page-title --url --steps --data --expected   (sets next actor owner;
-//            a row that has an item needs --url and --steps again; a re-sent --key never writes the item twice)
+//            a row that has an item needs all five template fields again; a re-sent --key never writes the item twice)
 //   show     <task> [--json]   list [--state S] [--actor A] [--json]   resume <task>   reproject <task>
 // Every write takes --key K (the idempotency key; a re-send returns the first event), --actor NAME
 // (default FM_TASK_ACTOR, FM_TASK_ID, then the login name) and --role (default FM_TASK_ROLE, then the
@@ -971,8 +971,8 @@ async function cmdOwnerCheck(args) {
   // the item first: a refusal here leaves the check row as it was
   const existing = prior ? null : await ownerItem(taskId, target);
   if (existing) {
-    // a create is refused by the API for a missing field; an update would keep the old one, so the writer asks for both
-    const missing = ['url', 'steps'].filter((name) => !f[name]);
+    // An update must supply the complete checklist rather than retain omitted fields.
+    const missing = ['page-title', 'url', 'steps', 'data', 'expected'].filter((name) => !f[name]?.trim());
     if (missing.length) throw rule(`owner-check on a row that has an owner item needs ${missing.map((name) => `--${name}`).join(' and ')}`);
     const diff = Object.fromEntries(Object.entries(item).filter(([k, v]) => !['taskId', 'scenarioId', 'width', 'status'].includes(k) && existing[k] !== v));
     // the same item on a row that already waits on the owner: nothing to change

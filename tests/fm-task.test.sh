@@ -927,6 +927,18 @@ case_owner_update() {
   ft create $t --title t --kind ship >/dev/null; use_issue v1; ft rows $t "$ISSUE" >/dev/null
   ft owner-check $t A1@1440 --page-title 'Home page' --url 'http://100.88.10.58:5001/#home' --steps '1. open it' --data d --expected e >/dev/null
   events=$(count fm_task_event); item=$(db fm_owner_check | jq -S -c .)
+  local missing
+  for missing in page-title url steps data expected; do
+    local -a template=()
+    local field
+    for field in page-title url steps data expected; do
+      [ "$field" = "$missing" ] || template+=("--$field" "value-$field")
+    done
+    ft owner-check $t A1@1440 "${template[@]}"
+    must "update without --$missing" 5 || return 1
+    [[ "$ERR" == *"--$missing"* ]] || return 1
+    [ "$(count fm_task_event)" = "$events" ] && [ "$(db fm_owner_check | jq -S -c .)" = "$item" ] || return 1
+  done
   ft owner-check $t A1@1440 --page-title 'New title' --steps '1. open it' --data d --expected e
   must 'update without --url' 5 || return 1
   case $ERR in *url*) ;; *) echo "the refusal does not name url: $ERR"; return 1 ;; esac
