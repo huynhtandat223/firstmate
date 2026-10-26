@@ -387,7 +387,7 @@ case_terminal() {
   for badfile in "$TMP_ROOT/report.md" "$TMP_ROOT/report.html"; do
     mk_running doc-valid >/dev/null || return 1
     log_reset
-    ft done doc-valid "${DONE_FLAGS[@]}" --document "$badfile"
+    ft "done" doc-valid "${DONE_FLAGS[@]}" --document "$badfile"
     must 'document deep insert' 0 || return 1
     doc_id=$(db fm_task_event | jq -r --argjson seq "$(seq_of)" '.[] | select(.seq == $seq) | .id')
     db fm_event_document | jq -e --arg id "$doc_id" --rawfile content "$badfile" --arg title "$(basename "$badfile")" '.[] | select(.fmTaskEventId == $id) | .content == $content and .title == $title and (.mediaType == "text/markdown" or .mediaType == "text/html")' >/dev/null || { echo 'document differs from input bytes'; return 1; }
@@ -399,24 +399,23 @@ case_terminal() {
   printf 'plain' > "$TMP_ROOT/wrong.txt"
   mk_running doc-refusal >/dev/null || return 1
   for badfile in "$TMP_ROOT/latin.md" "$TMP_ROOT/empty.md" "$TMP_ROOT/wrong.txt" "$TMP_ROOT/missing.md"; do
-    ft done doc-refusal "${DONE_FLAGS[@]}" --document "$badfile"
+    ft "done" doc-refusal "${DONE_FLAGS[@]}" --document "$badfile"
     must 'invalid document' 2 || return 1
     [ "$(task_state doc-refusal)" = running ] || return 1
   done
   node -e 'require("fs").writeFileSync(process.argv[1], Buffer.alloc(2*1024*1024+1, 65))' "$TMP_ROOT/large.md"
-  for badfile in "$TMP_ROOT/large.md"; do
+  badfile="$TMP_ROOT/large.md"
     docs_before=$(count fm_task_event)
-    ft done doc-refusal "${DONE_FLAGS[@]}" --document "$badfile"
+    ft "done" doc-refusal "${DONE_FLAGS[@]}" --document "$badfile"
     must 'oversize document' 2 || return 1
     [ "$(count fm_task_event)" = "$docs_before" ] || return 1
-  done
   for badfile in duplicate title-alone empty-title multiline-title; do
     docs_before=$(count fm_task_event)
     case "$badfile" in
-      duplicate) ft done doc-refusal "${DONE_FLAGS[@]}" --document "$TMP_ROOT/report.md" --document "$TMP_ROOT/report.html" ;;
-      title-alone) ft done doc-refusal "${DONE_FLAGS[@]}" --document-title title ;;
-      empty-title) ft done doc-refusal "${DONE_FLAGS[@]}" --document "$TMP_ROOT/report.md" --document-title '' ;;
-      multiline-title) ft done doc-refusal "${DONE_FLAGS[@]}" --document "$TMP_ROOT/report.md" --document-title $'two\nlines' ;;
+      duplicate) ft "done" doc-refusal "${DONE_FLAGS[@]}" --document "$TMP_ROOT/report.md" --document "$TMP_ROOT/report.html" ;;
+      title-alone) ft "done" doc-refusal "${DONE_FLAGS[@]}" --document-title title ;;
+      empty-title) ft "done" doc-refusal "${DONE_FLAGS[@]}" --document "$TMP_ROOT/report.md" --document-title '' ;;
+      multiline-title) ft "done" doc-refusal "${DONE_FLAGS[@]}" --document "$TMP_ROOT/report.md" --document-title $'two\nlines' ;;
     esac
     must 'document option refusal' 2 || return 1
     [ "$(count fm_task_event)" = "$docs_before" ] || return 1
