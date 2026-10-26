@@ -19,7 +19,7 @@ vg_install_gh "$TMP_ROOT/gh"
 mk_writer() {  # <dir>: a fake bin/fm-task.sh that records one line per call
   cat > "$1/fake-writer" <<'SH'
 #!/usr/bin/env bash
-if [ "${1:-}" = show ]; then printf '{"state":"running"}\n'; exit 0; fi
+if [ "${1:-}" = show ]; then printf '{"state":"%s"}\n' "${FAKE_STATE:-running}"; exit 0; fi
 printf '%s\n' "$*" >> "$FAKE_CALLS"
 printf 'auth=%s url=%s token=%s\n' "${FM_TASK_AUTH:-}" "${FM_TASK_BASE_URL:-}" "${FM_TASK_TOKEN_FILE:-}" >> "$FAKE_CALLS.env"
 [ -z "${FAKE_HANG:-}" ] || sleep "$FAKE_HANG"
@@ -122,7 +122,7 @@ test_status_lines_map_to_writer_commands() {
 test_working_after_a_block_unblocks_and_restarts() {
   make_case working-after-block on
   printf '%s\n' 'working [at=1]: back at it' > "$HOME_DIR/state/t1.status"
-  FAKE_FAIL=heartbeat FAKE_FAIL_ONCE=1 hook status "$HOME_DIR/config" "$HOME_DIR/state/t1.status" || fail "the hook failed"
+  FAKE_STATE=blocked FAKE_FAIL=heartbeat FAKE_FAIL_ONCE=1 hook status "$HOME_DIR/config" "$HOME_DIR/state/t1.status" || fail "the hook failed"
   assert_equals "$(printf '%s\n' 'heartbeat t1 --note back at it' 'unblock t1' 'start t1' 'heartbeat t1 --note back at it')" "$(calls)" "working after a refused heartbeat"
   pass "status: a working line the record refuses is retried after unblock and start"
 }
@@ -184,7 +184,7 @@ test_backlog_verbs() {
   hook backlog "done" t1; hook backlog reopen t1; hook backlog hold t1 external "waiting"; hook backlog hold t1 captain "a question"; hook backlog unhold t1
   assert_equals "$(printf '%s\n' \
     'approve t1' \
-    'event t1 comment --note backlog row reopened' \
+    'reopen t1 --reason backlog row reopened' \
     'block external t1 --reason waiting --next-actor firstmate' \
     'unblock t1')" "$(calls)" "backlog verbs (a captain hold is left to fm-captain-hold)"
   pass "backlog verbs: done, reopen, hold and unhold; a captain hold is left to bin/fm-captain-hold.sh"
@@ -382,7 +382,7 @@ mutate_hook 'every call carries a stable key' test_dispatched_creates_assigns_an
 mutate_hook 'the title comes from the backlog row' test_dispatched_creates_assigns_and_starts 'row=${row#*" - "}' 'row=$TASK'
 mutate_hook 'only the last status line is read' test_status_lines_map_to_writer_commands "tail -n 1)" "tail -n 2 | head -n 1)"
 mutate_hook 'a done line carries its PR' test_status_lines_map_to_writer_commands '--pr-url "$url")' ')'
-mutate_hook 'a refused working line is retried after unblock and start' test_working_after_a_block_unblocks_and_restarts '|| { w "status-$key-unblock" unblock "$TASK" &&' '|| { false &&'
+mutate_hook 'a refused working line is retried after unblock and start' test_working_after_a_block_unblocks_and_restarts 'blocked|triage) w "status-$key-unblock" unblock "$TASK" || return 0 ;;' 'blocked|triage) return 0 ;;'
 mutate_hook 'a hung writer is cut off' test_the_hook_never_fails_the_script 'run=(timeout "$TIMEOUT" "${run[@]}")' ':'
 mutate_hook 'the hook always exits 0' test_the_hook_never_fails_the_script $'esac\nexit 0' $'esac\nexit $?'
 mutate_hook 'the flag file hands the writer its settings' test_the_flag_file_carries_the_writer_settings 'export "${line?}"' ':'
