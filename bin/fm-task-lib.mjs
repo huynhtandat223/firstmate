@@ -14,6 +14,9 @@
 //   heartbeat <task> [--note N]              running (today's `working:`)
 //   done     <task> --summary --changed-files --verification --residual-risk [--rows JSON]
 //            [--pr-url U] [--head H] [--next-actor tester|firstmate]       running -> review
+//            [--document FILE] [--document-title TITLE] attaches one documents child in the same request.
+//            Document: UTF-8 .md/.markdown or .html/.htm, 1 byte to 2 MiB; one-line title 1..200
+//            characters (default file name). Invalid files/options exit 2 before any API write.
 //   ask      <task> --question Q --option O (2 to 6 times) --recommendation R --why W
 //            [--document D] [--next-actor firstmate|owner]                  running -> blocked (needs-decision)
 //   block    <kind> <task> --reason R --next-actor A [--until ISO] [--on PARENT]

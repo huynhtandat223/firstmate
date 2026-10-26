@@ -32,6 +32,12 @@ chmod 600 "$TMP_ROOT/token"
 cat > "$TMP_ROOT/schema.json" <<'JSON'
 {"fm_task":{"ops":["list","get","create","patch"],"f":{"assignee":{"t":"s","m":64},"blockKind":{"t":"s","n":1,"m":32},"blockReason":{"t":"s","n":1,"m":2000},"blockRepeats":{"t":"i"},"createdAt":{"t":"d","sv":"now"},"createdBy":{"t":"s","m":64,"sv":"callerId"},"holdUntil":{"t":"d","n":1},"issueUrl":{"t":"s","n":1,"m":2048},"kind":{"t":"s","m":32},"lastSeq":{"t":"i"},"nextActor":{"t":"s","m":32},"prUrl":{"t":"s","n":1,"m":2048},"repo":{"t":"s","n":1,"m":200},"state":{"t":"s","m":32},"surface":{"t":"s","n":1,"m":32},"taskId":{"t":"s","m":128},"title":{"t":"s","m":300}},"u":[["taskId"]]},"fm_task_event":{"ops":["list","get","create"],"f":{"actor":{"t":"s","m":64},"actorRole":{"t":"s","m":32},"body":{"t":"s","m":8000},"createdAt":{"t":"d","sv":"now"},"createdBy":{"t":"s","m":64,"sv":"callerId"},"idempotencyKey":{"t":"s","m":200},"kind":{"t":"s","m":32},"seq":{"t":"i"},"taskId":{"t":"s","m":128}},"u":[["seq"],["idempotencyKey"]]},"fm_event_done":{"ops":["list","get","create"],"f":{"changedFiles":{"t":"s","m":4000},"head":{"t":"s","n":1,"m":64},"prUrl":{"t":"s","n":1,"m":2048},"residualRisk":{"t":"s","m":2000},"rows":{"t":"s"},"summary":{"t":"s","m":4000},"verification":{"t":"s","m":4000}},"u":[["fmTaskEventId"]],"parent":["fmTaskEvent","done"]},"fm_event_question":{"ops":["list","get","create"],"f":{"document":{"t":"s","n":1,"m":2048},"options":{"t":"s","m":8000},"question":{"t":"s","m":2000},"recommendation":{"t":"s","m":2000},"why":{"t":"s","m":4000}},"u":[["fmTaskEventId"]],"parent":["fmTaskEvent","question"]},"fm_event_block":{"ops":["list","get","create"],"f":{"blockKind":{"t":"s","m":32},"nextActor":{"t":"s","m":32},"reason":{"t":"s","m":2000},"until":{"t":"d","n":1}},"u":[["fmTaskEventId"]],"parent":["fmTaskEvent","block"]},"fm_event_image":{"ops":["list","get","create"],"f":{"content":{"t":"s"},"label":{"t":"s","m":200},"mediaType":{"t":"s","m":32},"position":{"t":"i","n":1}},"u":[],"parent":["fmTaskEvent","images"]},"fm_task_check":{"ops":["list","get","create","patch"],"f":{"acceptanceDigest":{"t":"s","m":128},"checkedAt":{"t":"d","n":1},"controls":{"t":"s","m":2000},"data":{"t":"s","m":2000},"evidence":{"t":"s","n":1,"m":4000},"head":{"t":"s","n":1,"m":64},"line":{"t":"s","m":4000},"nextActor":{"t":"s","m":32},"page":{"t":"s","m":200},"proof":{"t":"s","m":4000},"scenarioId":{"t":"s","m":64},"status":{"t":"s","m":32},"surface":{"t":"s","m":32},"taskId":{"t":"s","m":128},"width":{"t":"s","m":32}},"u":[["taskId","scenarioId","width"]]},"fm_owner_check":{"ops":["list","get","create","patch"],"f":{"data":{"t":"s","m":4000},"decidedAt":{"t":"d","n":1},"expected":{"t":"s","m":4000},"note":{"t":"s","n":1,"m":4000},"pageTitle":{"t":"s","m":200},"scenarioId":{"t":"s","m":64},"status":{"t":"s","m":16},"steps":{"t":"s","m":8000},"taskId":{"t":"s","m":128},"url":{"t":"s","m":2048},"width":{"t":"s","m":32}},"u":[["taskId","scenarioId","width"]]},"fm_task_link":{"ops":["list","get","create","delete"],"f":{"childTaskId":{"t":"s","m":128},"parentTaskId":{"t":"s","m":128}},"u":[["parentTaskId","childTaskId"]]},"fm_task_delivery":{"ops":["list","get","create"],"f":{"consumer":{"t":"s","m":64},"deliveredAt":{"t":"d","sv":"now"},"seq":{"t":"i"}},"u":[["consumer","seq"]]}}
 JSON
+node - "$TMP_ROOT/schema.json" <<'JS'
+const fs = require('fs');
+const file = process.argv[2]; const s = JSON.parse(fs.readFileSync(file));
+s.fm_event_document = {ops:['list','get','create'],f:{title:{t:'s',m:200},mediaType:{t:'s',m:100},content:{t:'s'}},u:[['fmTaskEventId']],parent:['fmTaskEvent','documents']};
+fs.writeFileSync(file, JSON.stringify(s));
+JS
 
 cat > "$TMP_ROOT/fake-api.mjs" <<'JS'
 import crypto from 'node:crypto';
@@ -375,7 +381,19 @@ use_issue() { issue_body "$1" > "$TMP_ROOT/issue.body"; }
 # a missing template field prints the API's field and stores nothing.
 case_terminal() {
   BIN=$1; reset_db
-  local badfile
+  local badfile docs_before doc_id
+  printf '# Report\nUnicode: café\n' > "$TMP_ROOT/report.md"
+  printf '<!doctype html><script>window.proof=1</script>café' > "$TMP_ROOT/report.html"
+  for badfile in "$TMP_ROOT/report.md" "$TMP_ROOT/report.html"; do
+    mk_running doc-valid >/dev/null || return 1
+    log_reset
+    ft done doc-valid "${DONE_FLAGS[@]}" --document "$badfile"
+    must 'document deep insert' 0 || return 1
+    doc_id=$(db fm_task_event | jq -r --argjson seq "$(seq_of)" '.[] | select(.seq == $seq) | .id')
+    db fm_event_document | jq -e --arg id "$doc_id" --rawfile content "$badfile" --arg title "$(basename "$badfile")" '.[] | select(.fmTaskEventId == $id) | .content == $content and .title == $title and (.mediaType == "text/markdown" or .mediaType == "text/html")' >/dev/null || { echo 'document differs from input bytes'; return 1; }
+    [ "$(posts POST fm_task_event)" = 1 ] && [ "$(posts POST fm_event_document)" = 0 ] || return 1
+    reset_db
+  done
   printf '\377' > "$TMP_ROOT/latin.md"
   : > "$TMP_ROOT/empty.md"
   printf 'plain' > "$TMP_ROOT/wrong.txt"
@@ -385,6 +403,25 @@ case_terminal() {
     must 'invalid document' 2 || return 1
     [ "$(task_state doc-refusal)" = running ] || return 1
   done
+  node -e 'require("fs").writeFileSync(process.argv[1], Buffer.alloc(2*1024*1024+1, 65))' "$TMP_ROOT/large.md"
+  for badfile in "$TMP_ROOT/large.md"; do
+    docs_before=$(count fm_task_event)
+    ft done doc-refusal "${DONE_FLAGS[@]}" --document "$badfile"
+    must 'oversize document' 2 || return 1
+    [ "$(count fm_task_event)" = "$docs_before" ] || return 1
+  done
+  for badfile in duplicate title-alone empty-title multiline-title; do
+    docs_before=$(count fm_task_event)
+    case "$badfile" in
+      duplicate) ft done doc-refusal "${DONE_FLAGS[@]}" --document "$TMP_ROOT/report.md" --document "$TMP_ROOT/report.html" ;;
+      title-alone) ft done doc-refusal "${DONE_FLAGS[@]}" --document-title title ;;
+      empty-title) ft done doc-refusal "${DONE_FLAGS[@]}" --document "$TMP_ROOT/report.md" --document-title '' ;;
+      multiline-title) ft done doc-refusal "${DONE_FLAGS[@]}" --document "$TMP_ROOT/report.md" --document-title $'two\nlines' ;;
+    esac
+    must 'document option refusal' 2 || return 1
+    [ "$(count fm_task_event)" = "$docs_before" ] || return 1
+  done
+  reset_db
   export FM_HOME="$TMP_ROOT/terminal-home"
   mkdir -p "$FM_HOME/state"
   rm -f "$FM_HOME/state/tk10.status"
@@ -1481,5 +1518,9 @@ mutate 'a check on a task that closed meanwhile is refused' check_close "if (CLO
 mutate 'approve judges a row by its newest check event' approve_newest "return v ? { ...r, status: v.status," "return false ? { ...r, status: v.status,"
 mutate 'an owner-check update needs --url and --steps' owner_update "if (missing.length) throw rule(" "if (false) throw rule("
 mutate 'an owner-check on a task that closed meanwhile is refused' owner_close "if (CLOSED.includes(task.state)) throw rule(\`owner-check is refused:" "if (false) throw rule(\`owner-check is refused:"
+mutate 'done document is carried by the event deep insert' terminal '...(documents ? { documents: [documents] } : {})' '...{}'
+mutate 'document byte limit is checked before writing' terminal 'bytes.length > 2 * 1024 * 1024' 'false'
+mutate 'document UTF-8 is strict' terminal 'fatal: true, ignoreBOM: true' 'fatal: false, ignoreBOM: true'
+mutate 'document title requires a document' terminal "if (f['document-title'] !== undefined) throw usage" 'if (false) throw usage'
 mutate 'capability block is emitted once' terminal 'if (count === 3) {' 'if (count >= 3) {'
 pass 'every guarded behavior has a red mutation proof'
