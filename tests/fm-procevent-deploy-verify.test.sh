@@ -575,9 +575,40 @@ scenario_skip_catchup() {
   case "$out" in *'procevent:deploy-verify:1'*) ;; *) echo "the drain hid the visible skip: $out"; return 1 ;; esac
 }
 
+# With the task record shadow on, a delivered ask also reaches the record as a deploy event of its task; a home without the flag writes nothing.
+scenario_shadow() {
+  new_lab "$1"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s/writer.calls"\n' "$LAB" > "$LAB/writer"
+  chmod +x "$LAB/writer"
+  backlog_task alpha 11 500
+  fx_issue 500 V1:user-visible
+  fx_runs "1:completed:success:s0" "2:completed:success:s2"
+  fx_jobs 2 success
+  fx_compare s0 s2 c1
+  fx_commit_prs c1 11:500
+  set_cursor 1 s0
+  export FM_TASK_SHADOW_WRITER="$LAB/writer"
+  cycle
+  [ "$CYCLE_AUTO" = 0 ] || { echo "autohandle=$CYCLE_AUTO"; return 1; }
+  [ ! -s "$LAB/writer.calls" ] || { echo "a home without the flag wrote to the record: $(cat "$LAB/writer.calls")"; return 1; }
+  : > "$H/config/task-shadow"
+  backlog_task beta 13 600
+  fx_issue 600 V1:user-visible
+  fx_runs "1:completed:success:s0" "2:completed:success:s2" "3:completed:success:s3"
+  fx_jobs 3 success
+  fx_compare s2 s3 c3
+  fx_commit_prs c3 13:600
+  cycle
+  [ "$CYCLE_AUTO" = 0 ] || { unset FM_TASK_SHADOW_WRITER; echo "autohandle=$CYCLE_AUTO"; return 1; }
+  unset FM_TASK_SHADOW_WRITER
+  grep -q "^event beta deploy --note deploy deploy at $(sha s3): verify ask sent (cfw-modules#600) --key shadow:beta:deploy-[0-9a-f]* --actor shadow --role system$" "$LAB/writer.calls" \
+    || { echo "the delivered ask did not reach the record: $(cat "$LAB/writer.calls" 2>&1)"; return 1; }
+  [ "$(wc -l < "$LAB/writer.calls" | tr -d ' ')" = 1 ] || { echo "more than the one delivered ask reached the record: $(cat "$LAB/writer.calls")"; return 1; }
+}
+
 run_scenarios() {  # <bin-dir>
   local s rc=0
-  for s in ledger skips not_deployed draft record failures runner skip_catchup rows refused replay replay_refused; do
+  for s in ledger skips not_deployed draft record failures runner skip_catchup rows refused replay replay_refused shadow; do
     out=$(scenario_"$s" "$1" 2>&1) || { printf 'scenario %s: %s\n' "$s" "$out"; rc=1; }
   done
   return $rc
@@ -585,7 +616,7 @@ run_scenarios() {  # <bin-dir>
 
 # ---- real adapter -----------------------------------------------------------
 
-for s in ledger skips not_deployed draft record failures runner skip_catchup rows refused replay replay_refused; do
+for s in ledger skips not_deployed draft record failures runner skip_catchup rows refused replay replay_refused shadow; do
   out=$(scenario_"$s" "$ROOT/bin" 2>&1) || fail "scenario $s failed on the real adapter: $out"
   pass "deploy-verify $s"
 done
@@ -680,4 +711,6 @@ mutate 'a failed delivery keeps the cursor' failures \
   's/if \[ "\$failed" -eq 1 \]; then/if false; then/'
 mutate 'an unread GitHub is left for the wake' failures \
   's/jq -e .\.error == null. "\$result" >\/dev\/null 2>&1 \|\| return 1/:/'
+mutate 'a delivered ask reaches the task record' shadow \
+  's/^[^\n]*fm-task-shadow\.sh" deploy-verify[^\n]*\n//m'
 pass 'every guarded behavior has a red mutation proof'

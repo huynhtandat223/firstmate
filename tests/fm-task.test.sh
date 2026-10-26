@@ -2,7 +2,7 @@
 # Behavior tests for bin/fm-task.sh, the one writer and reader of the task contract.
 #
 # Every case drives the real command against a local stand-in for Dev 5001 (a small
-# HTTP server written below). The stand-in applies the rules the published tables
+# HTTP server in tests/fm-task-fake-api). The stand-in applies the rules the published tables
 # carry: required and length rules on a root row and on each deep-insert child,
 # unique keys answering 409 with details.existingId, a missing int stored as 0,
 # server values, an undeclared verb answering 404, and OData $filter/$orderby/$top.
@@ -307,7 +307,7 @@ jq -Rs '{body: .}' "$FAKE_GH_BODY_FILE"
 SH
 chmod +x "$TMP_ROOT/fakebin/gh"
 
-node "$TMP_ROOT/fake-api.mjs" "$TMP_ROOT/port" "$TMP_ROOT/schema.json" "$TOKEN" &
+node "$FAKE_API/server.mjs" "$TMP_ROOT/port" "$FAKE_API/schema.json" "$TOKEN" &
 for _ in $(seq 1 100); do [ -s "$TMP_ROOT/port" ] && break; sleep 0.1; done
 [ -s "$TMP_ROOT/port" ] || fail 'the stand-in API did not start'
 PORT=$(cat "$TMP_ROOT/port")
@@ -594,7 +594,7 @@ case_concurrent() {
 # TR12: the Hermes transitions, every state x command pair, then the block-repeat and parent rules.
 declare -A EXPECT
 for s in triage todo ready running blocked review 'done' archived; do
-  for c in assign start heartbeat 'done' ask block unblock approve changes archive comment; do EXPECT[$s:$c]=-; done
+  for c in assign reassign reopen start heartbeat 'done' ask block unblock approve changes archive comment; do EXPECT[$s:$c]=-; done
 done
 EXPECT[triage:assign]=ready;   EXPECT[triage:unblock]=ready;   EXPECT[triage:archive]=archived;   EXPECT[triage:comment]=triage
 EXPECT[todo:assign]=todo;      EXPECT[todo:archive]=archived;  EXPECT[todo:comment]=todo
@@ -605,7 +605,9 @@ EXPECT[blocked:unblock]=ready; EXPECT[blocked:archive]=archived; EXPECT[blocked:
 EXPECT[review:approve]='done';   EXPECT[review:changes]=ready;  EXPECT[review:archive]=archived;   EXPECT[review:comment]=review
 EXPECT['done':archive]=archived; EXPECT['done':comment]='done'
 EXPECT[archived:comment]=archived
-CMDS='assign start heartbeat done ask block unblock approve changes archive comment'
+for s in triage todo ready running blocked review; do EXPECT[$s:reassign]=$s; done
+EXPECT['done':reopen]=ready
+CMDS='assign reassign reopen start heartbeat done ask block unblock approve changes archive comment'
 
 put_in_state() {  # <task> <state>
   local t=$1
@@ -623,6 +625,8 @@ put_in_state() {  # <task> <state>
 run_command() {  # <task> <command>
   case $2 in
     assign) ft assign "$1" --to worker-2 ;;
+    reassign) ft reassign "$1" --to worker-2 --reason handoff ;;
+    reopen) ft reopen "$1" --reason 'new work' ;;
     done) ft "done" "$1" "${DONE_FLAGS[@]}" ;;
     ask) ft ask "$1" "${ASK_FLAGS[@]}" ;;
     block) ft block transient "$1" --reason waiting --next-actor firstmate ;;
@@ -1277,6 +1281,18 @@ case_owner_update() {
   ft create $t --title t --kind ship >/dev/null; use_issue v1; ft rows $t "$ISSUE" >/dev/null
   ft owner-check $t A1@1440 --page-title 'Home page' --url 'http://100.88.10.58:5001/#home' --steps '1. open it' --data d --expected e >/dev/null
   events=$(count fm_task_event); item=$(db fm_owner_check | jq -S -c .)
+  local missing
+  for missing in page-title url steps data expected; do
+    local -a template=()
+    local field
+    for field in page-title url steps data expected; do
+      [ "$field" = "$missing" ] || template+=("--$field" "value-$field")
+    done
+    ft owner-check $t A1@1440 "${template[@]}"
+    must "update without --$missing" 5 || return 1
+    [[ "$ERR" == *"--$missing"* ]] || return 1
+    [ "$(count fm_task_event)" = "$events" ] && [ "$(db fm_owner_check | jq -S -c .)" = "$item" ] || return 1
+  done
   ft owner-check $t A1@1440 --page-title 'New title' --steps '1. open it' --data d --expected e
   must 'update without --url' 5 || return 1
   case $ERR in *url*) ;; *) echo "the refusal does not name url: $ERR"; return 1 ;; esac
@@ -1306,6 +1322,39 @@ case_owner_close() {
   [ "$(cat "$TMP_ROOT/oc.rc")" = 5 ] || { echo "the owner-check behind the approval exited $(cat "$TMP_ROOT/oc.rc"), want 5: $(cat "$TMP_ROOT/oc.out")"; return 1; }
   db fm_task_event | jq -e '[.[] | select(.kind == "owner-check")] | length == 0' >/dev/null || { echo "an owner-check event was stored after the task closed"; return 1; }
   [ "$(db fm_task_check | jq -r '.[] | select(.scenarioId == "A2") | .status + "/" + .nextActor')" = pass/firstmate ] || { echo "the owner-check changed a row of the closed task"; return 1; }
+}
+
+# import writes a task at the state an old source holds, once: a second call changes nothing, and a bad value is refused.
+case_import() {
+  BIN=$1; reset_db
+  local events
+  ft import tk-im1 --title 'Imported' --kind ship --repo example/repo --state blocked --assignee w1 --next-actor owner --block-kind needs-decision --block-reason 'pick one' --issue https://github.com/o/r/issues/1 --since 2026-10-20T08:00:00Z
+  must 'import' 0 || return 1
+  task_row tk-im1 | jq -e '.state == "blocked" and .nextActor == "owner" and .blockKind == "needs-decision" and .blockReason == "pick one" and .assignee == "w1" and .repo == "example/repo" and .issueUrl == "https://github.com/o/r/issues/1" and .lastSeq > 0' >/dev/null \
+    || { echo "the imported row is wrong: $(task_row tk-im1)"; return 1; }
+  events=$(count fm_task_event)
+  ft import tk-im1 --title 'Changed' --kind scout --state running --assignee w2 --next-actor worker
+  must 'import again' 0 || return 1
+  case $OUT in *already*) ;; *) echo "import again does not say so: $OUT"; return 1 ;; esac
+  [ "$(count fm_task_event)" = "$events" ] && [ "$(task_state tk-im1)" = blocked ] || { echo "a second import changed the record"; return 1; }
+  ft import tk-im1 --title 'Other key' --kind ship --state running --assignee w3 --next-actor worker --key other-key
+  must 'import under another key' 0 || return 1
+  case $OUT in *'already present'*) ;; *) echo "import under another key does not say so: $OUT"; return 1 ;; esac
+  [ "$(count fm_task_event)" = "$events" ] || { echo "an import under another key stored an event"; return 1; }
+  ft import tk-im2 --title 'Done one' --kind ship --state "done" --assignee - --next-actor firstmate
+  must 'import done' 0 || return 1
+  [ "$(task_state tk-im2)" = "done" ] || { echo "done is $(task_state tk-im2)"; return 1; }
+  ft import tk-im3 --title t --kind ship --state nowhere --assignee - --next-actor worker
+  must 'import with a bad state' 5 || return 1
+  ft import tk-im3 --title t --kind ship --state ready --assignee - --next-actor nobody
+  must 'import with a bad actor' 5 || return 1
+  ft import tk-im3 --title t --kind ship --state ready --assignee - --next-actor worker --block-kind sulking
+  must 'import with a bad block kind' 5 || return 1
+  [ "$(task_row tk-im3)" = '' ] || { echo "a refused import stored a row"; return 1; }
+  ft reproject tk-im1 >/dev/null; task_row tk-im1 | jq -e '.state == "blocked"' >/dev/null || { echo "reproject changed the imported row"; return 1; }
+  # an imported task works with the other commands: unblock moves it on
+  ft unblock tk-im1 >/dev/null; must 'unblock an imported task' 0 || return 1
+  [ "$(task_state tk-im1)" = ready ] || { echo "unblock gave $(task_state tk-im1)"; return 1; }
 }
 
 # A re-sent key carries the values of its first event; a retry with other values is refused.
@@ -1432,7 +1481,7 @@ case_link_triage() {
   [ "$(task_state tk-lt-c2)" = ready ] || { echo "the parent closing left the child in $(task_state tk-lt-c2)"; return 1; }
 }
 
-CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close"}
+CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import"}
 
 # ---- real command -------------------------------------------------------------------
 
@@ -1522,4 +1571,6 @@ mutate 'document byte limit is checked before writing' terminal 'bytes.length > 
 mutate 'document UTF-8 is strict' terminal 'fatal: true, ignoreBOM: true' 'fatal: false, ignoreBOM: true'
 mutate 'document title requires a document' terminal "if (f['document-title'] !== undefined) throw usage" 'if (false) throw usage'
 mutate 'capability block is emitted once' terminal 'if (count === 3) {' 'if (count >= 3) {'
+mutate 'an import leaves a task that is already there as it is' import "if (existing) throw rule(\`task \${taskId} already present\`);" "if (false) throw rule(\`task \${taskId} already present\`);"
+mutate 'an import checks the state list' import "const state = oneOf(STATES, f.state, 'state');" "const state = f.state;"
 pass 'every guarded behavior has a red mutation proof'

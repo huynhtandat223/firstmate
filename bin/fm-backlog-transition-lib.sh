@@ -484,6 +484,21 @@ fm_backlog_row_probe() {  # <data-dir> <id>
   return 0
 }
 
+# Opt-in task record shadow (bin/fm-task-shadow.sh): a landed done, reopen, hold or unhold reaches the record too. The
+# hook never fails the transition; off costs one file test. Arguments: <verb> <id> <data-dir> [the verb's flags].
+fm_backlog_shadow() {
+  local verb=$1 id=$2 data=$3 kind='' reason='' previous='' arg
+  local config=${FM_CONFIG_OVERRIDE:-${FM_HOME:-}/config}
+  shift 3
+  [ -e "$config/task-shadow" ] || return 0
+  case "$verb" in done|reopen|hold|unhold) ;; *) return 0 ;; esac
+  for arg in "$@"; do
+    case "$previous" in --kind) kind=$arg ;; --reason) reason=$arg ;; esac
+    previous=$arg
+  done
+  FM_DATA_OVERRIDE=$data "$(dirname "${BASH_SOURCE[0]}")/fm-task-shadow.sh" backlog "$verb" "$id" "$kind" "$reason" >/dev/null 2>&1 || true
+}
+
 # Run one tasks-axi mutation against <home>'s backlog, capturing its first
 # output line in FM_BACKLOG_TRANSITION_ERROR on failure. The home boundary is
 # authorized through fm_backlog_source_present first; fm_backlog_tasks_axi owns
@@ -508,7 +523,10 @@ fm_backlog_mutate() {  # <data-dir> <verb> <id> [flag...]
     out=$(cd "$FM_BACKLOG_AXI_ROOT" 2>/dev/null && fm_tasks_axi "$verb" "$id" "$@" 2>&1)
   fi
   command_status=$?
-  [ "$command_status" -ne 0 ] || return 0
+  if [ "$command_status" -eq 0 ]; then
+    fm_backlog_shadow "$verb" "$id" "$data" "$@"
+    return 0
+  fi
   FM_BACKLOG_TRANSITION_ERROR=$(printf '%s\n' "$out" | sed -n '1p')
   if [ -z "$FM_BACKLOG_TRANSITION_ERROR" ]; then
     if fm_tasks_axi_timeout_expired "$command_status" && [ -n "${FM_TASKS_AXI_TIMEOUT:-}" ]; then

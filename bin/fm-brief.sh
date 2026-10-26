@@ -500,6 +500,8 @@ STATUS_FILE=$(shell_quote "$STATE/$ID.status")
 # file test when the flag is absent. A host without that flag, such as a remote
 # second mate's, runs only the append; the watcher capture is the backstop.
 STATUS_APPEND="echo \"{state} [at=<epoch>]: {one short line}\" >> $STATUS_FILE && { [ ! -e $(shell_quote "$CONFIG/fleet-ledger") ] || $(shell_quote "$FM_ROOT/bin/fm-fleet-ledger.sh") appended $(shell_quote "$CONFIG") $STATUS_FILE >/dev/null 2>&1 || true; }"
+# Opt-in task record shadow (bin/fm-task-shadow.sh): the same line reaches the record; the writer never changes the result.
+STATUS_APPEND="$STATUS_APPEND && { [ ! -e $(shell_quote "$CONFIG/task-shadow") ] || $(shell_quote "$FM_ROOT/bin/fm-task-shadow.sh") status $(shell_quote "$CONFIG") $STATUS_FILE >/dev/null 2>&1 || true; }"
 INBOX_DIR=$(shell_quote "$STATE/$ID.inbox")
 
 # The receive-and-ack half of the steering-inbox contract, included in every
