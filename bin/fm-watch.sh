@@ -2559,6 +2559,14 @@ turnend_check_task() {  # <task>
     TURNEND_WHY="composer $cstate"
     return 0
   fi
+  if ! grep -q '^Terminal call:' "$FM_HOME/data/$task/brief.md" 2>/dev/null ||
+    ! fm_run_timed 2 "$SCRIPT_DIR/fm-task.sh" show "$task" --json >/dev/null 2>&1; then
+    verdict=$(turnend_state_line_verdict "$task") || { TURNEND_WHY='legacy status unreadable'; return 0; }
+    verdict=${verdict%% *}
+    case "$verdict" in valid-working|valid-paused|wake-verb) TURNEND_VERDICT=$verdict; return 0 ;; esac
+    TURNEND_VERDICT=ping-exhausted
+    return 0
+  fi
   if ! verdict=$(FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task.sh" turn-end "$task" --turn "$(stat_mtime "$STATE/$task.turn-ended")"); then
     TURNEND_WHY='task record unreadable'
     return 0
@@ -3373,16 +3381,19 @@ resurface_after_downtime() {
 
 while :; do
   # Scope delivery to this home's direct task records, never another home's events.
+  task_delivery_processed=0
   for task_meta in "$STATE"/*.meta; do
     [ -f "$task_meta" ] || continue
     task_id=${task_meta##*/}; task_id=${task_id%.meta}
-    [ "$task_id" != "${TASK_DELIVERY_LAST:-}" ] || continue
+    if [ -n "${TASK_DELIVERY_LAST:-}" ] && [[ "$task_id" < "$TASK_DELIVERY_LAST" || "$task_id" = "$TASK_DELIVERY_LAST" ]]; then continue; fi
     TASK_DELIVERY_LAST=$task_id
+    task_delivery_processed=1
     task_consumer="firstmate-${FM_HOME##*/}"
     fm_run_timed 2 env FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task.sh" deliver "$task_id" --consumer "$task_consumer" >/dev/null 2>&1 || true
     # One task per pass bounds API work independently of fleet size.
     break
   done
+  [ "$task_delivery_processed" = 1 ] || TASK_DELIVERY_LAST=''
   # Home-gone exit: a deleted home, state directory, or code root means this
   # watcher's world is gone (a torn-down temporary home or a discarded
   # disposable checkout). Exit with a logged reason rather than writing state

@@ -785,8 +785,8 @@ The worktree is your laboratory - install, run, edit, and make scratch commits f
 The report is the only thing that survives, so anything worth keeping must be in it.
 
 # Rules
-Terminal call: end each worker turn with exactly one \`bin/fm-task.sh done|ask|block $ID\` and its template fields from \`--help\`.
-Read \`bin/fm-task.sh resume $ID\` first when starting or resuming this task; name its state in the terminal call's note.
+Terminal call: end each worker turn with exactly one \`$FM_ROOT/bin/fm-task.sh done|ask|block $ID\` and its template fields from \`--help\`.
+Read \`$FM_ROOT/bin/fm-task.sh resume $ID\` first when starting or resuming this task; name its state in the terminal call's note.
 Use \`heartbeat $ID --note <activity>\` for activity and \`block transient $ID --reason <wait> --next-actor worker --until <ISO>\` for a wait.
 The terminal call also writes the legacy status line until T7.
 1. Never push to any remote and never open a PR.

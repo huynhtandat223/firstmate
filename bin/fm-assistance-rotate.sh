@@ -36,13 +36,18 @@ fi
 # Rebuild task context from the record before any rotation action.
 resume_file="$FM_HOME/data/assistance-task-resume.md"
 resume_tmp=$(mktemp "$FM_HOME/data/.task-resume.XXXXXX")
-if ! "$SCRIPT_DIR/fm-task.sh" list --json > "$resume_tmp"; then rm -f "$resume_tmp"; exit 1; fi
+if ! "$SCRIPT_DIR/fm-task.sh" list --json > "$resume_tmp"; then
+  echo 'rotation: task record unavailable; continue from persisted handoff and retry resume in fresh session' >&2
+  printf '[]\n' > "$resume_tmp"
+fi
 name=$(<"$FM_HOME/.fm-assistance-home")
 tasks=$(jq -r --arg name "$name" '.[] | select(.assignee == $name and .state != "done" and .state != "archived") | .taskId' "$resume_tmp")
 : > "$resume_tmp"
 while IFS= read -r task; do
   [ -n "$task" ] || continue
-  if ! "$SCRIPT_DIR/fm-task.sh" resume "$task" >> "$resume_tmp"; then rm -f "$resume_tmp"; exit 1; fi
+  if ! "$SCRIPT_DIR/fm-task.sh" resume "$task" >> "$resume_tmp"; then
+    printf '\nRetry bin/fm-task.sh resume %s in the fresh session.\n' "$task" >> "$resume_tmp"
+  fi
 done <<< "$tasks"
 mv "$resume_tmp" "$resume_file"
 endpoint=$(<"$STATE/assistance-endpoint")

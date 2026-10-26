@@ -1079,10 +1079,10 @@ async function cmdTurnEnd(args) {
   const anchor = Math.max(prior.seq, started?.seq ?? 0);
   const terminal = events.some((e) => e.seq > anchor && TERMINAL[e.kind]);
   let count = terminal ? 0 : prior.count + 1;
-  let verdict = terminal ? 'wake-verb' : `ping-${Math.min(count, 3)}`;
+  let verdict = terminal ? 'wake-verb' : count > 3 ? 'ping-escalated' : `ping-${count}`;
   if (!terminal) {
     await cmdEvent({ pos: { task: taskId, kind: 'protocol_violation' }, flags: { key: `turn:${taskId}:${turn}`, note: 'Turn ended without a terminal call', actor: 'turn-end-checker', role: 'system' } });
-    if (count >= 3) {
+    if (count === 3) {
       await write(taskId, { key: `turn-block:${taskId}:${turn}`, actor: 'turn-end-checker', role: 'system' }, async () => ({ kind: 'blocked', note: 'Three turns without a terminal call', set: { state: 'blocked', nextActor: 'firstmate', blockKind: 'capability', blockReason: 'Three turns without a terminal call', blockRepeats: count }, children: { block: [{ blockKind: 'capability', reason: 'Three turns without a terminal call', nextActor: 'firstmate' }] } }));
       verdict = 'ping-exhausted';
     }
