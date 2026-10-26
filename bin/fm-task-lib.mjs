@@ -1170,12 +1170,23 @@ async function cmdDeliver(args) {
   const consumer = args.flags.consumer;
   if (!consumer || consumer.length > 64) throw usage('deliver needs --consumer (up to 64 characters)');
   if (!process.env.FM_HOME) throw usage('deliver requires FM_HOME');
-  const delivered = await listAll('fm_task_delivery', { filter: `consumer eq ${lit(consumer)}`, orderby: 'seq' });
+  const taskStream = await taskEvents(taskIdOf(args));
+  const firstSeq = taskStream[0]?.seq ?? 0;
+  const lastSeq = taskStream.at(-1)?.seq ?? 0;
+  const delivered = await listAll('fm_task_delivery', { filter: `consumer eq ${lit(consumer)} and seq ge ${firstSeq} and seq le ${lastSeq}`, orderby: 'seq' });
   const seen = new Set(delivered.map((r) => r.seq));
   const state = process.env.FM_STATE_OVERRIDE || path.join(process.env.FM_HOME, 'state');
   const spool = path.join(state, '.task-delivery-outbox', crypto.createHash('sha256').update(consumer).digest('hex'));
   fs.mkdirSync(spool, { recursive: true });
-  const events = await taskEvents(taskIdOf(args));
+  const activation = path.join(spool, `${taskIdOf(args)}.activated`);
+  if (!fs.existsSync(activation)) {
+    // First activation establishes a baseline, not a replay of historical work.
+    fs.writeFileSync(activation, String(lastSeq));
+    out(`activated ${consumer} task=${taskIdOf(args)} after=${lastSeq}`);
+    return;
+  }
+  const baseline = Number(fs.readFileSync(activation, 'utf8'));
+  const events = taskStream.filter((e) => e.seq > baseline);
   for (const event of events) {
     const receipt = path.join(spool, `${event.seq}.json`);
     if (seen.has(event.seq) && !fs.existsSync(receipt)) continue;
