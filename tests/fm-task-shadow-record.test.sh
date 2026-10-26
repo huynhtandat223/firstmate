@@ -44,7 +44,7 @@ bash "$ROOT/bin/fm-task-shadow.sh" held closing captain 'Close this'
 bash "$ROOT/bin/fm-task-shadow.sh" answered closing closed
 "$ROOT/bin/fm-task.sh" show closing --json | jq -e '.state == "done"'
 "$ROOT/bin/fm-task.sh" import todoclose --title Todo --kind ship --state todo --assignee todoclose --next-actor firstmate
-bash "$ROOT/bin/fm-task-shadow.sh" backlog done todoclose
+bash "$ROOT/bin/fm-task-shadow.sh" backlog 'done' todoclose
 "$ROOT/bin/fm-task.sh" show todoclose --json | jq -e '.state == "done"'
 "$ROOT/bin/fm-task.sh" create readywork --title Ready --kind ship
 "$ROOT/bin/fm-task.sh" assign readywork --to readywork
