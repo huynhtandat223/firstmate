@@ -3376,8 +3376,12 @@ while :; do
   for task_meta in "$STATE"/*.meta; do
     [ -f "$task_meta" ] || continue
     task_id=${task_meta##*/}; task_id=${task_id%.meta}
+    [ "$task_id" != "${TASK_DELIVERY_LAST:-}" ] || continue
+    TASK_DELIVERY_LAST=$task_id
     task_consumer="firstmate-${FM_HOME##*/}"
-    FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task.sh" deliver "$task_id" --consumer "$task_consumer" >/dev/null 2>&1 || true
+    fm_run_timed 2 env FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task.sh" deliver "$task_id" --consumer "$task_consumer" >/dev/null 2>&1 || true
+    # One task per pass bounds API work independently of fleet size.
+    break
   done
   # Home-gone exit: a deleted home, state directory, or code root means this
   # watcher's world is gone (a torn-down temporary home or a discarded
