@@ -26,5 +26,9 @@ curl -fsS -H 'Authorization: Bearer token' -H 'content-type: application/json' -
 curl -fsS -H 'Authorization: Bearer token' -H 'content-type: application/json' -X POST "$FM_TASK_BASE_URL/api/fm_task_check" --data '{"taskId":"held","scenarioId":"O1","width":"-","line":"Check","surface":"internal","page":"-","controls":"-","data":"probe","proof":"manual","status":"fail","nextActor":"owner","acceptanceDigest":"probe"}' >/dev/null
 "$ROOT/bin/fm-state-metrics" sample --feed "$FEED" --shadow "$TMP_ROOT/shadow" > "$TMP_ROOT/out"
 jq -e '.cards == [{id:"held",key:"hold:held"},{id:"planned",key:"plan:planned"}] and any(.items[]; .key == "hold:held" and .open)' "$TMP_ROOT/out"
+jq -e 'any(.items[]; .key == "owner:held:O1@-" and (.open | not))' "$TMP_ROOT/out"
+item_id=$(curl -fsS "$FM_TASK_BASE_URL/__x/rows/fm_owner_check" | jq -r '.[0].id')
+curl -fsS -H 'Authorization: Bearer token' -H 'content-type: application/json' -X PATCH "$FM_TASK_BASE_URL/api/fm_owner_check/$item_id" --data '{"status":"pending"}' >/dev/null
+"$ROOT/bin/fm-state-metrics" sample --feed "$FEED" --shadow "$TMP_ROOT/shadow" > "$TMP_ROOT/out"
 jq -e 'any(.items[]; .key == "owner:held:O1@-" and .open)' "$TMP_ROOT/out"
 echo 'ok - sampler decodes real inbox shape and question task identity'
