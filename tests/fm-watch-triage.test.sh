@@ -7794,6 +7794,14 @@ test_pi_turnend_semantic_continue_scenarios() {
   tc_status "$dir" 'working: new chunk'
   turnend_check_task tc
   [ "$TURNEND_VERDICT" = continue-1 ] || fail 'PC6: new state did not reset continue budget'
+  "$ROOT/bin/fm-busy-event.sh" apply "$state" tc busy --gen "$gen" --source pi-ext --event agent-start
+  tc_status "$dir" 'done: result ready after continue'
+  turnend_check_task tc
+  [ "$TURNEND_VERDICT" = wake-verb ] || fail 'PC2: continued worker terminal line did not wake'
+  [ ! -e "$state/.turnend-continues-tc" ] || fail 'PC2: busy terminal line retained continue budget'
+  "$ROOT/bin/fm-busy-event.sh" apply "$state" tc idle --gen "$gen" --source pi-ext --event agent-settled
+  turnend_check_task tc
+  case "$TURNEND_VERDICT" in continue-*|wake-verb) fail 'PC2: settle continued or repeated terminal wake' ;; esac
   TC_EMPTY_AFTER=999; printf 0 > "$dir/reads"
   turnend_check_task tc
   [ "$TURNEND_VERDICT" = composer ] || fail 'PC4: unknown did not keep composer wake'

@@ -2580,7 +2580,7 @@ turnend_check_task() {  # <task>
             TURNEND_WHY='turn-end cursor unwritable'
             return 0
           fi
-          rm -f "$pingf"
+          rm -f "$pingf" "$continuef"
           TURNEND_VERDICT=wake-verb
         else
           TURNEND_VERDICT=busy
