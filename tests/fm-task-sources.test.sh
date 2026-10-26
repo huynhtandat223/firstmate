@@ -30,6 +30,7 @@ grep -q 'running=1' "$TMP_ROOT/dry"
 bash "$BIN/fm-task-backfill.sh" --now 2026-10-25T14:00:00Z > "$TMP_ROOT/first"
 bash "$BIN/fm-task-backfill.sh" --now 2026-10-25T14:00:00Z > "$TMP_ROOT/second"
 grep -q '^0 added' "$TMP_ROOT/second"
+curl -fsS "$FM_TASK_BASE_URL/__x/rows/fm_task_event" | jq -e 'any(.[]; .kind == "steer") and any(.[]; .kind == "comment" and (.body | contains("probe.status")))'
 "$ROOT/bin/fm-task.sh" list --json > "$TMP_ROOT/list"
 jq -e 'length == 4 and any(.[]; .taskId == "owner" and .blockKind == "needs-decision" and .nextActor == "owner") and any(.[]; .taskId == "future" and .state == "todo")' "$TMP_ROOT/list"
 "$ROOT/bin/fm-task.sh" event probe comment --note untouched --key untouched
