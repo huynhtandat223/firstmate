@@ -783,6 +783,7 @@ $SETUP_BASE
 This is a SCOUT task: the deliverable is a written report, not a PR.
 The worktree is your laboratory - install, run, edit, and make scratch commits freely; all of it is discarded at teardown.
 The report is the only thing that survives, so anything worth keeping must be in it.
+Attach the report to your terminal call with \`$FM_ROOT/bin/fm-task.sh done $ID --document <report.md>\` and the required done template fields.
 
 # Rules
 Terminal call: end each worker turn with exactly one \`$FM_ROOT/bin/fm-task.sh done|ask|block $ID\` and its template fields from \`--help\`.
@@ -875,6 +876,7 @@ If the top-level path is the primary checkout or not the worktree you were launc
 
 # Rules
 Terminal call: end each worker turn with exactly one \`$FM_ROOT/bin/fm-task.sh done|ask|block $ID\` and its template fields from \`--help\`.
+When the task asks for an HTML explanation, attach that file to done with \`--document <explanation.html>\` and optional \`--document-title <title>\`.
 Read \`$FM_ROOT/bin/fm-task.sh resume $ID\` first when starting or resuming this task; name its state in the terminal call's note.
 Use \`$FM_ROOT/bin/fm-task.sh heartbeat $ID --note <activity>\` for activity, not a turn end.
 The terminal call also writes the legacy status line until T7.
