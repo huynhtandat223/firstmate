@@ -2434,6 +2434,10 @@ turnend_quota_text() {  # <plain pane tail>
 # The fixed ping text. It names the task's status file and the verbs with their
 # shapes; it is a format reminder, never new work.
 turnend_ping_text() {  # <task>
+  if ! grep -q '^Terminal call:' "$FM_HOME/data/$1/brief.md" 2>/dev/null; then
+    printf 'Your turn ended with no valid state line in %s/%s.status. Append exactly one line there, then continue your task: "working: <what you are doing>", "paused: <why> until <YYYY-MM-DDTHH:MMZ>", "done: <PR URL> head <sha>", "blocked: <why>", or "needs-decision: <options>". This is a format reminder, not new work.' "$STATE" "$1"
+    return
+  fi
   printf 'Terminal call: end this turn with bin/fm-task.sh done|ask|block %s and its required template fields (see --help). Read bin/fm-task.sh resume %s first. heartbeat reports activity and does not end a turn. This is a format reminder, not new work.' "$1" "$1"
 }
 
