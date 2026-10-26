@@ -103,7 +103,9 @@ test_pi_extension_semantic_lifecycle() {
   out=$(classify pi "$id" "$state")
   [ "$out" = "busy fm-spawn" ] || fail "turn_end must stay a notification, not a state edge, got '$out'"
 
+  touch -t 200001010000 "$state/$id.turn-ended"
   out=$(drive_pi_ext "$ext" settle-idle) || fail "agent_settled drive failed: $out"
+  [ "$(stat -c %Y "$state/$id.turn-ended" 2>/dev/null || stat -f %m "$state/$id.turn-ended")" -gt 946684800 ] || fail "PC3: settled idle did not advance turn-ended"
   out=$(classify pi "$id" "$state")
   [ "$out" = "idle pi-ext" ] || fail "agent_settled with isIdle must classify 'idle pi-ext', got '$out'"
 
@@ -111,7 +113,9 @@ test_pi_extension_semantic_lifecycle() {
   out=$(classify pi "$id" "$state")
   [ "$out" = "busy pi-ext" ] || fail "agent_start must classify 'busy pi-ext', got '$out'"
 
+  rm -f "$state/$id.turn-ended"
   out=$(drive_pi_ext "$ext" settle-continuing) || fail "continuing settle drive failed: $out"
+  [ ! -e "$state/$id.turn-ended" ] || fail "PC3: continuing settle touched turn-ended"
   out=$(classify pi "$id" "$state")
   [ "$out" = "busy pi-ext" ] || fail "a settle while another run continues must stay busy, got '$out'"
 

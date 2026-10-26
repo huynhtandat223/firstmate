@@ -2399,8 +2399,9 @@ EOF
 # line, in shell, with no model in the loop (docs/architecture.md owns the
 # contract). Each decision writes one triage line:
 #   turn-end check: <task> verdict=<valid-working|valid-paused|wake-verb|ping-1|
-#   ping-2|ping-3|ping-exhausted|ping-escalated|quota|dead|composer|error>
-# The checks run in this order: process, quota text, composer, then the state
+#   ping-2|ping-3|ping-exhausted|ping-escalated|busy|continue-1..3|
+#   continue-exhausted|continue-escalated|wake-settled|quota|dead|composer|error>
+# The checks run in this order: process, quota text, semantic busy, composer, then the state
 # line. A ping never goes to a rate-limited, dead or busy pane, because a ping to
 # a rate-limited session extends its limit.
 TURNEND_PING_MAX=3
@@ -2433,7 +2434,11 @@ turnend_quota_text() {  # <plain pane tail>
 
 # The fixed ping text. It names the task's status file and the verbs with their
 # shapes; it is a format reminder, never new work.
-turnend_ping_text() {  # <task>
+turnend_ping_text() {  # <task> [format|continue]
+  if [ "${2:-format}" = continue ]; then
+    printf 'Your turn ended while your newest state line in %s/%s.status says working. Continue your task now. If you are waiting, stopping or finished, append paused:, blocked:, needs-decision: or done: instead. This is a continue reminder, not new work.' "$STATE" "$1"
+    return
+  fi
   if ! grep -q '^Terminal call:' "$FM_HOME/data/$1/brief.md" 2>/dev/null; then
     printf 'Your turn ended with no valid state line in %s/%s.status. Append exactly one line there, then continue your task: "working: <what you are doing>", "paused: <why> until <YYYY-MM-DDTHH:MMZ>", "done: <PR URL> head <sha>", "blocked: <why>", or "needs-decision: <options>". This is a format reminder, not new work.' "$STATE" "$1"
     return
@@ -2448,7 +2453,7 @@ turnend_send_ping() {  # <task> <window> <backend> <label>
   delivery_id=$(LC_ALL=C od -An -v -tx1 -N 8 /dev/urandom 2>/dev/null | tr -d ' \n') || return 1
   case "$delivery_id" in ''|*[!0-9a-f]*) return 1 ;; esac
   rec=$(fm_task_inbox_write "$STATE" "$task" \
-    "${FM_FROMFIRST_MARK}delivery=${delivery_id} $(turnend_ping_text "$task")" fire-and-forget) || return 1
+    "${FM_FROMFIRST_MARK}delivery=${delivery_id} $(turnend_ping_text "$task" "${5:-format}")" fire-and-forget) || return 1
   fm_task_inbox_ring "$backend" "$w" "$rec" "$label"
 }
 
@@ -2521,9 +2526,11 @@ EOF
 # an `error` verdict names) and TURNEND_TAIL (the last lines of the pane).
 turnend_check_task() {  # <task>
   local task=$1 meta w backend label astate plain cstate verdict size count pingf seenf
+  local harness semantic retry continuef
   TURNEND_VERDICT=error; TURNEND_WHY=''; TURNEND_TAIL=''; TURNEND_SIZE=''; TURNEND_IDENT=''
   meta="$STATE/$task.meta"
   pingf="$STATE/.turnend-pings-$task"; seenf="$STATE/.turnend-seen-$task"
+  continuef="$STATE/.turnend-continues-$task"
   w=$(fm_meta_get "$meta" window)
   if [ -z "$w" ]; then
     TURNEND_WHY='no window recorded for the task'
@@ -2558,7 +2565,46 @@ turnend_check_task() {  # <task>
     TURNEND_VERDICT=quota
     return 0
   fi
+  harness=$(fm_meta_get "$meta" harness)
+  semantic=''
+  case "$harness" in
+    pi|pi-signed)
+      semantic=$(fm_busy_classify_meta "$meta" "$task" "$STATE" "$plain")
+      if [ "$semantic" = 'busy pi-ext' ]; then
+        verdict=$(turnend_state_line_verdict "$task") || { TURNEND_WHY='status file unreadable'; return 0; }
+        if [ "${verdict%% *}" = wake-verb ]; then
+          size=${verdict#* }
+          TURNEND_IDENT=${size#* }
+          TURNEND_SIZE=${size%% *}
+          if ! printf '%s' "$TURNEND_SIZE" > "$seenf" 2>/dev/null; then
+            TURNEND_WHY='turn-end cursor unwritable'
+            return 0
+          fi
+          rm -f "$pingf" "$continuef"
+          if ! : > "$STATE/.turnend-wake-settle-$task"; then
+            TURNEND_WHY='wake-settle bookkeeping unwritable'; return 0
+          fi
+          TURNEND_VERDICT=wake-verb
+        else
+          TURNEND_VERDICT=busy
+        fi
+        return 0
+      fi
+      ;;
+  esac
   cstate=$(fm_backend_composer_state "$backend" "$w" "$label" 2>/dev/null) || cstate=unknown
+  if [ "$semantic" = 'idle pi-ext' ] && [ "$cstate" = unknown ]; then
+    for retry in 1 2 3; do
+      sleep 1
+      cstate=$(fm_backend_composer_state "$backend" "$w" "$label" 2>/dev/null) || cstate=unknown
+      [ "$cstate" = unknown ] || break
+    done
+  fi
+  case "$harness" in
+    pi|pi-signed)
+      if [ "$cstate" = empty ] && [ "$semantic" != 'idle pi-ext' ]; then cstate=unknown; fi
+      ;;
+  esac
   if [ "$cstate" != empty ]; then
     TURNEND_VERDICT=composer
     TURNEND_WHY="composer $cstate"
@@ -2572,6 +2618,34 @@ turnend_check_task() {  # <task>
   size=${size%% *}
   TURNEND_SIZE=$size
   verdict=${verdict%% *}
+  # Consume only the immediate empty notification after a surfaced wake verb.
+  if [ -f "$STATE/.turnend-wake-settle-$task" ]; then
+    rm -f "$STATE/.turnend-wake-settle-$task"
+    if [ "$verdict" = missing ]; then TURNEND_VERDICT=wake-settled; return 0; fi
+  fi
+  # Any newly appended state line ends the old continuation wait.
+  if [ "$verdict" != missing ]; then rm -f "$continuef"; fi
+  # A continuation wait retains the last working verdict when no new line lands.
+  if [ "$verdict" = missing ] && [ -f "$continuef" ]; then verdict=valid-working; fi
+  if [ "$verdict" = valid-working ]; then
+    if ! printf '%s' "$size" > "$seenf" 2>/dev/null; then
+      TURNEND_WHY='turn-end cursor unwritable'; return 0
+    fi
+    rm -f "$pingf"
+    count=$(cat "$continuef" 2>/dev/null || true)
+    case "$count" in ''|*[!0-9]*) count=0 ;; esac
+    if [ "$count" -gt "$TURNEND_PING_MAX" ]; then TURNEND_VERDICT=continue-escalated; return 0; fi
+    if [ "$count" -eq "$TURNEND_PING_MAX" ]; then TURNEND_VERDICT=continue-exhausted; return 0; fi
+    count=$((count + 1))
+    if ! printf '%s' "$count" > "$continuef" 2>/dev/null; then
+      TURNEND_WHY='continue bookkeeping unwritable'; return 0
+    fi
+    if ! turnend_send_ping "$task" "$w" "$backend" "$label" continue; then
+      TURNEND_WHY='ping delivery failed'; return 0
+    fi
+    TURNEND_VERDICT="continue-$count"
+    return 0
+  fi
   case "$verdict" in
     valid-working|valid-paused|wake-verb)
       if ! printf '%s' "$size" > "$seenf" 2>/dev/null; then
@@ -2579,6 +2653,11 @@ turnend_check_task() {  # <task>
         return 0
       fi
       rm -f "$pingf"
+      if [ "$verdict" = wake-verb ]; then
+        if ! : > "$STATE/.turnend-wake-settle-$task"; then
+          TURNEND_WHY='wake-settle bookkeeping unwritable'; return 0
+        fi
+      fi
       TURNEND_VERDICT=$verdict
       return 0
       ;;
@@ -2680,16 +2759,20 @@ worker_turn_end_checks() {
                   valid-working|valid-paused)
                     TURNEND_OK_TASKS="$TURNEND_OK_TASKS $id"
                     ;;
-                  ping-1|ping-2|ping-3|ping-escalated)
+                  ping-1|ping-2|ping-3|ping-escalated|continue-1|continue-2|continue-3|continue-escalated)
                     dropped_status="$dropped_status $id"
                     TURNEND_COMMITS="${TURNEND_COMMITS}${id}"$'\t'"${TURNEND_SIZE}"$'\t'"${TURNEND_IDENT}"$'\n'
                     ;;
+                  busy|wake-settled) ;;
                   wake-verb)
                     TURNEND_FORCE_FILES="$TURNEND_FORCE_FILES $f"
                     ;;
                   *)
                     TURNEND_FORCE_FILES="$TURNEND_FORCE_FILES $f"
-                    [ "$TURNEND_VERDICT" != ping-exhausted ] || TURNEND_ESCALATED_TASKS="$TURNEND_ESCALATED_TASKS $id"
+                    case "$TURNEND_VERDICT" in
+                      ping-exhausted) TURNEND_ESCALATED_TASKS="$TURNEND_ESCALATED_TASKS pings:$id" ;;
+                      continue-exhausted) TURNEND_ESCALATED_TASKS="$TURNEND_ESCALATED_TASKS continues:$id" ;;
+                    esac
                     flat=$(printf '%s' "$TURNEND_TAIL" | tr '\n\t' '  ' | cut -c1-1500)
                     suffix="turn-end check $id verdict=$TURNEND_VERDICT${TURNEND_WHY:+ ($TURNEND_WHY)}"
                     [ -z "$flat" ] || suffix="$suffix; pane tail: $flat"
@@ -2699,7 +2782,7 @@ worker_turn_end_checks() {
                 ;;
             esac
             case " $decided " in
-              *" $id:valid-working "*|*" $id:valid-paused "*|*" $id:ping-1 "*|*" $id:ping-2 "*|*" $id:ping-3 "*|*" $id:ping-escalated "*)
+              *" $id:wake-settled "*|*" $id:busy "*|*" $id:continue-1 "*|*" $id:continue-2 "*|*" $id:continue-3 "*|*" $id:continue-escalated "*|*" $id:valid-working "*|*" $id:valid-paused "*|*" $id:ping-1 "*|*" $id:ping-2 "*|*" $id:ping-3 "*|*" $id:ping-escalated "*)
                 printf '%s' "$sig" > "$sf"
                 continue
                 ;;
@@ -3787,7 +3870,7 @@ EOF
 $pending
 EOF
       for id in $TURNEND_ESCALATED_TASKS; do
-        printf '%s' "$((TURNEND_PING_MAX + 1))" > "$STATE/.turnend-pings-$id" 2>/dev/null || true
+        printf '%s' "$((TURNEND_PING_MAX + 1))" > "$STATE/.turnend-${id%%:*}-${id#*:}" 2>/dev/null || true
       done
       # The wake signature advances for every file in this batch, including one
       # whose span could not be classified: it has now been reported, and this is

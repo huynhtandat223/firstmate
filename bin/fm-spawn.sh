@@ -5704,9 +5704,12 @@ export default function (pi: any) {
       checkedExclusions = true;
     }
   });
-  pi.on("agent_settled", (_event: any, ctx: any) => {
-    if (ctx && typeof ctx.isIdle === "function" && !ctx.isIdle()) return;
-    return busyEvent("idle", "agent-settled");
+  pi.on("agent_settled", async (_event: any, ctx: any) => {
+    if (!ctx || typeof ctx.isIdle !== "function" || !ctx.isIdle()) return;
+    await busyEvent("idle", "agent-settled");
+    if (notifyTurnEnd) await new Promise<void>((resolve) => {
+      execFile("touch", ["$TURNEND"], () => resolve());
+    });
   });
   pi.on("turn_end", async (_event: any, ctx: any) => {
 $PI_CONTEXT_CALL
