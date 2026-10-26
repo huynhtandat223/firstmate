@@ -590,7 +590,7 @@ Green CI gates the merge, not the review.
 Fix what falls inside this brief's already-accepted scope, and report the rest as findings beside the \`done:\` line.
 Never widen scope to satisfy your own finding, and a finding never blocks reporting.
 This self-review is evidence handed to firstmate, never a substitute for firstmate's own review and never authority to merge.
-Then append \`done [at=<epoch>]: PR {url}\` to the status file and stop.
+Then make the terminal call \`bin/fm-task.sh done\` with the PR URL and all required template fields, and stop; the call writes the legacy done line.
 That \`done:\` is accepted only when this copy's HEAD - your latest commit - is pushed to your PR branch; the check tests that commit, not merely that a branch moved.
 If you deliberately keep the PR a draft, append \`paused [at=<epoch>]: {why the draft is held}\` instead of done.
 Do NOT run /no-mistakes. The configured merge authority decides whether to merge the PR; firstmate relays the outcome.
