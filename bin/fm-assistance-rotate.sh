@@ -28,6 +28,11 @@ for file in assistance-stow.md assistance-handoff.md; do
 done
 grep -qi '^## Suggested skills' "$FM_HOME/data/assistance-handoff.md" || { echo 'error: handoff lacks Suggested skills' >&2; exit 1; }
 grep -qi '^## Next action' "$FM_HOME/data/assistance-handoff.md" || { echo 'error: handoff lacks Next action' >&2; exit 1; }
+name=$(<"$FM_HOME/.fm-assistance-home")
+if ! jq -e --arg name "$name" '.name == $name' "$FM_HOME/data/assistance.json" >/dev/null; then
+  echo 'error: rotation assistance name does not match this home profile' >&2
+  exit 1
+fi
 # Rebuild task context from the record before any rotation action.
 resume_file="$FM_HOME/data/assistance-task-resume.md"
 resume_tmp=$(mktemp "$FM_HOME/data/.task-resume.XXXXXX")

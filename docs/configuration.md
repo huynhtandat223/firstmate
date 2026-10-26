@@ -946,6 +946,9 @@ A local standalone-clone home cannot receive a primary-local commit through that
 Assistances use the persistent-home seed and launch machinery, but keep their local routes in `data/assistances.md`, separate from secondmate routing.
 The route format is the same local suffix described under [Secondmate routes](#secondmate-routes-datasecondmatesmd).
 Private profiles live in `config/assistances/<name>.json`; the [assistance command](../bin/fm-assistance.sh) owns the field schema and command syntax.
+Task-record rotation assumes one primary home owns the assistance profiles and their names are unique within that home.
+Rotation refuses when the assistance name does not match its home profile.
+Home-qualified assignee identities remain follow-up work before secondmates host assistances with duplicate names.
 A profile supplies the name, charter, harness/model/effort, source/recipe pairs, and a cadence, event-driven, or self trigger; no domain profile ships with Firstmate.
 Event-driven and self-delivery homes skip the cadence hook.
 An event-driven home receives untrusted source records through the assistance command's `source-event` path, which writes the parent home's steering inbox.
