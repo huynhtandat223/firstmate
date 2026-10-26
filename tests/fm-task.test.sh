@@ -244,7 +244,7 @@ case_concurrent() {
 # TR12: the Hermes transitions, every state x command pair, then the block-repeat and parent rules.
 declare -A EXPECT
 for s in triage todo ready running blocked review 'done' archived; do
-  for c in assign start heartbeat 'done' ask block unblock approve changes archive comment; do EXPECT[$s:$c]=-; done
+  for c in assign reassign reopen start heartbeat 'done' ask block unblock approve changes archive comment; do EXPECT[$s:$c]=-; done
 done
 EXPECT[triage:assign]=ready;   EXPECT[triage:unblock]=ready;   EXPECT[triage:archive]=archived;   EXPECT[triage:comment]=triage
 EXPECT[todo:assign]=todo;      EXPECT[todo:archive]=archived;  EXPECT[todo:comment]=todo
@@ -255,7 +255,9 @@ EXPECT[blocked:unblock]=ready; EXPECT[blocked:archive]=archived; EXPECT[blocked:
 EXPECT[review:approve]='done';   EXPECT[review:changes]=ready;  EXPECT[review:archive]=archived;   EXPECT[review:comment]=review
 EXPECT['done':archive]=archived; EXPECT['done':comment]='done'
 EXPECT[archived:comment]=archived
-CMDS='assign start heartbeat done ask block unblock approve changes archive comment'
+for s in triage todo ready running blocked review; do EXPECT[$s:reassign]=$s; done
+EXPECT['done':reopen]=ready
+CMDS='assign reassign reopen start heartbeat done ask block unblock approve changes archive comment'
 
 put_in_state() {  # <task> <state>
   local t=$1
@@ -273,6 +275,8 @@ put_in_state() {  # <task> <state>
 run_command() {  # <task> <command>
   case $2 in
     assign) ft assign "$1" --to worker-2 ;;
+    reassign) ft reassign "$1" --to worker-2 --reason handoff ;;
+    reopen) ft reopen "$1" --reason 'new work' ;;
     done) ft "done" "$1" "${DONE_FLAGS[@]}" ;;
     ask) ft ask "$1" "${ASK_FLAGS[@]}" ;;
     block) ft block transient "$1" --reason waiting --next-actor firstmate ;;
