@@ -8,4 +8,7 @@ set -eu
 
 command -v node >/dev/null 2>&1 || { echo 'fm-task: node is required' >&2; exit 2; }
 DIR=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
+# A worker's absolute command path identifies the supervising home when launch
+# environment carries only FM_TASK_ID. Explicit FM_HOME remains authoritative.
+export FM_HOME="${FM_HOME:-$(dirname "$DIR")}"
 exec node "$DIR/fm-task-lib.mjs" "$@"
