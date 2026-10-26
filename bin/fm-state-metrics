@@ -73,7 +73,7 @@ async function sample() {
   const checks = await table('fm_task_check');
   const owners = await table('fm_owner_check');
   const tasks = await table('fm_task');
-  for (const o of owners) items.push({id: o.taskId, key: `owner:${o.taskId}:${o.scenarioId}@${o.width}`, open: o.status === 'pending' && checks.some(c => c.taskId === o.taskId && c.scenarioId === o.scenarioId && c.width === o.width && c.nextActor === 'owner' && c.status === 'pending') && !tasks.some(t => t.taskId === o.taskId && ['done','archived'].includes(t.state))});
+  for (const o of owners) items.push({id: o.taskId, key: `owner:${o.taskId}:${o.scenarioId}@${o.width}`, open: ['pending', 'fail'].includes(o.status) && checks.some(c => c.taskId === o.taskId && c.scenarioId === o.scenarioId && c.width === o.width && c.nextActor === 'owner' && ['pending', 'fail'].includes(c.status)) && !tasks.some(t => t.taskId === o.taskId && ['done','archived'].includes(t.state))});
   const response = await fetch(`${opts.feed.replace(/\/$/, '')}/inbox`, {signal: AbortSignal.timeout(20000)});
   if (!response.ok) throw new Error(`inbox HTTP ${response.status}`);
   const feed = await response.json();

@@ -22,6 +22,9 @@ FEED="http://127.0.0.1:$(<"$TMP_ROOT/feedport")"
 export FM_TASK_BASE_URL FM_TASK_TOKEN_FILE="$TMP_ROOT/token" FM_HOME="$TMP_ROOT/home"
 unset FM_TASK_AUTH
 printf '## Queued\n- [ ] held - Held (hold-kind: captain) (hold: Pick)\n' > "$FM_HOME/data/backlog.md"
+curl -fsS -H 'Authorization: Bearer token' -H 'content-type: application/json' -X POST "$FM_TASK_BASE_URL/api/fm_owner_check" --data '{"taskId":"held","scenarioId":"O1","width":"-","pageTitle":"Home","url":"http://probe","steps":"Open","data":"probe","expected":"visible","status":"fail"}' >/dev/null
+curl -fsS -H 'Authorization: Bearer token' -H 'content-type: application/json' -X POST "$FM_TASK_BASE_URL/api/fm_task_check" --data '{"taskId":"held","scenarioId":"O1","width":"-","line":"Check","surface":"internal","page":"-","controls":"-","data":"probe","proof":"manual","status":"fail","nextActor":"owner","acceptanceDigest":"probe"}' >/dev/null
 "$ROOT/bin/fm-state-metrics" sample --feed "$FEED" --shadow "$TMP_ROOT/shadow" > "$TMP_ROOT/out"
 jq -e '.cards == [{id:"held",key:"hold:held"},{id:"planned",key:"plan:planned"}] and any(.items[]; .key == "hold:held" and .open)' "$TMP_ROOT/out"
+jq -e 'any(.items[]; .key == "owner:held:O1@-" and .open)' "$TMP_ROOT/out"
 echo 'ok - sampler decodes real inbox shape and question task identity'
