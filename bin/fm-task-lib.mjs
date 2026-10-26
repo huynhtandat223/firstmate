@@ -17,6 +17,9 @@
 //   heartbeat <task> [--note N]              running (today's `working:`)
 //   done     <task> --summary --changed-files --verification --residual-risk [--rows JSON]
 //            [--pr-url U] [--head H] [--next-actor tester|firstmate]       running -> review
+//            [--document FILE] [--document-title TITLE] attaches one documents child in the same request.
+//            Document: UTF-8 .md/.markdown or .html/.htm, 1 byte to 2 MiB; one-line title 1..200
+//            characters (default file name). Invalid files/options exit 2 before any API write.
 //   ask      <task> --question Q --option O (2 to 6 times) --recommendation R --why W
 //            [--document D] [--next-actor firstmate|owner]                  running -> blocked (needs-decision)
 //   block    <kind> <task> --reason R --next-actor A [--until ISO] [--on PARENT]
@@ -33,6 +36,11 @@
 //   rows     <task> <issue-url>              one check row per scenario x width from fm-acceptance.mjs
 //   check    <task> <id>@<width> --status pending|pass|fail [--evidence E] [--head H] [--next-actor A]
 //   owner-check <task> <id>@<width> --page-title --url --steps --data --expected   (sets next actor owner;
+//            a row that has an item needs --url and --steps again; a re-sent --key never writes the item twice)
+//   turn-end <task> --turn TOKEN             check a durable turn generation; heartbeat is not terminal
+//   deliver  <task> --consumer NAME           claim each event in fm_task_delivery, then append a wake
+//            FM_HOME is required; delivery is scoped to this task, never a whole foreign fleet.
+//            A crash between claim and queue append requires operator reconciliation (no duplicate claim).
 //            a row that has an item needs all five template fields again; a re-sent --key never writes the item twice)
 //   show     <task> [--json]   list [--state S] [--actor A] [--json]   resume <task>   reproject <task>
 // Every write takes --key K (the idempotency key; a re-send returns the first event), --actor NAME
@@ -62,6 +70,8 @@
 // FM_TASK_AUTH=bearer|cookie (cookie sends the token as the cfw.auth.session cookie, for a SysAdmin session
 // until the notify-firstmate grant lands); FM_TASK_ACCEPTANCE (the acceptance parser, default fm-acceptance.mjs
 // beside this file). The token is read from the file and sent as a header, never printed.
+// FM_HOME (and optional FM_STATE_OVERRIDE) selects the legacy status view and durable turn cursor.
+// Terminal calls and heartbeat keep that view written until T7; --key replays append no second line.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -257,7 +267,7 @@ const SPECS = {
   assign: { pos: ['task'], flags: { to: 's' } },
   start: { pos: ['task'], flags: {} },
   heartbeat: { pos: ['task'], flags: {} },
-  done: { pos: ['task'], flags: { summary: 's', 'changed-files': 's', verification: 's', 'residual-risk': 's', rows: 's', 'pr-url': 's', head: 's', 'next-actor': 's', image: 'm', 'image-label': 'm' } },
+  done: { pos: ['task'], flags: { document: 's', 'document-title': 's', summary: 's', 'changed-files': 's', verification: 's', 'residual-risk': 's', rows: 's', 'pr-url': 's', head: 's', 'next-actor': 's', image: 'm', 'image-label': 'm' } },
   ask: { pos: ['task'], flags: { question: 's', option: 'm', recommendation: 's', why: 's', document: 's', 'next-actor': 's', image: 'm', 'image-label': 'm' } },
   block: { pos: ['kind', 'task'], flags: { reason: 's', 'next-actor': 's', until: 's', on: 's', image: 'm', 'image-label': 'm' } },
   unblock: { pos: ['task'], flags: {} },
@@ -276,6 +286,8 @@ const SPECS = {
   list: { pos: [], flags: { state: 's', actor: 's' } },
   resume: { pos: ['task'], flags: {} },
   reproject: { pos: ['task'], flags: {} },
+  'turn-end': { pos: ['task'], flags: { turn: 's' } },
+  deliver: { pos: ['task'], flags: { consumer: 's' } },
 };
 
 function parseArgs(command, argv) {
@@ -302,6 +314,7 @@ function parseArgs(command, argv) {
       value = argv[++i];
     }
     if (value === '') throw usage(`--${name} is empty`);
+    if (name === 'document' && given[name] !== undefined) throw usage('only one --document is allowed');
     if (type === 'm') (given[name] ||= []).push(value);
     else given[name] = value;
   }
@@ -517,8 +530,27 @@ async function write(taskId, who, build, after) {
     }
     throw error;
   }
+  await legacyStatus(result.event);
   reportWrite(result, projected?.task);
   return { result, task: projected?.task };
+}
+
+// The legacy view remains written until T7. A replay does not append twice.
+async function legacyStatus(event) {
+  if (!process.env.FM_HOME || !['done', 'needs-decision', 'blocked', 'heartbeat', 'unblocked'].includes(event.kind)) return;
+  const state = process.env.FM_STATE_OVERRIDE || path.join(process.env.FM_HOME, 'state');
+  fs.mkdirSync(state, { recursive: true });
+  const file = path.join(state, `${event.taskId}.status`);
+  const marker = `[event=${event.seq}]`;
+  const prior = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
+  if (prior.split('\n').some((line) => line.includes(marker))) return;
+  const body = bodyOf(event);
+  const paused = event.kind === 'blocked' && body.set?.blockKind === 'transient' && body.set?.holdUntil;
+  const verb = event.kind === 'unblocked' ? 'resolved' : paused ? 'paused' : event.kind === 'heartbeat' ? 'working' : event.kind;
+  const child = event.kind === 'done' ? await firstRow('fm_event_done', `fmTaskEventId eq ${event.id}`) : null;
+  const summary = body.note || child?.summary || body.set?.blockReason || `${event.kind} recorded`;
+  const note = event.kind === 'done' && body.set?.prUrl ? `PR ${body.set.prUrl} ${summary}` : summary;
+  fs.appendFileSync(file, `${verb} [at=${Math.floor(Date.now() / 1000)}]: ${String(note).replace(/[\r\n]/g, ' ')}${paused ? ` until ${body.set.holdUntil}` : ''} ${marker}\n`);
 }
 
 // ---- commands ---------------------------------------------------------------------------------------------
@@ -682,11 +714,30 @@ async function cmdEvent(args) {
   });
 }
 
+function documentOf(f) {
+  if (!f.document) {
+    if (f['document-title'] !== undefined) throw usage('--document-title requires --document');
+    return null;
+  }
+  const ext = path.extname(f.document).toLowerCase();
+  const types = { '.md': 'text/markdown', '.markdown': 'text/markdown', '.html': 'text/html', '.htm': 'text/html' };
+  if (!types[ext]) throw usage('document extension must be .md, .markdown, .html or .htm');
+  let bytes;
+  try { bytes = fs.readFileSync(f.document); } catch { throw usage('document file is missing or unreadable'); }
+  if (!bytes.length || bytes.length > 2 * 1024 * 1024) throw usage('document must contain 1 byte to 2 MiB');
+  let content;
+  try { content = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes); } catch { throw usage('document must be UTF-8'); }
+  const title = f['document-title'] ?? path.basename(f.document);
+  if (!title.trim() || title.length > 200 || /[\r\n]/.test(title)) throw usage('document title must be one line of 1 to 200 characters');
+  return { title, mediaType: types[ext], content };
+}
+
 async function cmdDone(args) {
   const taskId = taskIdOf(args);
   const who = identity(args, 'worker');
   const f = args.flags;
   const images = imagesOf(args);
+  const documents = documentOf(f);
   const nextActor = f['next-actor'] === undefined ? null : oneOf(['tester', 'firstmate'], f['next-actor'], 'next actor');
   return write(taskId, who, async ({ task }) => {
     guard('done', task);
@@ -696,7 +747,7 @@ async function cmdDone(args) {
     for (const key of Object.keys(child)) if (child[key] === undefined) delete child[key];
     const set = { state: 'review', nextActor: nextActor ?? (waitingOnTester ? 'tester' : 'firstmate'), blockKind: null, blockReason: null, blockRepeats: 0, holdUntil: null };
     if (f['pr-url']) set.prUrl = f['pr-url'];
-    return { kind: 'done', note: noteOf(args), set, children: withImages({ done: [child] }, images) };
+    return { kind: 'done', note: noteOf(args), set, children: withImages({ done: [child], ...(documents ? { documents: [documents] } : {}) }, images) };
   });
 }
 
@@ -1085,7 +1136,74 @@ async function cmdResume(args) {
   for (const line of lines) out(line);
 }
 
+// A turn token is the durable hook generation, not a status-file byte offset.
+async function cmdTurnEnd(args) {
+  const taskId = taskIdOf(args);
+  const turn = args.flags.turn;
+  if (!turn) throw usage('turn-end needs --turn');
+  const events = await taskEvents(taskId);
+  const task = fold(events);
+  if (!task) throw rule(`no such task ${taskId}`);
+  const state = process.env.FM_STATE_OVERRIDE || (process.env.FM_HOME && path.join(process.env.FM_HOME, 'state'));
+  if (!state) throw usage('turn-end requires FM_HOME');
+  fs.mkdirSync(state, { recursive: true });
+  const cursor = path.join(state, `.task-turn-${taskId}.json`);
+  let prior = { seq: 0, count: 0 };
+  if (fs.existsSync(cursor)) prior = JSON.parse(fs.readFileSync(cursor, 'utf8'));
+  if (prior.turn === turn) return out(prior.verdict);
+  const started = [...events].reverse().find((e) => e.kind === 'started');
+  const anchor = Math.max(prior.seq, started?.seq ?? 0);
+  const terminal = events.some((e) => e.seq > anchor && TERMINAL[e.kind]);
+  let count = terminal ? 0 : prior.count + 1;
+  let verdict = terminal ? 'wake-verb' : count > 3 ? 'ping-escalated' : `ping-${count}`;
+  if (!terminal) {
+    await cmdEvent({ pos: { task: taskId, kind: 'protocol_violation' }, flags: { key: `turn:${taskId}:${turn}`, note: 'Turn ended without a terminal call', actor: 'turn-end-checker', role: 'system' } });
+    if (count === 3) {
+      await write(taskId, { key: `turn-block:${taskId}:${turn}`, actor: 'turn-end-checker', role: 'system' }, async () => ({ kind: 'blocked', note: 'Three turns without a terminal call', set: { state: 'blocked', nextActor: 'firstmate', blockKind: 'capability', blockReason: 'Three turns without a terminal call', blockRepeats: count }, children: { block: [{ blockKind: 'capability', reason: 'Three turns without a terminal call', nextActor: 'firstmate' }] } }));
+      verdict = 'ping-exhausted';
+    }
+  }
+  fs.writeFileSync(cursor, JSON.stringify({ turn, seq: (await taskEvents(taskId)).at(-1).seq, count, verdict }));
+  out(verdict);
+}
+
+async function cmdDeliver(args) {
+  const consumer = args.flags.consumer;
+  if (!consumer || consumer.length > 64) throw usage('deliver needs --consumer (up to 64 characters)');
+  if (!process.env.FM_HOME) throw usage('deliver requires FM_HOME');
+  const taskStream = await taskEvents(taskIdOf(args));
+  const firstSeq = taskStream[0]?.seq ?? 0;
+  const lastSeq = taskStream.at(-1)?.seq ?? 0;
+  const delivered = await listAll('fm_task_delivery', { filter: `consumer eq ${lit(consumer)} and seq ge ${firstSeq} and seq le ${lastSeq}`, orderby: 'seq' });
+  const seen = new Set(delivered.map((r) => r.seq));
+  const state = process.env.FM_STATE_OVERRIDE || path.join(process.env.FM_HOME, 'state');
+  const spool = path.join(state, '.task-delivery-outbox', crypto.createHash('sha256').update(consumer).digest('hex'));
+  fs.mkdirSync(spool, { recursive: true });
+  const activation = path.join(spool, `${taskIdOf(args)}.activated`);
+  if (!fs.existsSync(activation)) {
+    // First activation establishes a baseline, not a replay of historical work.
+    fs.writeFileSync(activation, String(lastSeq));
+    out(`activated ${consumer} task=${taskIdOf(args)} after=${lastSeq}`);
+    return;
+  }
+  const baseline = Number(fs.readFileSync(activation, 'utf8'));
+  const events = taskStream.filter((e) => e.seq > baseline);
+  for (const event of events) {
+    const receipt = path.join(spool, `${event.seq}.json`);
+    if (seen.has(event.seq) && !fs.existsSync(receipt)) continue;
+    // Persist recovery intent before claiming. A replay owns only this consumer's spool.
+    if (!fs.existsSync(receipt)) fs.writeFileSync(receipt, JSON.stringify(event), { flag: 'wx' });
+    const res = await http('POST', '/api/fm_task_delivery', { consumer, seq: event.seq });
+    if (res.status !== 409) ok(res, 'claim event delivery');
+    const queued = spawnSync('bash', ['-c', 'source "$1/fm-wake-lib.sh"; fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"; trap \'fm_lock_release "$FM_WAKE_QUEUE_LOCK"\' EXIT; if ! test -f "$4.sent"; then if ! test -f "$STATE/.wake-queue" || ! grep -Fq "$(printf "\\t%s\\t" "$2")" "$STATE/.wake-queue"; then fm_wake_append_locked check "$2" "$3" || exit; fi; : > "$4.sent"; fi', 'task-delivery', HERE, `task-event-${event.seq}`, `task event ${event.seq}: ${event.taskId} ${event.kind}`, receipt], { encoding: 'utf8', env: process.env });
+    if (queued.status !== 0) throw new Fail(3, `delivery ${event.seq} claimed but wake append failed: ${queued.stderr}`);
+    fs.unlinkSync(receipt);
+    out(`delivered ${consumer} seq=${event.seq}`);
+  }
+}
+
 const COMMANDS = {
+  'turn-end': cmdTurnEnd, deliver: cmdDeliver,
   create: cmdCreate, import: cmdImport, assign: cmdAssign, start: cmdStart, heartbeat: cmdHeartbeat, done: cmdDone, ask: cmdAsk, block: cmdBlock,
   unblock: cmdUnblock, approve: cmdApprove, changes: cmdChanges, reopen: cmdReopen, reassign: cmdReassign, archive: cmdArchive, comment: cmdComment, event: cmdEvent,
   link: cmdLink, rows: cmdRows, check: cmdCheck, 'owner-check': cmdOwnerCheck, show: cmdShow, list: cmdList, resume: cmdResume, reproject: cmdReproject,

@@ -28,6 +28,28 @@ for file in assistance-stow.md assistance-handoff.md; do
 done
 grep -qi '^## Suggested skills' "$FM_HOME/data/assistance-handoff.md" || { echo 'error: handoff lacks Suggested skills' >&2; exit 1; }
 grep -qi '^## Next action' "$FM_HOME/data/assistance-handoff.md" || { echo 'error: handoff lacks Next action' >&2; exit 1; }
+name=$(<"$FM_HOME/.fm-assistance-home")
+if ! jq -e --arg name "$name" '.name == $name' "$FM_HOME/data/assistance.json" >/dev/null; then
+  echo 'error: rotation assistance name does not match this home profile' >&2
+  exit 1
+fi
+# Rebuild task context from the record before any rotation action.
+resume_file="$FM_HOME/data/assistance-task-resume.md"
+resume_tmp=$(mktemp "$FM_HOME/data/.task-resume.XXXXXX")
+if ! "$SCRIPT_DIR/fm-task.sh" list --json > "$resume_tmp"; then
+  echo 'rotation: task record unavailable; continue from persisted handoff and retry resume in fresh session' >&2
+  printf '[]\n' > "$resume_tmp"
+fi
+name=$(<"$FM_HOME/.fm-assistance-home")
+tasks=$(jq -r --arg name "$name" '.[] | select(.assignee == $name and .state != "done" and .state != "archived") | .taskId' "$resume_tmp")
+: > "$resume_tmp"
+while IFS= read -r task; do
+  [ -n "$task" ] || continue
+  if ! "$SCRIPT_DIR/fm-task.sh" resume "$task" >> "$resume_tmp"; then
+    printf '\nRetry %s/fm-task.sh resume %s in the fresh session.\n' "$SCRIPT_DIR" "$task" >> "$resume_tmp"
+  fi
+done <<< "$tasks"
+mv "$resume_tmp" "$resume_file"
 endpoint=$(<"$STATE/assistance-endpoint")
 name=$(<"$FM_HOME/.fm-assistance-home")
 [[ "$name" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]] || exit 1
@@ -67,7 +89,7 @@ done
 for ((attempt=0; attempt<60; attempt++)); do
   if [ "$(<"$STATE/assistance-session")" != "$session" ]; then
     rm -f "$request"
-    fm_backend_send_text_submit herdr "$endpoint" "Read $FM_HOME/data/charter.md and $FM_HOME/data/assistance-handoff.md, then continue from Next action." 3 0.2 1.2
+    fm_backend_send_text_submit herdr "$endpoint" "First run $SCRIPT_DIR/fm-task.sh resume for each task in $FM_HOME/data/assistance-task-resume.md. Then read $FM_HOME/data/charter.md and $FM_HOME/data/assistance-handoff.md and continue from Next action." 3 0.2 1.2
     echo 'rotation: fresh session continuing from persisted handoff'
     exit 0
   fi

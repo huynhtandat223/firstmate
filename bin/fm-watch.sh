@@ -698,7 +698,7 @@ signal_turnend_panes_churned() {  # <file> ...
     base=${f##*/}
     case "$base" in
       *.status)     return 1 ;;
-      *.turn-ended) task=${base%.turn-ended}; kind=turn-ended ;;
+      *.turn-ended) task=${base%.turn-ended}; kind='turn-ended' ;;
       *)            return 1 ;;
     esac
     [ -n "$task" ] || return 1
@@ -2434,7 +2434,11 @@ turnend_quota_text() {  # <plain pane tail>
 # The fixed ping text. It names the task's status file and the verbs with their
 # shapes; it is a format reminder, never new work.
 turnend_ping_text() {  # <task>
-  printf 'Your turn ended with no valid state line in %s/%s.status. Append exactly one line there, then continue your task: "working: <what you are doing>", "paused: <why> until <YYYY-MM-DDTHH:MMZ>", "done: <PR URL> head <sha>", "blocked: <why>", or "needs-decision: <options>". This is a format reminder, not new work.' "$STATE" "$1"
+  if ! grep -q '^Terminal call:' "$FM_HOME/data/$1/brief.md" 2>/dev/null; then
+    printf 'Your turn ended with no valid state line in %s/%s.status. Append exactly one line there, then continue your task: "working: <what you are doing>", "paused: <why> until <YYYY-MM-DDTHH:MMZ>", "done: <PR URL> head <sha>", "blocked: <why>", or "needs-decision: <options>". This is a format reminder, not new work.' "$STATE" "$1"
+    return
+  fi
+  printf 'Terminal call: end this turn with bin/fm-task.sh done|ask|block %s and its required template fields (see --help). Read bin/fm-task.sh resume %s first. heartbeat reports activity and does not end a turn. This is a format reminder, not new work.' "$1" "$1"
 }
 
 # Fire-and-forget through the steering inbox, the way secondmate_ring_to_drain
@@ -2560,10 +2564,9 @@ turnend_check_task() {  # <task>
     TURNEND_WHY="composer $cstate"
     return 0
   fi
-  if ! verdict=$(turnend_state_line_verdict "$task"); then
-    TURNEND_WHY='status file unreadable'
-    return 0
-  fi
+  if ! grep -q '^Terminal call:' "$FM_HOME/data/$task/brief.md" 2>/dev/null ||
+    ! fm_run_timed 2 "$SCRIPT_DIR/fm-task.sh" show "$task" --json >/dev/null 2>&1; then
+    verdict=$(turnend_state_line_verdict "$task") || { TURNEND_WHY='status file unreadable'; return 0; }
   size=${verdict#* }
   TURNEND_IDENT=${size#* }
   size=${size%% *}
@@ -2609,6 +2612,25 @@ turnend_check_task() {  # <task>
     return 0
   fi
   TURNEND_VERDICT="ping-$count"
+    return 0
+  fi
+  if ! verdict=$(fm_run_timed 5 env FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task.sh" turn-end "$task" --turn "$(stat_mtime "$STATE/$task.turn-ended")"); then
+    TURNEND_WHY='task record unreadable'
+    return 0
+  fi
+  verdict=$(printf '%s\n' "$verdict" | tail -n 1)
+  case "$verdict" in
+    wake-verb) TURNEND_VERDICT=wake-verb; return 0 ;;
+    ping-exhausted) TURNEND_VERDICT=ping-exhausted; return 0 ;;
+    ping-escalated) TURNEND_VERDICT=ping-escalated; return 0 ;;
+    ping-*)
+      if ! turnend_send_ping "$task" "$w" "$backend" "$label"; then
+        TURNEND_WHY='ping delivery failed'; return 0
+      fi
+      TURNEND_VERDICT=$verdict; return 0 ;;
+    *) TURNEND_WHY='invalid record checker response'; return 0 ;;
+  esac
+
 }
 
 # A ping answers a missing or malformed line, so that task's status change in the
@@ -3406,6 +3428,20 @@ resurface_after_downtime() {
 }
 
 while :; do
+  # Scope delivery to this home's direct task records, never another home's events.
+  task_delivery_processed=0
+  for task_meta in "$STATE"/*.meta; do
+    [ -f "$task_meta" ] || continue
+    task_id=${task_meta##*/}; task_id=${task_id%.meta}
+    if [ -n "${TASK_DELIVERY_LAST:-}" ] && [[ "$task_id" < "$TASK_DELIVERY_LAST" || "$task_id" = "$TASK_DELIVERY_LAST" ]]; then continue; fi
+    TASK_DELIVERY_LAST=$task_id
+    task_delivery_processed=1
+    task_consumer="firstmate-${FM_HOME##*/}"
+    fm_run_timed 2 env FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task.sh" deliver "$task_id" --consumer "$task_consumer" >/dev/null 2>&1 || true
+    # One task per pass bounds API work independently of fleet size.
+    break
+  done
+  [ "$task_delivery_processed" = 1 ] || TASK_DELIVERY_LAST=''
   # Home-gone exit: a deleted home, state directory, or code root means this
   # watcher's world is gone (a torn-down temporary home or a discarded
   # disposable checkout). Exit with a logged reason rather than writing state
