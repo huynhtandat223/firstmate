@@ -2614,7 +2614,7 @@ turnend_check_task() {  # <task>
   TURNEND_VERDICT="ping-$count"
     return 0
   fi
-  if ! verdict=$(FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task.sh" turn-end "$task" --turn "$(stat_mtime "$STATE/$task.turn-ended")"); then
+  if ! verdict=$(fm_run_timed 5 env FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task.sh" turn-end "$task" --turn "$(stat_mtime "$STATE/$task.turn-ended")"); then
     TURNEND_WHY='task record unreadable'
     return 0
   fi
@@ -2622,6 +2622,7 @@ turnend_check_task() {  # <task>
   case "$verdict" in
     wake-verb) TURNEND_VERDICT=wake-verb; return 0 ;;
     ping-exhausted) TURNEND_VERDICT=ping-exhausted; return 0 ;;
+    ping-escalated) TURNEND_VERDICT=ping-escalated; return 0 ;;
     ping-*)
       if ! turnend_send_ping "$task" "$w" "$backend" "$label"; then
         TURNEND_WHY='ping delivery failed'; return 0
