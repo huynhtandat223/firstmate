@@ -3671,6 +3671,8 @@ seed_watcher_markers() {  # <case-dir> <task-id>
   printf '0:0\n' > "$state/.seen-${id}_status"
   printf '0:0\n' > "$state/.seen-${id}_turn-ended"
   printf '0\n' > "$state/.hb-surfaced-$id"
+  local type
+  for type in continues pings seen; do printf '1' > "$state/.turnend-$type-$id"; done
 }
 
 test_teardown_retires_task_watcher_markers_and_orphan_journal() {
@@ -3691,10 +3693,10 @@ test_teardown_retires_task_watcher_markers_and_orphan_journal() {
   FM_FAKE_HERDR_LOG="$log" FM_FAKE_HERDR_CLOSED="$closed" FM_FAKE_HERDR_RESTORED="$restored" \
     run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" \
     || fail "retire-watcher-markers: teardown failed: $(cat "$case_dir/stderr")"
-  for marker in .seen-task-x1_status .seen-task-x1_turn-ended .hb-surfaced-task-x1 task-x1.herdr-presentation; do
+  for marker in .turnend-continues-task-x1 .turnend-pings-task-x1 .turnend-seen-task-x1 .seen-task-x1_status .seen-task-x1_turn-ended .hb-surfaced-task-x1 task-x1.herdr-presentation; do
     assert_absent "$case_dir/state/$marker" "teardown left the torn-down task's $marker behind"
   done
-  for marker in .seen-task-y2_status .seen-task-y2_turn-ended .hb-surfaced-task-y2 task-y2.herdr-presentation \
+  for marker in .turnend-continues-task-y2 .turnend-pings-task-y2 .turnend-seen-task-y2 .seen-task-y2_status .seen-task-y2_turn-ended .hb-surfaced-task-y2 task-y2.herdr-presentation \
     .seen-task-x1_extra_status .seen-task-x1_extra_turn-ended .hb-surfaced-task-x1_extra; do
     assert_present "$case_dir/state/$marker" "teardown removed another task's $marker"
   done

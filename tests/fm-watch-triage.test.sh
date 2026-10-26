@@ -7727,18 +7727,114 @@ tc_verdict_logged() {  # <state> <verdict>
   grep -F "turn-end check: tc verdict=$2" "$1/.watch-triage.log" >/dev/null 2>&1
 }
 
+# Exercise the checker and wake batching with an isolated backend boundary.
+# No live endpoint or home is used.
+test_pi_turnend_semantic_continue_scenarios() {
+  local dir state gen n
+  dir=$(tc_case tc-pi-semantics ship); state="$dir/state"
+  (
+  # shellcheck source=bin/fm-watch.sh
+  FM_STATE_OVERRIDE="$state" . "$WATCH"
+  printf 'window=test:fm-tc\nkind=ship\nharness=pi\nbackend=herdr\n' > "$state/tc.meta"
+  gen=$("$ROOT/bin/fm-busy-event.sh" arm "$state" tc)
+  "$ROOT/bin/fm-busy-event.sh" apply "$state" tc busy --gen "$gen" --source pi-ext --event agent-start
+  fm_backend_agent_state() { printf alive; }
+  watcher_capture() { WATCHER_CAPTURE='last visible pane line'; }
+  # Keep the real Herdr capture, identity adapter and shared Pi classifier.
+  # Only the external CLI response is test-owned.
+  # shellcheck source=bin/backends/herdr.sh
+  . "$ROOT/bin/backends/herdr.sh"
+  fm_backend_herdr_server_running_state() { printf running; }
+  fm_backend_herdr_cli() {
+    local reads status=working
+    shift
+    case "$1 $2" in
+      'pane read') printf 'transcript\n────────────────────────\n\n────────────────────────\n footer\n' ;;
+      'agent get')
+        reads=$(cat "$dir/reads" 2>/dev/null || echo 0)
+        reads=$((reads + 1)); printf '%s' "$reads" > "$dir/reads"
+        if [ "$reads" -ge "${TC_EMPTY_AFTER:-999}" ]; then status=idle; fi
+        printf '{"result":{"agent":{"agent":"pi","agent_status":"%s"}}}' "$status"
+        ;;
+      *) return 1 ;;
+    esac
+  }
+  fm_backend_composer_state() { fm_backend_herdr_composer_state 'test:w1:p1'; }
+  fm_task_inbox_ring() { printf 'ring\n' >> "$dir/rings"; }
+  tc_status "$dir" 'working: chunk 2'
+  turnend_check_task tc
+  [ "$TURNEND_VERDICT" = busy ] || fail "PC1: expected busy, got $TURNEND_VERDICT"
+  [ ! -e "$state/.turnend-seen-tc" ] || fail 'PC1: busy advanced cursor'
+  [ "$(tc_pings "$state")" = 0 ] || fail 'PC1: busy sent a ping'
+  tc_status "$dir" 'done: result ready'
+  turnend_check_task tc
+  [ "$TURNEND_VERDICT" = wake-verb ] || fail "PC2: expected wake-verb, got $TURNEND_VERDICT"
+  rm -f "$state/.turnend-seen-tc" "$state/tc.status"
+  tc_status "$dir" 'working: writing tests'
+  "$ROOT/bin/fm-busy-event.sh" apply "$state" tc idle --gen "$gen" --source pi-ext --event agent-settled
+  TC_EMPTY_AFTER=2
+  turnend_check_task tc
+  [ "$TURNEND_VERDICT" = continue-1 ] || fail "PC4/PC5: expected continue-1, got $TURNEND_VERDICT"
+  [ "$(cat "$dir/reads")" = 2 ] || fail 'PC4: did not decide on first empty'
+  grep -F "Your turn ended while your newest state line in $state/tc.status says working. Continue your task now." "$state"/tc.inbox/*.msg >/dev/null || fail 'PC5: continue text missing'
+  [ "$(wc -l < "$dir/rings")" = 1 ] || fail 'PC5: continue did not ring'
+  for n in 2 3; do
+    turnend_check_task tc
+    [ "$TURNEND_VERDICT" = "continue-$n" ] || fail "PC6: expected continue-$n, got $TURNEND_VERDICT"
+  done
+  turnend_check_task tc
+  [ "$TURNEND_VERDICT" = continue-exhausted ] || fail "PC6: expected exhaustion, got $TURNEND_VERDICT"
+  # The batch caller records escalation only after its wake is durable.
+  printf 4 > "$state/.turnend-continues-tc"
+  turnend_check_task tc
+  [ "$TURNEND_VERDICT" = continue-escalated ] || fail 'PC6: repeated escalation'
+  tc_status "$dir" 'working: new chunk'
+  turnend_check_task tc
+  [ "$TURNEND_VERDICT" = continue-1 ] || fail 'PC6: new state did not reset continue budget'
+  TC_EMPTY_AFTER=999; printf 0 > "$dir/reads"
+  turnend_check_task tc
+  [ "$TURNEND_VERDICT" = composer ] || fail 'PC4: unknown did not keep composer wake'
+  [ "$(cat "$dir/reads")" = 4 ] || fail 'PC4: expected initial read plus three retries'
+  pass 'PC1 PC2 PC4 PC5 PC6: semantic busy, settle lag and bounded continuation'
+  )
+}
+
+test_continue_budget_wakes_once_with_tail() {
+  local dir state n
+  dir=$(tc_case tc-continue-budget ship); state="$dir/state"
+  tc_status "$dir" 'working: same note'
+  for n in 1 2 3; do
+    tc_round_quiet "$dir" || fail "PC6: continue $n woke"
+    tc_verdict_logged "$state" "continue-$n" || fail "PC6: continue-$n missing"
+  done
+  tc_pane "$dir" 'continuation tail evidence'
+  tc_round_wake "$dir" || fail 'PC6: exhaustion did not wake'
+  [ "$(tc_signal_rows "$state")" = 1 ] || fail 'PC6: expected one wake'
+  grep -F 'continuation tail evidence' "$state/.wake-queue" >/dev/null || fail 'PC6: pane tail missing'
+  ack_stopped_cycle "$state" || fail 'PC6: cannot acknowledge escalation'
+  tc_round_quiet "$dir" || fail 'PC6: already escalated wait woke again'
+  tc_verdict_logged "$state" continue-escalated || fail 'PC6: escalated verdict missing'
+  tc_status "$dir" 'working: next chunk'
+  tc_round_quiet "$dir" || fail 'PC6: new wait woke'
+  [ "$(cat "$state/.turnend-continues-tc")" = 1 ] || fail 'PC6: new state did not reset counter'
+  pass 'PC6: three continues, one durable escalation with tail, and reset'
+}
+
 test_turn_end_with_a_valid_working_or_paused_line_wakes_nothing() {
   local kind line verdict dir state
   for kind in ship scout; do
     for line in 'working: still implementing the parser' \
       "paused: waiting on the validation run until $(iso_utc_at "$(( $(date +%s) + 7200 ))")"
     do
-      case "$line" in working:*) verdict=valid-working ;; *) verdict=valid-paused ;; esac
+      case "$line" in working:*) verdict=continue-1 ;; *) verdict=valid-paused ;; esac
       dir=$(tc_case "tc-valid-$kind-$verdict" "$kind"); state="$dir/state"
       tc_status "$dir" "$line"
       tc_round_quiet "$dir" || fail "[$kind/$verdict] a valid state line at the turn end woke the watcher: $(cat "$dir/watch.out")"
       [ ! -s "$state/.wake-queue" ] || fail "[$kind/$verdict] a valid state line queued a row: $(cat "$state/.wake-queue")"
-      [ "$(tc_pings "$state")" -eq 0 ] || fail "[$kind/$verdict] a valid state line was pinged"
+      case "$verdict" in
+        continue-1) [ "$(tc_pings "$state")" -eq 1 ] || fail "working line was not continued" ;;
+        *) [ "$(tc_pings "$state")" -eq 0 ] || fail "paused line was pinged" ;;
+      esac
       tc_verdict_logged "$state" "$verdict" || fail "[$kind/$verdict] the triage log has no verdict line: $(cat "$state/.watch-triage.log" 2>/dev/null)"
     done
   done
@@ -7869,7 +7965,7 @@ test_turn_ends_after_the_escalation_wake_nothing_until_a_valid_line() {
   tc_status "$dir" 'working: back to the parser'
   tc_round_quiet "$dir" || fail "a valid line after the escalation woke the watcher"
   tc_round_quiet "$dir" || fail "the next missing turn end woke the watcher"
-  tc_verdict_logged "$state" ping-1 || fail "the wait after a valid line did not start at ping 1"
+  tc_verdict_logged "$state" continue-1 || fail "the working line did not start continuation"
   pass "turn ends after the escalation wake nothing, and a valid state line starts a fresh wait with ping 1"
 }
 
@@ -7883,8 +7979,8 @@ test_a_valid_line_after_pings_resets_the_ping_count() {
   tc_round_quiet "$dir" || fail "a valid line after pings woke the watcher: $(cat "$dir/watch.out")"
   [ ! -e "$state/.turnend-pings-tc" ] || fail "a valid line did not reset the ping count"
   tc_round_quiet "$dir" || fail "the next missing turn end woke the watcher"
-  tc_verdict_logged "$state" ping-1 || fail "the next missing turn end was not ping 1 again"
-  [ "$(tc_pings "$state")" -eq 3 ] || fail "the reset wait sent $(tc_pings "$state") pings in total instead of three"
+  tc_verdict_logged "$state" continue-2 || fail "the next turn end did not continue"
+  [ "$(tc_pings "$state")" -eq 4 ] || fail "the reset wait did not send two continue reminders"
   pass "a valid state line resets the ping count, so the next missing turn end is ping 1 again"
 }
 
@@ -7995,6 +8091,8 @@ test_quoted_exit_picker_stays_ordinary_stale
 test_secondmate_exit_picker_stays_quiet
 test_closed_exit_picker_drops_saved_dialog_name
 test_stale_dialog_after_the_waits_wake_surfaces_once
+test_pi_turnend_semantic_continue_scenarios
+test_continue_budget_wakes_once_with_tail
 test_turn_end_with_a_valid_working_or_paused_line_wakes_nothing
 test_turn_end_with_a_wake_verb_wakes_as_before
 test_turn_end_with_a_wake_verb_before_a_malformed_last_line_wakes
