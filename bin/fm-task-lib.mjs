@@ -9,7 +9,10 @@
 //   A <task> comes from the first positional (the second for `block`), --task, or FM_TASK_ID.
 //   create   <task> --title T --kind ship|scout|assistance|secondmate|plan|other [--repo R] [--issue URL]
 //            [--surface user-visible|internal] [--after PARENT]...
+//   import   <task> --title T --kind K --state S --assignee A --next-actor N [--repo R] [--issue U] [--pr-url U] [--surface S]
+//            [--block-kind K --block-reason R] [--until ISO] [--since ISO]   the backfill: a task at the state an old source holds, once
 //   assign   <task> --to ASSIGNEE            triage|todo|ready -> ready (todo while a parent is open)
+//   reassign <task> --to ASSIGNEE --reason WHY  changes only assignee; refused from done and archived
 //   start    <task>                          ready -> running
 //   heartbeat <task> [--note N]              running (today's `working:`)
 //   done     <task> --summary --changed-files --verification --residual-risk [--rows JSON]
@@ -22,6 +25,7 @@
 //   unblock  <task>                          blocked|triage -> ready
 //   approve  <task>                          review -> done (refused while a check row is pending or failed)
 //   changes  <task> --note WHY               review -> ready
+//   reopen   <task> --reason WHY             done -> ready, next actor firstmate; archived stays final
 //   archive  <task>                          triage|todo|ready|blocked|review|done -> archived
 //   comment  <task> --note T [--image PATH --image-label L]...             any state
 //   event    <task> <kind> [--note N] [--pr-url U]   kinds: steer comment pr deploy protocol_violation divergence
@@ -29,7 +33,7 @@
 //   rows     <task> <issue-url>              one check row per scenario x width from fm-acceptance.mjs
 //   check    <task> <id>@<width> --status pending|pass|fail [--evidence E] [--head H] [--next-actor A]
 //   owner-check <task> <id>@<width> --page-title --url --steps --data --expected   (sets next actor owner;
-//            a row that has an item needs --url and --steps again; a re-sent --key never writes the item twice)
+//            a row that has an item needs all five template fields again; a re-sent --key never writes the item twice)
 //   show     <task> [--json]   list [--state S] [--actor A] [--json]   resume <task>   reproject <task>
 // Every write takes --key K (the idempotency key; a re-send returns the first event), --actor NAME
 // (default FM_TASK_ACTOR, FM_TASK_ID, then the login name) and --role (default FM_TASK_ROLE, then the
@@ -81,6 +85,7 @@ const CLOSED = ['done', 'archived'];
 // command -> the states it may run from (the Hermes transitions)
 const TRANSITIONS = {
   assign: ['triage', 'todo', 'ready'],
+  reassign: ['triage', 'todo', 'ready', 'running', 'blocked', 'review'],
   start: ['ready'],
   heartbeat: ['running'],
   done: ['running'],
@@ -89,6 +94,7 @@ const TRANSITIONS = {
   unblock: ['triage', 'blocked'],
   approve: ['review'],
   changes: ['review'],
+  reopen: ['done'],
   archive: ['triage', 'todo', 'ready', 'blocked', 'review', 'done'],
   comment: STATES,
 };
@@ -247,6 +253,7 @@ async function project(taskId) {
 const COMMON = { actor: 's', role: 's', key: 's', note: 's', task: 's', json: 'b' };
 const SPECS = {
   create: { pos: ['task'], flags: { title: 's', kind: 's', repo: 's', issue: 's', surface: 's', after: 'm' } },
+  import: { pos: ['task'], flags: { title: 's', kind: 's', repo: 's', state: 's', assignee: 's', 'next-actor': 's', 'block-kind': 's', 'block-reason': 's', issue: 's', 'pr-url': 's', surface: 's', until: 's', since: 's' } },
   assign: { pos: ['task'], flags: { to: 's' } },
   start: { pos: ['task'], flags: {} },
   heartbeat: { pos: ['task'], flags: {} },
@@ -256,6 +263,8 @@ const SPECS = {
   unblock: { pos: ['task'], flags: {} },
   approve: { pos: ['task'], flags: {} },
   changes: { pos: ['task'], flags: {} },
+  reopen: { pos: ['task'], flags: { reason: 's' } },
+  reassign: { pos: ['task'], flags: { to: 's', reason: 's' } },
   archive: { pos: ['task'], flags: {} },
   comment: { pos: ['task'], flags: { image: 'm', 'image-label': 'm' } },
   event: { pos: ['task', 'kind'], flags: { 'pr-url': 's' } },
@@ -547,6 +556,37 @@ async function cmdCreate(args) {
   return task;
 }
 
+// Write a task at the state an old source holds (the backfill of the task contract in shadow). A task that is already
+// in the record stays as it is, so a second run adds nothing.
+async function cmdImport(args) {
+  const taskId = taskIdOf(args);
+  const who = identity(args, 'system');
+  const f = args.flags;
+  if (!f.title) throw usage('import needs --title');
+  const kind = oneOf(TASK_KINDS, f.kind, 'kind');
+  const state = oneOf(STATES, f.state, 'state');
+  const nextActor = oneOf(ACTORS, f['next-actor'], 'next actor');
+  const surface = f.surface === undefined ? null : oneOf(SURFACES, f.surface, 'surface');
+  const blockKind = f['block-kind'] === undefined ? null : oneOf([...BLOCK_KINDS, 'needs-decision'], f['block-kind'], 'block kind');
+  const until = f.until === undefined ? null : isoOf(f.until, '--until');
+  const key = args.flags.key ? who.key : `import:${taskId}`;
+  const { result } = await write(taskId, { ...who, key }, async ({ task: existing }) => {
+    if (existing) throw rule(`task ${taskId} already present`);
+    return {
+      kind: 'created',
+      note: `imported${f.since ? ` (open since ${f.since})` : ''}`,
+      set: { title: f.title, repo: f.repo ?? null, kind, state, assignee: f.assignee ?? '-', nextActor, blockKind, blockReason: f['block-reason'] ?? null, blockRepeats: 0, issueUrl: f.issue ?? null, prUrl: f['pr-url'] ?? null, surface, holdUntil: until },
+    };
+  }).catch((error) => {
+    if (error instanceof Fail && error.code === 5 && /already present/.test(error.message)) {
+      out(`import ${taskId}: already present`);
+      return {};
+    }
+    throw error;
+  });
+  return result;
+}
+
 function simple(command, kind, setFor, { needNote = false } = {}) {
   return async (args) => {
     const taskId = taskIdOf(args);
@@ -569,6 +609,11 @@ const cmdAssign = simple('assign', 'assigned', async (task, args, taskId) => {
   const waiting = (await openParents(taskId)).length > 0;
   return { assignee: args.flags.to, nextActor: 'worker', state: waiting ? 'todo' : 'ready' };
 });
+const cmdReassign = async (args) => {
+  if (!args.flags.to?.trim() || !args.flags.reason?.trim()) throw usage('reassign needs --to and --reason');
+  args.flags.note = args.flags.reason;
+  return simple('reassign', 'reassigned', async () => ({assignee: args.flags.to}))(args);
+};
 const cmdStart = simple('start', 'started', async (task, args, taskId) => {
   const parents = await openParents(taskId);
   if (parents.length) throw rule(`start is refused while the task waits on open parents: ${parents.join(', ')}`);
@@ -582,6 +627,11 @@ const cmdUnblock = simple('unblock', 'unblocked', async (task, args, taskId) => 
   return set;
 });
 const cmdChanges = simple('changes', 'changes', async () => ({ state: 'ready', nextActor: 'worker' }), { needNote: true });
+const cmdReopen = async (args) => {
+  if (!args.flags.reason?.trim()) throw usage('reopen needs --reason');
+  args.flags.note = args.flags.reason;
+  return simple('reopen', 'reopened', async () => ({state: 'ready', nextActor: 'firstmate', blockKind: null, blockReason: null, blockRepeats: 0, holdUntil: null}))(args);
+};
 const cmdArchive = simple('archive', 'archived', async () => ({ state: 'archived', nextActor: 'firstmate' }));
 // A user-visible pass counts for the head that was built last: the head of the newest done call.
 async function latestDoneHead(taskId) {
@@ -921,8 +971,8 @@ async function cmdOwnerCheck(args) {
   // the item first: a refusal here leaves the check row as it was
   const existing = prior ? null : await ownerItem(taskId, target);
   if (existing) {
-    // a create is refused by the API for a missing field; an update would keep the old one, so the writer asks for both
-    const missing = ['url', 'steps'].filter((name) => !f[name]);
+    // An update must supply the complete checklist rather than retain omitted fields.
+    const missing = ['page-title', 'url', 'steps', 'data', 'expected'].filter((name) => !f[name]?.trim());
     if (missing.length) throw rule(`owner-check on a row that has an owner item needs ${missing.map((name) => `--${name}`).join(' and ')}`);
     const diff = Object.fromEntries(Object.entries(item).filter(([k, v]) => !['taskId', 'scenarioId', 'width', 'status'].includes(k) && existing[k] !== v));
     // the same item on a row that already waits on the owner: nothing to change
@@ -1036,8 +1086,8 @@ async function cmdResume(args) {
 }
 
 const COMMANDS = {
-  create: cmdCreate, assign: cmdAssign, start: cmdStart, heartbeat: cmdHeartbeat, done: cmdDone, ask: cmdAsk, block: cmdBlock,
-  unblock: cmdUnblock, approve: cmdApprove, changes: cmdChanges, archive: cmdArchive, comment: cmdComment, event: cmdEvent,
+  create: cmdCreate, import: cmdImport, assign: cmdAssign, start: cmdStart, heartbeat: cmdHeartbeat, done: cmdDone, ask: cmdAsk, block: cmdBlock,
+  unblock: cmdUnblock, approve: cmdApprove, changes: cmdChanges, reopen: cmdReopen, reassign: cmdReassign, archive: cmdArchive, comment: cmdComment, event: cmdEvent,
   link: cmdLink, rows: cmdRows, check: cmdCheck, 'owner-check': cmdOwnerCheck, show: cmdShow, list: cmdList, resume: cmdResume, reproject: cmdReproject,
 };
 

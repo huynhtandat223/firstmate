@@ -222,6 +222,7 @@ FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
+CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 
 # shellcheck source=bin/fm-classify-lib.sh
 # shellcheck disable=SC1091
@@ -1015,6 +1016,7 @@ command_hold() {
   [ -n "$(body_hold_set_timestamp "$(show_field_value "$show" body)")" ] \
     || fail "task $id lost its hold-set stamp while being held"
   publish_parent_hold "$id" "$occurrence" needs-decision "$reason"
+  shadow_record held "$id" captain "$reason"
   printf '%s\n' "$id"
 }
 
@@ -1101,16 +1103,24 @@ verify_pending_open() {  # <task-id>
   VERIFY_PENDING_ITEMS=$(printf '%s\n' "$problems" | awk '{ printf "%s%s", sep, $0; sep = "; " }')
 }
 
+# Opt-in task record shadow (bin/fm-task-shadow.sh): the hold and its answer reach the record too; never fails the call.
+shadow_record() {  # <hook event> <args...>
+  [ ! -e "$CONFIG/task-shadow" ] || FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_CONFIG_OVERRIDE=$CONFIG FM_DATA_OVERRIDE=$DATA \
+    "$SCRIPT_DIR/fm-task-shadow.sh" "$@" >/dev/null 2>&1 || true
+}
+
 close_answered() {  # <task-id> <release-0-or-1>
   if verify_pending_open "$1"; then
     tasks_axi hold "$1" --reason "$(fm_hold_reason_encode "verification pending: $VERIFY_PENDING_ITEMS")" --kind external >/dev/null
   elif [ "$2" = 1 ]; then
     tasks_axi unhold "$1" >/dev/null || return 1
     rm -f -- "$DATA/$1/verify-pending"
+    shadow_record answered "$1" released
   else
     apply_pending_retained_artifact "$1" || return 1
     tasks_axi "done" "$1" "${RETAINED_CLOSE_ARGS[@]+"${RETAINED_CLOSE_ARGS[@]}"}" >/dev/null || return 1
     rm -f -- "$DATA/$1/verify-pending"
+    shadow_record answered "$1" closed
   fi
 }
 
