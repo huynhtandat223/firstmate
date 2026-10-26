@@ -874,6 +874,10 @@ If the top-level path is the primary checkout or not the worktree you were launc
 1. First action: create your branch: \`git checkout -b $BRANCH_Q --\`$SETUP2
 
 # Rules
+Terminal call: end each worker turn with exactly one \`$FM_ROOT/bin/fm-task.sh done|ask|block $ID\` and its template fields from \`--help\`.
+Read \`$FM_ROOT/bin/fm-task.sh resume $ID\` first when starting or resuming this task; name its state in the terminal call's note.
+Use \`$FM_ROOT/bin/fm-task.sh heartbeat $ID --note <activity>\` for activity, not a turn end.
+The terminal call also writes the legacy status line until T7.
 $RULE1
 2. Keep project edits inside this worktree; keep proof and scratch output outside it, under \`$DATA/$ID/\` or a temporary directory.
    Outside the worktree, write only that task material and the status and steering-inbox records authorized below.
