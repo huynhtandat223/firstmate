@@ -65,7 +65,7 @@ claude --version
 "$code/bin/fm-home-seed.sh" --assistance sample "$helper" --no-projects > "$TMP_ROOT/seed.log"
 cp -a "$code/bin/." "$helper/bin/"
 printf 'New evidence in an isolated test source.\n' > "$helper/data/source.txt"
-jq -n '{name:"sample",charter:"Read the sample source only.",harness:"claude",model:"sonnet",effort:"low",sources:[{source:"data/source.txt",recipe:"read"}],cadence_seconds:5}' > "$parent/config/assistances/sample.json"
+jq -n --rawfile charter "$parent/data/sample/brief.md" '{name:"sample",charter:$charter,harness:"claude",model:"sonnet",effort:"low",sources:[{source:"data/source.txt",recipe:"read"}],cadence_seconds:5}' > "$parent/config/assistances/sample.json"
 "$code/bin/fm-assistance.sh" start sample | tee "$TMP_ROOT/start.log"
 meta="$parent/state/sample.meta"
 target=$(awk -F= '$1=="window" {print substr($0,8)}' "$meta")
@@ -75,7 +75,7 @@ for ((n=0;n<180;n++)); do
   sleep 1
 done
 if [ ! -f "$helper/data/ready.txt" ]; then
-  PATH="$ORIGINAL_PATH" "$LAB_HELPER" run "$SESSION" pane capture "$pane" --lines 60 || true
+  PATH="$ORIGINAL_PATH" "$LAB_HELPER" run "$SESSION" pane read "$pane" --lines 60 || true
   fail 'real assistance did not finish source/proposal/refusal proof'
 fi
 grep -q 'assistance rule' "$helper/data/spawn-refusal.txt" || fail 'real spawn was not refused'
