@@ -375,6 +375,16 @@ use_issue() { issue_body "$1" > "$TMP_ROOT/issue.body"; }
 # a missing template field prints the API's field and stores nothing.
 case_terminal() {
   BIN=$1; reset_db
+  local badfile
+  printf '\377' > "$TMP_ROOT/latin.md"
+  : > "$TMP_ROOT/empty.md"
+  printf 'plain' > "$TMP_ROOT/wrong.txt"
+  mk_running doc-refusal >/dev/null || return 1
+  for badfile in "$TMP_ROOT/latin.md" "$TMP_ROOT/empty.md" "$TMP_ROOT/wrong.txt" "$TMP_ROOT/missing.md"; do
+    ft done doc-refusal "${DONE_FLAGS[@]}" --document "$badfile"
+    must 'invalid document' 2 || return 1
+    [ "$(task_state doc-refusal)" = running ] || return 1
+  done
   export FM_HOME="$TMP_ROOT/terminal-home"
   mkdir -p "$FM_HOME/state"
   rm -f "$FM_HOME/state/tk10.status"

@@ -256,7 +256,7 @@ const SPECS = {
   assign: { pos: ['task'], flags: { to: 's' } },
   start: { pos: ['task'], flags: {} },
   heartbeat: { pos: ['task'], flags: {} },
-  done: { pos: ['task'], flags: { summary: 's', 'changed-files': 's', verification: 's', 'residual-risk': 's', rows: 's', 'pr-url': 's', head: 's', 'next-actor': 's', image: 'm', 'image-label': 'm' } },
+  done: { pos: ['task'], flags: { document: 's', 'document-title': 's', summary: 's', 'changed-files': 's', verification: 's', 'residual-risk': 's', rows: 's', 'pr-url': 's', head: 's', 'next-actor': 's', image: 'm', 'image-label': 'm' } },
   ask: { pos: ['task'], flags: { question: 's', option: 'm', recommendation: 's', why: 's', document: 's', 'next-actor': 's', image: 'm', 'image-label': 'm' } },
   block: { pos: ['kind', 'task'], flags: { reason: 's', 'next-actor': 's', until: 's', on: 's', image: 'm', 'image-label': 'm' } },
   unblock: { pos: ['task'], flags: {} },
@@ -301,6 +301,7 @@ function parseArgs(command, argv) {
       value = argv[++i];
     }
     if (value === '') throw usage(`--${name} is empty`);
+    if (name === 'document' && given[name] !== undefined) throw usage('only one --document is allowed');
     if (type === 'm') (given[name] ||= []).push(value);
     else given[name] = value;
   }
@@ -657,11 +658,30 @@ async function cmdEvent(args) {
   });
 }
 
+function documentOf(f) {
+  if (!f.document) {
+    if (f['document-title'] !== undefined) throw usage('--document-title requires --document');
+    return null;
+  }
+  const ext = path.extname(f.document).toLowerCase();
+  const types = { '.md': 'text/markdown', '.markdown': 'text/markdown', '.html': 'text/html', '.htm': 'text/html' };
+  if (!types[ext]) throw usage('document extension must be .md, .markdown, .html or .htm');
+  let bytes;
+  try { bytes = fs.readFileSync(f.document); } catch { throw usage('document file is missing or unreadable'); }
+  if (!bytes.length || bytes.length > 2 * 1024 * 1024) throw usage('document must contain 1 byte to 2 MiB');
+  let content;
+  try { content = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes); } catch { throw usage('document must be UTF-8'); }
+  const title = f['document-title'] ?? path.basename(f.document);
+  if (!title.trim() || title.length > 200 || /[\r\n]/.test(title)) throw usage('document title must be one line of 1 to 200 characters');
+  return { title, mediaType: types[ext], content };
+}
+
 async function cmdDone(args) {
   const taskId = taskIdOf(args);
   const who = identity(args, 'worker');
   const f = args.flags;
   const images = imagesOf(args);
+  const documents = documentOf(f);
   const nextActor = f['next-actor'] === undefined ? null : oneOf(['tester', 'firstmate'], f['next-actor'], 'next actor');
   return write(taskId, who, async ({ task }) => {
     guard('done', task);
@@ -671,7 +691,7 @@ async function cmdDone(args) {
     for (const key of Object.keys(child)) if (child[key] === undefined) delete child[key];
     const set = { state: 'review', nextActor: nextActor ?? (waitingOnTester ? 'tester' : 'firstmate'), blockKind: null, blockReason: null, blockRepeats: 0, holdUntil: null };
     if (f['pr-url']) set.prUrl = f['pr-url'];
-    return { kind: 'done', note: noteOf(args), set, children: withImages({ done: [child] }, images) };
+    return { kind: 'done', note: noteOf(args), set, children: withImages({ done: [child], ...(documents ? { documents: [documents] } : {}) }, images) };
   });
 }
 
