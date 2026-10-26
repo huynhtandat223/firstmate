@@ -400,8 +400,11 @@ case_terminal() {
   local deliveries
   deliveries=$(count fm_task_delivery)
   [ "$deliveries" -gt 0 ] || { echo 'no delivery rows'; return 1; }
+  local wake_rows
+  wake_rows=$(wc -l < "$FM_HOME/state/.wake-queue")
   ft deliver tk10 --consumer test-firstmate
   must 'replay delivery' 0 || return 1
+  [ "$(wc -l < "$FM_HOME/state/.wake-queue")" = "$wake_rows" ] || { echo 'replay duplicated wake rows'; return 1; }
   [ "$(count fm_task_delivery)" = "$deliveries" ] || { echo 'replay duplicated deliveries'; return 1; }
   # TR31: a status line cannot satisfy a terminal call; a heartbeat is not terminal.
   mk_running tk31 >/dev/null || return 1

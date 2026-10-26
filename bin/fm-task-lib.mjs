@@ -1095,14 +1095,20 @@ async function cmdDeliver(args) {
   if (!process.env.FM_HOME) throw usage('deliver requires FM_HOME');
   const delivered = await listAll('fm_task_delivery', { filter: `consumer eq ${lit(consumer)}`, orderby: 'seq' });
   const seen = new Set(delivered.map((r) => r.seq));
+  const state = process.env.FM_STATE_OVERRIDE || path.join(process.env.FM_HOME, 'state');
+  const spool = path.join(state, '.task-delivery-outbox', crypto.createHash('sha256').update(consumer).digest('hex'));
+  fs.mkdirSync(spool, { recursive: true });
   const events = await taskEvents(taskIdOf(args));
   for (const event of events) {
-    if (seen.has(event.seq)) continue;
+    const receipt = path.join(spool, `${event.seq}.json`);
+    if (seen.has(event.seq) && !fs.existsSync(receipt)) continue;
+    // Persist recovery intent before claiming. A replay owns only this consumer's spool.
+    if (!fs.existsSync(receipt)) fs.writeFileSync(receipt, JSON.stringify(event), { flag: 'wx' });
     const res = await http('POST', '/api/fm_task_delivery', { consumer, seq: event.seq });
-    if (res.status === 409) continue;
-    ok(res, 'claim event delivery');
-    const queued = spawnSync('bash', ['-c', 'source "$1/fm-wake-lib.sh"; fm_wake_append check "$2" "$3"', 'task-delivery', HERE, `task-event-${event.seq}`, `task event ${event.seq}: ${event.taskId} ${event.kind}`], { encoding: 'utf8', env: process.env });
+    if (res.status !== 409) ok(res, 'claim event delivery');
+    const queued = spawnSync('bash', ['-c', 'source "$1/fm-wake-lib.sh"; fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"; trap \'fm_lock_release "$FM_WAKE_QUEUE_LOCK"\' EXIT; if ! test -f "$4.sent"; then if ! test -f "$STATE/.wake-queue" || ! grep -Fq "$(printf "\\t%s\\t" "$2")" "$STATE/.wake-queue"; then fm_wake_append_locked check "$2" "$3" || exit; fi; : > "$4.sent"; fi', 'task-delivery', HERE, `task-event-${event.seq}`, `task event ${event.seq}: ${event.taskId} ${event.kind}`, receipt], { encoding: 'utf8', env: process.env });
     if (queued.status !== 0) throw new Fail(3, `delivery ${event.seq} claimed but wake append failed: ${queued.stderr}`);
+    fs.unlinkSync(receipt);
     out(`delivered ${consumer} seq=${event.seq}`);
   }
 }
