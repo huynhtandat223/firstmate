@@ -2516,9 +2516,10 @@ EOF
 # Decide one worker's turn end. Sets TURNEND_VERDICT, TURNEND_WHY (the failure
 # an `error` verdict names) and TURNEND_TAIL (the last lines of the pane).
 turnend_check_task() {  # <task>
-  local task=$1 meta w backend label astate plain cstate verdict
+  local task=$1 meta w backend label astate plain cstate verdict size count pingf seenf
   TURNEND_VERDICT=error; TURNEND_WHY=''; TURNEND_TAIL=''; TURNEND_SIZE=''; TURNEND_IDENT=''
   meta="$STATE/$task.meta"
+  pingf="$STATE/.turnend-pings-$task"; seenf="$STATE/.turnend-seen-$task"
   w=$(fm_meta_get "$meta" window)
   if [ -z "$w" ]; then
     TURNEND_WHY='no window recorded for the task'
@@ -2562,9 +2563,51 @@ turnend_check_task() {  # <task>
   if ! grep -q '^Terminal call:' "$FM_HOME/data/$task/brief.md" 2>/dev/null ||
     ! fm_run_timed 2 "$SCRIPT_DIR/fm-task.sh" show "$task" --json >/dev/null 2>&1; then
     verdict=$(turnend_state_line_verdict "$task") || { TURNEND_WHY='legacy status unreadable'; return 0; }
-    verdict=${verdict%% *}
-    case "$verdict" in valid-working|valid-paused|wake-verb) TURNEND_VERDICT=$verdict; return 0 ;; esac
+  size=${verdict#* }
+  TURNEND_IDENT=${size#* }
+  size=${size%% *}
+  TURNEND_SIZE=$size
+  verdict=${verdict%% *}
+  case "$verdict" in
+    valid-working|valid-paused|wake-verb)
+      if ! printf '%s' "$size" > "$seenf" 2>/dev/null; then
+        TURNEND_WHY='turn-end cursor unwritable'
+        return 0
+      fi
+      rm -f "$pingf"
+      TURNEND_VERDICT=$verdict
+      return 0
+      ;;
+  esac
+  # Missing or malformed: ping up to TURNEND_PING_MAX times per wait, then wake.
+  count=$(cat "$pingf" 2>/dev/null || true)
+  case "$count" in ''|*[!0-9]*) count=0 ;; esac
+  if ! printf '%s' "$size" > "$seenf" 2>/dev/null; then
+    TURNEND_WHY='turn-end cursor unwritable'
+    return 0
+  fi
+  # Once the wake with the pane tail has gone (count past the maximum), the rest
+  # of the wait is firstmate's to read: later malformed turn ends wake nothing,
+  # and a valid state line resets the wait.
+  if [ "$count" -gt "$TURNEND_PING_MAX" ]; then
+    TURNEND_VERDICT=ping-escalated
+    return 0
+  fi
+  if [ "$count" -eq "$TURNEND_PING_MAX" ]; then
+    # The escalation is recorded by the caller once its wake row is queued.
     TURNEND_VERDICT=ping-exhausted
+    return 0
+  fi
+  count=$((count + 1))
+  if ! printf '%s' "$count" > "$pingf" 2>/dev/null; then
+    TURNEND_WHY='ping bookkeeping unwritable'
+    return 0
+  fi
+  if ! turnend_send_ping "$task" "$w" "$backend" "$label"; then
+    TURNEND_WHY='ping delivery failed'
+    return 0
+  fi
+  TURNEND_VERDICT="ping-$count"
     return 0
   fi
   if ! verdict=$(FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task.sh" turn-end "$task" --turn "$(stat_mtime "$STATE/$task.turn-ended")"); then
