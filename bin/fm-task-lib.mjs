@@ -537,7 +537,7 @@ async function write(taskId, who, build, after) {
 
 // The legacy view remains written until T7. A replay does not append twice.
 async function legacyStatus(event) {
-  if (!process.env.FM_HOME || !['done', 'needs-decision', 'blocked', 'heartbeat'].includes(event.kind)) return;
+  if (!process.env.FM_HOME || !['done', 'needs-decision', 'blocked', 'heartbeat', 'unblocked'].includes(event.kind)) return;
   const state = process.env.FM_STATE_OVERRIDE || path.join(process.env.FM_HOME, 'state');
   fs.mkdirSync(state, { recursive: true });
   const file = path.join(state, `${event.taskId}.status`);
@@ -545,10 +545,11 @@ async function legacyStatus(event) {
   const prior = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
   if (prior.split('\n').some((line) => line.includes(marker))) return;
   const body = bodyOf(event);
-  const verb = event.kind === 'heartbeat' ? 'working' : event.kind;
+  const paused = event.kind === 'blocked' && body.set?.blockKind === 'transient' && body.set?.holdUntil;
+  const verb = event.kind === 'unblocked' ? 'resolved' : paused ? 'paused' : event.kind === 'heartbeat' ? 'working' : event.kind;
   const child = event.kind === 'done' ? await firstRow('fm_event_done', `fmTaskEventId eq ${event.id}`) : null;
   const note = body.note || child?.summary || body.set?.blockReason || `${event.kind} recorded`;
-  fs.appendFileSync(file, `${verb} [at=${Math.floor(Date.now() / 1000)}]: ${String(note).replace(/[\r\n]/g, ' ')} ${marker}\n`);
+  fs.appendFileSync(file, `${verb} [at=${Math.floor(Date.now() / 1000)}]: ${String(note).replace(/[\r\n]/g, ' ')}${paused ? ` until ${body.set.holdUntil}` : ''} ${marker}\n`);
 }
 
 // ---- commands ---------------------------------------------------------------------------------------------
