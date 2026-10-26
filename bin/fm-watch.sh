@@ -2400,7 +2400,7 @@ EOF
 # contract). Each decision writes one triage line:
 #   turn-end check: <task> verdict=<valid-working|valid-paused|wake-verb|ping-1|
 #   ping-2|ping-3|ping-exhausted|ping-escalated|busy|continue-1..3|
-#   continue-exhausted|continue-escalated|quota|dead|composer|error>
+#   continue-exhausted|continue-escalated|wake-settled|quota|dead|composer|error>
 # The checks run in this order: process, quota text, semantic busy, composer, then the state
 # line. A ping never goes to a rate-limited, dead or busy pane, because a ping to
 # a rate-limited session extends its limit.
