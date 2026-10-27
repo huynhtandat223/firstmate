@@ -79,6 +79,14 @@ for state in triage todo ready running blocked review 'done' archived; do
     diff <(jq 'del(.assignee,.lastSeq)' "$TMP_ROOT/before") <(jq 'del(.assignee,.lastSeq)' "$TMP_ROOT/after")
   fi
 done
+"$ROOT/bin/fm-task.sh" create restarter --title Restart --kind ship
+"$ROOT/bin/fm-task.sh" assign restarter --to restarter
+bash "$ROOT/bin/fm-task-shadow.sh" started restarter occurrence-one
+"$ROOT/bin/fm-task.sh" 'done' restarter --summary Done --changed-files - --verification - --residual-risk -
+"$ROOT/bin/fm-task.sh" approve restarter
+"$ROOT/bin/fm-task.sh" reopen restarter --reason Again
+bash "$ROOT/bin/fm-task-shadow.sh" started restarter occurrence-two
+"$ROOT/bin/fm-task.sh" show restarter --json | jq -e '.state == "running"'
 if grep -q 'backlog approve rc=5' "$FM_HOME/state/task-shadow.log"; then fail 'close probes an invalid approve transition'; fi
 if grep -q '\[event=' "$FM_HOME/state/todoclose.status" 2>/dev/null; then fail 'shadow event wrote a legacy status'; fi
 echo 'ok - shadow lifecycle, reopen, reassign matrix and reproject'

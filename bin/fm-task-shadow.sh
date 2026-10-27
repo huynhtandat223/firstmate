@@ -233,7 +233,7 @@ case "$EVENT" in
     w start start "$TASK"
     ;;
   status) status_event "$@" ;;
-  started) w manual-start start "$TASK" ;;
+  started) w "manual-start-${2:?start occurrence required}" start "$TASK" ;;
   cleaned-up) w cleaned-up event "$TASK" comment --note 'cleaned up by bin/fm-teardown.sh' ;;
   verified) w verified event "$TASK" comment --note 'verification record complete (bin/fm-verify-close.sh)' ;;
   held) hold_event "${2:-hold}" "${3:-}" "${4:-}" ;;

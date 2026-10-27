@@ -169,7 +169,7 @@ case "${1:-}" in
               previous=$arg
             done
             FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task-shadow.sh" held "$id" "$kind" "$reason" >/dev/null 2>&1 || true ;;
-          start) FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task-shadow.sh" started "$id" >/dev/null 2>&1 || true ;;
+          start) FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task-shadow.sh" started "$id" "$(date +%s)-$$-${RANDOM}" >/dev/null 2>&1 || true ;;
           unhold) FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task-shadow.sh" backlog unhold "$id" >/dev/null 2>&1 || true ;;
           done|reopen) FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task-shadow.sh" backlog "$1" "$id" >/dev/null 2>&1 || true ;;
         esac
