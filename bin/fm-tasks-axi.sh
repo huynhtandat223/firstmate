@@ -155,6 +155,9 @@ case "${1:-}" in
   add|create|hold|unhold|done|reopen|start)
     tasks-axi ${ARGS[@]+"${ARGS[@]}"} || exit $?
     if [ -e "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}/task-shadow" ]; then
+      # shellcheck source=bin/fm-task-shadow-config-lib.sh
+      . "$SCRIPT_DIR/fm-task-shadow-config-lib.sh"
+      fm_task_shadow_config "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}/task-shadow"
       id=${2:-}
       case "$id" in ''|-*) ;; *)
         FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task-backfill.sh" --task "$id" >/dev/null 2>&1 || true

@@ -56,11 +56,9 @@ FLAG="$CONFIG/task-shadow"
 [ -e "$FLAG" ] || exit 0
 
 # the writer's own settings, from the flag file
-while IFS= read -r line; do
-  case "$line" in
-    FM_TASK_BASE_URL=*|FM_TASK_AUTH=*|FM_TASK_TOKEN_FILE=*) export "${line?}" ;;
-  esac
-done < "$FLAG"
+# shellcheck source=bin/fm-task-shadow-config-lib.sh
+. "$SCRIPT_DIR/fm-task-shadow-config-lib.sh"
+fm_task_shadow_config "$FLAG"
 
 WRITER=${FM_TASK_SHADOW_WRITER:-$SCRIPT_DIR/fm-task.sh}
 TIMEOUT=${FM_TASK_SHADOW_TIMEOUT:-30}
