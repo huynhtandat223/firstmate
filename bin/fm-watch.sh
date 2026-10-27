@@ -2699,6 +2699,7 @@ turnend_check_task() {  # <task>
   fi
   verdict=$(printf '%s\n' "$verdict" | tail -n 1)
   case "$verdict" in
+    idle) TURNEND_VERDICT=valid-paused; return 0 ;;
     wake-verb) TURNEND_VERDICT=wake-verb; return 0 ;;
     ping-exhausted) TURNEND_VERDICT=ping-exhausted; return 0 ;;
     ping-escalated) TURNEND_VERDICT=ping-escalated; return 0 ;;
