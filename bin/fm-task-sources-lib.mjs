@@ -114,7 +114,8 @@ export function options(argv) {
   const opts = {home: process.env.FM_HOME || process.cwd(), now: Date.now(), sourceHomes: []};
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
-    if (arg === '--home') opts.home = argv[++i];
+    if (arg === '--task') opts.task = argv[++i];
+    else if (arg === '--home') opts.home = argv[++i];
     else if (arg === '--now') { opts.now = Date.parse(argv[++i]); if (!Number.isFinite(opts.now)) throw new Error('invalid --now'); }
     else if (arg === '--source-home') opts.sourceHomes.push(argv[++i]);
     else if (arg === '--dry-run') opts.dry = true;

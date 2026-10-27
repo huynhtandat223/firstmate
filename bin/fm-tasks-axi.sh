@@ -151,4 +151,26 @@ case "${1:-}" in
     exit $?
     ;;
 esac
+case "${1:-}" in
+  add|create|hold|unhold|done|reopen|start)
+    tasks-axi ${ARGS[@]+"${ARGS[@]}"} || exit $?
+    if [ -e "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}/task-shadow" ]; then
+      id=${2:-}
+      case "$id" in ''|-*) ;; *)
+        FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task-backfill.sh" --task "$id" >/dev/null 2>&1 || true
+        case "${1:-}" in
+          hold)
+            kind=hold reason='' previous=''
+            for arg in "$@"; do
+              case "$previous" in --kind) kind=$arg ;; --reason) reason=$arg ;; esac
+              previous=$arg
+            done
+            FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task-shadow.sh" held "$id" "$kind" "$reason" >/dev/null 2>&1 || true ;;
+          unhold) FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task-shadow.sh" backlog unhold "$id" >/dev/null 2>&1 || true ;;
+          done|reopen) FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task-shadow.sh" backlog "$1" "$id" >/dev/null 2>&1 || true ;;
+        esac
+      esac
+    fi
+    exit 0 ;;
+esac
 exec tasks-axi ${ARGS[@]+"${ARGS[@]}"}

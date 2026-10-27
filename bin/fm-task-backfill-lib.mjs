@@ -5,7 +5,7 @@ import {options, parseBacklog, writer, history} from './fm-task-sources-lib.mjs'
 try {
   if (process.argv.includes('--help')) { console.log('Usage: fm-task-backfill.sh [--home HOME] [--source-home HOME]... [--now ISO] [--dry-run]'); process.exit(0); }
   const opts = options(process.argv.slice(2));
-  const tasks = parseBacklog(opts.home, opts.now);
+  const tasks = parseBacklog(opts.home, opts.now).filter(t => !opts.task || t.id === opts.task);
   const counts = {};
   for (const t of tasks) counts[t.state] = (counts[t.state] || 0) + 1;
   console.log(Object.entries(counts).sort().map(([k,v]) => `${k}=${v}`).join(' '));

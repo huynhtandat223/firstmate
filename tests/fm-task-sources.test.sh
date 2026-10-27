@@ -59,4 +59,8 @@ bash "$BIN/fm-task-reconcile.sh" once --now 2026-10-25T14:00:00Z > "$TMP_ROOT/pa
 jq -e '.added == 1' "$TMP_ROOT/pairing"
 bash "$ROOT/bin/fm-task-reconcile.sh" once --now 2026-10-25T14:00:00Z > "$TMP_ROOT/pairing-repeat"
 jq -e '.added == 0' "$TMP_ROOT/pairing-repeat"
-echo 'ok - backfill mapping, history idempotency, reconciliation, no repair, owner pairing'
+mkdir -p "$FM_HOME/config"
+touch "$FM_HOME/config/task-shadow"
+bash "$ROOT/bin/fm-tasks-axi.sh" add wrapper-added 'Wrapper added task' >/dev/null
+"$ROOT/bin/fm-task.sh" show wrapper-added --json | jq -e '.state == "ready"'
+echo 'ok - backfill mapping, history idempotency, reconciliation, no repair, owner pairing, wrapper add'
