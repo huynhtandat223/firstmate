@@ -37,7 +37,7 @@ jq -e 'length == 4 and any(.[]; .taskId == "owner" and .blockKind == "needs-deci
 "$ROOT/bin/fm-task.sh" show probe --json > "$TMP_ROOT/before"
 sed -i 's/## In flight/## Queued/' "$FM_HOME/data/backlog.md"
 bash "$ROOT/bin/fm-task-reconcile.sh" once --now 2026-10-25T14:00:00Z > "$TMP_ROOT/reconcile"
-jq -e '.added == 2' "$TMP_ROOT/reconcile"
+jq -e '.added == 1 and .notComparable.count == 8' "$TMP_ROOT/reconcile"
 bash "$ROOT/bin/fm-task-reconcile.sh" once --now 2026-10-25T14:00:00Z > "$TMP_ROOT/repeat"
 jq -e '.added == 0' "$TMP_ROOT/repeat"
 # Divergence events change lastSeq only, not the old source or projected values.
