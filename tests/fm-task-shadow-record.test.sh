@@ -94,6 +94,10 @@ for turn in 1 2 3 4; do
   [ "$verdict" = idle ] || fail "review turn returned $verdict"
 done
 [ "$("$ROOT/bin/fm-task.sh" show idle-review --json)" = "$before" ] || fail 'idle turns changed review task'
+"$ROOT/bin/fm-task.sh" create worker-ready --title Ready --kind ship
+"$ROOT/bin/fm-task.sh" assign worker-ready --to worker
+verdict=$("$ROOT/bin/fm-task.sh" turn-end worker-ready --turn first | tail -n 1)
+[ "$verdict" = ping-1 ] || fail "ready worker returned $verdict instead of ping-1"
 if grep -q 'backlog approve rc=5' "$FM_HOME/state/task-shadow.log"; then fail 'close probes an invalid approve transition'; fi
 if grep -q '\[event=' "$FM_HOME/state/todoclose.status" 2>/dev/null; then fail 'shadow event wrote a legacy status'; fi
 echo 'ok - shadow lifecycle, reopen, reassign matrix and reproject'
