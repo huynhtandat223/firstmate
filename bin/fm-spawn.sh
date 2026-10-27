@@ -75,6 +75,8 @@
 #        fm-spawn.sh <task-id> --relaunch [--harness <name>] [--model <name>] [--effort <level>]
 #   --plan-exception <words> records captain words to bypass the dispatch plan gate
 #   on a fresh single ship or scout only (not relaunch or persistent launches).
+#   --allow-third-spec <words> records captain words that let a fresh single ship
+#   start while two specs are already in flight; it is never firstmate's own call.
 #   --relaunch launches a replacement agent for an EXISTING task into that
 #   task's own recorded worktree, reusing its recorded endpoint when that
 #   endpoint still exists, instead of creating either from scratch. It is
@@ -856,6 +858,9 @@ WORKDIR_SET=0
 RELAUNCH=0
 PLAN_EXCEPTION=
 PLAN_EXCEPTION_SET=0
+ALLOW_THIRD_SPEC=
+ALLOW_THIRD_SPEC_SET=0
+PLAN_SPEC=
 PLAN_ISSUE=
 # Opt-in only: exact-resume presentation-order lock waits instead of refusing.
 # Absent/unset keeps upstream refuse-on-contention. See header.
@@ -919,6 +924,10 @@ for a in "$@"; do
       PLAN_EXCEPTION=$a
       PLAN_EXCEPTION_SET=1
       ;;
+    allow-third-spec)
+      ALLOW_THIRD_SPEC=$a
+      ALLOW_THIRD_SPEC_SET=1
+      ;;
     workdir)
       WORKDIR_ARG=$a
       WORKDIR_SET=1
@@ -949,6 +958,7 @@ for a in "$@"; do
     SUB_HOME_MARKER=.fm-assistance-home
     ;;
   --plan-exception) want_value=plan-exception ;;
+  --allow-third-spec) want_value=allow-third-spec ;;
   --relaunch) RELAUNCH=1 ;;
   --herdr-resume-lock-wait) HERDR_RESUME_LOCK_WAIT=1 ;;
   --harness) want_value=harness ;;
@@ -1092,6 +1102,13 @@ esac
 if [ "$PLAN_EXCEPTION_SET" = 1 ]; then
   if [ -z "${PLAN_EXCEPTION//[[:space:]]/}" ] || [ "$RELAUNCH" = 1 ] || [ "$KIND" = secondmate ] || [[ ${POS[0]:-} = *=* ]]; then
     echo 'error: --plan-exception requires nonempty captain words on a fresh single ship or scout; not a batch, --relaunch, --secondmate or --assistance' >&2
+    exit 1
+  fi
+fi
+
+if [ "$ALLOW_THIRD_SPEC_SET" = 1 ]; then
+  if [ -z "${ALLOW_THIRD_SPEC//[[:space:]]/}" ] || [ "$RELAUNCH" = 1 ] || [ "$KIND" = secondmate ] || [[ ${POS[0]:-} = *=* ]]; then
+    echo 'error: --allow-third-spec requires nonempty captain words on a fresh single ship; not a batch, --relaunch, --secondmate or --assistance' >&2
     exit 1
   fi
 fi
@@ -1903,6 +1920,52 @@ if [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart" ] && case "$idpart" in *
   if [ "$KIND" != secondmate ] && [ -z "$HARNESS_ARG" ] && [ -f "$CONFIG/crew-dispatch.json" ]; then
     echo "error: config/crew-dispatch.json is active - pass an explicit harness resolved from the dispatch rules (the consultation backstop, so the rules are never silently skipped)." >&2
     exit 1
+  fi
+  # A batch is refused whole when its members' distinct specs would bring the
+  # count of specs in flight above two, before any member is launched.
+  if [ "$KIND" = ship ] && [ -e "$CONFIG/dispatch-plan-gate" ]; then
+    # shellcheck source=bin/fm-plan-gate-lib.sh
+    . "$SCRIPT_DIR/fm-plan-gate-lib.sh"
+    batch_specs=()
+    batch_members=()
+    for pair in "${POS[@]}"; do
+      case "$pair" in *=*) ;; *) continue ;; esac
+      batch_member=${pair%%=*}
+      if ! fm_backlog_row_probe "$DATA" "$batch_member"; then
+        echo "error: spec limit: cannot read backlog row $batch_member ($FM_BACKLOG_ROW_ERROR)" >&2
+        exit 1
+      fi
+      batch_links=$(printf '%s\n' "$FM_BACKLOG_ROW_LINKS" | grep -oE 'doc:https://github[.]com/[^[:space:],"]+' || true)
+      batch_spec=
+      while IFS= read -r batch_link; do
+        [ -n "$batch_link" ] || continue
+        if fm_plan_gate_check "${batch_link#doc:}"; then
+          if ! fm_plan_gate_spec; then
+            echo "error: spec limit: cannot resolve the spec of $batch_member" >&2
+            exit 1
+          fi
+          batch_spec=$FM_PLAN_GATE_SPEC
+          break
+        fi
+      done <<< "$batch_links"
+      [ -n "$batch_spec" ] || continue
+      batch_specs+=("$batch_spec")
+      batch_members+=("$batch_member $batch_spec")
+    done
+    if [ "${#batch_specs[@]}" -gt 0 ]; then
+      if ! batch_in_flight=$(fm_plan_gate_in_flight_specs "$STATE" ""); then
+        echo "error: spec limit: GitHub read error or timeout ($FM_PLAN_GATE_REASON)" >&2
+        exit 1
+      fi
+      batch_total=$(printf '%s\n%s\n' \
+        "$(printf '%s\n' "$batch_in_flight" | awk -F'\t' 'NF { print $1 }')" \
+        "${batch_specs[@]}" | sed '/^$/d' | awk '!seen[$0]++' | wc -l | tr -d ' ')
+      if [ "$batch_total" -gt 2 ]; then
+        printf 'error: spec limit: batch would reach %s specs in flight (%s); finish one, or split the batch\n' \
+          "$batch_total" "$(printf '%s, ' "${batch_members[@]}" | sed 's/, $//')" >&2
+        exit 1
+      fi
+    fi
   fi
   rc=0
   shared_args=()
@@ -4298,6 +4361,42 @@ if [ "$RELAUNCH" != 1 ] && [ "$KIND" != secondmate ] && { [ -e "$CONFIG/dispatch
   fi
 fi
 
+# Plan spec limit (firstmate#188): at most two specs in flight, and the same spec's
+# second repository ticket is not a new spec. The spec comes from the approved issue's
+# own parent line, so a split plan cannot spread over three ships unnoticed.
+if [ "$RELAUNCH" != 1 ] && [ "$KIND" = ship ] && [ -n "$PLAN_ISSUE" ]; then
+  # shellcheck source=bin/fm-plan-gate-lib.sh
+  . "$SCRIPT_DIR/fm-plan-gate-lib.sh"
+  if ! fm_plan_gate_spec; then
+    echo "error: spec limit: cannot resolve the spec of $PLAN_ISSUE" >&2
+    exit 1
+  fi
+  PLAN_SPEC=$FM_PLAN_GATE_SPEC
+  if ! spec_in_flight=$(fm_plan_gate_in_flight_specs "$STATE" "$ID"); then
+    echo "error: spec limit: GitHub read error or timeout ($FM_PLAN_GATE_REASON)" >&2
+    exit 1
+  fi
+  spec_list=$(printf '%s\n' "$spec_in_flight" | awk -F'\t' 'NF { print $1 }' | awk '!seen[$0]++')
+  spec_count=$(printf '%s\n' "$spec_list" | sed '/^$/d' | wc -l | tr -d ' ')
+  spec_detail=$(printf '%s\n' "$spec_list" | while IFS= read -r one_spec; do
+    [ -n "$one_spec" ] || continue
+    one_task=$(printf '%s\n' "$spec_in_flight" | awk -F'\t' -v s="$one_spec" '$1 == s { print $2; exit }')
+    printf '%s by %s, ' "$one_spec" "$one_task"
+  done | sed 's/, $//')
+  if [ "$ALLOW_THIRD_SPEC_SET" = 1 ]; then
+    if ! fm_backlog_body_append_line "$DATA" "$ID" "Spec limit override (captain): \"$ALLOW_THIRD_SPEC\""; then
+      echo "error: spec limit: cannot record the override ($FM_BACKLOG_TRANSITION_ERROR)" >&2
+      exit 1
+    fi
+    printf 'spec limit: OVERRIDE "%s"\n' "$ALLOW_THIRD_SPEC"
+  elif [ "$spec_count" -ge 2 ] && ! printf '%s\n' "$spec_list" | grep -Fxq "$PLAN_SPEC"; then
+    printf 'error: spec limit: %s specs in flight (%s); finish one, or pass --allow-third-spec "<captain words>" on the captain'\''s word\n' "$spec_count" "$spec_detail" >&2
+    exit 1
+  else
+    printf 'spec limit: %s in flight: %s\n' "$spec_count" "$spec_detail"
+  fi
+fi
+
 # A user-visible ship task starts firstmate's verification record with the issue its
 # backlog item links (bin/fm-verify-gate-lib.sh): the plan gate's approved issue, else the
 # first linked GitHub issue. No issue means the done gate could never pass, so refuse now.
@@ -6040,6 +6139,8 @@ preserve_relaunch_meta() {
   echo "window=$META_WINDOW"
   echo "endpoint_task_id=$ID"
   [ -z "$PLAN_ISSUE" ] || echo "plan_issue=$PLAN_ISSUE"
+  [ -z "$PLAN_SPEC" ] || echo "plan_spec=$PLAN_SPEC"
+  [ "$ALLOW_THIRD_SPEC_SET" != 1 ] || printf 'spec_limit_override=%s\n' "$(printf '%s' "$ALLOW_THIRD_SPEC" | base64 | tr -d '\n')"
   [ "$PLAN_EXCEPTION_SET" != 1 ] || printf 'plan_exception=%s\n' "$(printf '%s' "$PLAN_EXCEPTION" | base64 | tr -d '\n')"
   echo "worktree=$WT"
   echo "project=$PROJ_ABS"

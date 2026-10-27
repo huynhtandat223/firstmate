@@ -21,6 +21,11 @@ if ! fm_plan_gate_issue "$url"; then
   printf 'error: %s\n' "$FM_PLAN_GATE_REASON" >&2
   exit 1
 fi
+if ! fm_plan_gate_spec; then
+  echo 'error: plan gate: cannot resolve the spec of the issue' >&2
+  exit 1
+fi
+fm_plan_gate_one_per_repo "$FM_PLAN_GATE_ISSUE_REPO" "$FM_PLAN_GATE_SPEC" || exit 1
 body="approved: firstmate $(date +%s) body-sha256:$FM_PLAN_GATE_HASH"
 [ -z "$note" ] || body="$body
 $note"

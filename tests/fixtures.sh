@@ -93,9 +93,30 @@ if [ -n "${FM_FAKE_GH_PLAN_DIR:-}" ]; then
       jq -n --arg body "$body" '[{id:1,body:$body}]' > "$FM_FAKE_GH_PLAN_DIR/comments.json"
       printf 'https://github.com/o/r/issues/7#issuecomment-1\n'
       ;;
-    *comments*) cat "$FM_FAKE_GH_PLAN_DIR/comments.json" ;;
+    *comments*)
+      number=$(printf '%s\n' "$*" | grep -oE 'issues/[0-9]+/comments' | head -n 1 | cut -d/ -f2)
+      if [ -n "$number" ] && [ -f "$FM_FAKE_GH_PLAN_DIR/comments-$number.json" ]; then
+        cat "$FM_FAKE_GH_PLAN_DIR/comments-$number.json"
+      else
+        cat "$FM_FAKE_GH_PLAN_DIR/comments.json"
+      fi ;;
+    *"issues?state=open"*)
+      repo=$(printf '%s\n' "$*" | sed -n 's#.*repos/\([A-Za-z0-9_.-]*/[A-Za-z0-9_.-]*\)/issues?state=open.*#\1#p')
+      if [ -n "$repo" ] && [ -f "$FM_FAKE_GH_PLAN_DIR/open-issues-${repo//\//_}.json" ]; then
+        cat "$FM_FAKE_GH_PLAN_DIR/open-issues-${repo//\//_}.json"
+      else
+        printf '[]\n'
+      fi ;;
     *issues/8*) printf '{"state":"closed","body":"plan"}\n' ;;
-    *) cat "$FM_FAKE_GH_PLAN_DIR/issue.json" ;;
+    *)
+      number=$(printf '%s\n' "$*" | grep -oE 'issues/[0-9]+' | head -n 1 | cut -d/ -f2)
+      if [ -n "$number" ] && [ -f "$FM_FAKE_GH_PLAN_DIR/issue-$number.json" ]; then
+        cat "$FM_FAKE_GH_PLAN_DIR/issue-$number.json"
+      elif [ -f "$FM_FAKE_GH_PLAN_DIR/issue.json" ]; then
+        cat "$FM_FAKE_GH_PLAN_DIR/issue.json"
+      else
+        printf '{"state":"open","body":""}\n'
+      fi ;;
   esac
 fi
 exit 0
