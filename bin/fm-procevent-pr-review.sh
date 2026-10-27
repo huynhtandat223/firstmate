@@ -545,17 +545,28 @@ poll_late() {
 # nothing else is due. POLL_FAILED says whether this pass could read GitHub.
 POLL_FAILED=0
 pass() {
-  local rc f
+  local rc f pid
+  local -a reader_pids=()
   EMIT=
   POLL_FAILED=0
   poll_prs
   rc=$?
   case "$rc" in 2) POLL_FAILED=1 ;; 10) return 0 ;; esac
   # Rounds already open finish and time out even when GitHub cannot be read.
-  # The reader runs one round at a time, because the rounds share one Chrome.
+  # Each round's reader opens its own tab and bridge session, so every pending
+  # round is asked in this pass, at most READER_JOBS at once.
   for f in "$OPEN"/*.round.json; do
     [ -f "$f" ] || continue
-    if [ "$(jq -r .reader.status "$f")" = pending ]; then run_reader "$f"; break; fi
+    [ "$(jq -r .reader.status "$f")" = pending ] || continue
+    run_reader "$f" &
+    reader_pids+=("$!")
+    if [ "${#reader_pids[@]}" -ge "${FM_PR_REVIEW_READER_JOBS:-3}" ]; then
+      wait "${reader_pids[0]}" 2>/dev/null || true
+      reader_pids=("${reader_pids[@]:1}")
+    fi
+  done
+  for pid in ${reader_pids[@]+"${reader_pids[@]}"}; do
+    wait "$pid" 2>/dev/null || true
   done
   for f in "$OPEN"/*.round.json; do
     [ -f "$f" ] || continue
@@ -573,6 +584,16 @@ pass() {
 }
 
 # ---- wait --------------------------------------------------------------------
+
+# The runner ends after one published result, so a home would lose its poller
+# until the next reconcile. Emitting starts the next generation here; the delay
+# lets this runner release its claim, and a start that loses the claim lock
+# leaves the source to that generation or to reconcile.
+rearm_source() {
+  [ "${FM_PR_REVIEW_ONCE:-0}" != 1 ] || return 0
+  ( sleep "${FM_PR_REVIEW_REARM_DELAY_SECONDS:-5}"
+    exec "$SCRIPT_DIR/fm-procevent.sh" start "$SOURCE_ID" ) >/dev/null 2>&1 &
+}
 
 cmd_wait() {
   local rc previous
@@ -601,6 +622,7 @@ cmd_wait() {
           [ -z "$previous" ] || mark_errors_handled 999999999999
         fi
         printf '%s\n' "$EMIT"
+        rearm_source
         return 0
         ;;
       2)
@@ -610,6 +632,7 @@ cmd_wait() {
           printf '%s\n' "$READ_ERROR" > "$LAST_ERROR"
           emit_error "$READ_ERROR"
           printf '%s\n' "$EMIT"
+          rearm_source
           return 0
         fi
         ;;
@@ -617,6 +640,7 @@ cmd_wait() {
         if [ -n "$previous" ]; then
           emit_recovery
           printf '%s\n' "$EMIT"
+          rearm_source
           return 0
         fi
         ;;
