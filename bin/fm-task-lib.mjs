@@ -1151,6 +1151,10 @@ async function cmdTurnEnd(args) {
   const cursor = path.join(state, `.task-turn-${taskId}.json`);
   let prior = { seq: 0, count: 0 };
   if (fs.existsSync(cursor)) prior = JSON.parse(fs.readFileSync(cursor, 'utf8'));
+  if (task.state !== 'running' || task.nextActor !== 'worker') {
+    fs.writeFileSync(cursor, JSON.stringify({...prior, turn, verdict: 'idle'}));
+    return out('idle');
+  }
   if (prior.turn === turn) return out(prior.verdict);
   const started = [...events].reverse().find((e) => e.kind === 'started');
   const anchor = Math.max(prior.seq, started?.seq ?? 0);
