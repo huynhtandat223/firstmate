@@ -72,6 +72,16 @@ grep -F 'wait-over done-task' "$dir/tick.out" "$dir/tick.err" >/dev/null \
   || fail "FW5 the tick did not alarm on the done line: $(head -3 "$dir/tick.out" "$dir/tick.err")"
 pass 'FW5 the real watcher tick alarms on a done line at the firstmate limit'
 
+# FW7: a steer that lands after the line but before the worker's turn end still
+# clears the wait; the turn end only makes the age older.
+new_case fw7 steered-task 'done' 13
+line_stamp=$(( NOW - 13 * 60 ))
+touch -d "@$(( line_stamp + 60 ))" "$state/steered-task.firstmate-ack"
+touch -d "@$(( line_stamp + 120 ))" "$state/steered-task.turn-ended"
+drain "$dir" > "$dir/out" 2> "$dir/err"
+grep -F 'FIRSTMATE OWES:' "$dir/out" >/dev/null && fail "FW7 a steer sent before the turn end was ignored: $(cat "$dir/out")"
+pass 'FW7 a steer clears the wait even when the turn end is later'
+
 # FW6: a real captain hold exits 0 and clears the wait it answered.
 new_case fw6 held-task 'done' 12
 tasks-axi add held-task 'Pick a path' --kind ship --file "$dir/home/data/backlog.md" >/dev/null
