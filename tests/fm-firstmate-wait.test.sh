@@ -76,8 +76,10 @@ pass 'FW5 the real watcher tick alarms on a done line at the firstmate limit'
 # clears the wait; the turn end only makes the age older.
 new_case fw7 steered-task 'done' 13
 line_stamp=$(( NOW - 13 * 60 ))
-touch -d "@$(( line_stamp + 60 ))" "$state/steered-task.firstmate-ack"
-touch -d "@$(( line_stamp + 120 ))" "$state/steered-task.turn-ended"
+: > "$state/steered-task.firstmate-ack"
+: > "$state/steered-task.turn-ended"
+perl -e 'utime $ARGV[1], $ARGV[1], $ARGV[0] or die' "$state/steered-task.firstmate-ack" "$(( line_stamp + 60 ))"
+perl -e 'utime $ARGV[1], $ARGV[1], $ARGV[0] or die' "$state/steered-task.turn-ended" "$(( line_stamp + 120 ))"
 drain "$dir" > "$dir/out" 2> "$dir/err"
 grep -F 'FIRSTMATE OWES:' "$dir/out" >/dev/null && fail "FW7 a steer sent before the turn end was ignored: $(cat "$dir/out")"
 pass 'FW7 a steer clears the wait even when the turn end is later'
