@@ -401,6 +401,15 @@ A batch is refused whole when its members' distinct specs would exceed two.
 
 The gate is a process check, not an authorship or access-control check.
 
+## Firstmate-owed waits (config/firstmate-wait-minutes)
+
+A worker's `done`, `needs-decision` or `blocked` line waits on firstmate, and `bin/fm-wake-drain.sh` lists each such wait older than `config/firstmate-wait-minutes` under `FIRSTMATE OWES` and refuses its acknowledgement while any is listed.
+The file holds whole minutes and defaults to 10; `off` disables the gate.
+A `paused` line waits on something outside firstmate and keeps the `config/wait-over-minutes` alarm instead, which `bin/fm-watch.sh` also applies to the three firstmate-owed verbs at the shorter limit.
+`bin/fm-firstmate-wait-lib.sh` owns the threshold, the verb list, and the clearing rule.
+A newer status line, a steering message from `bin/fm-send.sh`, a captain hold, or a merge clears the listed wait.
+The refusal names each task, its verb, and its age, and the drain consumes nothing while it stands.
+
 ## Backlog backend (.tasks.toml / config/backlog-backend)
 
 The tracked `.tasks.toml` pins the default `tasks-axi` markdown backend to `data/backlog.md`, with `done_keep = 10` and an archive at `data/done-archive.md`.

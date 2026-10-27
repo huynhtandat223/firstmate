@@ -21,6 +21,8 @@ set -u
 SCRIPT_DIR="$(d=${BASH_SOURCE[0]%/*}; [ "$d" != "${BASH_SOURCE[0]}" ] || d=.; cd "${d:-/}" && pwd)"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+# shellcheck source=bin/fm-firstmate-wait-lib.sh
+. "$SCRIPT_DIR/fm-firstmate-wait-lib.sh"
 # shellcheck source=bin/fm-procevent-lib.sh
 . "$SCRIPT_DIR/fm-procevent-lib.sh"
 # shellcheck source=bin/fm-classify-lib.sh
@@ -271,6 +273,27 @@ case "${1:-}" in
 esac
 
 [ "$ACTOR" != branch ] || require_branch_eligible_rows || exit 1
+
+# Firstmate-owed waits (firstmate#192): a worker whose line waits on firstmate
+# holds the turn. The waits are listed on every drain, and an acknowledgement is
+# refused while one is owed, so a done line cannot be acknowledged unread.
+owed_state=${FM_STATE_OVERRIDE:-$FM_HOME/state}
+owed_config=${FM_CONFIG_OVERRIDE:-$FM_HOME/config}
+if fm_firstmate_wait_owed "$owed_state" "$owed_config"; then
+  if [ -n "${FM_FIRSTMATE_WAIT_ROWS:-}" ]; then
+    printf 'FIRSTMATE OWES:\n'
+    while IFS=$(printf '\t') read -r owed_task owed_verb owed_min owed_note; do
+      [ -n "$owed_task" ] || continue
+      printf '  %s %s %sm: %s\n' "$owed_task" "$owed_verb" "$owed_min" "$owed_note"
+    done <<< "$FM_FIRSTMATE_WAIT_ROWS"
+    if [ -n "${ACK_THROUGH:-}" ]; then
+      printf 'wake drain: acknowledgement refused while firstmate owes the waits above; answer each one (a steering message, a captain hold, or a merge clears it), then re-run this acknowledgement\n' >&2
+      exit 1
+    fi
+  fi
+else
+  printf 'FIRSTMATE OWES SKIPPED: config/firstmate-wait-minutes could not be read; repair it before relying on this gate.\n' >&2
+fi
 
 # Defense in depth for the supervision chain: this script runs at the top of
 # every wake-handling and recovery turn, so assert supervision health here too. A

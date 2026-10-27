@@ -1017,6 +1017,9 @@ command_hold() {
     || fail "task $id lost its hold-set stamp while being held"
   publish_parent_hold "$id" "$occurrence" needs-decision "$reason"
   shadow_record held "$id" captain "$reason"
+  # A recorded hold is firstmate acting on this task's wait, so the drain may
+  # acknowledge past it (bin/fm-firstmate-wait-lib.sh).
+  fm_firstmate_wait_ack "$STATE" "$id"
   printf '%s\n' "$id"
 }
 
