@@ -12,10 +12,12 @@ async function run(opts) {
   const owners = await table('fm_owner_check');
   let added = 0;
   const missing = [];
+  const notComparable = [];
   for (const t of parseBacklog(opts.home, opts.now)) {
     const row = records.get(t.id);
     if (!row) { missing.push(t.id); continue; }
-    const comparisons = ['state', 'nextActor', 'blockKind', 'assignee', 'kind'].map(field => ({field, oldSource: field === 'blockKind' && !t.holdKind ? null : t[field] ?? null, record: field === 'blockKind' && !t.holdKind ? null : row[field] ?? null}));
+    for (const field of ['nextActor', 'blockKind']) notComparable.push({task: t.id, field, reason: 'not comparable from the old source'});
+    const comparisons = ['state', 'assignee', 'kind'].map(field => ({field, oldSource: t[field] ?? null, record: row[field] ?? null}));
     for (const c of checks.filter(c => c.taskId === t.id && c.nextActor === 'owner' && c.status !== 'retired')) {
       if (!owners.some(o => o.taskId === t.id && o.scenarioId === c.scenarioId && o.width === c.width)) comparisons.push({field: `ownerItem:${c.scenarioId}@${c.width}`, oldSource: 'required', record: 'missing'});
     }
@@ -29,7 +31,7 @@ async function run(opts) {
       if (before !== after) added++;
     }
   }
-  console.log(JSON.stringify({added, missing}));
+  console.log(JSON.stringify({added, missing, notComparable: {count: notComparable.length, fields: notComparable}}));
 }
 try {
   if (!['once', 'loop'].includes(mode) || every < 1) throw new Error('expected once or loop with a positive interval');

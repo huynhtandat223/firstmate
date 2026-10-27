@@ -166,6 +166,7 @@ test_events_of_the_other_scripts() {
     'block transient t1 --reason later --next-actor firstmate' \
     'block external t1 --reason an encoded reason --next-actor firstmate' \
     'unblock t1' \
+    'done t1 --summary closed by the old source --changed-files - --verification - --residual-risk -' \
     'approve t1' \
     'event t1 deploy --note deploy 1 at abc123: verify ask sent (https://github.com/o/r/issues/9)')" "$(calls)" "the events of the other scripts"
   make_case events-refused on
@@ -174,8 +175,8 @@ test_events_of_the_other_scripts() {
     'ask t1 --question queued row --option Decide now --option Decide later --recommendation - --why a captain hold --next-actor owner' \
     'event t1 comment --note held (captain): queued row')" "$(calls)" "a refused ask leaves a comment"
   make_case events-close on
-  FAKE_FAIL=approve FAKE_FAIL_ONCE=1 hook answered t1 closed
-  assert_equals "$(printf '%s\n' 'approve t1' 'done t1 --summary closed by the old source --changed-files - --verification - --residual-risk -' 'approve t1')" "$(calls)" "approve of a task the record holds running"
+  hook answered t1 closed
+  assert_equals "$(printf '%s\n' 'done t1 --summary closed by the old source --changed-files - --verification - --residual-risk -' 'approve t1')" "$(calls)" "approve of a task the record holds running"
   pass "cleaned-up, verified, held, answered and deploy-verify become the writer commands the header names"
 }
 
@@ -183,6 +184,7 @@ test_backlog_verbs() {
   make_case backlog on
   hook backlog "done" t1; hook backlog reopen t1; hook backlog hold t1 external "waiting"; hook backlog hold t1 captain "a question"; hook backlog unhold t1
   assert_equals "$(printf '%s\n' \
+    'done t1 --summary closed by the old source --changed-files - --verification - --residual-risk -' \
     'approve t1' \
     'reopen t1 --reason backlog row reopened' \
     'block external t1 --reason waiting --next-actor firstmate' \
@@ -337,7 +339,7 @@ test_captain_hold_writes_the_record() {
   printf 'Take the first path.\n' > "$CASE_DIR/decision.md"
   : > "$CALLS"
   out=$(in_home "$SBIN/fm-captain-hold.sh" answer "$TASK" --decision-file "$CASE_DIR/decision.md" 2>&1) || fail "captain answer failed: $out"
-  assert_equals "approve $TASK" "$(calls)" "the answer closes the task in the record"
+  assert_equals "$(printf '%s\n' "done $TASK --summary closed by the old source --changed-files - --verification - --residual-risk -" "approve $TASK")" "$(calls)" "the answer closes the task in the record"
   make_real_case captain-hold-release
   fm_test_tasks_toml "$HOME_DIR/.tasks.toml"
   printf '%s\n' '## In flight' '' '## Queued' '' '## Done' > "$HOME_DIR/data/backlog.md"

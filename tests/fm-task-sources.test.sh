@@ -37,7 +37,7 @@ jq -e 'length == 4 and any(.[]; .taskId == "owner" and .blockKind == "needs-deci
 "$ROOT/bin/fm-task.sh" show probe --json > "$TMP_ROOT/before"
 sed -i 's/## In flight/## Queued/' "$FM_HOME/data/backlog.md"
 bash "$ROOT/bin/fm-task-reconcile.sh" once --now 2026-10-25T14:00:00Z > "$TMP_ROOT/reconcile"
-jq -e '.added == 2' "$TMP_ROOT/reconcile"
+jq -e '.added == 1 and .notComparable.count == 8' "$TMP_ROOT/reconcile"
 bash "$ROOT/bin/fm-task-reconcile.sh" once --now 2026-10-25T14:00:00Z > "$TMP_ROOT/repeat"
 jq -e '.added == 0' "$TMP_ROOT/repeat"
 # Divergence events change lastSeq only, not the old source or projected values.
@@ -59,4 +59,23 @@ bash "$BIN/fm-task-reconcile.sh" once --now 2026-10-25T14:00:00Z > "$TMP_ROOT/pa
 jq -e '.added == 1' "$TMP_ROOT/pairing"
 bash "$ROOT/bin/fm-task-reconcile.sh" once --now 2026-10-25T14:00:00Z > "$TMP_ROOT/pairing-repeat"
 jq -e '.added == 0' "$TMP_ROOT/pairing-repeat"
-echo 'ok - backfill mapping, history idempotency, reconciliation, no repair, owner pairing'
+mkdir -p "$FM_HOME/config"
+printf 'FM_TASK_BASE_URL=%s\nFM_TASK_TOKEN_FILE=%s\n' "$FM_TASK_BASE_URL" "$FM_TASK_TOKEN_FILE" > "$FM_HOME/config/task-shadow"
+cat > "$TMP_ROOT/broken-crew" <<'SH'
+#!/usr/bin/env bash
+exit 1
+SH
+chmod +x "$TMP_ROOT/broken-crew"
+export FM_TASK_CREW_STATE="$TMP_ROOT/broken-crew"
+printf '\n## In flight\n- [ ] unrelated - Unrelated (kind: ship)\n' >> "$FM_HOME/data/backlog.md"
+env -u FM_TASK_BASE_URL -u FM_TASK_TOKEN_FILE bash "$ROOT/bin/fm-tasks-axi.sh" add wrapper-added 'Wrapper added task' >/dev/null
+"$ROOT/bin/fm-task.sh" show wrapper-added --json | jq -e '.state == "ready"'
+bash "$ROOT/bin/fm-tasks-axi.sh" hold wrapper-added --kind external --reason waiting >/dev/null
+"$ROOT/bin/fm-task.sh" show wrapper-added --json | jq -e '.state == "blocked" and .blockKind == "external"'
+bash "$ROOT/bin/fm-tasks-axi.sh" unhold wrapper-added >/dev/null
+"$ROOT/bin/fm-task.sh" show wrapper-added --json | jq -e '.state == "ready"'
+bash "$ROOT/bin/fm-tasks-axi.sh" start wrapper-added >/dev/null
+"$ROOT/bin/fm-task.sh" show wrapper-added --json | jq -e '.state == "running"'
+(cd "$TMP_ROOT" && FM_DATA_OVERRIDE=home/data env -u FM_TASK_BASE_URL -u FM_TASK_TOKEN_FILE bash "$ROOT/bin/fm-tasks-axi.sh" add relative-added 'Relative data task' >/dev/null)
+"$ROOT/bin/fm-task.sh" show relative-added --json | jq -e '.taskId == "relative-added"'
+echo 'ok - backfill mapping, reconciliation and wrapper add/hold/unhold/start'

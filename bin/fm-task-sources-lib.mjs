@@ -42,10 +42,26 @@ export function hermes(t) {
   if (hk === 'external') return {state: 'blocked', nextActor: 'firstmate', blockKind: 'external'};
   return {state: 'ready', nextActor: 'firstmate', blockKind: null};
 }
-export function parseBacklog(home, now = Date.now()) {
+function crewMapping(home, t) {
+  const mapped = hermes(t);
+  if (t.section !== 'In flight' || t.holdKind) return mapped;
+  const result = spawnSync(process.env.FM_TASK_CREW_STATE || path.join(here, 'fm-crew-state.sh'), [t.id], {
+    encoding: 'utf8', timeout: 30000,
+    env: {...process.env, FM_HOME: home, FM_STATE_OVERRIDE: path.join(home, 'state'), FM_CREW_STATE_META_OVERRIDE: '', FM_CREW_STATE_STATUS_OVERRIDE: '', FM_CREW_STATE_NO_FORGE: '1'},
+  });
+  if (result.error || result.status !== 0) throw new Error(`crew-state could not read ${t.id}`);
+  const state = result.stdout.match(/^state: ([a-z-]+)/)?.[1];
+  if (state === 'done') return {...mapped, state: 'review', nextActor: 'firstmate'};
+  if (['blocked', 'failed', 'paused'].includes(state)) {
+    const terminal = read(path.join(home, 'state', `${t.id}.status`)).trim().split('\n').at(-1) || '';
+    return {...mapped, state: 'blocked', nextActor: 'firstmate', blockKind: state === 'failed' ? 'failure' : terminal.startsWith('needs-decision') ? 'needs-decision' : 'transient'};
+  }
+  return mapped;
+}
+export function parseBacklog(home, now = Date.now(), taskId) {
   let section = '', cur;
   const rows = [];
-  for (const line of read(path.join(home, 'data/backlog.md')).split('\n')) {
+  for (const line of read(path.join(process.env.FM_DATA_OVERRIDE || path.join(home, 'data'), 'backlog.md')).split('\n')) {
     if (line.startsWith('## ')) { section = line.slice(3).trim(); cur = null; continue; }
     const m = line.match(/^- \[[ x]\] ([A-Za-z0-9._-]+) - (.*)$/);
     if (m) {
@@ -54,10 +70,10 @@ export function parseBacklog(home, now = Date.now()) {
       rows.push(cur);
     } else if (cur) cur.notes.push(line);
   }
-  return rows.filter(t => t.section !== 'Done' || Date.parse(t.completed) >= now - 30 * 86400000).map(t => {
+  return rows.filter(t => (!taskId || t.id === taskId) && (t.section !== 'Done' || Date.parse(t.completed) >= now - 30 * 86400000)).map(t => {
     const meta = read(path.join(home, 'state', `${t.id}.meta`));
     const assignee = meta.match(/^assignee=(.*)$/m)?.[1] || t.id;
-    return {...t, ...hermes(t), assignee, kind: ['ship', 'scout', 'assistance', 'secondmate', 'plan'].includes(t.kind) ? t.kind : 'other'};
+    return {...t, ...crewMapping(home, t), assignee, kind: ['ship', 'scout', 'assistance', 'secondmate', 'plan'].includes(t.kind) ? t.kind : 'other'};
   });
 }
 export function writer(args, {json = false} = {}) {
@@ -98,7 +114,8 @@ export function options(argv) {
   const opts = {home: process.env.FM_HOME || process.cwd(), now: Date.now(), sourceHomes: []};
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
-    if (arg === '--home') opts.home = argv[++i];
+    if (arg === '--task') opts.task = argv[++i];
+    else if (arg === '--home') opts.home = argv[++i];
     else if (arg === '--now') { opts.now = Date.parse(argv[++i]); if (!Number.isFinite(opts.now)) throw new Error('invalid --now'); }
     else if (arg === '--source-home') opts.sourceHomes.push(argv[++i]);
     else if (arg === '--dry-run') opts.dry = true;

@@ -56,11 +56,9 @@ FLAG="$CONFIG/task-shadow"
 [ -e "$FLAG" ] || exit 0
 
 # the writer's own settings, from the flag file
-while IFS= read -r line; do
-  case "$line" in
-    FM_TASK_BASE_URL=*|FM_TASK_AUTH=*|FM_TASK_TOKEN_FILE=*) export "${line?}" ;;
-  esac
-done < "$FLAG"
+# shellcheck source=bin/fm-task-shadow-config-lib.sh
+. "$SCRIPT_DIR/fm-task-shadow-config-lib.sh"
+fm_task_shadow_config "$FLAG"
 
 WRITER=${FM_TASK_SHADOW_WRITER:-$SCRIPT_DIR/fm-task.sh}
 TIMEOUT=${FM_TASK_SHADOW_TIMEOUT:-30}
@@ -112,7 +110,10 @@ close_task() {
     todo) w "$1-assign" assign "$TASK" --to "$assignee" || return 0
           w "$1-start" start "$TASK" || { w "$1-archive" archive "$TASK" --note 'closed by the old source'; return 0; } ;;
   esac
-  w "$1-approve" approve "$TASK" && return 0
+  case "$current" in
+    review) w "$1-approve" approve "$TASK"; return $? ;;
+    done|archived) return 0 ;;
+  esac
   w "$1-done" "done" "$TASK" --summary "closed by the old source" --changed-files - --verification - --residual-risk - || return 1
   w "$1-approve" approve "$TASK"
 }
@@ -232,6 +233,7 @@ case "$EVENT" in
     w start start "$TASK"
     ;;
   status) status_event "$@" ;;
+  started) w "manual-start-${2:?start occurrence required}" start "$TASK" ;;
   cleaned-up) w cleaned-up event "$TASK" comment --note 'cleaned up by bin/fm-teardown.sh' ;;
   verified) w verified event "$TASK" comment --note 'verification record complete (bin/fm-verify-close.sh)' ;;
   held) hold_event "${2:-hold}" "${3:-}" "${4:-}" ;;

@@ -537,6 +537,7 @@ async function write(taskId, who, build, after) {
 
 // The legacy view remains written until T7. A replay does not append twice.
 async function legacyStatus(event) {
+  if (/^(shadow|backfill):/.test(event.idempotencyKey || '')) return;
   if (!process.env.FM_HOME || !['done', 'needs-decision', 'blocked', 'heartbeat', 'unblocked'].includes(event.kind)) return;
   const state = process.env.FM_STATE_OVERRIDE || path.join(process.env.FM_HOME, 'state');
   fs.mkdirSync(state, { recursive: true });
@@ -1150,6 +1151,10 @@ async function cmdTurnEnd(args) {
   const cursor = path.join(state, `.task-turn-${taskId}.json`);
   let prior = { seq: 0, count: 0 };
   if (fs.existsSync(cursor)) prior = JSON.parse(fs.readFileSync(cursor, 'utf8'));
+  if (task.state !== 'running' || task.nextActor !== 'worker') {
+    fs.writeFileSync(cursor, JSON.stringify({...prior, turn, verdict: 'idle'}));
+    return out('idle');
+  }
   if (prior.turn === turn) return out(prior.verdict);
   const started = [...events].reverse().find((e) => e.kind === 'started');
   const anchor = Math.max(prior.seq, started?.seq ?? 0);

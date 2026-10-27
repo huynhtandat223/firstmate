@@ -143,6 +143,9 @@ else
   unset TASKS_AXI_FILE
 fi
 
+# Resolve against the caller before changing to the backlog adapter root.
+DATA=$(cd "$DATA" && pwd -P) || fail "cannot resolve backlog data directory $DATA"
+
 cd "$FM_BACKLOG_AXI_ROOT" || fail "cannot enter the backlog root $FM_BACKLOG_AXI_ROOT"
 case "${1:-}" in
   show|view|list)
@@ -150,5 +153,31 @@ case "${1:-}" in
     tasks-axi ${ARGS[@]+"${ARGS[@]}"} | fm_hold_reason_decode_stream
     exit $?
     ;;
+esac
+case "${1:-}" in
+  add|create|hold|unhold|done|reopen|start)
+    tasks-axi ${ARGS[@]+"${ARGS[@]}"} || exit $?
+    if [ -e "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}/task-shadow" ]; then
+      # shellcheck source=bin/fm-task-shadow-config-lib.sh
+      . "$SCRIPT_DIR/fm-task-shadow-config-lib.sh"
+      fm_task_shadow_config "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}/task-shadow"
+      id=${2:-}
+      case "$id" in ''|-*) ;; *)
+        FM_HOME="$FM_HOME" FM_DATA_OVERRIDE="$DATA" "$SCRIPT_DIR/fm-task-backfill.sh" --task "$id" >/dev/null 2>&1 || true
+        case "${1:-}" in
+          hold)
+            kind=hold reason='' previous=''
+            for arg in "$@"; do
+              case "$previous" in --kind) kind=$arg ;; --reason) reason=$arg ;; esac
+              previous=$arg
+            done
+            FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task-shadow.sh" held "$id" "$kind" "$reason" >/dev/null 2>&1 || true ;;
+          start) FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task-shadow.sh" started "$id" "$(date +%s)-$$-${RANDOM}" >/dev/null 2>&1 || true ;;
+          unhold) FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task-shadow.sh" backlog unhold "$id" >/dev/null 2>&1 || true ;;
+          done|reopen) FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task-shadow.sh" backlog "$1" "$id" >/dev/null 2>&1 || true ;;
+        esac
+      esac
+    fi
+    exit 0 ;;
 esac
 exec tasks-axi ${ARGS[@]+"${ARGS[@]}"}
