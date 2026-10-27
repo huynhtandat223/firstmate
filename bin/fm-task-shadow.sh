@@ -112,7 +112,10 @@ close_task() {
     todo) w "$1-assign" assign "$TASK" --to "$assignee" || return 0
           w "$1-start" start "$TASK" || { w "$1-archive" archive "$TASK" --note 'closed by the old source'; return 0; } ;;
   esac
-  w "$1-approve" approve "$TASK" && return 0
+  case "$current" in
+    review) w "$1-approve" approve "$TASK"; return $? ;;
+    done|archived) return 0 ;;
+  esac
   w "$1-done" "done" "$TASK" --summary "closed by the old source" --changed-files - --verification - --residual-risk - || return 1
   w "$1-approve" approve "$TASK"
 }
