@@ -390,6 +390,15 @@ An approved launch prints its issue URL and records `plan_issue` in the task rec
 On a fresh single ship or scout, `--plan-exception "<captain words>"` skips the issue check and records those words, base64-encoded as `plan_exception`, and in the backlog body.
 The flag requires nonempty words and cannot be used in a batch or with an exempt launch.
 Refusals name the link or approval command and the exception flag.
+### One ticket per repository and two specs in flight
+
+A ticket names its spec on a `## Parent` line or on a `- Parent:` line in `## Links`; an issue with neither is its own spec, and `bin/fm-plan-gate-lib.sh` owns that reading.
+Approval refuses a spec that holds more than one open ticket in a counted repository and posts no marker; the counted repositories are the approved issue's own plus each `owner/repo` line in `config/plan-gate-repos`, which defaults to `huynhtandat223/cfw-modules` and `huynhtandat223/firstmate`.
+A fresh single ship is refused when two other specs are already in flight, which `state/*.meta` records as `kind=ship` with `plan_issue`; a ship whose spec is already in flight passes, and scouts, assistances, relaunches and `--plan-exception` ships are not counted.
+Every fresh ship prints the count and records `plan_spec` beside `plan_issue`.
+`--allow-third-spec "<captain words>"` proceeds anyway, records the words in the backlog body and as `spec_limit_override`, and is used only on the captain's word.
+A batch is refused whole when its members' distinct specs would exceed two.
+
 The gate is a process check, not an authorship or access-control check.
 
 ## Backlog backend (.tasks.toml / config/backlog-backend)
