@@ -63,4 +63,8 @@ mkdir -p "$FM_HOME/config"
 touch "$FM_HOME/config/task-shadow"
 bash "$ROOT/bin/fm-tasks-axi.sh" add wrapper-added 'Wrapper added task' >/dev/null
 "$ROOT/bin/fm-task.sh" show wrapper-added --json | jq -e '.state == "ready"'
-echo 'ok - backfill mapping, history idempotency, reconciliation, no repair, owner pairing, wrapper add'
+bash "$ROOT/bin/fm-tasks-axi.sh" hold wrapper-added --kind external --reason waiting >/dev/null
+"$ROOT/bin/fm-task.sh" show wrapper-added --json | jq -e '.state == "blocked" and .blockKind == "external"'
+bash "$ROOT/bin/fm-tasks-axi.sh" unhold wrapper-added >/dev/null
+"$ROOT/bin/fm-task.sh" show wrapper-added --json | jq -e '.state == "ready"'
+echo 'ok - backfill mapping, history idempotency, reconciliation, no repair, owner pairing, wrapper add/hold/unhold'
