@@ -108,6 +108,17 @@ verdict=$("$ROOT/bin/fm-task.sh" turn-end todo-worker --turn first | tail -n 1)
 "$ROOT/bin/fm-task.sh" changes changed-turn --note Again
 verdict=$("$ROOT/bin/fm-task.sh" turn-end changed-turn --turn first | tail -n 1)
 [ "$verdict" = ping-1 ] || fail "changed ready task returned $verdict"
+"$ROOT/bin/fm-task.sh" create promotion-parent --title Parent --kind ship
+"$ROOT/bin/fm-task.sh" assign promotion-parent --to worker
+"$ROOT/bin/fm-task.sh" start promotion-parent
+"$ROOT/bin/fm-task.sh" create promotion-child --title Child --kind ship
+"$ROOT/bin/fm-task.sh" assign promotion-child --to worker
+"$ROOT/bin/fm-task.sh" start promotion-child
+"$ROOT/bin/fm-task.sh" block dependency promotion-child --on promotion-parent --reason Wait --next-actor worker
+"$ROOT/bin/fm-task.sh" 'done' promotion-parent --summary Done --changed-files - --verification - --residual-risk -
+"$ROOT/bin/fm-task.sh" approve promotion-parent
+verdict=$("$ROOT/bin/fm-task.sh" turn-end promotion-child --turn first | tail -n 1)
+[ "$verdict" = ping-1 ] || fail "promoted child returned $verdict"
 if grep -q 'backlog approve rc=5' "$FM_HOME/state/task-shadow.log"; then fail 'close probes an invalid approve transition'; fi
 if grep -q '\[event=' "$FM_HOME/state/todoclose.status" 2>/dev/null; then fail 'shadow event wrote a legacy status'; fi
 echo 'ok - shadow lifecycle, reopen, reassign matrix and reproject'

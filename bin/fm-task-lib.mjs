@@ -1157,7 +1157,7 @@ async function cmdTurnEnd(args) {
   }
   if (prior.turn === turn) return out(prior.verdict);
   const started = [...events].reverse().find((e) => e.kind === 'started');
-  const ready = task.state === 'ready' ? [...events].reverse().find(e => ['assigned', 'changes', 'unblocked', 'reopened'].includes(e.kind) && bodyOf(e).set?.state === 'ready') : null;
+  const ready = task.state === 'ready' ? [...events].reverse().find(e => ['assigned', 'changes', 'unblocked', 'reopened', 'promoted'].includes(e.kind) && bodyOf(e).set?.state === 'ready') : null;
   const anchor = Math.max(prior.seq, started?.seq ?? 0, ready?.seq ?? 0);
   const terminal = events.some((e) => e.seq > anchor && TERMINAL[e.kind]);
   let count = terminal ? 0 : prior.count + 1;
