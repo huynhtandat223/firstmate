@@ -17,4 +17,10 @@ const {parseBacklog}=await import(process.argv[2]);
 const row=parseBacklog(process.argv[3])[0];
 if(row.state!=='blocked'||row.nextActor!=='firstmate')process.exit(1);
 JS
-printf 'ok - crew-state terminal verdict overrides generic in-flight mapping\n'
+mkdir -p "$TMP_ROOT/override"
+printf '## Queued\n- [ ] override - Override (kind: ship)\n' > "$TMP_ROOT/override/backlog.md"
+FM_DATA_OVERRIDE="$TMP_ROOT/override" node --input-type=module - "$ROOT/bin/fm-task-sources-lib.mjs" "$TMP_ROOT/home" <<'JS'
+const {parseBacklog}=await import(process.argv[2]);
+if(parseBacklog(process.argv[3])[0].id!=='override')process.exit(1);
+JS
+printf 'ok - source mapping and data override\n'

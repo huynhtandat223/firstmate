@@ -61,7 +61,7 @@ function crewMapping(home, t) {
 export function parseBacklog(home, now = Date.now(), taskId) {
   let section = '', cur;
   const rows = [];
-  for (const line of read(path.join(home, 'data/backlog.md')).split('\n')) {
+  for (const line of read(path.join(process.env.FM_DATA_OVERRIDE || path.join(home, 'data'), 'backlog.md')).split('\n')) {
     if (line.startsWith('## ')) { section = line.slice(3).trim(); cur = null; continue; }
     const m = line.match(/^- \[[ x]\] ([A-Za-z0-9._-]+) - (.*)$/);
     if (m) {

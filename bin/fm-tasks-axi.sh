@@ -160,7 +160,7 @@ case "${1:-}" in
       fm_task_shadow_config "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}/task-shadow"
       id=${2:-}
       case "$id" in ''|-*) ;; *)
-        FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task-backfill.sh" --task "$id" >/dev/null 2>&1 || true
+        FM_HOME="$FM_HOME" FM_DATA_OVERRIDE="$DATA" "$SCRIPT_DIR/fm-task-backfill.sh" --task "$id" >/dev/null 2>&1 || true
         case "${1:-}" in
           hold)
             kind=hold reason='' previous=''
