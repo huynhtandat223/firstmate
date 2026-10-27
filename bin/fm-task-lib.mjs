@@ -537,6 +537,7 @@ async function write(taskId, who, build, after) {
 
 // The legacy view remains written until T7. A replay does not append twice.
 async function legacyStatus(event) {
+  if (/^(shadow|backfill):/.test(event.idempotencyKey || '')) return;
   if (!process.env.FM_HOME || !['done', 'needs-decision', 'blocked', 'heartbeat', 'unblocked'].includes(event.kind)) return;
   const state = process.env.FM_STATE_OVERRIDE || path.join(process.env.FM_HOME, 'state');
   fs.mkdirSync(state, { recursive: true });

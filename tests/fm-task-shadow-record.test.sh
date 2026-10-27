@@ -79,4 +79,6 @@ for state in triage todo ready running blocked review 'done' archived; do
     diff <(jq 'del(.assignee,.lastSeq)' "$TMP_ROOT/before") <(jq 'del(.assignee,.lastSeq)' "$TMP_ROOT/after")
   fi
 done
+if grep -q 'backlog approve rc=5' "$FM_HOME/state/task-shadow.log"; then fail 'close probes an invalid approve transition'; fi
+if grep -q '\[event=' "$FM_HOME/state/todoclose.status" 2>/dev/null; then fail 'shadow event wrote a legacy status'; fi
 echo 'ok - shadow lifecycle, reopen, reassign matrix and reproject'
