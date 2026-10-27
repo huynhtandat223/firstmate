@@ -239,6 +239,8 @@ CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 # shellcheck source=bin/fm-hold-reason-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-hold-reason-lib.sh"
+# shellcheck source=bin/fm-firstmate-wait-lib.sh
+. "$SCRIPT_DIR/fm-firstmate-wait-lib.sh"
 # shellcheck source=bin/fm-verify-gate-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-verify-gate-lib.sh"

@@ -72,6 +72,16 @@ grep -F 'wait-over done-task' "$dir/tick.out" "$dir/tick.err" >/dev/null \
   || fail "FW5 the tick did not alarm on the done line: $(head -3 "$dir/tick.out" "$dir/tick.err")"
 pass 'FW5 the real watcher tick alarms on a done line at the firstmate limit'
 
+# FW6: a real captain hold exits 0 and clears the wait it answered.
+new_case fw6 held-task 'done' 12
+tasks-axi add held-task 'Pick a path' --kind ship --file "$dir/home/data/backlog.md" >/dev/null
+hold_out=$(FM_HOME="$dir/home" FM_STATE_OVERRIDE="$state" FM_CONFIG_OVERRIDE="$dir/config" \
+  "$ROOT/bin/fm-captain-hold.sh" hold held-task --title 'Pick a path' --reason 'a question for the captain' 2>&1)
+hold_rc=$?
+[ "$hold_rc" = 0 ] || fail "FW6 the captain hold exited $hold_rc: $hold_out"
+[ -e "$state/held-task.firstmate-ack" ] || fail 'FW6 the captain hold did not clear the wait'
+pass 'FW6 a real captain hold clears the firstmate-owed wait'
+
 # FW4: with the refusal removed, FW1 goes red.
 MBIN="$TMP_ROOT/mbin"
 mkdir -p "$MBIN"
