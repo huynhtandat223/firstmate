@@ -98,6 +98,16 @@ done
 "$ROOT/bin/fm-task.sh" assign worker-ready --to worker
 verdict=$("$ROOT/bin/fm-task.sh" turn-end worker-ready --turn first | tail -n 1)
 [ "$verdict" = ping-1 ] || fail "ready worker returned $verdict instead of ping-1"
+"$ROOT/bin/fm-task.sh" import todo-worker --title Todo --kind ship --state todo --assignee worker --next-actor worker
+verdict=$("$ROOT/bin/fm-task.sh" turn-end todo-worker --turn first | tail -n 1)
+[ "$verdict" = idle ] || fail "todo worker returned $verdict"
+"$ROOT/bin/fm-task.sh" create changed-turn --title Changed --kind ship
+"$ROOT/bin/fm-task.sh" assign changed-turn --to worker
+"$ROOT/bin/fm-task.sh" start changed-turn
+"$ROOT/bin/fm-task.sh" 'done' changed-turn --summary Done --changed-files - --verification - --residual-risk -
+"$ROOT/bin/fm-task.sh" changes changed-turn --note Again
+verdict=$("$ROOT/bin/fm-task.sh" turn-end changed-turn --turn first | tail -n 1)
+[ "$verdict" = ping-1 ] || fail "changed ready task returned $verdict"
 if grep -q 'backlog approve rc=5' "$FM_HOME/state/task-shadow.log"; then fail 'close probes an invalid approve transition'; fi
 if grep -q '\[event=' "$FM_HOME/state/todoclose.status" 2>/dev/null; then fail 'shadow event wrote a legacy status'; fi
 echo 'ok - shadow lifecycle, reopen, reassign matrix and reproject'
