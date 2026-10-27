@@ -55,6 +55,7 @@ new_lab() {  # <bin-dir>: a firstmate home with a registered Reviewer, a fake re
 #!/usr/bin/env bash
 # The fake reader: <chat-url> <prompt-file> <answer-file>. FAKE_READER_FAIL names a failure line.
 printf '%s\n' "$1" >> "$FAKE_READER_LOG"
+[ -z "${FAKE_READER_WAIT:-}" ] || while [ ! -e "$FAKE_READER_WAIT" ]; do sleep 0.1; done
 [ -z "${FAKE_READER_SLEEP:-}" ] || sleep "$FAKE_READER_SLEEP"
 [ -z "${FAKE_READER_FAIL:-}" ] || { echo "$FAKE_READER_FAIL"; exit 1; }
 inner=$(jq -Rs . < "$FAKE_READER_ANSWER")
@@ -65,7 +66,7 @@ SH
   default_reader_answer
   export FAKE_READER_LOG="$LAB/reader.log" FAKE_READER_ANSWER="$LAB/reader-answer.txt"
   : > "$FAKE_READER_LOG"
-  unset FAKE_READER_FAIL FAKE_READER_CHAT FAKE_READER_SLEEP FAKE_GH_FAIL FAKE_GH_FORBID
+  unset FAKE_READER_FAIL FAKE_READER_CHAT FAKE_READER_SLEEP FAKE_READER_WAIT FAKE_GH_FAIL FAKE_GH_FORBID
   write_config
   export FM_HOME="$H" FAKE_GH_DIR="$GHD" FM_PR_REVIEW_ONCE=1 FM_PR_REVIEW_NOW=$NOW
 }
@@ -443,6 +444,60 @@ scenario_readertimeout() {
     || { echo "reader timeout: $LAST_RESULT"; return 1; }
 }
 
+# Two rounds whose readers wait are both asked in one pass instead of one after the other.
+scenario_readerconcurrency() {
+  new_lab "$1"
+  fx_pulls 7:fm/alpha:h0 8:fm/beta:g0
+  fx_compare h0
+  fx_compare g0
+  cycle
+  start_round 7 fm/alpha h1
+  start_round 8 fm/beta g1
+  local f task
+  for f in "$H"/data/pr-review/open/*.round.json; do
+    [ -f "$f" ] || continue
+    task=$(jq -r .task "$f")
+    rm -f "$H/data/$task/reader-gpt-$(jq -r .head "$f" | cut -c1-8).md"
+    jq '.reader = {status: "pending", answer: null, at: null, findings: [], pre_existing: [], labels: {}}' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+  done
+  local rounds
+  rounds=$(find "$H/data/pr-review/open" -name '*.round.json' | wc -l | tr -d ' ')
+  [ "$rounds" = 2 ] || { echo "want two open rounds, got $rounds"; return 1; }
+  : > "$FAKE_READER_LOG"
+  export FAKE_READER_WAIT="$LAB/reader-release"
+  ( sleep 3; : > "$LAB/reader-release" ) &
+  advance 60
+  cycle
+  wait 2>/dev/null || true
+  unset FAKE_READER_WAIT
+  [ "$(reader_calls)" = 2 ] || { echo "one pass asked the reader $(reader_calls) time(s), want 2 before either answered"; return 1; }
+}
+
+# An emitted result starts the next poll generation instead of leaving the source down.
+scenario_rearm() {
+  new_lab "$1"
+  baseline 7 fm/alpha h0
+  start_round 7 fm/alpha h1
+  reviewer_answers h1 || return 1
+  cp -a "$ROOT/bin" "$LAB/bin"
+  cat > "$LAB/bin/fm-procevent.sh" <<SH
+#!/usr/bin/env bash
+printf '%s\\n' "\$*" >> "$LAB/rearm.log"
+exit 0
+SH
+  chmod +x "$LAB/bin/fm-procevent.sh"
+  : > "$LAB/rearm.log"
+  local out2
+  out2=$(FM_PR_REVIEW_ONCE=0 FM_PR_REVIEW_REARM_DELAY_SECONDS=0 "$LAB/bin/fm-procevent-pr-review.sh" wait 2>/dev/null)
+  printf '%s\n' "$out2" | jq -e '.schema == "fm-pr-review-result.v1" and .kind == "round"' >/dev/null \
+    || { echo "rearm run: $out2"; return 1; }
+  local tries=0
+  while [ "$tries" -lt 50 ] && ! grep -q 'start pr-review' "$LAB/rearm.log" 2>/dev/null; do
+    sleep 0.1; tries=$((tries + 1))
+  done
+  grep -q 'start pr-review' "$LAB/rearm.log" || { echo "no re-arm call: $(cat "$LAB/rearm.log" 2>/dev/null)"; return 1; }
+}
+
 # P7: the summary reads the ledger: rounds, findings by label, commit-to-answer time, timeouts, failures.
 scenario_summary() {
   new_lab "$1"
@@ -490,7 +545,7 @@ scenario_runner() {
     || { echo 'want exactly one wake row'; cat "$H/state/.wake-queue" 2>&1; return 1; }
 }
 
-SCENARIOS=${FM_PR_REVIEW_TEST_SCENARIOS:-rounds scope eof ask failures pollfail recovery disabled reenable readertimeout summary runner}
+SCENARIOS=${FM_PR_REVIEW_TEST_SCENARIOS:-rounds scope eof ask failures pollfail recovery disabled reenable readertimeout readerconcurrency rearm summary runner}
 
 # ---- real adapter -----------------------------------------------------------
 
@@ -571,4 +626,6 @@ mutate 'a reader that never answers is stopped' readertimeout \
   's/if \[ "\$rc" -eq 124 \]; then/if false; then/'
 mutate 'a late report joins its round in the summary' summary \
   's/else \.reviewer \|= \(\. \+ \{labels: \$l\.labels, at: \$l\.at\}\) end/else . end/'
+mutate 'every pending reader round runs in one pass' readerconcurrency \
+  's/    run_reader "\$f" &/    run_reader "\$f"; break/'
 pass 'every guarded behavior has a red mutation proof'
