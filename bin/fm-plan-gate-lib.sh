@@ -162,8 +162,10 @@ fm_plan_gate_one_per_repo() {  # <approved-issue-repo> <spec-url>; refuses a spl
   return "$status"
 }
 
-fm_plan_gate_in_flight_specs() {  # <state-dir> <excluded-task>; prints "<spec>\t<task>" per live ship
+fm_plan_gate_in_flight_specs() {  # <state-dir> <excluded-task>; sets "<spec>\t<task>" lines in FM_PLAN_GATE_IN_FLIGHT
   local state=$1 exclude=$2 meta task kind plan_issue plan_spec
+  FM_PLAN_GATE_IN_FLIGHT=""
+  FM_PLAN_GATE_IN_FLIGHT_COUNT=0
   for meta in "$state"/*.meta; do
     [ -e "$meta" ] || continue
     task=$(basename "$meta" .meta)
@@ -184,6 +186,8 @@ fm_plan_gate_in_flight_specs() {  # <state-dir> <excluded-task>; prints "<spec>\
       fi
       plan_spec=$FM_PLAN_GATE_SPEC
     fi
-    printf '%s\t%s\n' "$plan_spec" "$task"
+    FM_PLAN_GATE_IN_FLIGHT="$FM_PLAN_GATE_IN_FLIGHT$plan_spec	$task
+"
+    FM_PLAN_GATE_IN_FLIGHT_COUNT=$((FM_PLAN_GATE_IN_FLIGHT_COUNT + 1))
   done
 }

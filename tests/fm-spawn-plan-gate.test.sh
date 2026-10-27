@@ -292,13 +292,15 @@ for label in gt4-error gt4-timeout; do
   gate_case "$label"
   issue_of 901 open "$parent_ticket"
   case "$label" in
-    gt4-error) touch "$FM_FAKE_GH_PLAN_DIR/fail" ;;
-    gt4-timeout) touch "$FM_FAKE_GH_PLAN_DIR/sleep" ;;
+    gt4-error) touch "$FM_FAKE_GH_PLAN_DIR/fail-open-list" ;;
+    gt4-timeout) touch "$FM_FAKE_GH_PLAN_DIR/sleep-open-list" ;;
   esac
   out=$(FM_PLAN_GATE_TIMEOUT_SECS=1 PATH="$fakebin:$PATH" "$ROOT/bin/fm-plan-approve.sh" https://github.com/o/r/issues/901 2>&1)
   status=$?
   [ "$status" = 1 ] || fail "$label exit $status, want 1: $out"
   printf '%s\n' "$out" | grep -F 'GitHub read error or timeout' >/dev/null || fail "$label wording differs: $out"
+  grep -q 'issues?state=open' "$FM_FAKE_GH_PLAN_DIR/calls" || fail "$label never reached the open-issue list"
+  grep -q 'issues/901' "$FM_FAKE_GH_PLAN_DIR/calls" || fail "$label skipped the issue read"
   grep -q POST "$FM_FAKE_GH_PLAN_DIR/calls" && fail "$label posted a comment"
   pass "$label refuses on a repository list read error"
 done
@@ -362,11 +364,12 @@ override_body=$(tasks-axi show gate --full --file "$home/data/backlog.md" | sed 
 [ "$override_body" = 'Spec limit override (captain): "captain test override"' ] || fail "GT7 backlog receipt is '$override_body'"
 pass 'GT7 the captain override proceeds, records the words and their receipt'
 
-for forbidden in empty batch relaunch secondmate assistance; do
+for forbidden in empty scout batch relaunch secondmate assistance; do
   label="gt7-forbidden-$forbidden"
   gate_case "$label" ''
   case "$forbidden" in
     empty) args=(gate "$home/projects/demo" --allow-third-spec '') ;;
+    scout) rm -f "$home/config/dispatch-plan-gate"; args=(gate "$home/projects/demo" --scout --allow-third-spec words) ;;
     batch) args=("gate=$home/projects/demo" --allow-third-spec words) ;;
     relaunch) args=(gate --relaunch --allow-third-spec words) ;;
     secondmate) args=(gate "$home" --secondmate --allow-third-spec words) ;;
@@ -379,6 +382,20 @@ for forbidden in empty batch relaunch secondmate assistance; do
   [ ! -s "$FM_FAKE_GH_PLAN_DIR/calls" ] || fail "$label called GitHub"
   pass "$label refuses the override before launch"
 done
+
+gate_case gt-reason
+issue_of 901 open "$parent_ticket"
+approved_comments 901 "$parent_ticket"
+tasks-axi update gate --title 'Build https://github.com/o/r/issues/901' --file "$home/data/backlog.md" >/dev/null
+ship_meta task-a https://github.com/o/r/issues/900 https://github.com/o/r/issues/900
+ship_meta task-b https://github.com/o/r/issues/910
+touch "$FM_FAKE_GH_PLAN_DIR/fail-issue-910"
+out=$(spawn)
+status=$?
+[ "$status" = 1 ] || fail "GT-reason exit $status, want 1: $out"
+printf '%s\n' "$out" | grep -F 'error: spec limit: GitHub read error or timeout (task-b:' >/dev/null \
+  || fail "GT-reason refusal lost the failing task: $out"
+pass 'GT-reason a failed meta read names that task instead of a stale reason'
 
 gate_case gt8
 issue_of 911 open '## Parent\n#910 (spec)\n'

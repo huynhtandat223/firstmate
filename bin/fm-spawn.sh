@@ -1107,8 +1107,8 @@ if [ "$PLAN_EXCEPTION_SET" = 1 ]; then
 fi
 
 if [ "$ALLOW_THIRD_SPEC_SET" = 1 ]; then
-  if [ -z "${ALLOW_THIRD_SPEC//[[:space:]]/}" ] || [ "$RELAUNCH" = 1 ] || [ "$KIND" = secondmate ] || [[ ${POS[0]:-} = *=* ]]; then
-    echo 'error: --allow-third-spec requires nonempty captain words on a fresh single ship; not a batch, --relaunch, --secondmate or --assistance' >&2
+  if [ -z "${ALLOW_THIRD_SPEC//[[:space:]]/}" ] || [ "$KIND" != ship ] || [ "$RELAUNCH" = 1 ] || [ "$KIND" = secondmate ] || [[ ${POS[0]:-} = *=* ]]; then
+    echo 'error: --allow-third-spec requires nonempty captain words on a fresh single ship; not a scout, batch, --relaunch, --secondmate or --assistance' >&2
     exit 1
   fi
 fi
@@ -1953,10 +1953,11 @@ if [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart" ] && case "$idpart" in *
       batch_members+=("$batch_member $batch_spec")
     done
     if [ "${#batch_specs[@]}" -gt 0 ]; then
-      if ! batch_in_flight=$(fm_plan_gate_in_flight_specs "$STATE" ""); then
+      if ! fm_plan_gate_in_flight_specs "$STATE" ""; then
         echo "error: spec limit: GitHub read error or timeout ($FM_PLAN_GATE_REASON)" >&2
         exit 1
       fi
+      batch_in_flight=$FM_PLAN_GATE_IN_FLIGHT
       batch_total=$(printf '%s\n%s\n' \
         "$(printf '%s\n' "$batch_in_flight" | awk -F'\t' 'NF { print $1 }')" \
         "${batch_specs[@]}" | sed '/^$/d' | awk '!seen[$0]++' | wc -l | tr -d ' ')
@@ -4372,10 +4373,11 @@ if [ "$RELAUNCH" != 1 ] && [ "$KIND" = ship ] && [ -n "$PLAN_ISSUE" ]; then
     exit 1
   fi
   PLAN_SPEC=$FM_PLAN_GATE_SPEC
-  if ! spec_in_flight=$(fm_plan_gate_in_flight_specs "$STATE" "$ID"); then
+  if ! fm_plan_gate_in_flight_specs "$STATE" "$ID"; then
     echo "error: spec limit: GitHub read error or timeout ($FM_PLAN_GATE_REASON)" >&2
     exit 1
   fi
+  spec_in_flight=$FM_PLAN_GATE_IN_FLIGHT
   spec_list=$(printf '%s\n' "$spec_in_flight" | awk -F'\t' 'NF { print $1 }' | awk '!seen[$0]++')
   spec_count=$(printf '%s\n' "$spec_list" | sed '/^$/d' | wc -l | tr -d ' ')
   spec_detail=$(printf '%s\n' "$spec_list" | while IFS= read -r one_spec; do

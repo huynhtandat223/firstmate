@@ -86,6 +86,11 @@ if [ -n "${FM_FAKE_GH_PLAN_DIR:-}" ]; then
   [ ! -e "$FM_FAKE_GH_PLAN_DIR/fail" ] || { echo 'authentication failed' >&2; exit 1; }
   [ ! -e "$FM_FAKE_GH_PLAN_DIR/sleep" ] || sleep 5
   case "$*" in
+    *"issues?state=open"*)
+      [ ! -e "$FM_FAKE_GH_PLAN_DIR/fail-open-list" ] || { echo 'open issue list failed' >&2; exit 1; }
+      [ ! -e "$FM_FAKE_GH_PLAN_DIR/sleep-open-list" ] || sleep 5 ;;
+  esac
+  case "$*" in
     *comments*POST*)
       for arg in "$@"; do
         case "$arg" in body=*) body=${arg#body=} ;; esac
@@ -110,6 +115,7 @@ if [ -n "${FM_FAKE_GH_PLAN_DIR:-}" ]; then
     *issues/8*) printf '{"state":"closed","body":"plan"}\n' ;;
     *)
       number=$(printf '%s\n' "$*" | grep -oE 'issues/[0-9]+' | head -n 1 | cut -d/ -f2)
+      [ -z "$number" ] || [ ! -e "$FM_FAKE_GH_PLAN_DIR/fail-issue-$number" ] || { echo 'issue read failed' >&2; exit 1; }
       if [ -n "$number" ] && [ -f "$FM_FAKE_GH_PLAN_DIR/issue-$number.json" ]; then
         cat "$FM_FAKE_GH_PLAN_DIR/issue-$number.json"
       elif [ -f "$FM_FAKE_GH_PLAN_DIR/issue.json" ]; then
