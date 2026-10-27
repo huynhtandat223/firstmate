@@ -804,6 +804,30 @@ test_github_merged_outcome_is_verified() {
   pass "fm-pr-merge verifies a genuinely merged GitHub pull request"
 }
 
+# A proven merge is firstmate acting on the task's wait, so the owed listing for
+# it must clear (bin/fm-firstmate-wait-lib.sh): the marker appears and the merge
+# still records its outcome instead of dying on an unsourced helper.
+test_github_merge_clears_the_firstmate_wait() {
+  local case_dir rc
+  case_dir=$(make_case github-merge-clears-wait)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" 1212121212121212121212121212121212121212
+  : > "$case_dir/gh-axi.log"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/61 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "github-merge-clears-wait: a merged PR should succeed"
+  assert_grep 'verified: https://github.com/example/repo/pull/61 is merged' \
+    "$case_dir/stdout" "github-merge-clears-wait: the merge outcome was not reported"
+  assert_present "$case_dir/state/task-x1.firstmate-ack" \
+    "github-merge-clears-wait: a proven merge did not clear the firstmate-owed wait"
+  pass "fm-pr-merge clears a firstmate-owed wait after a proven merge"
+}
+
 test_github_verified_merge_requires_poll_recording() {
   local case_dir rc
   case_dir=$(make_case github-poll-recording-fails)
@@ -2952,6 +2976,7 @@ test_github_failed_merge_names_an_observed_landed_state
 test_github_without_gh_still_uses_gh_axi_merge
 test_github_without_gh_failed_read_keeps_bookkeeping
 test_github_merged_outcome_is_verified
+test_github_merge_clears_the_firstmate_wait
 test_github_verified_merge_requires_poll_recording
 test_github_queued_outcome_is_verified
 test_github_queue_required_refusal_names_retry_flags

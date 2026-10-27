@@ -197,6 +197,7 @@ WATCH_HOME_EXISTED=0
 # runtime needlessly spends per-root CI lint memory while adding no uncovered file.
 # shellcheck source=/dev/null
 . "$SCRIPT_DIR/fm-push-transition-lib.sh"
+. "$SCRIPT_DIR/fm-firstmate-wait-lib.sh"
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
 # Only for the arm-time check on FM_PROCEVENT_LAUNCH_CONFIRM_SECONDS below;
@@ -1125,10 +1126,11 @@ wait_over_limit_resolve() {
 }
 
 wait_over_tick() {
-  local meta task kind status marker row offset line verb note stamp stamp_id start turn now elapsed
+  local meta task kind status marker row offset line verb note stamp stamp_id start turn now elapsed limit
   local reason key queued current
   wait_over_limit_resolve || return 1
-  [ "$WAIT_OVER_LIMIT" != off ] || return 0
+  fm_firstmate_wait_limit "$CONFIG" || return 1
+  [ "$WAIT_OVER_LIMIT" != off ] || [ "$FM_FIRSTMATE_WAIT_LIMIT" != off ] || return 0
   for meta in "$STATE"/*.meta; do
     [ -e "$meta" ] || continue
     task=${meta##*/}
@@ -1148,13 +1150,18 @@ wait_over_tick() {
     offset=${row%%:*}
     line=${row#*:}
     status_line_verb "$line" verb
+    # A done line waits on firstmate exactly as an ask or a block does, so all
+    # three use config/firstmate-wait-minutes; a paused line waits on something
+    # outside firstmate and keeps the cache-driven wait-over limit.
     case "$verb" in
-      paused|blocked|needs-decision) ;;
+      done|blocked|needs-decision) limit=$FM_FIRSTMATE_WAIT_LIMIT ;;
+      paused) limit=$WAIT_OVER_LIMIT ;;
       *)
         rm -f "$marker"
         continue
         ;;
     esac
+    [ "$limit" != off ] || { rm -f "$marker"; continue; }
     if stamp=$(status_line_at_epoch "$line"); then
       stamp_id=$stamp
     else
@@ -1166,7 +1173,7 @@ wait_over_tick() {
     case "$turn" in ''|*[!0-9]*) ;; *) [ "$turn" -le "$start" ] || start=$turn ;; esac
     fm_epoch_seconds_to now
     elapsed=$((now - start))
-    [ "$elapsed" -ge $((WAIT_OVER_LIMIT * 60)) ] || continue
+    [ "$elapsed" -ge $((limit * 60)) ] || continue
     current="$offset $stamp_id $start"
     [ "$(cat "$marker" 2>/dev/null || true)" != "$current" ] || continue
     note=$(status_line_note "$line")

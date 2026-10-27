@@ -257,6 +257,8 @@ fi
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 # shellcheck source=bin/fm-task-inbox-lib.sh
 . "$SCRIPT_DIR/fm-task-inbox-lib.sh"
+# shellcheck source=bin/fm-firstmate-wait-lib.sh
+. "$SCRIPT_DIR/fm-firstmate-wait-lib.sh"
 # shellcheck source=bin/fm-timeout-lib.sh
 . "$SCRIPT_DIR/fm-timeout-lib.sh"
 
@@ -1083,6 +1085,9 @@ else
       echo "error: steer not sent to $INBOX_TASK_ID: its inbox record could not be written under $STATE/$INBOX_TASK_ID.inbox" >&2
       exit 1
     fi
+    # The steer is firstmate acting on this task, so a wait it owed is answered
+    # (bin/fm-firstmate-wait-lib.sh).
+    fm_firstmate_wait_ack "$STATE" "$INBOX_TASK_ID"
     fm_lock_release "$INBOX_META_LOCK"
     # Enqueue IS durable delivery to the task's record: mark the pending
     # expectation delivered now, without resolving it - only a correlated
