@@ -61,6 +61,13 @@ bash "$ROOT/bin/fm-task-reconcile.sh" once --now 2026-10-25T14:00:00Z > "$TMP_RO
 jq -e '.added == 0' "$TMP_ROOT/pairing-repeat"
 mkdir -p "$FM_HOME/config"
 touch "$FM_HOME/config/task-shadow"
+cat > "$TMP_ROOT/broken-crew" <<'SH'
+#!/usr/bin/env bash
+exit 1
+SH
+chmod +x "$TMP_ROOT/broken-crew"
+export FM_TASK_CREW_STATE="$TMP_ROOT/broken-crew"
+printf '\n## In flight\n- [ ] unrelated - Unrelated (kind: ship)\n' >> "$FM_HOME/data/backlog.md"
 bash "$ROOT/bin/fm-tasks-axi.sh" add wrapper-added 'Wrapper added task' >/dev/null
 "$ROOT/bin/fm-task.sh" show wrapper-added --json | jq -e '.state == "ready"'
 bash "$ROOT/bin/fm-tasks-axi.sh" hold wrapper-added --kind external --reason waiting >/dev/null

@@ -58,7 +58,7 @@ function crewMapping(home, t) {
   }
   return mapped;
 }
-export function parseBacklog(home, now = Date.now()) {
+export function parseBacklog(home, now = Date.now(), taskId) {
   let section = '', cur;
   const rows = [];
   for (const line of read(path.join(home, 'data/backlog.md')).split('\n')) {
@@ -70,7 +70,7 @@ export function parseBacklog(home, now = Date.now()) {
       rows.push(cur);
     } else if (cur) cur.notes.push(line);
   }
-  return rows.filter(t => t.section !== 'Done' || Date.parse(t.completed) >= now - 30 * 86400000).map(t => {
+  return rows.filter(t => (!taskId || t.id === taskId) && (t.section !== 'Done' || Date.parse(t.completed) >= now - 30 * 86400000)).map(t => {
     const meta = read(path.join(home, 'state', `${t.id}.meta`));
     const assignee = meta.match(/^assignee=(.*)$/m)?.[1] || t.id;
     return {...t, ...crewMapping(home, t), assignee, kind: ['ship', 'scout', 'assistance', 'secondmate', 'plan'].includes(t.kind) ? t.kind : 'other'};
