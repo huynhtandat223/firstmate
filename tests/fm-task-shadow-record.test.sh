@@ -94,6 +94,31 @@ for turn in 1 2 3 4; do
   [ "$verdict" = idle ] || fail "review turn returned $verdict"
 done
 [ "$("$ROOT/bin/fm-task.sh" show idle-review --json)" = "$before" ] || fail 'idle turns changed review task'
+"$ROOT/bin/fm-task.sh" create worker-ready --title Ready --kind ship
+"$ROOT/bin/fm-task.sh" assign worker-ready --to worker
+verdict=$("$ROOT/bin/fm-task.sh" turn-end worker-ready --turn first | tail -n 1)
+[ "$verdict" = ping-1 ] || fail "ready worker returned $verdict instead of ping-1"
+"$ROOT/bin/fm-task.sh" import todo-worker --title Todo --kind ship --state todo --assignee worker --next-actor worker
+verdict=$("$ROOT/bin/fm-task.sh" turn-end todo-worker --turn first | tail -n 1)
+[ "$verdict" = idle ] || fail "todo worker returned $verdict"
+"$ROOT/bin/fm-task.sh" create changed-turn --title Changed --kind ship
+"$ROOT/bin/fm-task.sh" assign changed-turn --to worker
+"$ROOT/bin/fm-task.sh" start changed-turn
+"$ROOT/bin/fm-task.sh" 'done' changed-turn --summary Done --changed-files - --verification - --residual-risk -
+"$ROOT/bin/fm-task.sh" changes changed-turn --note Again
+verdict=$("$ROOT/bin/fm-task.sh" turn-end changed-turn --turn first | tail -n 1)
+[ "$verdict" = ping-1 ] || fail "changed ready task returned $verdict"
+"$ROOT/bin/fm-task.sh" create promotion-parent --title Parent --kind ship
+"$ROOT/bin/fm-task.sh" assign promotion-parent --to worker
+"$ROOT/bin/fm-task.sh" start promotion-parent
+"$ROOT/bin/fm-task.sh" create promotion-child --title Child --kind ship
+"$ROOT/bin/fm-task.sh" assign promotion-child --to worker
+"$ROOT/bin/fm-task.sh" start promotion-child
+"$ROOT/bin/fm-task.sh" block dependency promotion-child --on promotion-parent --reason Wait --next-actor worker
+"$ROOT/bin/fm-task.sh" 'done' promotion-parent --summary Done --changed-files - --verification - --residual-risk -
+"$ROOT/bin/fm-task.sh" approve promotion-parent
+verdict=$("$ROOT/bin/fm-task.sh" turn-end promotion-child --turn first | tail -n 1)
+[ "$verdict" = ping-1 ] || fail "promoted child returned $verdict"
 if grep -q 'backlog approve rc=5' "$FM_HOME/state/task-shadow.log"; then fail 'close probes an invalid approve transition'; fi
 if grep -q '\[event=' "$FM_HOME/state/todoclose.status" 2>/dev/null; then fail 'shadow event wrote a legacy status'; fi
 echo 'ok - shadow lifecycle, reopen, reassign matrix and reproject'
