@@ -461,6 +461,8 @@ META="$STATE/$ID.meta"
 # whatever that record says.
 # shellcheck source=bin/fm-lease-lib.sh
 . "$SCRIPT_DIR/fm-lease-lib.sh"
+# shellcheck source=bin/fm-firstmate-wait-lib.sh
+. "$SCRIPT_DIR/fm-firstmate-wait-lib.sh"
 fm_lease_forbid_branch "PR merge (fm-pr-merge)" --away-relocated
 
 if [ ! -f "$META" ] || [ -L "$META" ]; then
