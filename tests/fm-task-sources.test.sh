@@ -76,4 +76,6 @@ bash "$ROOT/bin/fm-tasks-axi.sh" unhold wrapper-added >/dev/null
 "$ROOT/bin/fm-task.sh" show wrapper-added --json | jq -e '.state == "ready"'
 bash "$ROOT/bin/fm-tasks-axi.sh" start wrapper-added >/dev/null
 "$ROOT/bin/fm-task.sh" show wrapper-added --json | jq -e '.state == "running"'
+(cd "$TMP_ROOT" && FM_DATA_OVERRIDE=home/data env -u FM_TASK_BASE_URL -u FM_TASK_TOKEN_FILE bash "$ROOT/bin/fm-tasks-axi.sh" add relative-added 'Relative data task' >/dev/null)
+"$ROOT/bin/fm-task.sh" show relative-added --json | jq -e '.taskId == "relative-added"'
 echo 'ok - backfill mapping, reconciliation and wrapper add/hold/unhold/start'

@@ -143,6 +143,9 @@ else
   unset TASKS_AXI_FILE
 fi
 
+# Resolve against the caller before changing to the backlog adapter root.
+DATA=$(cd "$DATA" && pwd -P) || fail "cannot resolve backlog data directory $DATA"
+
 cd "$FM_BACKLOG_AXI_ROOT" || fail "cannot enter the backlog root $FM_BACKLOG_AXI_ROOT"
 case "${1:-}" in
   show|view|list)
