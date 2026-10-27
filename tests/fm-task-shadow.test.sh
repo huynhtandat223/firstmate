@@ -339,7 +339,7 @@ test_captain_hold_writes_the_record() {
   printf 'Take the first path.\n' > "$CASE_DIR/decision.md"
   : > "$CALLS"
   out=$(in_home "$SBIN/fm-captain-hold.sh" answer "$TASK" --decision-file "$CASE_DIR/decision.md" 2>&1) || fail "captain answer failed: $out"
-  assert_equals "approve $TASK" "$(calls)" "the answer closes the task in the record"
+  assert_equals "$(printf '%s\n' "done $TASK --summary closed by the old source --changed-files - --verification - --residual-risk -" "approve $TASK")" "$(calls)" "the answer closes the task in the record"
   make_real_case captain-hold-release
   fm_test_tasks_toml "$HOME_DIR/.tasks.toml"
   printf '%s\n' '## In flight' '' '## Queued' '' '## Done' > "$HOME_DIR/data/backlog.md"
