@@ -74,4 +74,6 @@ bash "$ROOT/bin/fm-tasks-axi.sh" hold wrapper-added --kind external --reason wai
 "$ROOT/bin/fm-task.sh" show wrapper-added --json | jq -e '.state == "blocked" and .blockKind == "external"'
 bash "$ROOT/bin/fm-tasks-axi.sh" unhold wrapper-added >/dev/null
 "$ROOT/bin/fm-task.sh" show wrapper-added --json | jq -e '.state == "ready"'
-echo 'ok - backfill mapping, history idempotency, reconciliation, no repair, owner pairing, wrapper add/hold/unhold'
+bash "$ROOT/bin/fm-tasks-axi.sh" start wrapper-added >/dev/null
+"$ROOT/bin/fm-task.sh" show wrapper-added --json | jq -e '.state == "running"'
+echo 'ok - backfill mapping, reconciliation and wrapper add/hold/unhold/start'
