@@ -25,14 +25,14 @@ ack_of() {  # <dir> <drain-err-file>: prints the ack arguments the drain named
 }
 
 # FW1: a done line 12 minutes old is listed and its ack is refused.
-new_case fw1 done-task done 12
+new_case fw1 done-task 'done' 12
 queue_row "$state"
 drain "$dir" > "$dir/out" 2> "$dir/err"
 grep -F 'FIRSTMATE OWES:' "$dir/out" >/dev/null || fail "FW1 no FIRSTMATE OWES block: $(cat "$dir/out")"
 grep -E 'done-task done 12m' "$dir/out" >/dev/null || fail "FW1 listing lacks task, verb and age: $(cat "$dir/out")"
-set -- $(ack_of "$dir/err")
-[ "$#" = 2 ] || fail "FW1 no ack boundary: $(cat "$dir/err")"
-if drain "$dir" --ack-through "$1" --recovery-generation "$2" > "$dir/out2"; then fail 'FW1 acknowledgement was accepted'; fi
+read -r ack_seq ack_gen <<< "$(ack_of "$dir/err")"
+[ -n "$ack_seq" ] && [ -n "$ack_gen" ] || fail "FW1 no ack boundary: $(cat "$dir/err")"
+if drain "$dir" --ack-through "$ack_seq" --recovery-generation "$ack_gen" > "$dir/out2"; then fail 'FW1 acknowledgement was accepted'; fi
 grep -F 'acknowledgement refused while firstmate owes' "$dir/err" >/dev/null || fail "FW1 refusal wording: $(cat "$dir/err")"
 [ -s "$state/.wake-queue" ] || fail 'FW1 acknowledged the queue anyway'
 pass 'FW1 a firstmate-owed done wait is listed and its ack refused'
@@ -43,24 +43,24 @@ printf 'schema=fm-task-inbox.v1\nat=x\n--\nanswer\n' > "$state/done-task.inbox/0
 touch "$state/done-task.firstmate-ack"
 drain "$dir" > "$dir/out3"
 grep -F 'FIRSTMATE OWES:' "$dir/out3" >/dev/null && fail 'FW2 still owed after firstmate acted'
-set -- $(ack_of "$dir/err")
-drain "$dir" --ack-through "$1" --recovery-generation "$2" > "$dir/out4" \
+read -r ack_seq ack_gen <<< "$(ack_of "$dir/err")"
+drain "$dir" --ack-through "$ack_seq" --recovery-generation "$ack_gen" > "$dir/out4" \
   || fail "FW2 ack refused after the steer: $(cat "$dir/err")"
 pass 'FW2 a steer clears the wait and the ack is accepted'
 
 # FW3: a paused line on an external wait is not firstmate's to answer.
-new_case fw3 paused-task paused 30
+new_case fw3 paused-task 'paused' 30
 queue_row "$state"
 printf '11\n' > "$dir/config/firstmate-wait-minutes"
 drain "$dir" > "$dir/out"
 grep -F 'FIRSTMATE OWES:' "$dir/out" >/dev/null && fail 'FW3 a paused wait was listed as owed'
-set -- $(ack_of "$dir/err")
-drain "$dir" --ack-through "$1" --recovery-generation "$2" > "$dir/out2" \
+read -r ack_seq ack_gen <<< "$(ack_of "$dir/err")"
+drain "$dir" --ack-through "$ack_seq" --recovery-generation "$ack_gen" > "$dir/out2" \
   || fail "FW3 ack refused for an external wait: $(cat "$dir/err")"
 pass 'FW3 a paused external wait leaves the ack alone'
 
 # FW5: the real watcher tick alarms on a done line at the firstmate limit.
-new_case fw5 done-task done 12
+new_case fw5 done-task 'done' 12
 ( set -u
   # shellcheck source=bin/fm-watch.sh
   FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_CONFIG_OVERRIDE="$dir/config"
@@ -78,7 +78,7 @@ mkdir -p "$MBIN"
 cp -a "$ROOT/bin/." "$MBIN/"
 perl -0pi -e 's/if \[ -n "\$\{ACK_THROUGH:-\}" \]; then/if false; then/' "$MBIN/fm-wake-drain.sh"
 grep -q 'ACK_THROUGH:-' "$MBIN/fm-wake-drain.sh" && fail 'FW4 mutation left the refusal guard in place'
-new_case fw4 done-task done 12
+new_case fw4 done-task 'done' 12
 queue_row "$state"
 mbin_drain() {  # <dir> [ack args...]
   local d=$1
@@ -86,8 +86,8 @@ mbin_drain() {  # <dir> [ack args...]
   FM_HOME="$d" FM_STATE_OVERRIDE="$d/state" FM_CONFIG_OVERRIDE="$d/config" "$MBIN/fm-wake-drain.sh" "$@" 2>"$d/err"
 }
 mbin_drain "$dir" > "$dir/out"
-set -- $(ack_of "$dir/err")
-if ! mbin_drain "$dir" --ack-through "$1" --recovery-generation "$2" > "$dir/out2"; then
+read -r ack_seq ack_gen <<< "$(ack_of "$dir/err")"
+if ! mbin_drain "$dir" --ack-through "$ack_seq" --recovery-generation "$ack_gen" > "$dir/out2"; then
   fail 'FW4 the mutated drain still refused, so the scenario does not guard the refusal'
 fi
 [ ! -s "$state/.wake-queue" ] || fail 'FW4 the mutated drain did not consume the queue'
