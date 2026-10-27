@@ -34,7 +34,7 @@ fm_firstmate_wait_cleared() {  # <state> <task> <line-start-epoch>
   local state=$1 task=$2 start=$3 f mtime
   for f in "$state/$task.firstmate-ack" "$state/$task".inbox/*.msg; do
     [ -e "$f" ] || continue
-    mtime=$(stat -c %Y "$f" 2>/dev/null) || continue
+    mtime=$(fm_path_mtime "$f") || continue
     [ "$mtime" -lt "$start" ] || return 0
   done
   return 1
@@ -73,14 +73,17 @@ fm_firstmate_wait_owed() {  # <state> <config>
     if stamp=$(status_line_at_epoch "$line"); then
       :
     else
-      stamp=$(stat -c %Y "$status" 2>/dev/null) || continue
+      stamp=$(fm_path_mtime "$status") || continue
     fi
+    # Clearing marks compare against the line's own stamp: a steer or a hold
+    # that arrived after the line answered it, even if the worker's turn end
+    # came later still. Only the age counts the turn end.
     start=$stamp
-    turn=$(stat -c %Y "$state/$task.turn-ended" 2>/dev/null) || turn=
+    turn=$(fm_path_mtime "$state/$task.turn-ended") || turn=
     case "$turn" in ''|*[!0-9]*) ;; *) [ "$turn" -le "$start" ] || start=$turn ;; esac
     elapsed=$((now - start))
     [ "$elapsed" -ge $((FM_FIRSTMATE_WAIT_LIMIT * 60)) ] || continue
-    fm_firstmate_wait_cleared "$state" "$task" "$start" && continue
+    fm_firstmate_wait_cleared "$state" "$task" "$stamp" && continue
     note=$(status_line_note "$line")
     note=${note:0:120}
     FM_FIRSTMATE_WAIT_ROWS="${FM_FIRSTMATE_WAIT_ROWS}${task}	${verb}	$((elapsed / 60))	${note}
