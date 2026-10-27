@@ -1826,6 +1826,9 @@ esac
 # Reached only after the forge confirmed the merge landed: set -e exits on a
 # refused or failed merge above, and a queued forge merge exits without an
 # outcome while its existing poll remains armed.
+# A proven merge is firstmate acting on this task's wait, so any firstmate-owed
+# listing for it clears (bin/fm-firstmate-wait-lib.sh).
+fm_firstmate_wait_ack "$STATE" "$ID"
 outcome_rc=0
 fm_merge_outcome_report "$FM_HOME" "$STATE" "$ID" "$URL" self \
   "${FM_PR_MERGE_AUTHORITY:-}" || outcome_rc=$?

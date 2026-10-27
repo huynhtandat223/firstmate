@@ -59,6 +59,19 @@ drain "$dir" --ack-through "$1" --recovery-generation "$2" > "$dir/out2" \
   || fail "FW3 ack refused for an external wait: $(cat "$dir/err")"
 pass 'FW3 a paused external wait leaves the ack alone'
 
+# FW5: the real watcher tick alarms on a done line at the firstmate limit.
+new_case fw5 done-task done 12
+( set -u
+  # shellcheck source=bin/fm-watch.sh
+  FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_CONFIG_OVERRIDE="$dir/config"
+  export FM_HOME FM_STATE_OVERRIDE FM_CONFIG_OVERRIDE
+  . "$ROOT/bin/fm-watch.sh"
+  wait_over_tick ) > "$dir/tick.out" 2> "$dir/tick.err"
+grep -Ei 'unbound|FIRSTMATE_WAIT_LIMIT' "$dir/tick.err" >/dev/null && fail "FW5 watcher tick failed: $(head -2 "$dir/tick.err")"
+grep -F 'wait-over done-task' "$dir/tick.out" "$dir/tick.err" >/dev/null \
+  || fail "FW5 the tick did not alarm on the done line: $(head -3 "$dir/tick.out" "$dir/tick.err")"
+pass 'FW5 the real watcher tick alarms on a done line at the firstmate limit'
+
 # FW4: with the refusal removed, FW1 goes red.
 MBIN="$TMP_ROOT/mbin"
 mkdir -p "$MBIN"

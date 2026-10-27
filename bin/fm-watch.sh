@@ -1154,7 +1154,7 @@ wait_over_tick() {
     # three use config/firstmate-wait-minutes; a paused line waits on something
     # outside firstmate and keeps the cache-driven wait-over limit.
     case "$verb" in
-      done|blocked|needs-decision) limit=$FIRSTMATE_WAIT_LIMIT ;;
+      done|blocked|needs-decision) limit=$FM_FIRSTMATE_WAIT_LIMIT ;;
       paused) limit=$WAIT_OVER_LIMIT ;;
       *)
         rm -f "$marker"
