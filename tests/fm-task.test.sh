@@ -1992,6 +1992,12 @@ case_stage() {
   task_row $t | jq -e --arg note "$stamp" '.lastNote == $note' >/dev/null \
     || { echo "a real comment shaped like a stamp did not become lastNote: $(task_row $t)"; return 1; }
   ft comment $t --note 'real note'; must 'real note again' 0 || return 1  # the note SG2 expects reproject to restore
+  # a reconcile divergence ({"field","oldSource","record"} under a reconcile:<task>: key, fm-task-reconcile-lib.mjs) is a
+  # comparison record, not a note: lastNote stays
+  local diverged='{"field":"nextActor","oldSource":"tester","record":"worker"}'
+  ft event $t divergence --note "$diverged" --key "reconcile:$t:nextActor:0123abcd"; must 'reconcile divergence' 0 || return 1
+  task_row $t | jq -e --arg at "$(at_of $t "$(seq_of)")" '.lastNote == "real note" and .lastEventAt == $at' >/dev/null \
+    || { echo "a reconcile divergence became lastNote: $(task_row $t)"; return 1; }
   # SG2: reproject --all fills the step fields of every row, and a second run repairs nothing
   api -X PATCH "$BASE/api/fm_task/$(task_row tk-sg | jq -r .id)" -d '{"stage":null,"stageSince":null}' >/dev/null
   api -X PATCH "$BASE/api/fm_task/$(task_row tk-sg2 | jq -r .id)" -d '{"lastNote":null}' >/dev/null
@@ -2094,8 +2100,9 @@ mutate 'a pr event after the newest started is pr' stage "if (event.kind === 'pr
 mutate 'stageSince moves only when the step changes' stage "if (stage !== task.stage) Object.assign(task, { stage, stageSince: event.createdAt ?? null });" "Object.assign(task, { stage, stageSince: event.createdAt ?? null });"
 mutate 'the reviewer is the actor of the newest review event' stage "if (REVIEWER_KINDS.includes(event.kind)) task.reviewer = event.actor ?? null;" ";"
 mutate 'a row event does not move lastNote or lastEventAt' stage "if (event.kind !== 'row') {" "if (true) {"
-mutate 'a source stamp does not become lastNote' stage "if (!isSourceStamp(event, note)) task.lastNote" "task.lastNote"
-mutate 'a stamp is only a stamp under a backfill key' stage "if (!String(event.idempotencyKey ?? '').startsWith(\`backfill:\${event.taskId}:\`)) return false;" ";"
+mutate 'a machine record does not become lastNote' stage "if (!isMachineRecord(event, note)) task.lastNote" "task.lastNote"
+mutate 'a machine record is one only under its own key' stage "if (!Object.hasOwn(MACHINE_RECORDS, prefix) || taskId !== event.taskId) return false;" ";"
+mutate 'a reconcile divergence is a machine record' stage "{ backfill: 'sha256,source', reconcile: 'field,oldSource,record' }" "{ backfill: 'sha256,source' }"
 mutate 'lastNote is cut to 300' stage "task.lastNote = note.slice(0, 300) || null" "task.lastNote = note || null"
 mutate 'reproject --all repairs every row' stage "      const result = await project(taskId);
       if (!result?.changed.length) continue;" "      continue;"
