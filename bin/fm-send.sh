@@ -537,6 +537,30 @@ fm_send_steer_problem() { # <"kind<TAB>record<TAB>age">
   fi
   exit 1
 }
+# Herdr-lab check (config/enforce-herdr-lab-brief, bin/fm-herdr-lab-phrase-lib.sh): a steer that
+# names a pane or assistance lifecycle action, to a task whose brief has no Herdr lab block.
+fm_send_lab_check() {
+  local brief phrase mode
+  brief="${FM_DATA_OVERRIDE:-$FM_HOME/data}/$INBOX_TASK_ID/brief.md"
+  [ -f "$brief" ] || return 0
+  # shellcheck source=bin/fm-herdr-lab-phrase-lib.sh
+  . "$SCRIPT_DIR/fm-herdr-lab-phrase-lib.sh"
+  ! fm_herdr_lab_brief_has "$brief" || return 0
+  phrase=$(fm_herdr_lab_phrase "$MESSAGE")
+  [ -n "$phrase" ] || return 0
+  mode=$(fm_enforce_mode "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}" herdr-lab-brief)
+  if [ "$mode" != block ]; then
+    fm_enforce_log "$STATE" herdr-lab-brief would-refuse steer "$INBOX_TASK_ID: $phrase"
+    return 0
+  fi
+  fm_enforce_log "$STATE" herdr-lab-brief refuse steer "$INBOX_TASK_ID: $phrase"
+  fm_lock_release "$INBOX_META_LOCK"
+  if [ "$PENDING_REPLY_CREATED" = 1 ] && [ -n "$PENDING_REPLY_CORR" ]; then
+    fm_pending_reply_discard_undelivered "$STATE" "$PENDING_REPLY_CORR" || true
+  fi
+  echo "error: steer not sent to $INBOX_TASK_ID: it names a pane or assistance lifecycle action ('$phrase') but the task's brief has no Herdr lab block; re-scaffold with --herdr-lab and tell the worker to re-read it" >&2
+  exit 1
+}
 while :; do
   case "${1:-}" in
   --assistance-captain-words)
@@ -1125,6 +1149,7 @@ else
       steer_problem=$(fm_task_inbox_steer_problem "$STATE" "$INBOX_TASK_ID" "$RESOLVE_ANSWER_TEXT" "$MESSAGE" "$SEND_AGAIN"); then
       fm_send_steer_problem "$steer_problem"
     fi
+    fm_send_lab_check
     if [ "${FM_SEND_IDEMPOTENT:-0}" = 1 ]; then
       INBOX_RECORD=$(fm_task_inbox_write_idempotent "$STATE" "$INBOX_TASK_ID" "$MESSAGE" \
         "${FIRE_AND_FORGET_ID:+fire-and-forget}") || inbox_write_rc=$?

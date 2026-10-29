@@ -437,6 +437,16 @@ It allows `fetch <remote> [<branch>]`, `merge --ff-only`, and every read.
 The refusal names `gh pr diff <n>` to read a PR and `git -C <worker worktree>` to change code.
 It reads `config/enforce-clone-git`, and `bin/fm-clone-git-command-policy.mjs --replay <transcript or directory>` lists the commands a past transcript would have denied with their session ids.
 
+## Herdr-lab brief check (config/enforce-herdr-lab-brief)
+
+A task that starts, stops, rotates or otherwise drives a pane or an assistance needs the Herdr lab block that `bin/fm-brief.sh --herdr-lab` adds.
+`bin/fm-brief.sh --check <task-id>` flags a brief without that block when its `# Task` text, or the scenarios of the issue it links, name a lifecycle verb within 60 characters of the word pane or assistance.
+`bin/fm-send.sh` applies the same rule to a steer sent to a task whose brief has no lab block.
+Both say to re-scaffold with `--herdr-lab`.
+`bin/fm-herdr-lab-phrase-lib.sh` owns the phrase rule.
+The check is log-only until `config/enforce-herdr-lab-brief` holds `block`: each hit is written to `state/enforce-herdr-lab-brief.log` and the brief or steer still passes.
+`bin/fm-enforce-lib.sh` owns that switch.
+
 ## Backlog backend (.tasks.toml / config/backlog-backend)
 
 The tracked `.tasks.toml` pins the default `tasks-axi` markdown backend to `data/backlog.md`, with `done_keep = 10` and an archive at `data/done-archive.md`.
