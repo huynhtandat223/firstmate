@@ -179,6 +179,25 @@ test_no_exec_shells_classify_nothing() {
   pass "#205: bash -n and bash -nc execute nothing and classify nothing; bash -c still does"
 }
 
+# Reader round 1 on PR 220: the shell options apply in order, so +n or +o noexec turns execution back on.
+test_shell_options_apply_in_order() {
+  local cmd ack='bin/fm-wake-drain.sh --ack-through 1 --recovery-generation g'
+  for cmd in \
+    "bash -n +n -c 'bin/fm-wake-drain.sh; $ack'" \
+    "bash -o noexec +o noexec -c 'bin/fm-wake-drain.sh; $ack'" \
+    "bash -nc +n 'bin/fm-wake-drain.sh; $ack'" \
+    "bash +o noexec -c 'bin/fm-wake-drain.sh; $ack'"; do
+    [ "$(policy "$cmd")" = "$(printf 'deny\tchained-ack')" ] || fail "+n or +o noexec turns execution back on, must deny: $cmd => $(policy "$cmd")"
+  done
+  for cmd in \
+    "bash +n -n -c 'bin/fm-wake-drain.sh; $ack'" \
+    "bash +o noexec -o noexec -c 'bin/fm-wake-drain.sh; $ack'" \
+    "bash -n -x -c 'bin/fm-wake-drain.sh; $ack'"; do
+    [ "$(policy "$cmd")" = allow ] || fail "the last option wins and leaves noexec on, must allow: $cmd => $(policy "$cmd")"
+  done
+  pass "shell options are read in order: +n and +o noexec after -n turn execution back on"
+}
+
 test_da3_a_filtered_drain_is_logged_not_denied() {
   local cmd
   for cmd in \
@@ -320,6 +339,7 @@ test_exclusive_if_branches_are_not_a_chain
 test_exclusive_case_arms_are_not_a_chain
 test_elif_condition_shares_the_later_branches
 test_no_exec_shells_classify_nothing
+test_shell_options_apply_in_order
 test_da3_a_filtered_drain_is_logged_not_denied
 test_hook_logs_only_until_the_switch_is_set
 test_hook_denies_in_block_mode

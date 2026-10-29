@@ -16,7 +16,7 @@
 // policy never evaluates, expands or runs any byte of the submitted command.
 // Output: "allow", or "<deny|log>\t<code>\t<reason>".
 
-import { Lexer, splitProgram, commandPosition } from "./fm-arm-command-policy.mjs";
+import { Lexer, splitProgram, commandPosition, noExecShell } from "./fm-arm-command-policy.mjs";
 import { realpathSync } from "node:fs";
 import { basename } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -88,14 +88,20 @@ function exclusive(a, b) {
   return a.path.some(([id, ...x]) => b.path.some(([otherId, ...y]) => id === otherId && apart(x, y)));
 }
 
-// The literal payload of `bash -c '<payload>'` (also -lc, -ec), or null.
+// The literal payload of `bash -c '<payload>'` (also -lc, -ec), or null: the
+// first word after the options that follow the -c cluster.
 function shellPayload(position) {
   const words = position.words;
   for (let i = position.index + 1; i < words.length; i += 1) {
-    if (/^-[A-Za-z]*c[A-Za-z]*$/.test(words[i].value)) {
-      const payload = words[i + 1]?.value === "--" ? words[i + 2] : words[i + 1];
-      return payload ? payload.value : null;
+    if (!/^-[A-Za-z]*c[A-Za-z]*$/.test(words[i].value)) continue;
+    let at = i + 1;
+    while (at < words.length) {
+      const option = /^[-+]([A-Za-z]+)$/.exec(words[at].value);
+      if (!option) break;
+      at += 1 + [...option[1]].filter((flag) => flag === "o" || flag === "O").length;
     }
+    if (words[at]?.value === "--") at += 1;
+    return words[at] ? words[at].value : null;
   }
   return null;
 }
@@ -114,22 +120,6 @@ function shellScript(position) {
     return value;
   }
   return null;
-}
-
-// True for `bash -n`, `bash -nc` and `bash -o noexec`: the shell only parses.
-function noExecShell(position) {
-  const words = position.words;
-  for (let i = position.index + 1; i < words.length; i += 1) {
-    const value = words[i].value;
-    if (value === "--" || !value.startsWith("-")) return false;
-    if (value === "-o" || value === "-O") {
-      if (value === "-o" && words[i + 1]?.value === "noexec") return true;
-      i += 1;
-    } else if (/^-[A-Za-z]*n[A-Za-z]*$/.test(value)) {
-      return true;
-    }
-  }
-  return false;
 }
 
 function drainExecution(position, found, path) {

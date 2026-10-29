@@ -595,6 +595,29 @@ export function commandPosition(tokens) {
   return { words, index, command, wrappers, prefixAssignments, unresolvedWrapperOption, wrapperPayloads };
 }
 
+// True when the shell invoked at `position` only parses its input: the options
+// are read in order, so `-n` and `-o noexec` turn execution off and `+n` and
+// `+o noexec` turn it back on. Used by the drain-ack guard and the reply lint.
+export function noExecShell(position) {
+  const words = position.words;
+  let noExec = false;
+  for (let i = position.index + 1; i < words.length; i += 1) {
+    const match = /^([-+])([A-Za-z]+)$/.exec(words[i].value);
+    if (!match) break;
+    const on = match[1] === "-";
+    let argument = i + 1;
+    for (const flag of match[2]) {
+      if (flag === "n") noExec = on;
+      else if (flag === "o") {
+        if (words[argument]?.value === "noexec") noExec = on;
+        argument += 1;
+      } else if (flag === "O") argument += 1;
+    }
+    i = argument - 1;
+  }
+  return noExec;
+}
+
 const PROTECTED_SCRIPTS = [
   { relative: "bin/fm-watch-arm.sh", kind: "arm" },
   { relative: "bin/fm-watch-checkpoint.sh", kind: "checkpoint" },
