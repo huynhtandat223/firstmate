@@ -20,8 +20,10 @@
 #   no-selftest-line  the body has no such line
 #   stale-head        <sha> is not a prefix of the live head (9 or more hex)
 #   no-receipt        no receipt file for that head
-#   receipt-fail      the receipt is not PASS, holds a failed check or names
-#                     another head
+#   receipt-fail      the receipt is not PASS, holds a failed check, names
+#                     another head, or is not the run the Self-test line names
+#                     (other features, another target, or widths without both
+#                     1440 and 390)
 # Every receipt hit prints the verify-cfw command that produces a fresh receipt.
 #
 # G2, check merge-verifier: the receipt G1 reads must carry an `actor` other
@@ -153,15 +155,21 @@ fm_selftest_receipt_rule() {
   fi
   if ! result_head=$(jq -r '
         if type != "object" then error("not an object") else
-          (if ((.result // "") == "PASS") and ([.results[]? | select(.result == "fail")] | length == 0)
-           then "pass" else "fail" end) + "\u001f" + ((.head // "") | tostring) + "\u001f" + ((.actor // "") | tostring)
+          [ (if ((.result // "") == "PASS") and ([.results[]? | select(.result == "fail")] | length == 0)
+             then "pass" else "fail" end),
+            ((.head // "") | tostring),
+            ((.actor // "") | tostring),
+            ((.features // []) | if type == "array" then (map(tostring) | unique | join(",")) else "" end),
+            ((.target // "") | tostring),
+            ((.widths // []) | if type == "array" then (map(tostring) | join(",")) else "" end)
+          ] | join("\u001f")
         end' "$receipt" 2>/dev/null); then
     fm_selftest_hit merge-selftest receipt-fail \
       "the receipt $receipt is not readable JSON; run: $cmd"
     return 0
   fi
-  local verdict receipt_head actor
-  IFS=$'\x1f' read -r verdict receipt_head actor <<< "$result_head"
+  local verdict receipt_head actor receipt_features receipt_target receipt_widths
+  IFS=$'\x1f' read -r verdict receipt_head actor receipt_features receipt_target receipt_widths <<< "$result_head"
   # G2: the receipt must come from a verifier that is not the task's author.
   if [ -z "$actor" ]; then
     fm_selftest_hit merge-verifier no-actor \
@@ -183,6 +191,26 @@ fm_selftest_receipt_rule() {
   if [ -z "$receipt_head" ]; then
     fm_selftest_hit merge-selftest receipt-fail \
       "the receipt $receipt names another head than the live head $head; run: $cmd"
+    return 0
+  fi
+  # The receipt must be the run the Self-test line names: same features, same
+  # target, and both widths.
+  local line_features differs=''
+  line_features=$(printf '%s\n' "$features" | tr ',' '\n' | sort -u | paste -sd, -)
+  [ "$receipt_features" = "$line_features" ] \
+    || differs="$differs; the receipt ran features ${receipt_features:-none} but the Self-test line names $line_features"
+  [ "$receipt_target" = "storybook:$branch" ] \
+    || differs="$differs; the receipt ran target ${receipt_target:-none} but the Self-test line names storybook:$branch"
+  local width
+  for width in 1440 390; do
+    case ",$receipt_widths," in
+      *",$width,"*) ;;
+      *) differs="$differs; the receipt widths (${receipt_widths:-none}) lack $width" ;;
+    esac
+  done
+  if [ -n "$differs" ]; then
+    fm_selftest_hit merge-selftest receipt-fail \
+      "the receipt $receipt is not the run the Self-test line names${differs}; run: $cmd"
   fi
   return 0
 }

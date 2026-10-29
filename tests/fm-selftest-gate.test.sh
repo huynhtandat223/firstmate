@@ -89,12 +89,17 @@ selftest_line() {  # <sha>
   printf 'Self-test: verify-cfw run board-task-detail --target storybook:fm/board-fix head=%s PASS\n' "$1"
 }
 
-# write_receipt <case> <head> <actor> <result> [failed-check]
+# write_receipt <case> <head> <actor> <result> [failed-check]: a receipt shaped as
+# cfw-modules PR 1748 writes it. RECEIPT_FEATURES, RECEIPT_TARGET and RECEIPT_WIDTHS
+# (JSON) replace the matching field.
 write_receipt() {
   local dir=$1 head=$2 actor=$3 result=$4 failed=${5:-pass}
-  jq -n --arg head "$head" --arg actor "$actor" --arg result "$result" --arg failed "$failed" '
-    {tool: "verify-cfw", head: $head, target: "storybook:fm/board-fix", features: ["board-task-detail"],
-     widths: [1440, 390], actor: $actor, result: $result,
+  jq -n --arg head "$head" --arg actor "$actor" --arg result "$result" --arg failed "$failed" \
+    --argjson features "${RECEIPT_FEATURES:-[\"board-task-detail\"]}" \
+    --arg target "${RECEIPT_TARGET:-storybook:fm/board-fix}" \
+    --argjson widths "${RECEIPT_WIDTHS:-[1440, 390]}" '
+    {tool: "verify-cfw", head: $head, target: $target, features: $features,
+     widths: $widths, actor: $actor, result: $result,
      results: [{feature: "board-task-detail", state: "detail sheet open on a phone", width: 390, check: "page", result: "pass"},
                {feature: "board-task-detail", state: "document dialog open", width: 390, check: "touch", result: $failed}]}' \
     > "$dir/home/data/$TASK/selftest-$head.json"
@@ -526,6 +531,62 @@ test_sg5_an_unreadable_issue_is_logged_and_refuses_under_block() {
   pass "sg5: an unreadable issue is logged as issue-unread and refuses under block"
 }
 
+test_sg2_a_receipt_for_another_run_hits_receipt_fail() {
+  local dir
+
+  dir=$(make_case sg2-features user-visible)
+  body_file "$dir" "$(selftest_line "${HEAD:0:12}")"
+  RECEIPT_FEATURES='["screens-debug-steps"]' write_receipt "$dir" "$HEAD" tester PASS
+  run_gate "$dir" "$CFW_URL"
+  assert_receipt_hit "$dir" receipt-fail
+  assert_contains "$ERR" "features screens-debug-steps" "sg2: the receipt's features are named"
+  assert_contains "$ERR" "board-task-detail" "sg2: and the Self-test line's features"
+
+  dir=$(make_case sg2-target user-visible)
+  body_file "$dir" "$(selftest_line "${HEAD:0:12}")"
+  RECEIPT_TARGET='storybook:fm/other' write_receipt "$dir" "$HEAD" tester PASS
+  run_gate "$dir" "$CFW_URL"
+  assert_receipt_hit "$dir" receipt-fail
+  assert_contains "$ERR" "target storybook:fm/other" "sg2: the receipt's target is named"
+  assert_contains "$ERR" "storybook:fm/board-fix" "sg2: and the Self-test line's target"
+
+  dir=$(make_case sg2-target-5001 user-visible)
+  body_file "$dir" "$(selftest_line "${HEAD:0:12}")"
+  RECEIPT_TARGET='5001' write_receipt "$dir" "$HEAD" tester PASS
+  run_gate "$dir" "$CFW_URL"
+  assert_receipt_hit "$dir" receipt-fail
+
+  dir=$(make_case sg2-widths-phone user-visible)
+  body_file "$dir" "$(selftest_line "${HEAD:0:12}")"
+  RECEIPT_WIDTHS='[1440]' write_receipt "$dir" "$HEAD" tester PASS
+  run_gate "$dir" "$CFW_URL"
+  assert_receipt_hit "$dir" receipt-fail
+  assert_contains "$ERR" "widths (1440) lack 390" "sg2: the missing width is named"
+
+  dir=$(make_case sg2-widths-desktop user-visible)
+  body_file "$dir" "$(selftest_line "${HEAD:0:12}")"
+  RECEIPT_WIDTHS='[390]' write_receipt "$dir" "$HEAD" tester PASS
+  run_gate "$dir" "$CFW_URL"
+  assert_receipt_hit "$dir" receipt-fail
+  assert_contains "$ERR" "widths (390) lack 1440" "sg2: the other missing width is named"
+
+  dir=$(make_case sg2-fields-absent user-visible)
+  body_file "$dir" "$(selftest_line "${HEAD:0:12}")"
+  write_receipt "$dir" "$HEAD" tester PASS
+  jq 'del(.features, .target, .widths)' "$dir/home/data/$TASK/selftest-$HEAD.json" > "$dir/r.json"
+  mv "$dir/r.json" "$dir/home/data/$TASK/selftest-$HEAD.json"
+  run_gate "$dir" "$CFW_URL"
+  assert_receipt_hit "$dir" receipt-fail
+
+  # The same run in another order, with an extra width, is the same run.
+  dir=$(make_case sg2-same-run user-visible)
+  body_file "$dir" "Self-test: verify-cfw run screens-debug-steps,board-task-detail --target storybook:fm/board-fix head=${HEAD:0:12} PASS"
+  RECEIPT_FEATURES='["board-task-detail","screens-debug-steps"]' RECEIPT_WIDTHS='[768,390,1440]' write_receipt "$dir" "$HEAD" tester PASS
+  run_gate "$dir" "$CFW_URL"
+  assert_equals '' "$ERR" "sg2: feature order and an extra width do not matter"
+  pass "sg2: a PASS receipt for other features, another target or missing widths hits receipt-fail"
+}
+
 test_sg1_pr_1730_body_hits_phrase_on_lines_4_and_16
 test_sg2_receipt_at_the_live_head_logs_nothing
 test_sg2_each_missing_piece_hits_its_own_code
@@ -535,3 +596,4 @@ test_sg5_a_brief_names_the_verify_run_for_each_mapped_page
 test_sg5_an_unmapped_page_is_logged_and_never_a_hit
 test_sg5_internal_issues_and_other_repositories_log_nothing
 test_sg5_an_unreadable_issue_is_logged_and_refuses_under_block
+test_sg2_a_receipt_for_another_run_hits_receipt_fail
