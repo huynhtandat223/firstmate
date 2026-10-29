@@ -432,7 +432,7 @@ case_terminal() {
   must 'done' 0 || return 1
   grep -q '^done \[at=[0-9]*\]: PR https://example.com/pr/1 Built it' "$FM_HOME/state/tk10.status" || { echo 'done did not write legacy status'; return 1; }
   local parsed_pr
-  parsed_pr=$(bash -c 'source "$1/fm-dod-lib.sh"; fm_dod_pr_url_from_done_note "$2"' _ "$ROOT/bin" "$(tail -n 1 "$FM_HOME/state/tk10.status" | cut -d: -f2- | sed 's/^ //')") || return 1
+  parsed_pr=$(bash -c 'source "$1/fm-dod-lib.sh"; fm_dod_pr_url_from_done_note "$2"' _ "$ROOT/bin" "$(grep '^done ' "$FM_HOME/state/tk10.status" | tail -n 1 | cut -d: -f2- | sed 's/^ //')") || return 1
   [ "$parsed_pr" = https://example.com/pr/1 ] || { echo 'legacy PR parser lost URL'; return 1; }
   seq=$(seq_of); [ -n "$seq" ] || { echo "no seq printed: $OUT"; return 1; }
   id=$(db fm_task_event | jq -r --argjson s "$seq" '.[] | select(.seq == $s and .kind == "done" and .taskId == "tk10") | .id')
@@ -440,7 +440,8 @@ case_terminal() {
   child=$(db fm_event_done | jq -c --arg id "$id" '.[] | select(.fmTaskEventId == $id)')
   jq -e '.summary == "Built it" and .changedFiles == "bin/fm-task.sh" and .verification == "ran the tests" and .residualRisk == "none known" and .prUrl == "https://example.com/pr/1" and .head == "abc123" and (.rows | type == "string")' <<<"$child" >/dev/null \
     || { echo "stored done child: $child"; return 1; }
-  [ "$(posts POST fm_task_event)" = 1 ] && [ "$(posts POST fm_event_done)" = 0 ] || { echo "the event and its child did not travel in one request"; return 1; }
+  # two event requests: the done event with its child, then the merge wait a PR-ready done declares (HG1)
+  [ "$(posts POST fm_task_event)" = 2 ] && [ "$(posts POST fm_event_done)" = 0 ] || { echo "the event and its child did not travel in one request"; return 1; }
   curl -s "$BASE/__x/log" | jq -e '[.[] | select(.method == "POST" and .path == "/api/fm_task_event")][0].body | (.done | length) == 1 and .seq == '"$seq" >/dev/null \
     || { echo "the event request does not carry the done child"; return 1; }
   [ "$(task_state $t)" = review ] || { echo "done did not move the task to review: $(task_state $t)"; return 1; }
@@ -1868,7 +1869,64 @@ case_verify_view() {
   grep -q '^approved: firstmate [0-9][0-9]*$' "$v3" || { echo "no approved line: $(cat "$v3")"; return 1; }
 }
 
-CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed row backlog status_view verify_view"}
+# HG1: a wait is one paused line keyed on its event, the watcher's reader takes it as a declared wait, and the record
+# event that clears it appends one resolved line with the same key, also when another home wrote that event.
+case_wait() {
+  BIN=$1; reset_db
+  export FM_HOME="$TMP_ROOT/wait-home"
+  rm -rf "$FM_HOME" "$TMP_ROOT/wait-other"; mkdir -p "$FM_HOME/state" "$TMP_ROOT/wait-other/state"
+  local f n line
+  declared() { bash -c 'source "$1/fm-classify-lib.sh"; status_declared_wait_line "$2"' _ "$ROOT/bin" "$1"; }
+  use_issue v1
+  mk_running tk-w1 >/dev/null || { echo "setup: $ERR"; return 1; }
+  ft rows tk-w1 "$ISSUE" >/dev/null || { echo "setup rows: $ERR"; return 1; }
+  f="$FM_HOME/state/tk-w1.status"
+  ft event tk-w1 wait --next-actor tester --clears-on rows --rows 'A1@1440,A1@390' --note 'A1 on head h1' --key w1-wait
+  must 'wait' 0 || return 1
+  n=$(seq_of)
+  line=$(tail -n 1 "$f")
+  [[ $line =~ ^paused\ \[at=[0-9]+\]\ \[key=wait-$n\]:\ waiting\ on\ tester:\ A1\ on\ head\ h1\ \(clears\ on\ rows\)\ \[event=$n\]$ ]] || { echo "paused line: $line"; return 1; }
+  [ "$(declared "$f")" = "$line" ] || { echo "the watcher's reader does not take the wait: [$(declared "$f")]"; return 1; }
+  ft event tk-w1 wait --next-actor tester --clears-on rows --rows 'A1@1440,A1@390' --note 'A1 on head h1' --key w1-wait
+  [ "$(grep -c "key=wait-$n" "$f")" = 1 ] || { echo "a replayed wait wrote a second line"; return 1; }
+  FM_HOME="$TMP_ROOT/wait-other" ft check tk-w1 A1@1440 pass --evidence e1 --head h1 >/dev/null || { echo "check: $ERR"; return 1; }
+  grep -q '^resolved .*wait-' "$f" && { echo "one of two asked rows resolved the wait"; return 1; }
+  FM_HOME="$TMP_ROOT/wait-other" ft check tk-w1 A1@390 pass --evidence e2 --head h1 >/dev/null || { echo "check: $ERR"; return 1; }
+  [ -e "$TMP_ROOT/wait-other/state/tk-w1.status" ] && { echo "another home got a status line for the wait"; return 1; }
+  grep -q '^resolved .*wait-' "$f" && { echo "the wait resolved before this home read the record"; return 1; }
+  ft deliver tk-w1 --consumer wait-test >/dev/null || { echo "deliver: $ERR"; return 1; }
+  line=$(tail -n 1 "$f")
+  [[ $line =~ ^resolved\ \[at=[0-9]+\]\ \[key=wait-$n\]:\ the\ wait\ on\ tester\ cleared:\ check\ event\ [0-9]+$ ]] || { echo "resolved line: $line"; return 1; }
+  [ -z "$(declared "$f")" ] || { echo "the wait still reads as declared: $(declared "$f")"; return 1; }
+  ft deliver tk-w1 --consumer wait-test >/dev/null
+  [ "$(grep -c "^resolved .*key=wait-$n" "$f")" = 1 ] || { echo "a second read wrote a second resolved line"; return 1; }
+  # the owner's question waits on the answer
+  mk_running tk-w2 >/dev/null || return 1
+  ft ask tk-w2 "${ASK_FLAGS[@]}" --next-actor owner
+  must 'ask owner' 0 || return 1
+  line=$(tail -n 1 "$FM_HOME/state/tk-w2.status")
+  [[ $line =~ ^paused\ .*waiting\ on\ owner:\ Which\ one\?\ \(clears\ on\ answer\) ]] || { echo "ask owner line: $line"; return 1; }
+  ft unblock tk-w2 >/dev/null || return 1
+  tail -n 1 "$FM_HOME/state/tk-w2.status" | grep -q '^resolved .*\[key=wait-[0-9]*\]: the wait on owner cleared: unblocked event' || { echo "answer: $(tail -n 1 "$FM_HOME/state/tk-w2.status")"; return 1; }
+  # a PR-ready done waits on the merge
+  mk_running tk-w3 >/dev/null || return 1
+  ft "done" tk-w3 "${DONE_FLAGS[@]}" --pr-url https://github.com/example/repo/pull/7 --head h3
+  must 'done pr' 0 || return 1
+  sed -n '2p' "$FM_HOME/state/tk-w3.status" | grep -q '^done ' || { echo "the done line is not before the wait"; return 1; }
+  tail -n 1 "$FM_HOME/state/tk-w3.status" | grep -q '^paused .*waiting on merge: PR https://github.com/example/repo/pull/7 (clears on merge)' || { echo "done pr: $(tail -n 1 "$FM_HOME/state/tk-w3.status")"; return 1; }
+  ft event tk-w3 pr --note 'opened again' >/dev/null
+  grep -q '^resolved .*wait-' "$FM_HOME/state/tk-w3.status" && { echo "a pr event that is no merge cleared the wait"; return 1; }
+  ft event tk-w3 pr --note 'merged at m1' >/dev/null
+  tail -n 1 "$FM_HOME/state/tk-w3.status" | grep -q '^resolved .*the wait on merge cleared: pr event' || { echo "merge: $(tail -n 1 "$FM_HOME/state/tk-w3.status")"; return 1; }
+  ft event tk-w3 wait --next-actor tester --clears-on rows
+  must 'wait without a note' 2 || return 1
+  ft event tk-w3 wait --next-actor nobody --clears-on rows --note x
+  must 'wait actor outside the list' 5 || return 1
+  ft event tk-w3 comment --clears-on rows --note x
+  must 'clears-on on another kind' 2 || return 1
+}
+
+CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed row backlog status_view verify_view wait"}
 
 # ---- real command -------------------------------------------------------------------
 
@@ -2004,4 +2062,12 @@ mutate 'a status file the writer creates names the record on line 1' status_view
 mutate 'only a marked verify file is written' verify_view "if (!/^record: rows\$/m.test(text)) return;" ';'
 mutate 'a replayed deploy adds no second deployed line' verify_view "if (lines.filter((l) => l.startsWith('deployed: ')).at(-1) === line) return;" ';'
 mutate 'an approved event adds the approved line' verify_view "line = \`approved: firstmate" "return; line = \`approved: firstmate"
+mutate 'a wait writes its keyed paused line' wait "if (event.kind === 'wait') {" "if (false) {"
+mutate 'a cleared wait gets its resolved line' wait "    if (!by) continue;" "    continue;"
+mutate 'rows clear a wait only when every asked row has a result' wait "asked.every((key) =>" "asked.some((key) =>"
+mutate 'deliver resolves a wait that another home cleared' wait "  await waitView(taskIdOf(args), taskStream);" ""
+mutate 'a question to the owner waits on the answer' wait "nextActor === 'owner' ? () => waitOn(" "false ? () => waitOn("
+mutate 'a PR-ready done waits after its own line' wait "  if (wait) await wait(result);
+  await waitView(taskId);" "  await waitView(taskId);"
+mutate 'only a merged pr event clears a merge wait' wait "e.kind === 'pr' && /\\bmerged\\b/i.test(" "e.kind === 'pr' && /./.test("
 pass 'every guarded behavior has a red mutation proof'

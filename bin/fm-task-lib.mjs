@@ -34,6 +34,11 @@
 //   comment  <task> --note T [--image PATH --image-label L]...             any state
 //   event    <task> <kind> [--note N] [--pr-url U] [--head H]   kinds: steer comment pr deploy protocol_violation
 //            divergence; --head only on deploy: the deployed head, which user-visible passes count on from then
+//   event    <task> wait --next-actor tester|owner|merge --clears-on rows|answer|merge --note WHY [--rows ID@W,...]
+//            a declared wait (G1); `ask --next-actor owner` (answer) and `done --pr-url` (rows on the Tester, else merge)
+//            write one too. Its status line is `paused [at=E] [key=wait-<seq>]: waiting on <actor>: WHY (clears on X)`; the
+//            clearing event (the asked rows each with a newer result that is not pending, an unblocked event, a pr event whose
+//            note says merged, or an approved or archived event) adds `resolved` with that key, in the home holding the line.
 //   link     <parent> <child>                the child waits in todo while the parent is open
 //   rows     <task> <issue-url> [--surface all|user-visible]   one check row per scenario x width from
 //            fm-acceptance.mjs; user-visible adds, resets and retires the Tester's rows only
@@ -112,6 +117,8 @@ const ROLES = ['worker', 'firstmate', 'tester', 'planner', 'owner', 'assistance'
 const BLOCK_KINDS = ['transient', 'dependency', 'external', 'credential', 'failure'];
 const CHECK_STATUSES = ['pending', 'pass', 'fail'];
 const FREE_KINDS = ['steer', 'comment', 'pr', 'deploy', 'protocol_violation', 'divergence'];
+const WAIT_ACTORS = ['tester', 'owner', 'merge'];
+const WAIT_CLEARS = ['rows', 'answer', 'merge'];
 const CLOSED = ['done', 'archived'];
 
 // command -> the states it may run from (the Hermes transitions)
@@ -314,7 +321,7 @@ const SPECS = {
   reassign: { pos: ['task'], flags: { to: 's', reason: 's' } },
   archive: { pos: ['task'], flags: {} },
   comment: { pos: ['task'], flags: { image: 'm', 'image-label': 'm' } },
-  event: { pos: ['task', 'kind'], flags: { 'pr-url': 's', head: 's' } },
+  event: { pos: ['task', 'kind'], flags: { 'pr-url': 's', head: 's', 'next-actor': 's', 'clears-on': 's', rows: 's' } },
   link: { pos: ['parent', 'child'], flags: {} },
   rows: { pos: ['task', 'issue'], flags: { surface: 's' } },
   check: { pos: ['task', 'target', 'status'], flags: { status: 's', evidence: 's', head: 's', 'next-actor': 's' } },
@@ -553,8 +560,9 @@ function reportWrite(result, task) {
   out(`seq=${e.seq} task=${e.taskId} event=${e.kind} state=${task?.state ?? '?'} next=${task?.nextActor ?? '?'}${result.replayed ? ' (already recorded)' : ''}`);
 }
 
-// Append an event, then project; both are safe to repeat with the same --key.
-async function write(taskId, who, build, after) {
+// Append an event, then project; both are safe to repeat with the same --key. `wait` appends a declared wait after the
+// event's own status line, so the paused line is the newest one.
+async function write(taskId, who, build, after, wait) {
   const result = await append(taskId, who, build);
   let projected;
   try {
@@ -572,6 +580,8 @@ async function write(taskId, who, build, after) {
   }
   await statusView(result.event);
   await verifyView(result.event);
+  if (wait) await wait(result);
+  await waitView(taskId);
   reportWrite(result, projected?.task);
   return { result, task: projected?.task };
 }
@@ -581,21 +591,80 @@ async function write(taskId, who, build, after) {
 // never take it for a status prefix. The other writers of the file are unchanged.
 async function statusView(event) {
   if (/^(shadow|backfill):/.test(event.idempotencyKey || '')) return;
-  if (!process.env.FM_HOME || !['done', 'needs-decision', 'blocked', 'heartbeat', 'unblocked'].includes(event.kind)) return;
-  const state = process.env.FM_STATE_OVERRIDE || path.join(process.env.FM_HOME, 'state');
-  fs.mkdirSync(state, { recursive: true });
-  const file = path.join(state, `${event.taskId}.status`);
+  if (!process.env.FM_HOME || !['done', 'needs-decision', 'blocked', 'heartbeat', 'unblocked', 'wait'].includes(event.kind)) return;
+  const file = statusFile(event.taskId);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
   const marker = `[event=${event.seq}]`;
   const prior = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null;
   if ((prior ?? '').split('\n').some((line) => line.includes(marker))) return;
   const body = bodyOf(event);
+  const head = prior === null ? `# A view of the task record for ${event.taskId}, written by bin/fm-task.sh; read the record with bin/fm-task.sh resume ${event.taskId}\n` : '';
+  if (event.kind === 'wait') {
+    const w = body.wait || {};
+    fs.appendFileSync(file, `${head}paused [at=${Math.floor(Date.now() / 1000)}] [key=wait-${event.seq}]: waiting on ${w.actor}: ${String(body.note ?? '').replace(/[\r\n]/g, ' ')} (clears on ${w.clearsOn}) ${marker}\n`);
+    return;
+  }
   const paused = event.kind === 'blocked' && body.set?.blockKind === 'transient' && body.set?.holdUntil;
   const verb = event.kind === 'unblocked' ? 'resolved' : paused ? 'paused' : event.kind === 'heartbeat' ? 'working' : event.kind;
   const child = event.kind === 'done' ? await firstRow('fm_event_done', `fmTaskEventId eq ${event.id}`) : null;
   const summary = body.note || child?.summary || body.set?.blockReason || `${event.kind} recorded`;
   const note = event.kind === 'done' && body.set?.prUrl ? `PR ${body.set.prUrl} ${summary}` : summary;
-  const head = prior === null ? `# A view of the task record for ${event.taskId}, written by bin/fm-task.sh; read the record with bin/fm-task.sh resume ${event.taskId}\n` : '';
   fs.appendFileSync(file, `${head}${verb} [at=${Math.floor(Date.now() / 1000)}]: ${String(note).replace(/[\r\n]/g, ' ')}${paused ? ` until ${body.set.holdUntil}` : ''} ${marker}\n`);
+}
+
+const statusFile = (taskId) => path.join(process.env.FM_STATE_OVERRIDE || path.join(process.env.FM_HOME, 'state'), `${taskId}.status`);
+
+// A declared wait (G1): `event <task> wait`, which the Tester ask builder, `ask --next-actor owner` and `done --pr-url`
+// also write. The status view writes it as a paused line keyed wait-<seq>; the record event that clears it is the asked
+// rows each holding a newer result that is not pending (rows), an unblocked event (answer), a `pr` event whose note says
+// merged (merge), or for any of them an approved or archived event.
+function clearingEvent(wait, events) {
+  const { clearsOn, rows = [] } = bodyOf(wait).wait || {};
+  const later = events.filter((e) => e.seq > wait.seq);
+  const closing = later.find((e) => e.kind === 'approved' || e.kind === 'archived');
+  if (clearsOn === 'answer') return later.find((e) => e.kind === 'unblocked') ?? closing;
+  if (clearsOn === 'merge') return later.find((e) => e.kind === 'pr' && /\bmerged\b/i.test(bodyOf(e).note ?? '')) ?? closing;
+  const rowEvents = later.filter((e) => (e.kind === 'check' || e.kind === 'owner-check') && bodyOf(e).row && bodyOf(e).values);
+  const newest = (key) => rowEvents.filter((e) => bodyOf(e).row === key).at(-1);
+  const asked = rows.length ? rows : [...new Set(rowEvents.map((e) => bodyOf(e).row))];
+  if (asked.length && asked.every((key) => newest(key) && bodyOf(newest(key)).values.status !== 'pending')) return asked.map(newest).sort((a, b) => a.seq - b.seq).at(-1);
+  return closing;
+}
+
+// Each wait's paused line in this home's status file gets one resolved line with the same key once the record holds its
+// clearing event. Only the home whose file holds the paused line writes it: the writer runs this after every write, and
+// the watcher's deliver call runs it in firstmate's home for an event another home wrote (the Tester's check rows).
+async function waitView(taskId, known) {
+  if (!process.env.FM_HOME) return;
+  const file = statusFile(taskId);
+  let lines;
+  try {
+    lines = fs.readFileSync(file, 'utf8').split('\n');
+  } catch {
+    return;
+  }
+  const keyed = (verb) => new Set(lines.map((l) => new RegExp(`^${verb} \\[at=\\d+\\] \\[key=wait-(\\d+)\\]:`).exec(l)?.[1]).filter(Boolean));
+  const resolved = keyed('resolved');
+  const open = [...keyed('paused')].filter((n) => !resolved.has(n));
+  if (!open.length) return;
+  const events = known ?? (await taskEvents(taskId));
+  for (const n of open) {
+    const wait = events.find((e) => e.seq === Number(n) && e.kind === 'wait');
+    const by = wait && clearingEvent(wait, events);
+    if (!by) continue;
+    fs.appendFileSync(file, `resolved [at=${Math.floor(Date.now() / 1000)}] [key=wait-${n}]: the wait on ${bodyOf(wait).wait?.actor} cleared: ${by.kind} event ${by.seq}\n`);
+  }
+}
+
+// Append a wait for a task, keyed on the call that asks for it, and write its paused line.
+async function waitOn(taskId, who, { actor, clearsOn, note, rows = [] }) {
+  const result = await append(taskId, { ...who, key: `${who.key}:wait` }, async ({ task }) => {
+    if (!task) throw rule('no such task');
+    if (CLOSED.includes(task.state)) throw rule(`wait is refused: ${taskId} is ${task.state}`);
+    return { kind: 'wait', note, extra: { wait: { actor, clearsOn, rows } } };
+  });
+  await statusView(result.event);
+  return result;
 }
 
 // The verify view of a task begun after T5 (its data/<task>/verify.md holds `record: rows`): a deploy event with a head
@@ -1074,10 +1143,22 @@ async function cmdComment(args) {
 async function cmdEvent(args) {
   const taskId = taskIdOf(args);
   const who = identity(args, 'worker');
-  const kind = oneOf(FREE_KINDS, args.pos.kind, 'event kind');
+  const kind = oneOf([...FREE_KINDS, 'wait'], args.pos.kind, 'event kind');
   const prUrl = args.flags['pr-url'];
   const head = args.flags.head;
   if (head !== undefined && kind !== 'deploy') throw usage('--head names a deployed head: give it only on a deploy event');
+  if (kind === 'wait') {
+    const f = args.flags;
+    if (!f.note) throw usage('a wait needs --note WHY');
+    const actor = oneOf(WAIT_ACTORS, f['next-actor'], 'wait next actor');
+    const clearsOn = oneOf(WAIT_CLEARS, f['clears-on'], 'wait --clears-on');
+    const rows = f.rows ? f.rows.split(',').map((t) => rowKey(targetOf(t.trim()))) : [];
+    return write(taskId, who, async ({ task }) => {
+      if (!task) throw rule('no such task');
+      if (CLOSED.includes(task.state)) throw rule(`wait is refused: ${taskId} is ${task.state}`);
+      return { kind: 'wait', note: f.note, extra: { wait: { actor, clearsOn, rows } } };
+    });
+  } else if (['next-actor', 'clears-on', 'rows'].some((n) => args.flags[n] !== undefined)) throw usage('--next-actor, --clears-on and --rows go only on a wait event');
   return write(taskId, who, async ({ task }) => {
     if (!task) throw rule('no such task');
     return { kind, note: noteOf(args), set: kind === 'pr' && prUrl ? { prUrl } : {}, ...(head ? { extra: { head } } : {}) };
@@ -1118,7 +1199,13 @@ async function cmdDone(args) {
     const set = { state: 'review', nextActor: nextActor ?? (waitingOnTester ? 'tester' : 'firstmate'), blockKind: null, blockReason: null, blockRepeats: 0, holdUntil: null };
     if (f['pr-url']) set.prUrl = f['pr-url'];
     return { kind: 'done', note: noteOf(args), set, children: withImages({ done: [child], ...(documents ? { documents: [documents] } : {}) }, images) };
-  });
+  }, undefined, f['pr-url'] ? async () => {
+    // a PR-ready done waits on the Tester for its open user-visible rows, else on the merge
+    const task = fold(await taskEvents(taskId));
+    const rows = (await checkRows(taskId)).filter((r) => r.surface === 'user-visible' && r.status !== 'retired' && !(r.status === 'pass' && (r.head ?? null) === (f.head ?? null))).map(rowKey);
+    const tester = task?.nextActor === 'tester';
+    await waitOn(taskId, who, tester ? { actor: 'tester', clearsOn: 'rows', note: `rows ${rows.join(' ') || 'of the task'} on ${f.head ?? 'the PR head'}`, rows } : { actor: 'merge', clearsOn: 'merge', note: `PR ${f['pr-url']}` });
+  } : undefined);
 }
 
 // Count a block of `kind` against the task: the third in a row of one kind goes to triage.
@@ -1141,7 +1228,7 @@ async function cmdAsk(args) {
     const child = { question: f.question, options: JSON.stringify(options), recommendation: f.recommendation, why: f.why, document: f.document };
     for (const key of Object.keys(child)) if (child[key] === undefined) delete child[key];
     return { kind: 'needs-decision', note: noteOf(args), set: blockSet(task, 'needs-decision', f.question, nextActor, null), children: withImages({ question: [child] }, images) };
-  });
+  }, undefined, nextActor === 'owner' ? () => waitOn(taskId, who, { actor: 'owner', clearsOn: 'answer', note: String(f.question).replace(/\s+/g, ' ').slice(0, 300) }) : undefined);
 }
 
 async function cmdBlock(args) {
@@ -1598,6 +1685,7 @@ async function cmdDeliver(args) {
   if (!consumer || consumer.length > 64) throw usage('deliver needs --consumer (up to 64 characters)');
   if (!process.env.FM_HOME) throw usage('deliver requires FM_HOME');
   const taskStream = await taskEvents(taskIdOf(args));
+  await waitView(taskIdOf(args), taskStream);
   const firstSeq = taskStream[0]?.seq ?? 0;
   const lastSeq = taskStream.at(-1)?.seq ?? 0;
   const delivered = await listAll('fm_task_delivery', { filter: `consumer eq ${lit(consumer)} and seq ge ${firstSeq} and seq le ${lastSeq}`, orderby: 'seq' });
