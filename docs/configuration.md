@@ -454,6 +454,58 @@ Code `missing-verify` lists the features it does not name.
 A page with no feature file is logged as `unmapped` and never refuses.
 It reads `config/enforce-brief-verify`.
 
+## Model deny list (config/model-deny)
+
+`config/model-deny` is captain-private and holds one glob and its reason per line, the glob first; blank lines and `#` comment lines are ignored.
+`bin/fm-spawn.sh` (`--model` and a secondmate model pin, local or remote), `bin/fm-control.sh relaunch` and `bin/fm-remote-secondmate-relaunch.sh` (a remote mate, on the parent's config before the relaunch crosses the hop, for a direct run and for `bin/fm-secondmate-restart.sh`) refuse a model that matches a glob before any endpoint, worktree or record exists, and print that line's reason.
+A line with a glob and no reason refuses, so a hit always says why; with the file absent nothing changes.
+`bin/fm-model-deny-lib.sh` owns the format and the check.
+The check is log-only until `config/enforce-model-deny` holds `block`: each hit is written to `state/enforce-model-deny.log` and the launch goes ahead.
+
+## Project rules in briefs (data/project-rules/<repo>.md)
+
+`bin/fm-brief.sh` copies every line of `data/project-rules/<repo-name>.md` that starts with `brief:` into the brief's `## Firstmate spec`.
+The copy is verbatim, tag included, in file order, and sits below the `{FIRSTMATE_SPEC}` fill under its own `### Project rules` subheading, so a spec filled with `###` subsections does not swallow it.
+A line without the tag is never copied, a project with no rules file adds nothing, and a repo name with a slash is refused.
+Firstmate tags the lines in its private rules file; the file is not tracked.
+
+## DMS account guard (config/dms-account)
+
+The company watches one Claude account, so DMS work runs only on it.
+`config/dms-account` holds a `root <path>` line (the only Claude config root a DMS launch may use; `~` is allowed), then one `project <name>` line per DMS project and one `assistance <name>` line per DMS assistance.
+Blank lines and `#` comments are ignored; a file that exists but cannot be read, a file with no `root` line, or a file with an unknown line refuses every launch rather than passing.
+With the file absent the guard does nothing, and only a Claude launch is checked.
+`bin/fm-spawn.sh`, `bin/fm-control.sh relaunch` and `bin/fm-assistance.sh start` refuse a listed launch whose resolved `CLAUDE_CONFIG_DIR` is not the root, before any endpoint, worktree or record exists, and the refusal names the file and the root.
+A raw launch command that sets its own `CLAUDE_CONFIG_DIR=` is checked on that value, and a project is matched by the canonical name of its clone directory.
+In block mode a raw launch on a listed project or assistance must start with `claude` (a wrapper such as `env`, `command` or `exec` is refused) and must assign no credential from the shed list, and a guarded launch sheds the environment credentials Claude ranks above the root's login (`ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` and the rest of the shed list).
+Log-only logs those breaches and changes no launch.
+`bin/fm-dms-account-lib.sh` owns the file format and the check.
+The check is log-only until `config/enforce-dms-account` holds `block`: each hit is written to `state/enforce-dms-account.log` and the launch goes ahead.
+
+## Task identity checks (config/enforce-task-identity)
+
+`bin/fm-task-identity-check.sh` owns three checks on task identity.
+`add` runs before `bin/fm-tasks-axi.sh add|create` and `bin/fm-task.sh create`: it refuses an id that is already a done row in `data/done-archive.md` or `data/backlog.md` (citing file and line), an id with a local `fm/<id>` branch in the `--repo` clone, and a title whose ticket key (`DEV-n`, `PS-n`) a live task already carries (naming that task).
+The shadow create that follows dispatch (`bin/fm-task-shadow.sh`) skips `add`, because the spawn has already made the `fm/<id>` branch visible in the clone.
+A ticket key matches whole (`DEV-12` does not match `DEV-12A`), and only `data/backlog.md` is read for live tasks, not the task record.
+`pr` runs in `bin/fm-pr-check.sh`, on the merge path too: it refuses a GitHub PR whose closing references name other issues and omit the task's linked issue, the first `.../issues/<n>` URL in its backlog item, naming both.
+The linked and closing issue URLs are compared as host, owner, repo and number, so scheme, host case and a trailing slash do not matter.
+A PR with no closing reference, a task with no linked issue, or an unreadable forge passes.
+The checks are log-only until `config/enforce-task-identity` holds `block`: each hit is written to `state/enforce-task-identity.log` and the command goes on.
+
+## Herdr-lab brief check (config/enforce-herdr-lab-brief)
+
+A task that starts, stops, rotates or otherwise drives a pane, an assistance or an agent needs the Herdr lab block that `bin/fm-brief.sh --herdr-lab` adds.
+`bin/fm-brief.sh --check <task-id>` flags a brief without that block when its `# Task` text, or the scenarios of the issue its `# Acceptance` section names, hold a lifecycle verb within 60 characters of the word pane, assistance or agent.
+The block is the `# Herdr isolation - HARD SAFETY CONTRACT` section; no other text counts.
+An unreadable scenario list is logged in log mode and refuses in block mode, and is never read as empty.
+`bin/fm-send.sh` applies the same rule to a steer sent to a crewmate task whose brief has no lab block, on the inbox plane and on the typed plane alike; a secondmate target is skipped.
+A period inside a file name such as `fm-assistance.sh` does not break the link between verb and noun.
+Both say to re-scaffold with `--herdr-lab`.
+`bin/fm-herdr-lab-phrase-lib.sh` owns the phrase rule.
+The check is log-only until `config/enforce-herdr-lab-brief` holds `block`: each hit is written to `state/enforce-herdr-lab-brief.log` and the brief or steer still passes.
+`bin/fm-enforce-lib.sh` owns that switch.
+
 ## Backlog backend (.tasks.toml / config/backlog-backend)
 
 The tracked `.tasks.toml` pins the default `tasks-axi` markdown backend to `data/backlog.md`, with `done_keep = 10` and an archive at `data/done-archive.md`.

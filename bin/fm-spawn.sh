@@ -439,6 +439,11 @@
 #   docs/configuration.md "Worker tool exclusions" owns config/crew-exclude-tools
 #   and its operator contract. Resolve it with bin/fm-exclude-tools-lib.sh
 #   before provisioning; __PIEXCLUDE__ below owns the Pi launch substitution.
+# Model deny list (config/model-deny):
+#   Opt-in. One glob and its reason per line; a --model (or a secondmate model
+#   pin, local or remote) matching a glob refuses before any endpoint, worktree,
+#   or record exists and prints the reason. Log-only until config/enforce-model-deny holds block.
+#   bin/fm-model-deny-lib.sh owns the format and the check.
 # Worker account pin (config/claude-account, config/pi-account):
 #   Opt-in. With no file, a Claude or Pi launch is unchanged: Claude still
 #   receives this process's own CLAUDE_CONFIG_DIR when it is set, and Pi the
@@ -456,6 +461,16 @@
 #   in this launching home, then falls back to its home-wide pin when absent.
 #   Pins are never inherited; remote per-mate overrides refuse locally.
 #   bin/fm-worker-account-lib.sh owns parsing, the check, and the shed list.
+# DMS account guard (config/dms-account):
+#   Opt-in. A Claude launch on a project listed there, or an assistance listed
+#   there, must resolve CLAUDE_CONFIG_DIR to the file's root (a raw launch
+#   command's own CLAUDE_CONFIG_DIR= assignment counts), or the spawn refuses
+#   before any endpoint, worktree, or record exists. In block mode a raw
+#   launch there must start with claude and assign no shed-list credential,
+#   and the launch sheds the environment credentials Claude ranks above the
+#   root's login; log-only logs and changes nothing. It is log-only
+#   until config/enforce-dms-account holds block. bin/fm-dms-account-lib.sh
+#   owns the file format and the check.
 #   Launch templates live in launch_template() below; placeholders replaced before launch:
 #     __BRIEF__    absolute path to data/<task-id>/brief.md
 #     __CLAUDEPERMFLAG__ the claude permission flag selected by config/claude-permission-mode
@@ -821,6 +836,10 @@ fm_backlog_directory_present "$STATE" "state directory" || {
 . "$SCRIPT_DIR/fm-project-capacity-lib.sh"
 # shellcheck source=bin/fm-worker-account-lib.sh
 . "$SCRIPT_DIR/fm-worker-account-lib.sh"
+# shellcheck source=bin/fm-dms-account-lib.sh
+. "$SCRIPT_DIR/fm-dms-account-lib.sh"
+# shellcheck source=bin/fm-model-deny-lib.sh
+. "$SCRIPT_DIR/fm-model-deny-lib.sh"
 # Fail closed before any fleet mutation: a no-mistakes gate agent must never spawn
 # a direct report (see bin/fm-gate-refuse-lib.sh).
 fm_refuse_if_gate_agent
@@ -1309,6 +1328,14 @@ spawn_remote_secondmate() {
       effort=$("$SCRIPT_DIR/fm-harness.sh" secondmate-effort)
       [ -n "$effort" ] || effort=-
     fi
+  fi
+  # The parent's model deny list (config/model-deny) also covers a remote second
+  # mate, whose launch and relaunch both end here: the model resolved above is
+  # checked on this host before anything is dispatched.
+  if [ "$model" != - ] && ! fm_model_deny_guard "$CONFIG" "$STATE" "$model"; then
+    fm_lock_release "$registry_lock" || true
+    fm_lock_release "$SPAWN_TASK_LOCK" || true
+    return 1
   fi
   # A remote second mate always runs on Herdr: its server belongs to the host's
   # own GUI login session, so the endpoint outlives every SSH connection that
@@ -3049,6 +3076,9 @@ if [ "$HARNESS" = polytoken ] && [ "$RAW_LAUNCH" -eq 0 ]; then
 elif [ "$HARNESS" = polytoken ]; then
   POLYTOKEN_MODEL_REF=$(fm_polytoken_model_ref "$POLYTOKEN_BIN" "$MODEL" "$EFFORT") || exit 1
 fi
+# Model deny list (config/model-deny, bin/fm-model-deny-lib.sh): a model that
+# matches a listed glob refuses here, before any endpoint, worktree, or record.
+fm_model_deny_guard "$CONFIG" "$STATE" "$MODEL" || exit 1
 # Worker account pin (header above): resolved before any endpoint, worktree, or
 # record exists. An absent pin selects nothing and leaves every later launch
 # step exactly as it was. A pinned Claude root is exported here as well, so the
@@ -3067,6 +3097,36 @@ if [ -n "$WORKER_ACCOUNT" ] && [ "$HARNESS" = claude ]; then
     export CLAUDE_CONFIG_DIR=$WORKER_ACCOUNT_ROOT
   else
     unset CLAUDE_CONFIG_DIR
+  fi
+fi
+# DMS account guard (config/dms-account, bin/fm-dms-account-lib.sh): a Claude
+# launch on a DMS project, or the dms assistance, must resolve to the declared
+# root. Still before any endpoint, worktree, or record exists.
+DMS_SHED=0
+DMS_ROOT=${CLAUDE_CONFIG_DIR:-}
+# A raw launch command is read through its leading assignments: a CLAUDE_CONFIG_DIR it
+# sets for itself overrides the caller's environment and any pinned account. Whatever
+# command it runs, a listed DMS launch is guarded as a Claude launch, and the raw guard
+# then requires the command to start with claude and assign no shed-list credential.
+if [ "$RAW_LAUNCH" = 1 ]; then
+  fm_dms_account_raw_parse "$LAUNCH"
+  if [ "$FM_DMS_RAW_ROOT_SET" = 1 ]; then DMS_ROOT=$FM_DMS_RAW_ROOT; fi
+fi
+if [ "$HARNESS" = claude ] || [ "$RAW_LAUNCH" = 1 ]; then
+  if [ "$ASSISTANCE" = 1 ]; then
+    DMS_KIND=assistance DMS_NAME=$ID
+  elif [ -n "$PROJ" ]; then
+    DMS_KIND=project DMS_NAME=$(fm_dms_account_project_name "$PROJ")
+  else
+    DMS_KIND=''
+  fi
+  if [ -n "$DMS_KIND" ]; then
+    fm_dms_account_guard "$CONFIG" "$STATE" "$DMS_KIND" "$DMS_NAME" claude "$DMS_ROOT" || exit 1
+    if [ "$FM_DMS_ACCOUNT_LISTED" = 1 ]; then
+      [ "$RAW_LAUNCH" = 0 ] || fm_dms_account_raw_guard "$CONFIG" "$STATE" "$DMS_KIND" "$DMS_NAME" "$LAUNCH" || exit 1
+      # Only a blocking guard changes the launch: log-only must leave it exactly as it was.
+      [ "$(fm_enforce_mode "$CONFIG" dms-account)" != block ] || DMS_SHED=1
+    fi
   fi
 fi
 
@@ -6439,6 +6499,14 @@ if [ -n "$WORKER_ACCOUNT" ]; then
     LAUNCH="PI_CODING_AGENT_DIR=$(shell_quote "$WORKER_ACCOUNT_ROOT") $LAUNCH"
     ;;
   esac
+elif [ "$DMS_SHED" = 1 ]; then
+  # A launch the blocking DMS guard covers must run on the declared root's own login, so the
+  # environment credentials Claude ranks above it are shed, as for a pinned account.
+  if [ "$HARNESS" = claude ] && [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
+    LAUNCH="$(fm_worker_account_claude_shed) CLAUDE_CONFIG_DIR=$(shell_quote "$CLAUDE_CONFIG_DIR") $LAUNCH"
+  else
+    LAUNCH="$(fm_worker_account_claude_shed) $LAUNCH"
+  fi
 elif [ "$HARNESS" = claude ] && [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
   LAUNCH="CLAUDE_CONFIG_DIR=$(shell_quote "$CLAUDE_CONFIG_DIR") $LAUNCH"
 fi

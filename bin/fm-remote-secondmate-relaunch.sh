@@ -29,6 +29,8 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 . "$SCRIPT_DIR/fm-backend.sh"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+# shellcheck source=bin/fm-model-deny-lib.sh
+. "$SCRIPT_DIR/fm-model-deny-lib.sh"
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
 usage() { sed -n '2,4p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
@@ -45,6 +47,11 @@ META="$STATE/$ID.meta"
 REMOTE_HOST=$(fm_meta_get "$META" remote_host)
 [ -n "$REMOTE_HOST" ] \
   || die "task $ID is not a remotely placed secondmate; use bin/fm-control.sh $ID relaunch instead"
+
+# The parent's model deny list (config/model-deny) is checked here, on the
+# parent's config and state, before the relaunch crosses the hop; every caller
+# (bin/fm-secondmate-restart.sh and a direct run) goes through this check.
+fm_model_deny_guard "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}" "$STATE" "$MODEL" || exit 1
 
 RELAUNCH_OUT=$("$SCRIPT_DIR/fm-on.sh" "$ID" fm-remote-secondmate-control.sh \
   relaunch "$ID" "$HARNESS" "$MODEL" "$EFFORT" </dev/null 2>&1) || {
