@@ -611,7 +611,7 @@ scenario_shadow() {
 # the next poll retries it, and the ask tells the Tester the check call that records each result.
 scenario_rows_record() {
   new_lab "$1"
-  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s/writer.calls"\ncase "$*" in *"${FAKE_WRITER_FAIL:-none}"*) exit 3 ;; esac\n' "$LAB" > "$LAB/writer"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s/writer.calls"\ncase "$*" in *"${FAKE_WRITER_FAIL:-@no-fail@}"*) exit 3 ;; esac\ncase "$1" in checks) echo "{\\"rows\\":[]}" ;; esac\n' "$LAB" > "$LAB/writer"
   chmod +x "$LAB/writer"
   : > "$H/config/task-shadow"
   backlog_task alpha 11 500
@@ -639,7 +639,7 @@ scenario_rows_record() {
   [ "$CYCLE_AUTO" = 0 ] || { echo "the retry: autohandle=$CYCLE_AUTO"; return 1; }
   [ "$(sed -n 1p "$LAB/writer.calls")" = "rows alpha https://github.com/$REPO/issues/500 --surface user-visible --key deploy-verify:$(ledger | jq -r 'select(.task == "alpha") | .key'):rows --actor deploy-verify --role system" ] \
     || { echo "the rows were not written first: $(cat "$LAB/writer.calls" 2>&1)"; return 1; }
-  grep -q "^event alpha deploy --note deploy deploy at $(sha s2): verify ask sent (cfw-modules#500) --head $(sha s2) --key deploy-verify:[^ ]*:deploy --actor deploy-verify --role system$" "$LAB/writer.calls" \
+  grep -q "^event alpha deploy --note deploy deploy at $(sha s2): verify ask sent (cfw-modules#500) --head $(sha s2) --touched none --key deploy-verify:[^ ]*:deploy --actor deploy-verify --role system$" "$LAB/writer.calls" \
     || { echo "the rows task deploy event names no head: $(cat "$LAB/writer.calls")"; return 1; }
   [ "$(grep -c '^event alpha deploy' "$LAB/writer.calls")" = 1 ] || { echo "the deploy event was written twice: $(cat "$LAB/writer.calls")"; return 1; }
   ! grep -q '^rows beta' "$LAB/writer.calls" || { echo "a task begun before T5 got check rows: $(cat "$LAB/writer.calls")"; return 1; }
@@ -687,8 +687,9 @@ scenario_carry() {
   export FM_TASK_SHADOW_WRITER="$LAB/writer"
   local dry
   dry=$("$BIN/fm-procevent-deploy-verify.sh" deploy --dry-run --sha "$(sha s2)" --base "$(sha s0)") || { unset FM_TASK_SHADOW_WRITER; echo "deploy --dry-run failed"; return 1; }
-  [ -z "$(ledger)" ] && ! grep -q '^\(rows\|event\) ' "$LAB/writer.calls" 2>/dev/null \
-    || { unset FM_TASK_SHADOW_WRITER; echo "the dry run wrote: $(ledger) $(cat "$LAB/writer.calls" 2>&1)"; return 1; }
+  if [ -n "$(ledger)" ] || grep -q '^\(rows\|event\) ' "$LAB/writer.calls" 2>/dev/null; then
+    unset FM_TASK_SHADOW_WRITER; echo "the dry run wrote: $(ledger) $(cat "$LAB/writer.calls" 2>&1)"; return 1
+  fi
   grep -qx "checks alpha --as-deployed $(sha s2) --touched none" "$LAB/writer.calls" \
     || { unset FM_TASK_SHADOW_WRITER; echo "the dry run did not read alpha as deployed: $(cat "$LAB/writer.calls" 2>&1)"; return 1; }
   jq -e '[.asks[] | {task, rows: [.rows[] | split(" | ")[0]], carried: [.carried[].key]}] == [{task: "alpha", rows: ["- A2@1440"], carried: ["A1@1440"]}, {task: "beta", rows: ["- B2@1440"], carried: ["B1@1440"]}, {task: "gamma", rows: [], carried: ["C1@1440"]}]' <<<"$dry" >/dev/null \
@@ -703,17 +704,30 @@ scenario_carry() {
   asked | jq -e --arg h "$(sha s1)" 'select(.task == "beta") | (.rows | map(split(" | ")[0])) == ["- B2@1440"] and .lines == ["B2"] and .carried == [{key: "B1@1440", head: $h}]' >/dev/null \
     || { unset FM_TASK_SHADOW_WRITER; echo "beta ask: $(asked | jq -c 'select(.task == "beta")')"; return 1; }
   ! asked | jq -e 'select(.task == "gamma")' >/dev/null || { unset FM_TASK_SHADOW_WRITER; echo 'gamma had nothing due and still got an ask'; return 1; }
-  [ "$(ledger_count 'select(.type == "carry" and .task == "gamma")')" = 1 ] || { unset FM_TASK_SHADOW_WRITER; echo "no carry entry for gamma: $(ledger)"; return 1; }
-  # a later PR that names B1 brings it back into beta's ask
+  [ "$(ledger_count '.type == "carry" and .task == "gamma"')" = 1 ] || { unset FM_TASK_SHADOW_WRITER; echo "no carry entry for gamma: $(ledger)"; return 1; }
+  # the same result handled again sends and records nothing more
+  "$BIN/fm-procevent-deploy-verify.sh" autohandle deploy-verify "$SEQ" "$H/state/procevent-inbox/deploy-verify.$SEQ.result" >/dev/null 2>&1
+  [ "$(ledger_count '.type == "carry"')" = 1 ] || { unset FM_TASK_SHADOW_WRITER; echo "a handled carry was recorded again: $(ledger)"; return 1; }
+  # the dry run ignores the ledger: the deploy already asked about plans the same asks again
+  if ! dry=$("$BIN/fm-procevent-deploy-verify.sh" deploy --dry-run --sha "$(sha s2)" --base "$(sha s0)") \
+    || ! jq -e '[.asks[].task] == ["alpha", "beta", "gamma"]' <<<"$dry" >/dev/null; then
+    unset FM_TASK_SHADOW_WRITER; echo "a dry run after the deploy: $dry"; return 1
+  fi
+  # a later PR that names B1 brings it back into beta's ask, a PR that names all brings back C1, and gamma's carried
+  # PR 14, still in the compare, is not planned again
   fx_runs "1:completed:success:s0" "2:completed:success:s2" "3:completed:success:s3"
   fx_jobs 3 success
-  fx_compare s2 s3 c3
+  fx_compare s2 s3 c3 c4 c5
   fx_commit_pr_body c3 13 "$(printf 'Closes #600\nScenarios touched: B1')"
+  fx_commit_pr_body c5 15 "$(printf 'Closes #700\n- Scenarios touched: `all`')"
   backlog_task beta 13 600
+  backlog_task gamma 15 700
   cycle
   unset FM_TASK_SHADOW_WRITER
   asked | jq -e --arg s "$(sha s3)" 'select(.task == "beta" and .sha == $s) | (.rows | map(split(" | ")[0])) == ["- B1@1440", "- B2@1440"] and .carried == []' >/dev/null \
     || { echo "a PR that names B1 did not bring it back: $(asked | jq -c 'select(.task == "beta")')"; return 1; }
+  asked | jq -e --arg s "$(sha s3)" --arg p "$RURL/pull/15" 'select(.task == "gamma" and .sha == $s) | (.rows | map(split(" | ")[0])) == ["- C1@1440"] and .carried == [] and .prs == [$p]' >/dev/null \
+    || { echo "gamma at s3: $(asked | jq -c 'select(.task == "gamma")')"; return 1; }
 }
 
 run_scenarios() {  # <bin-dir>
@@ -782,7 +796,7 @@ mutate_parser 'non-A acceptance ids' ledger \
 mutate_parser 'non-A draft ids' draft \
   's/\[A-Z\]\+\[0-9\]\+\)\(\?=/A[0-9]+)(?=/'
 mutate 'the ask carries the rows' rows \
-  's/head, pushed, lines, rows, check\}/head, pushed, lines, check}/'
+  's/head, pushed, lines, rows, touched/head, pushed, lines, touched/'
 mutate 'draft rows are the draft scenarios' rows \
   's/\[ "\$mode" != draft \] \|\| flag=--draft/:/'
 mutate 'a refused issue wakes firstmate' refused \
@@ -824,11 +838,37 @@ mutate 'an unread GitHub is left for the wake' failures \
 mutate 'a delivered ask reaches the task record' shadow \
   's/^[^\n]*fm-task-shadow\.sh" deploy-verify[^\n]*\n//m'
 mutate 'a rows task ask names the check call' rows_record \
-  's/if grep -qx .record: rows. "\$FM_HOME/if false \&\& grep -qx "x" "\$FM_HOME/'
+  's/if rows_task "\$\(jq -r \.task <<<"\$ask"\)"; then/if false; then/'
 mutate 'a refused record write fails the delivery' rows_record \
   's/record_rows "\$ask" \|\| return 1/record_rows "\$ask" || true/'
 mutate 'the deploy round names the deployed head' rows_record \
   's/head=\(--head "\$\(jq -r \.sha <<<"\$ask"\)"\)/head=()/'
 mutate 'the deploy event is written once, by the rows path' rows_record \
   's/ \|\| \[ "\$rows_task" = 1 \]//'
+mutate 'a PR names the scenarios it touches' carry \
+  's/print \(o == "" \? "none" : o\); found = 1; exit/print "all"; found = 1; exit/'
+mutate 'a PR with no Scenarios touched line names none' carry \
+  's/END \{ if \(!found\) print "none" \}/END { if (!found) print "all" }/'
+mutate 'one PR that names all touches every row' carry \
+  's/\$0 == "all" \{ a = 1 \}/$0 == "all" { a = 0 }/'
+mutate 'a deploy ask drops its carried rows' carry \
+  's/carried=\$\(carried_rows "\$ask" "\$2"\) \|\| return 1/carried="[]"/'
+mutate 'a record row carries when it is a pass that is not due' carry \
+  's/select\(\.status == "pass" and \(\.due \| not\)\)/select(false)/'
+mutate 'a Tester file row the deploy touches does not carry' carry \
+  's/ and \(\(split\("@"\)\[0\]\) as \$id \| \$ids \| index\(\$id\) \| not\)//'
+mutate 'a deploy that touches all carries no Tester file row' carry \
+  's/ \|\| \[ "\$touched" = all \]//'
+mutate 'nothing due sends no ask' carry \
+  's/if jq -e .\.round == "deploy" and \(\.rows \| length\) == 0/if false \&\& jq -e ".round" and (.rows | length) == 0/'
+mutate 'a handled carry is not recorded again' carry \
+  's/\.type == "ask" or \.type == "carry" or \.type == "draft-skip"/.type == "ask" or .type == "draft-skip"/'
+mutate 'a carried PR is final' carry \
+  's/\(\(\.type == "ask" or \.type == "carry"\) and \.round == "deploy"/((.type == "ask") and .round == "deploy"/'
+mutate 'the deploy event records the touched ids' carry \
+  's/^[^\n]*head\+=\(--touched[^\n]*\n//m'
+mutate 'the dry run reads the record as deployed' carry \
+  's/checks "\$task" --as-deployed "\$sha" --touched "\$touched"/checks "\$task"/'
+mutate 'the dry run ignores the ledger' carry \
+  's/PLAN_IGNORE_LEDGER=1/PLAN_IGNORE_LEDGER=0/'
 pass 'every guarded behavior has a red mutation proof'
