@@ -428,6 +428,9 @@ A missing file, an empty file, or any other word keeps the check in log-only mod
 The first check is `drain-ack`: `bin/fm-drain-pretool-check.sh` denies one command that acknowledges a wake drain and runs another drain, and `bin/fm-wake-drain.sh` refuses an acknowledgement while a captain note waits in `state/inbox/`.
 Both read `config/enforce-drain-ack`.
 A drain piped into `grep`, `head`, `cut` or `sed` is only ever logged.
+The second check is `reply-lint`: the Claude Stop hook `bin/fm-reply-lint.sh` reads the turn that just ended and flags a reply with no Vietnamese letter, a question with no `agent-ask` call in the turn, a waiting captain note, and a session that has not read `data/captain.md` since its last SessionStart.
+It reads `config/enforce-reply-lint`, and it does nothing until `config/reply-language` holds a language word (`vi` today); with the file absent the lint is off.
+A hit blocks at most once per turn, and `bin/fm-reply-lint.sh --replay <transcript>` lists the turn ends a past transcript would have flagged.
 
 ## Backlog backend (.tasks.toml / config/backlog-backend)
 
