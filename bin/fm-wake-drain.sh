@@ -23,6 +23,8 @@ SCRIPT_DIR="$(d=${BASH_SOURCE[0]%/*}; [ "$d" != "${BASH_SOURCE[0]}" ] || d=.; cd
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 # shellcheck source=bin/fm-firstmate-wait-lib.sh
 . "$SCRIPT_DIR/fm-firstmate-wait-lib.sh"
+# shellcheck source=bin/fm-enforce-lib.sh
+. "$SCRIPT_DIR/fm-enforce-lib.sh"
 # shellcheck source=bin/fm-procevent-lib.sh
 . "$SCRIPT_DIR/fm-procevent-lib.sh"
 # shellcheck source=bin/fm-classify-lib.sh
@@ -293,6 +295,30 @@ if fm_firstmate_wait_owed "$owed_state" "$owed_config"; then
   fi
 else
   printf 'FIRSTMATE OWES SKIPPED: config/firstmate-wait-minutes could not be read; repair it before relying on this gate.\n' >&2
+fi
+
+# Captain notes (spec huynhtandat223/firstmate#200, E3): a note waiting in
+# state/inbox/ is the captain's word to firstmate, and an acknowledgement given
+# while one waits skips it. The ack is refused until each note is handled and
+# acked with fm-inbox.sh drain --ack. Like every new check it only logs
+# (state/enforce-drain-ack.log) until config/enforce-drain-ack holds `block`.
+if [ -n "$ACK_THROUGH" ]; then
+  waiting_notes=
+  for note_file in "$owed_state"/inbox/*.note; do
+    [ -f "$note_file" ] || continue
+    note_id=$(basename "$note_file" .note)
+    waiting_notes="${waiting_notes:+$waiting_notes }$note_id"
+  done
+  if [ -n "$waiting_notes" ]; then
+    if [ "$(fm_enforce_mode "$owed_config" drain-ack)" = block ]; then
+      fm_enforce_log "$owed_state" drain-ack refuse waiting-captain-note "$waiting_notes"
+      for note_id in $waiting_notes; do
+        printf 'wake drain: acknowledgement refused while captain note %s waits; handle it, then fm-inbox.sh drain --ack %s\n' "$note_id" "$note_id" >&2
+      done
+      exit 1
+    fi
+    fm_enforce_log "$owed_state" drain-ack would-refuse waiting-captain-note "$waiting_notes"
+  fi
 fi
 
 # Defense in depth for the supervision chain: this script runs at the top of
