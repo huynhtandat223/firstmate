@@ -55,6 +55,10 @@ export FM_HOME
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 # shellcheck source=bin/fm-backend.sh
 . "$SCRIPT_DIR/fm-backend.sh"
+# shellcheck source=bin/fm-worker-account-lib.sh
+. "$SCRIPT_DIR/fm-worker-account-lib.sh"
+# shellcheck source=bin/fm-dms-account-lib.sh
+. "$SCRIPT_DIR/fm-dms-account-lib.sh"
 DATA="$FM_HOME/data"
 STATE="$FM_HOME/state"
 REG="$DATA/assistances.md"
@@ -151,6 +155,14 @@ start() {
   trap 'fm_lock_release "$lock"' EXIT
   fm_assistance_require_dispatcher || exit 1
   profile "$name"
+  # DMS account guard (config/dms-account): refuse before the home is seeded or
+  # anything is spawned. The root is the pin's, else this process's own.
+  if [ "$(jq -r .harness "$PROFILE")" = claude ]; then
+    local selection root
+    selection=$(fm_worker_account_select claude "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}" '' claude '' '' 2>/dev/null || true)
+    if [ -n "$selection" ]; then root=${selection#*$'\t'}; root=${root%%$'\t'*}; else root=${CLAUDE_CONFIG_DIR:-}; fi
+    fm_dms_account_guard "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}" "$STATE" assistance "$name" claude "$root" || exit 1
+  fi
   meta="$STATE/$name.meta"
   if [ -e "$meta" ]; then
     grep -qx 'kind=assistance' "$meta" || die 'identifier belongs to another task kind'

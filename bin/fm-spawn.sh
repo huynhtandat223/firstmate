@@ -456,6 +456,12 @@
 #   in this launching home, then falls back to its home-wide pin when absent.
 #   Pins are never inherited; remote per-mate overrides refuse locally.
 #   bin/fm-worker-account-lib.sh owns parsing, the check, and the shed list.
+# DMS account guard (config/dms-account):
+#   Opt-in. A Claude launch on a project listed there, or an assistance listed
+#   there, must resolve CLAUDE_CONFIG_DIR to the file's root, or the spawn
+#   refuses before any endpoint, worktree, or record exists. It is log-only
+#   until config/enforce-dms-account holds block. bin/fm-dms-account-lib.sh
+#   owns the file format and the check.
 #   Launch templates live in launch_template() below; placeholders replaced before launch:
 #     __BRIEF__    absolute path to data/<task-id>/brief.md
 #     __CLAUDEPERMFLAG__ the claude permission flag selected by config/claude-permission-mode
@@ -821,6 +827,8 @@ fm_backlog_directory_present "$STATE" "state directory" || {
 . "$SCRIPT_DIR/fm-project-capacity-lib.sh"
 # shellcheck source=bin/fm-worker-account-lib.sh
 . "$SCRIPT_DIR/fm-worker-account-lib.sh"
+# shellcheck source=bin/fm-dms-account-lib.sh
+. "$SCRIPT_DIR/fm-dms-account-lib.sh"
 # Fail closed before any fleet mutation: a no-mistakes gate agent must never spawn
 # a direct report (see bin/fm-gate-refuse-lib.sh).
 fm_refuse_if_gate_agent
@@ -3067,6 +3075,16 @@ if [ -n "$WORKER_ACCOUNT" ] && [ "$HARNESS" = claude ]; then
     export CLAUDE_CONFIG_DIR=$WORKER_ACCOUNT_ROOT
   else
     unset CLAUDE_CONFIG_DIR
+  fi
+fi
+# DMS account guard (config/dms-account, bin/fm-dms-account-lib.sh): a Claude
+# launch on a DMS project, or the dms assistance, must resolve to the declared
+# root. Still before any endpoint, worktree, or record exists.
+if [ "$HARNESS" = claude ]; then
+  if [ "$ASSISTANCE" = 1 ]; then
+    fm_dms_account_guard "$CONFIG" "$STATE" assistance "$ID" claude "${CLAUDE_CONFIG_DIR:-}" || exit 1
+  elif [ -n "$PROJ" ]; then
+    fm_dms_account_guard "$CONFIG" "$STATE" project "$(basename "$PROJ")" claude "${CLAUDE_CONFIG_DIR:-}" || exit 1
   fi
 fi
 

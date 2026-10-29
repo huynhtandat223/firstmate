@@ -1,0 +1,137 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC2016
+# Behavior tests for the DMS account guard (spec huynhtandat223/firstmate#200, E6a;
+# config/dms-account, bin/fm-dms-account-lib.sh).
+#
+# CA1, CA2 (spawn): each case drives the real fm-spawn.sh through the shared fake
+# tmux, in a lab home under a temp root, never the live home. The relaunch and
+# assistance start cases live in tests/fm-control-relaunch.test.sh and
+# tests/fm-assistance.test.sh, beside the fixtures those commands need.
+set -u
+
+# shellcheck source=tests/fixtures.sh
+. "$(dirname "${BASH_SOURCE[0]}")/fixtures.sh"
+# shellcheck source=bin/fm-dms-account-lib.sh
+. "$ROOT/bin/fm-dms-account-lib.sh"
+
+# shellcheck disable=SC2088
+TILDE='~'  # the file is written with a literal tilde, as the live one is
+TMP_ROOT=$(fm_test_tmproot fm-dms-account)
+unset LAVISH_AXI_HOST ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN OPENAI_API_KEY
+
+# new_case <name> <project-name> -> sets CASE HOME_DIR PROJ WT FAKEBIN
+new_case() {
+  CASE="$TMP_ROOT/$1"
+  HOME_DIR="$CASE/home"
+  PROJ="$CASE/$2"
+  WT="$CASE/wt"
+  FAKEBIN=$(fm_test_make_spawn_fakebin "$CASE/fake")
+  fm_test_spawn_home "$HOME_DIR" claude
+  fm_git_worktree "$PROJ" "$WT" "wt-$1"
+  mkdir -p "$HOME_DIR/user-home"
+  : > "$CASE/launch.log"
+}
+
+# The lab file of the live shape: the root first, then the DMS projects.
+write_dms_account() {  # <root-as-written> [block]
+  {
+    printf '# DMS work runs on one account\n'
+    printf 'root %s\n\n' "$1"
+    printf 'project dms-workspaces\nproject dms-kernel   # a trailing comment\nproject AutoLedgers\nassistance dms\n'
+  } > "$HOME_DIR/config/dms-account"
+  if [ "${2:-}" = block ]; then printf 'block\n' > "$HOME_DIR/config/enforce-dms-account"; fi
+}
+
+# spawn_scout <id> <claude-config-dir>: a scout spawn whose invoking process
+# carries the given CLAUDE_CONFIG_DIR (the task from the report: dev-5902-inspect).
+spawn_scout() {
+  local id=$1 root=$2
+  fm_test_spawn_brief "$HOME_DIR" "$id"
+  : > "$CASE/launch.log"
+  FM_FAKE_LAUNCH_LOG="$CASE/launch.log" FM_TEST_CLAUDE_CONFIG_DIR="$root" \
+    fm_test_run_spawn "$HOME_DIR" "$WT" "$FAKEBIN" "$id" "$PROJ" --scout
+}
+
+test_ca1_a_dms_spawn_on_the_wrong_account_is_refused() {
+  local out rc id=dev-5902-inspect
+  new_case ca1 dms-workspaces
+  write_dms_account "$TILDE/.claude-account2" block
+  mkdir -p "$CASE/account3"
+  out=$(spawn_scout "$id" "$CASE/account3"); rc=$?
+  expect_code 1 "$rc" "CA1 a DMS spawn on account3 must refuse: $out"
+  assert_contains "$out" "config/dms-account" "CA1 the refusal should name the file"
+  assert_contains "$out" "$TILDE/.claude-account2" "CA1 the refusal should name the root"
+  assert_contains "$out" "$CASE/account3" "CA1 the refusal should name the resolved account"
+  assert_absent "$HOME_DIR/state/$id.meta" "CA1 a refused spawn must not publish a task record"
+  assert_absent "$HOME_DIR/state/$id.status" "CA1 a refused spawn must not write a status line"
+  [ ! -s "$CASE/launch.log" ] || fail "CA1 a refused spawn must not launch a worker: $(cat "$CASE/launch.log")"
+  [ -z "$(find "$HOME_DIR/state" -name "$id*" 2>/dev/null)" ] || fail "CA1 a refused spawn must leave no record of the task: $(find "$HOME_DIR/state" -name "$id*")"
+  printf '%s\n' "$out" > "$TMP_ROOT/ca1-refusal.txt"
+  # The default account is not the root either.
+  out=$(spawn_scout "$id" ''); rc=$?
+  expect_code 1 "$rc" "CA1 a DMS spawn on the default account must refuse: $out"
+  assert_contains "$out" "$HOME_DIR/user-home/.claude" "CA1 the default account should be named as resolved"
+  pass "CA1: a DMS spawn with CLAUDE_CONFIG_DIR on another account refuses before any record or endpoint, naming config/dms-account and ~/.claude-account2"
+}
+
+test_ca2_the_right_account_and_other_projects_pass() {
+  local out rc
+  new_case ca2-root dms-workspaces
+  write_dms_account "$TILDE/.claude-account2" block
+  out=$(spawn_scout dev-5902-inspect "$HOME_DIR/user-home/.claude-account2"); rc=$?
+  expect_code 0 "$rc" "CA2 a DMS spawn on the declared root should succeed: $out"
+  assert_grep "kind=scout" "$HOME_DIR/state/dev-5902-inspect.meta" "CA2 the task record should exist"
+
+  new_case ca2-other other-project
+  write_dms_account "$TILDE/.claude-account2" block
+  mkdir -p "$CASE/account3"
+  out=$(spawn_scout other-task "$CASE/account3"); rc=$?
+  expect_code 0 "$rc" "CA2 a project not in the file should pass on any account: $out"
+
+  new_case ca2-absent dms-workspaces
+  mkdir -p "$CASE/account3"
+  out=$(spawn_scout absent-task "$CASE/account3"); rc=$?
+  expect_code 0 "$rc" "CA2 with config/dms-account absent the guard should do nothing: $out"
+  pass "CA2: the declared root passes, a project outside the file passes, and an absent file changes nothing"
+}
+
+test_log_only_until_the_switch_is_set() {
+  local out rc log
+  new_case logonly dms-workspaces
+  write_dms_account "$TILDE/.claude-account2"
+  mkdir -p "$CASE/account3"
+  out=$(spawn_scout log-task "$CASE/account3"); rc=$?
+  expect_code 0 "$rc" "a DMS spawn on the wrong account must still launch while config/enforce-dms-account is absent: $out"
+  log="$HOME_DIR/state/enforce-dms-account.log"
+  [ -f "$log" ] || fail "log-only default wrote no hit log"
+  grep -q 'would-refuse	project-dms-workspaces	' "$log" || fail "hit log lacks the would-refuse line: $(cat "$log")"
+  pass "with config/enforce-dms-account absent the wrong account launches and the would-be refusal is logged"
+}
+
+test_the_library_reads_the_file_strictly() {
+  local cfg="$TMP_ROOT/lib-cfg" state="$TMP_ROOT/lib-state" err
+  mkdir -p "$cfg" "$state"
+  printf 'block\n' > "$cfg/enforce-dms-account"
+  fm_dms_account_guard "$cfg" "$state" project dms-kernel claude '/x' || fail "an absent file must pass"
+  printf 'project dms-kernel\n' > "$cfg/dms-account"
+  err=$(fm_dms_account_guard "$cfg" "$state" project dms-kernel claude '/x' 2>&1) && fail "a file with no root line must refuse"
+  assert_contains "$err" "no 'root <path>' line" "the missing root should be named"
+  printf 'root /r\nprojekt dms-kernel\n' > "$cfg/dms-account"
+  err=$(fm_dms_account_guard "$cfg" "$state" project dms-kernel claude '/x' 2>&1) && fail "an unknown line must refuse"
+  assert_contains "$err" "line 2" "the bad line number should be named"
+  printf 'root /r\nproject dms-kernel\nassistance dms\n' > "$cfg/dms-account"
+  fm_dms_account_guard "$cfg" "$state" project dms-kernel pi '/x' || fail "a non-claude launch must pass"
+  fm_dms_account_guard "$cfg" "$state" project dms-kernel claude '/r/' || fail "a trailing slash on the root must pass"
+  fm_dms_account_guard "$cfg" "$state" project dms-kernel claude '/x' 2>/dev/null && fail "the wrong root must refuse"
+  fm_dms_account_guard "$cfg" "$state" assistance dms claude '/x' 2>/dev/null && fail "the dms assistance on the wrong root must refuse"
+  fm_dms_account_guard "$cfg" "$state" assistance planner claude '/x' || fail "an assistance outside the file must pass"
+  fm_dms_account_guard "$cfg" "$state" project dms claude '/x' || fail "a project is not matched by an assistance line"
+  pass "the library refuses a malformed file, ignores non-claude launches and unlisted names, and compares roots without a trailing slash"
+}
+
+test_ca1_a_dms_spawn_on_the_wrong_account_is_refused
+test_ca2_the_right_account_and_other_projects_pass
+test_log_only_until_the_switch_is_set
+test_the_library_reads_the_file_strictly
+
+echo "# fm-dms-account.test.sh: all assertions passed"

@@ -181,6 +181,8 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 # shellcheck source=bin/fm-worker-account-lib.sh
 . "$SCRIPT_DIR/fm-worker-account-lib.sh"
+# shellcheck source=bin/fm-dms-account-lib.sh
+. "$SCRIPT_DIR/fm-dms-account-lib.sh"
 # shellcheck source=bin/fm-exclude-tools-lib.sh
 . "$SCRIPT_DIR/fm-exclude-tools-lib.sh"
 
@@ -991,8 +993,22 @@ resolve_relaunch_profile() {
   local account_model=$TARGET_MODEL account_mate=
   [ "$account_model" != default ] || account_model=
   [ "$KIND" != secondmate ] || account_mate=$ID
-  fm_worker_account_select "$TARGET_HARNESS" "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}" \
-    "$account_model" "$TARGET_HARNESS" "" "$account_mate" >/dev/null || return 1
+  local account_selection account_root
+  account_selection=$(fm_worker_account_select "$TARGET_HARNESS" "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}" \
+    "$account_model" "$TARGET_HARNESS" "" "$account_mate") || return 1
+  # The DMS account guard (config/dms-account) refuses here too, before the old
+  # agent stops: the root is the pin's when a pin selects one, else the
+  # invoking process's own CLAUDE_CONFIG_DIR.
+  if [ -n "$account_selection" ]; then
+    account_root=${account_selection#*$'\t'}
+    account_root=${account_root%%$'\t'*}
+  else
+    account_root=${CLAUDE_CONFIG_DIR:-}
+  fi
+  case "$KIND" in
+    assistance) fm_dms_account_guard "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}" "$STATE" assistance "$ID" "$TARGET_HARNESS" "$account_root" || return 1 ;;
+    ship|scout) fm_dms_account_guard "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}" "$STATE" project "$(basename "$(fm_meta_get "$META" project)")" "$TARGET_HARNESS" "$account_root" || return 1 ;;
+  esac
   # Likewise polytoken's launch profile and wiring refusals
   # (bin/fm-polytoken-lib.sh owns them). The launch owner retires the prior
   # incarnation's own generated hook layer, so only one it did not generate

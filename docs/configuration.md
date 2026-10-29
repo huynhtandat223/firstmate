@@ -432,6 +432,16 @@ The second check is `reply-lint`: the Claude Stop hook `bin/fm-reply-lint.sh` re
 It reads `config/enforce-reply-lint`, and it does nothing until `config/reply-language` holds a language word (`vi` today); with the file absent the lint is off.
 A hit blocks at most once per turn, and `bin/fm-reply-lint.sh --replay <transcript>` lists the turn ends a past transcript would have flagged.
 
+## DMS account guard (config/dms-account)
+
+The company watches one Claude account, so DMS work runs only on it.
+`config/dms-account` holds a `root <path>` line (the only Claude config root a DMS launch may use; `~` is allowed), then one `project <name>` line per DMS project and one `assistance <name>` line per DMS assistance.
+Blank lines and `#` comments are ignored; a file with no `root` line, or with an unknown line, refuses every launch rather than passing.
+With the file absent the guard does nothing, and only a Claude launch is checked.
+`bin/fm-spawn.sh`, `bin/fm-control.sh relaunch` and `bin/fm-assistance.sh start` refuse a listed launch whose resolved `CLAUDE_CONFIG_DIR` is not the root, before any endpoint, worktree or record exists, and the refusal names the file and the root.
+`bin/fm-dms-account-lib.sh` owns the file format and the check.
+The check is log-only until `config/enforce-dms-account` holds `block`: each hit is written to `state/enforce-dms-account.log` and the launch goes ahead.
+
 ## Backlog backend (.tasks.toml / config/backlog-backend)
 
 The tracked `.tasks.toml` pins the default `tasks-axi` markdown backend to `data/backlog.md`, with `done_keep = 10` and an archive at `data/done-archive.md`.
