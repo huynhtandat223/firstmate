@@ -1007,7 +1007,7 @@ resolve_relaunch_profile() {
   fi
   case "$KIND" in
     assistance) fm_dms_account_guard "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}" "$STATE" assistance "$ID" "$TARGET_HARNESS" "$account_root" || return 1 ;;
-    ship|scout) fm_dms_account_guard "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}" "$STATE" project "$(basename "$(fm_meta_get "$META" project)")" "$TARGET_HARNESS" "$account_root" || return 1 ;;
+    ship|scout) fm_dms_account_guard "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}" "$STATE" project "$(fm_dms_account_project_name "$(fm_meta_get "$META" project)")" "$TARGET_HARNESS" "$account_root" || return 1 ;;
   esac
   # Likewise polytoken's launch profile and wiring refusals
   # (bin/fm-polytoken-lib.sh owns them). The launch owner retires the prior

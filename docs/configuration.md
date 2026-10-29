@@ -436,9 +436,10 @@ A hit blocks at most once per turn, and `bin/fm-reply-lint.sh --replay <transcri
 
 The company watches one Claude account, so DMS work runs only on it.
 `config/dms-account` holds a `root <path>` line (the only Claude config root a DMS launch may use; `~` is allowed), then one `project <name>` line per DMS project and one `assistance <name>` line per DMS assistance.
-Blank lines and `#` comments are ignored; a file with no `root` line, or with an unknown line, refuses every launch rather than passing.
+Blank lines and `#` comments are ignored; a file that exists but cannot be read, a file with no `root` line, or a file with an unknown line refuses every launch rather than passing.
 With the file absent the guard does nothing, and only a Claude launch is checked.
 `bin/fm-spawn.sh`, `bin/fm-control.sh relaunch` and `bin/fm-assistance.sh start` refuse a listed launch whose resolved `CLAUDE_CONFIG_DIR` is not the root, before any endpoint, worktree or record exists, and the refusal names the file and the root.
+A raw launch command that sets its own `CLAUDE_CONFIG_DIR=` is checked on that value, and a project is matched by the canonical name of its clone directory.
 `bin/fm-dms-account-lib.sh` owns the file format and the check.
 The check is log-only until `config/enforce-dms-account` holds `block`: each hit is written to `state/enforce-dms-account.log` and the launch goes ahead.
 

@@ -154,6 +154,10 @@ grep -qF "$TMP_ROOT/acct2" "$TMP_ROOT/dms-refused.out" || fail "dms refusal lack
 [ ! -e "$parent/state/dms.meta" ] || fail 'a refused dms start published an endpoint record'
 CLAUDE_CONFIG_DIR="$TMP_ROOT/acct2" "$lab/bin/fm-assistance.sh" start dms || fail 'the dms assistance did not start on the declared root'
 [ -f "$dmshome/data/assistance.json" ] || fail 'a dms start on the declared root did not reach the home'
+printf 'kind=assistance\nharness=claude\nbackend=herdr\nwindow=fixture:pane\nhome=%s\n' "$dmshome" > "$parent/state/dms.meta"
+CLAUDE_CONFIG_DIR="$TMP_ROOT/acct3" "$lab/bin/fm-assistance.sh" start dms > "$TMP_ROOT/dms-attach.out" 2>&1 || fail "attaching to a live dms endpoint was refused by the account guard: $(cat "$TMP_ROOT/dms-attach.out")"
+grep -q 'attached: dms' "$TMP_ROOT/dms-attach.out" || fail "a live dms endpoint was not attached: $(cat "$TMP_ROOT/dms-attach.out")"
+rm -f "$parent/state/dms.meta"
 printf 'root %s\nassistance elsewhere\n' "$TMP_ROOT/acct2" > "$parent/config/dms-account"
 rm -f "$dmshome/data/assistance.json"
 CLAUDE_CONFIG_DIR="$TMP_ROOT/acct3" "$lab/bin/fm-assistance.sh" start dms || fail 'an assistance outside config/dms-account was refused'

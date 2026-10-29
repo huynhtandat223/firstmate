@@ -8,9 +8,9 @@
 #   root <path>          the only Claude config root a DMS launch may use (~ allowed)
 #   project <name>       a DMS project, by the basename of its clone
 #   assistance <name>    a DMS assistance, by its registry name
-# With the file absent the guard does nothing. A file with no root line, or a
-# line this parser does not know, refuses: a strict company rule must not pass
-# because its file was misspelled.
+# With the file absent the guard does nothing. A file that exists but cannot be
+# read, a file with no root line, or a line this parser does not know, refuses:
+# a strict company rule must not pass because its file was misspelled or locked.
 #
 # fm_dms_account_guard <config-dir> <state-dir> <project|assistance> <name> <harness> <claude-root>
 #   <claude-root> is the CLAUDE_CONFIG_DIR the launch resolves to; empty means
@@ -18,6 +18,13 @@
 #   prints the refusal to stderr and returns 1 once config/enforce-dms-account
 #   holds `block` (bin/fm-enforce-lib.sh); until then it writes the would-be
 #   refusal to state/enforce-dms-account.log and returns 0.
+# fm_dms_account_raw_root <launch-command>   prints the CLAUDE_CONFIG_DIR a raw
+#   launch command assigns for itself (the last leading NAME=value word, quotes
+#   removed) and succeeds; fails when the command assigns none. Such an
+#   assignment overrides the caller's environment and a pinned account.
+# fm_dms_account_project_name <project-dir>   prints the clone's basename after
+#   resolving the directory canonically, so `/repos/dms-workspaces/.` and a
+#   symlink to it name the same project.
 
 _fm_dms_account_lib_dir=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=bin/fm-enforce-lib.sh
@@ -34,11 +41,44 @@ _fm_dms_account_norm() {  # <path>
   if [ -d "$path" ]; then (CDPATH='' cd -P -- "$path" 2>/dev/null && pwd -P) || printf '%s\n' "$path"; else printf '%s\n' "$path"; fi
 }
 
+fm_dms_account_raw_root() {  # <launch-command>
+  local word root='' found=1
+  for word in $1; do
+    case "$word" in
+      [A-Za-z_]*=*)
+        if [ "${word%%=*}" = CLAUDE_CONFIG_DIR ]; then
+          root=${word#*=}
+          root=${root#[\'\"]}
+          root=${root%[\'\"]}
+          found=0
+        fi
+        ;;
+      *) break ;;
+    esac
+  done
+  [ "$found" -eq 0 ] || return 1
+  printf '%s\n' "$root"
+}
+
+fm_dms_account_project_name() {  # <project-dir>
+  local dir=$1 canon
+  canon=$(CDPATH='' cd -P -- "$dir" 2>/dev/null && pwd -P) || canon=$dir
+  while [ "${#canon}" -gt 1 ] && [ "${canon%/}" != "$canon" ]; do canon=${canon%/}; done
+  basename -- "$canon"
+}
+
 fm_dms_account_guard() {  # <config-dir> <state-dir> <kind> <name> <harness> <claude-root>
   local config=$1 state=$2 kind=$3 name=$4 harness=$5 resolved=$6
   local file="$config/dms-account" line key value n=0 root='' listed=0 expected
   [ "$harness" = claude ] || return 0
-  [ -f "$file" ] && [ -r "$file" ] || return 0
+  if [ -e "$file" ] || [ -L "$file" ]; then
+    if [ ! -f "$file" ] || [ ! -r "$file" ]; then
+      echo "error: config/dms-account exists but cannot be read; fix it or remove it" >&2
+      return 1
+    fi
+  else
+    return 0
+  fi
   while IFS= read -r line || [ -n "$line" ]; do
     n=$((n + 1))
     line=${line%%#*}

@@ -458,7 +458,8 @@
 #   bin/fm-worker-account-lib.sh owns parsing, the check, and the shed list.
 # DMS account guard (config/dms-account):
 #   Opt-in. A Claude launch on a project listed there, or an assistance listed
-#   there, must resolve CLAUDE_CONFIG_DIR to the file's root, or the spawn
+#   there, must resolve CLAUDE_CONFIG_DIR to the file's root (a raw launch
+#   command's own CLAUDE_CONFIG_DIR= assignment counts), or the spawn
 #   refuses before any endpoint, worktree, or record exists. It is log-only
 #   until config/enforce-dms-account holds block. bin/fm-dms-account-lib.sh
 #   owns the file format and the check.
@@ -3081,10 +3082,14 @@ fi
 # launch on a DMS project, or the dms assistance, must resolve to the declared
 # root. Still before any endpoint, worktree, or record exists.
 if [ "$HARNESS" = claude ]; then
+  DMS_ROOT=${CLAUDE_CONFIG_DIR:-}
+  # A raw launch command that assigns its own CLAUDE_CONFIG_DIR overrides the
+  # caller's environment and any pinned account, so its value is the one checked.
+  if [ "$RAW_LAUNCH" = 1 ] && DMS_RAW_ROOT=$(fm_dms_account_raw_root "$LAUNCH"); then DMS_ROOT=$DMS_RAW_ROOT; fi
   if [ "$ASSISTANCE" = 1 ]; then
-    fm_dms_account_guard "$CONFIG" "$STATE" assistance "$ID" claude "${CLAUDE_CONFIG_DIR:-}" || exit 1
+    fm_dms_account_guard "$CONFIG" "$STATE" assistance "$ID" claude "$DMS_ROOT" || exit 1
   elif [ -n "$PROJ" ]; then
-    fm_dms_account_guard "$CONFIG" "$STATE" project "$(basename "$PROJ")" claude "${CLAUDE_CONFIG_DIR:-}" || exit 1
+    fm_dms_account_guard "$CONFIG" "$STATE" project "$(fm_dms_account_project_name "$PROJ")" claude "$DMS_ROOT" || exit 1
   fi
 fi
 

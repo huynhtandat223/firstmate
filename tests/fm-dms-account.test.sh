@@ -129,7 +129,56 @@ test_the_library_reads_the_file_strictly() {
   pass "the library refuses a malformed file, ignores non-claude launches and unlisted names, and compares roots without a trailing slash"
 }
 
+test_a_raw_command_with_its_own_account_is_checked() {
+  local out rc id=raw-task
+  new_case raw dms-workspaces
+  write_dms_account "$TILDE/.claude-account2" block
+  # The caller's environment is the declared root; the raw command overrides it.
+  fm_test_spawn_brief "$HOME_DIR" "$id"
+  out=$(FM_FAKE_LAUNCH_LOG="$CASE/launch.log" FM_TEST_CLAUDE_CONFIG_DIR="$HOME_DIR/user-home/.claude-account2" \
+    fm_test_run_spawn "$HOME_DIR" "$WT" "$FAKEBIN" "$id" "$PROJ" "CLAUDE_CONFIG_DIR=$CASE/account3 claude --flag" --scout); rc=$?
+  expect_code 1 "$rc" "a raw claude command with another CLAUDE_CONFIG_DIR must refuse though the caller env is right: $out"
+  assert_contains "$out" "$CASE/account3" "the refusal should name the raw command's account"
+  assert_absent "$HOME_DIR/state/$id.meta" "a refused raw spawn must not publish a task record"
+  out=$(FM_FAKE_LAUNCH_LOG="$CASE/launch.log" FM_TEST_CLAUDE_CONFIG_DIR="$CASE/account3" \
+    fm_test_run_spawn "$HOME_DIR" "$WT" "$FAKEBIN" "$id" "$PROJ" "CLAUDE_CONFIG_DIR='$HOME_DIR/user-home/.claude-account2' claude --flag" --scout); rc=$?
+  expect_code 0 "$rc" "a raw claude command that sets the declared root must pass though the caller env is wrong: $out"
+  pass "a raw claude launch command's own CLAUDE_CONFIG_DIR= is the account that is checked, not the caller's"
+}
+
+test_a_dotted_project_dir_names_the_clone() {
+  local out rc
+  new_case dot dms-workspaces
+  write_dms_account "$TILDE/.claude-account2" block
+  mkdir -p "$CASE/account3"
+  fm_test_spawn_brief "$HOME_DIR" dot-task
+  out=$(FM_FAKE_LAUNCH_LOG="$CASE/launch.log" FM_TEST_CLAUDE_CONFIG_DIR="$CASE/account3" \
+    fm_test_run_spawn "$HOME_DIR" "$WT" "$FAKEBIN" dot-task "$PROJ/." --scout); rc=$?
+  expect_code 1 "$rc" "a DMS clone named as <dir>/. must still be guarded: $out"
+  [ "$(fm_dms_account_project_name "$PROJ/.")" = dms-workspaces ] || fail "the dotted path did not resolve to the clone name"
+  [ "$(fm_dms_account_project_name "$PROJ/")" = dms-workspaces ] || fail "the trailing slash did not resolve to the clone name"
+  ln -s "$PROJ" "$CASE/link"
+  [ "$(fm_dms_account_project_name "$CASE/link")" = dms-workspaces ] || fail "a symlink did not resolve to the clone name"
+  pass "a project dir given as <dir>/. , <dir>/ or a symlink is guarded as the DMS clone it is"
+}
+
+test_an_unreadable_file_refuses() {
+  local cfg="$TMP_ROOT/unreadable-cfg" state="$TMP_ROOT/unreadable-state" err
+  mkdir -p "$cfg/dms-account" "$state"
+  err=$(fm_dms_account_guard "$cfg" "$state" project dms-kernel claude '/x' 2>&1) && fail "a config/dms-account that exists but is not a readable file must refuse"
+  assert_contains "$err" "cannot be read" "the unreadable file should be named"
+  rmdir "$cfg/dms-account"
+  ln -s "$cfg/missing-target" "$cfg/dms-account"
+  fm_dms_account_guard "$cfg" "$state" project dms-kernel claude '/x' 2>/dev/null && fail "a dangling config/dms-account must refuse"
+  rm -f "$cfg/dms-account"
+  fm_dms_account_guard "$cfg" "$state" project dms-kernel claude '/x' || fail "only a true absence is a no-op"
+  pass "a config/dms-account that exists but cannot be read refuses; only true absence is a no-op"
+}
+
 test_ca1_a_dms_spawn_on_the_wrong_account_is_refused
+test_a_raw_command_with_its_own_account_is_checked
+test_a_dotted_project_dir_names_the_clone
+test_an_unreadable_file_refuses
 test_ca2_the_right_account_and_other_projects_pass
 test_log_only_until_the_switch_is_set
 test_the_library_reads_the_file_strictly
