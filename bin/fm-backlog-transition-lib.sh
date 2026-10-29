@@ -499,6 +499,29 @@ fm_backlog_shadow() {
   FM_DATA_OVERRIDE=$data "$(dirname "${BASH_SOURCE[0]}")/fm-task-shadow.sh" backlog "$verb" "$id" "$kind" "$reason" >/dev/null 2>&1 || true
 }
 
+# Task record backlog view (T7): after a landed tasks-axi mutation of a markdown backlog, `bin/fm-task.sh backlog sync`
+# writes every row the file changed to the record and renders the file from the record. On while config/task-shadow is
+# on, with that file's writer settings. It never fails the caller: a sync that does not finish within
+# FM_TASK_VIEW_TIMEOUT seconds (default 120) leaves the file as tasks-axi wrote it, and the next sync absorbs it. Each
+# run is one line in <state>/task-shadow.log. FM_TASK_VIEW_WRITER, else FM_TASK_SHADOW_WRITER, replaces bin/fm-task.sh, so a
+# caller that replaces the record writer replaces it here too (the tests use stand-ins).
+fm_backlog_view_sync() {  # <backlog-file>
+  local file=$1 config=${FM_CONFIG_OVERRIDE:-${FM_HOME:-}/config} lib out rc state
+  [ -n "$file" ] && [ -e "$config/task-shadow" ] || return 0
+  lib=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+  state=${FM_STATE_OVERRIDE:-${FM_HOME:-$(dirname "$lib")}/state}
+  out=$(
+    # shellcheck source=bin/fm-task-shadow-config-lib.sh
+    . "$lib/fm-task-shadow-config-lib.sh"
+    fm_task_shadow_config "$config/task-shadow"
+    fm_run_timed "${FM_TASK_VIEW_TIMEOUT:-120}" "${FM_TASK_VIEW_WRITER:-${FM_TASK_SHADOW_WRITER:-$lib/fm-task.sh}}" backlog sync --file "$file" --actor backlog-view 2>&1 </dev/null
+  )
+  rc=$?
+  mkdir -p "$state" 2>/dev/null
+  printf '%s - backlog-view sync rc=%s %s\n' "$(date +%s)" "$rc" "$(printf '%s' "$out" | tail -n 1 | cut -c1-160)" >> "$state/task-shadow.log" 2>/dev/null
+  return 0
+}
+
 # Run one tasks-axi mutation against <home>'s backlog, capturing its first
 # output line in FM_BACKLOG_TRANSITION_ERROR on failure. The home boundary is
 # authorized through fm_backlog_source_present first; fm_backlog_tasks_axi owns
@@ -525,6 +548,7 @@ fm_backlog_mutate() {  # <data-dir> <verb> <id> [flag...]
   command_status=$?
   if [ "$command_status" -eq 0 ]; then
     fm_backlog_shadow "$verb" "$id" "$data" "$@"
+    fm_backlog_view_sync "$FM_BACKLOG_AXI_FILE"
     return 0
   fi
   FM_BACKLOG_TRANSITION_ERROR=$(printf '%s\n' "$out" | sed -n '1p')

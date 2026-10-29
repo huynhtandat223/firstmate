@@ -27,8 +27,8 @@ import {fileURLToPath} from 'node:url';
 export const here = path.dirname(fileURLToPath(import.meta.url));
 export const read = (file) => { try { return fs.readFileSync(file, 'utf8'); } catch (e) { if (e.code === 'ENOENT') return ''; throw e; } };
 export const hash = (s) => crypto.createHash('sha256').update(s).digest('hex');
-const attr = (s, k) => s.match(new RegExp(`\\(${k}: ((?:[^()]|\\([^()]*\\))*)\\)`))?.[1] || '';
-function holdText(s) {
+export const attr = (s, k) => s.match(new RegExp(`\\(${k}: ((?:[^()]|\\([^()]*\\))*)\\)`))?.[1] || '';
+export function holdText(s) {
   return s.startsWith('fm-hold-v1:') ? Buffer.from(s.slice(11), 'base64url').toString() : s;
 }
 export function hermes(t) {
