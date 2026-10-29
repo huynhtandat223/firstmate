@@ -300,7 +300,8 @@ fm_task_inbox_write_idempotent() {  # <state-dir> <task-id> <text> [delivery-mod
 # checked before it is written:
 #   short      the text (before any marker) is under FM_STEER_MIN_CHARS
 #              characters (default 8), too little to act on (retro 10-25#4);
-#   duplicate  the exact body is already in the inbox unhandled, or sits in
+#   duplicate  the exact body (a secondmate request without its marker and
+#              correlation token) is already in the inbox unhandled, or sits in
 #              handled/ and was written within FM_STEER_DEDUPE_SECS (default
 #              1800, 30 minutes) - retros 10-23#10, 10-25#13, 10-26#5.
 # `--again` on bin/fm-send.sh skips the duplicate check on purpose. A record
@@ -309,7 +310,7 @@ fm_task_inbox_write_idempotent() {  # <state-dir> <task-id> <text> [delivery-mod
 # returns 0 when there is a problem; returns 1 and prints nothing otherwise.
 # bin/fm-send.sh applies the log-only switch (bin/fm-enforce-lib.sh).
 fm_task_inbox_steer_problem() {  # <state-dir> <task-id> <raw-text> <body-text> [again]
-  local state=$1 task=$2 raw=$3 body=$4 again=${5:-} dir min window now mtime age f have want status=1 trimmed
+  local state=$1 task=$2 raw=$3 body=$4 again=${5:-} dir min window now match have want status=1 trimmed f text
   min=${FM_STEER_MIN_CHARS:-8}
   window=${FM_STEER_DEDUPE_SECS:-1800}
   case "$min" in ''|*[!0-9]*) min=8 ;; esac
@@ -326,24 +327,75 @@ fm_task_inbox_steer_problem() {  # <state-dir> <task-id> <raw-text> <body-text> 
   now=$(date +%s)
   want=$(mktemp "${TMPDIR:-/tmp}/fm-steer-want.XXXXXX") || return 1
   have=$(mktemp "${TMPDIR:-/tmp}/fm-steer-have.XXXXXX") || { rm -f "$want"; return 1; }
-  printf '%s' "$body" > "$want"
+  fm_task_inbox_steer_text "$body" text
+  printf '%s' "$text" > "$want"
   for f in "$dir"/*.msg "$dir/handled"/*.msg; do
     [ -f "$f" ] || continue
-    if fm_task_inbox_is_fire_and_forget "$f"; then continue; fi
-    mtime=$(fm_path_mtime "$f") || continue
-    age=$((now - mtime))
-    case "$f" in
-      "$dir/handled"/*) [ "$age" -le "$window" ] || continue ;;
-    esac
-    fm_task_inbox_body "$f" > "$have" 2>/dev/null || continue
-    if cmp -s "$want" "$have"; then
-      printf 'duplicate\t%s\t%s\n' "$f" "$age"
+    if match=$(fm_task_inbox_steer_match "$f" "$dir" "$want" "$have" "$now" "$window"); then
+      printf 'duplicate\t%s\n' "$match"
       status=0
       break
     fi
   done
   rm -f "$want" "$have"
   return "$status"
+}
+
+# The instruction text of a steer, for the duplicate compare. A marked
+# secondmate request carries the transport marker and a fresh correlation token
+# ahead of the text, so two identical steers differ in those bytes only; both
+# are removed here. Text without the marker is returned unchanged.
+fm_task_inbox_steer_text() {  # <enqueued-text> <result-var>
+  local plain=$1 result_var=$2 marker
+  if [ -z "${FM_FROMFIRST_MARK-}" ]; then
+    # shellcheck source=/dev/null
+    . "$_FM_TASK_INBOX_LIB_DIR/fm-marker-lib.sh"
+  fi
+  marker=$FM_FROMFIRST_MARK
+  case "$plain" in
+    "$marker"*)
+      plain=${plain#"$marker"}
+      case "${plain:0:21}" in
+        corr=[a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9])
+          plain=${plain:21}
+          while [ "${plain# }" != "$plain" ]; do plain=${plain# }; done
+          while [ "${plain#$'\t'}" != "$plain" ]; do plain=${plain#$'\t'}; done
+          ;;
+      esac
+      ;;
+  esac
+  printf -v "$result_var" '%s' "$plain"
+}
+
+# Does one inbox record carry the wanted steer text? Prints "<path><TAB><age>"
+# and returns 0 on a match. An unhandled record can be moved into handled/ by
+# the worker at any point of the scan, so a record that vanishes is read again
+# from handled/ and judged by the handled age rule (the 30 minute window).
+fm_task_inbox_steer_match() {  # <record> <inbox-dir> <want-file> <scratch-file> <now> <window>
+  local f=$1 dir=$2 want=$3 have=$4 now=$5 window=$6 mtime age moved=0 text
+  while :; do
+    if [ -f "$f" ]; then
+      ! fm_task_inbox_is_fire_and_forget "$f" || return 1
+      if mtime=$(fm_path_mtime "$f") && fm_task_inbox_body "$f" > "$have" 2>/dev/null; then
+        age=$((now - mtime))
+        case "$f" in
+          "$dir/handled"/*) [ "$age" -le "$window" ] || return 1 ;;
+        esac
+        text=$(cat "$have"; printf x)
+        fm_task_inbox_steer_text "${text%x}" text
+        printf '%s' "$text" > "$have"
+        cmp -s "$want" "$have" || return 1
+        printf '%s\t%s\n' "$f" "$age"
+        return 0
+      fi
+    fi
+    case "$f" in
+      "$dir/handled"/*) return 1 ;;
+    esac
+    [ "$moved" = 0 ] || return 1
+    moved=1
+    f="$dir/handled/${f##*/}"
+  done
 }
 
 # The exact enqueued text back out of a record.

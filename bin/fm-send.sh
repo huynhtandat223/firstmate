@@ -15,7 +15,8 @@
 # huynhtandat223/firstmate#200, E5; bin/fm-task-inbox-lib.sh
 # fm_task_inbox_steer_problem owns the rule): a text under 8 characters, or a
 # body identical to an unhandled record or to one written in the last 30
-# minutes, is a mistake the worker would act on twice or not at all. Such a send
+# minutes (a secondmate request is compared without its marker and correlation
+# token), is a mistake the worker would act on twice or not at all. Such a send
 # is refused naming the existing NNN.msg, and --again resends an identical body
 # on purpose. Like every new check it only logs to state/enforce-steer-dedupe.log
 # until config/enforce-steer-dedupe holds `block` (bin/fm-enforce-lib.sh).

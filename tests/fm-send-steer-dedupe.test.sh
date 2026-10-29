@@ -102,6 +102,64 @@ test_sd1_old_handled_steer_is_allowed_but_old_unhandled_is_not() {
   pass "SD1: a handled record older than 30 minutes no longer blocks; an unhandled one blocks at any age"
 }
 
+# Issue #206: a marked secondmate request embeds a fresh corr token, so the
+# compare must read the instruction text without the marker and the token.
+test_sd1_secondmate_steers_compare_without_marker_and_corr() {
+  local dir marker_count
+  dir=$(setup_case sd1-secondmate block)
+  rm -f "$dir/home/state/t1.meta"
+  fm_write_secondmate_meta "$dir/home/state/sm.meta" "$dir/home" "sess:fm-t1"
+  send "$dir" sm "$BODY_A"
+  [ "$RC" -eq 0 ] || fail "the first secondmate send must be written: $ERR"
+  [ -f "$dir/home/state/sm.inbox/001.msg" ] || fail "the first secondmate send left no 001.msg"
+  grep -q 'corr=[0-9a-f]\{16\}' "$dir/home/state/sm.inbox/001.msg" || fail "the secondmate record carries no corr token, so the case proves nothing"
+  send "$dir" sm "$BODY_A"
+  [ "$RC" -ne 0 ] || fail "#206 an identical second secondmate steer was accepted"
+  assert_contains "$ERR" "001.msg" "the refusal does not name the existing record"
+  [ ! -e "$dir/home/state/sm.inbox/002.msg" ] || fail "the refused secondmate steer was written"
+  marker_count=$(find "$dir/home/state/pending-replies" -type f 2>/dev/null | wc -l)
+  [ "$marker_count" -eq 1 ] || fail "the refused steer left its undelivered reply expectation behind ($marker_count records)"
+  send "$dir" sm "$BODY_B"
+  [ "$RC" -eq 0 ] || fail "#206 a different secondmate steer must still be written: $ERR"
+  send "$dir" sm --again "$BODY_A"
+  [ "$RC" -eq 0 ] || fail "#206 --again must write an identical secondmate steer: $ERR"
+  pass "#206: two identical steers to a local secondmate match on the text alone; a different text and --again still pass"
+}
+
+# Issue #206: a worker moves an unhandled record into handled/ after the glob
+# expands and before the stat. The scan must read it again from handled/.
+test_sd1_record_moved_to_handled_mid_scan_is_still_matched() {
+  local dir state out
+  dir=$(setup_case sd1-vanish block)
+  state="$dir/home/state"
+  send "$dir" t1 "$BODY_B"
+  [ "$RC" -eq 0 ] || fail "first send: $ERR"
+  scan_with_move() {  # <touch -d age or empty>: the scan sees 001.msg vanish at its stat
+    mkdir -p "$state/t1.inbox/handled"
+    [ ! -f "$state/t1.inbox/handled/001.msg" ] || mv "$state/t1.inbox/handled/001.msg" "$state/t1.inbox/001.msg"
+    bash -c '
+      . "$1"
+      state=$2 touch_age=$4
+      eval "$(declare -f fm_path_mtime | sed "1s/fm_path_mtime/real_fm_path_mtime/")"
+      fm_path_mtime() {
+        case "$1" in
+          */t1.inbox/001.msg)
+            mv "$1" "${1%/*}/handled/001.msg"
+            [ -z "$touch_age" ] || touch -d "$touch_age" "${1%/*}/handled/001.msg"
+            ;;
+        esac
+        real_fm_path_mtime "$@"
+      }
+      fm_task_inbox_steer_problem "$state" t1 "$3" "$3"
+    ' _ "$ROOT/bin/fm-task-inbox-lib.sh" "$state" "$BODY_B" "$1"
+  }
+  out=$(scan_with_move "")
+  assert_contains "$out" "duplicate	$state/t1.inbox/handled/001.msg" "#206 the record moved mid-scan was skipped: $out"
+  out=$(scan_with_move "3 hours ago") && fail "#206 a record moved mid-scan and older than the window must not match: $out"
+  [ -z "$out" ] || fail "#206 an old moved record printed a problem: $out"
+  pass "#206: a record moved to handled/ between the glob and the stat is matched there, under the handled age rule"
+}
+
 test_sd1_log_only_until_the_switch_is_set() {
   local dir log
   dir=$(setup_case sd1-log)
@@ -183,6 +241,8 @@ test_sd3_assistance_steer_applies_the_same_rule() {
 test_sd1_identical_unhandled_steer_is_refused
 test_sd1_identical_handled_steer_is_refused_inside_the_window
 test_sd1_old_handled_steer_is_allowed_but_old_unhandled_is_not
+test_sd1_secondmate_steers_compare_without_marker_and_corr
+test_sd1_record_moved_to_handled_mid_scan_is_still_matched
 test_sd1_log_only_until_the_switch_is_set
 test_sd2_short_body_is_refused
 test_sd3_again_writes_the_repeat
