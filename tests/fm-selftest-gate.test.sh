@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC1091,SC2016
 # Behavior tests for the merge self-test gate (spec huynhtandat223/firstmate#217,
-# ticket #218): bin/fm-selftest-gate-lib.sh, and its call from bin/fm-pr-merge.sh.
+# ticket #218): bin/fm-selftest-gate-lib.sh, and its call from bin/fm-pr-merge.sh,
+# and bin/fm-brief-verify-lib.sh, which bin/fm-brief.sh --check calls.
 #
 # Every case runs in a lab home under a temp root, never the live home. A stub
 # `gh` answers `pr view --json body` from a fixture, so nothing reaches GitHub
@@ -17,10 +18,18 @@
 #   SG4  a receipt whose actor is the task hits `author-receipt` on its own
 #        check, merge-verifier: only logged without its config file, refused
 #        under `block`; an actor such as `tester` logs nothing.
+#   SG5  a brief for a cfw-modules issue with user-visible scenarios on
+#        `firstmate.board` hits `missing-verify` naming board-task-detail unless
+#        it names `verify-cfw run board-task-detail`; a page with no feature file
+#        is logged as `unmapped` and never a hit; an internal-only issue logs
+#        nothing. Feature files are read with git show from origin/main of a lab
+#        clone.
 set -u
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
+fm_git_identity fmtest fmtest@example.invalid
 
 LIB="$ROOT/bin/fm-selftest-gate-lib.sh"
 FIXTURE="$ROOT/tests/fixtures/selftest-gate"
@@ -344,8 +353,146 @@ test_sg4_a_receipt_written_by_the_author_hits_author_receipt() {
   pass "sg4: a receipt the author wrote hits author-receipt on the merge-verifier switch alone"
 }
 
+# --- SG5: bin/fm-brief.sh --check names the evidence ---------------------------
+
+CFW_ISSUE=https://github.com/huynhtandat223/cfw-modules/issues/1678
+BRIEF_TASK=board-task
+
+# make_brief_home <name> [features...]: a lab home, a gh stub that serves
+# $FM_TEST_ISSUE_BODY as the issue body, and a lab cfw-modules clone whose
+# origin/main holds the named fixture feature files (none: no feature files).
+make_brief_home() {
+  local name=$1 dir="$TMP_ROOT/$1" feature
+  shift
+  mkdir -p "$dir/home/data" "$dir/home/state" "$dir/home/config" "$dir/clone"
+  printf '#!/usr/bin/env bash\njq -Rs "{body: .}" "$FM_TEST_ISSUE_BODY"\n' > "$dir/gh"
+  chmod +x "$dir/gh"
+  fm_git_init_commit "$dir/clone"
+  if [ "$#" -gt 0 ]; then
+    mkdir -p "$dir/clone/.agents/skills/verify-cfw/features"
+    cp "$FIXTURE/features/README.md" "$dir/clone/.agents/skills/verify-cfw/features/README.md"
+    for feature in "$@"; do
+      cp "$FIXTURE/features/$feature.md" "$dir/clone/.agents/skills/verify-cfw/features/$feature.md"
+    done
+    git -C "$dir/clone" add -A
+    git -C "$dir/clone" commit -q -m features
+  fi
+  git -C "$dir/clone" update-ref refs/remotes/origin/main "$(git -C "$dir/clone" rev-parse HEAD)"
+  printf '%s\n' "$dir"
+}
+
+# write_brief <home-dir> <issue-url> <spec text>: scaffold a ship brief that
+# names the issue, as firstmate does, and fill its two task fields.
+write_brief() {
+  local dir=$1 url=$2 spec=$3
+  FM_HOME="$dir/home" "$ROOT/bin/fm-brief.sh" "$BRIEF_TASK" cfw-modules --mode direct-PR --surface user-visible \
+    --issue "$url" > /dev/null 2>&1 || fail "write_brief: scaffold failed"
+  sed -i "s/{TASK}/Fix the page./; s|{FIRSTMATE_SPEC}|$spec|" "$dir/home/data/$BRIEF_TASK/brief.md"
+}
+
+# check_brief <home-dir> <issue body file>: run fm-brief.sh --check; sets RC and ERR.
+check_brief() {
+  local dir=$1 body=$2
+  RC=0
+  FM_HOME="$dir/home" FM_BRIEF_CFW_CLONE="$dir/clone" FM_ACCEPTANCE_GH="$dir/gh" FM_TEST_ISSUE_BODY="$body" \
+    "$ROOT/bin/fm-brief.sh" --check "$BRIEF_TASK" > /dev/null 2> "$dir/err" || RC=$?
+  ERR=$(cat "$dir/err")
+}
+
+brief_log() {  # <home-dir>
+  cat "$1/home/state/enforce-brief-verify.log" 2>/dev/null || true
+}
+
+test_sg5_a_brief_names_the_verify_run_for_each_mapped_page() {
+  local dir
+
+  dir=$(make_brief_home sg5-missing board-task-detail screens-debug-steps)
+  write_brief "$dir" "$CFW_ISSUE" "Build the board record."
+  check_brief "$dir" "$FIXTURE/cfw-modules-1678.body"
+  expect_code 0 "$RC" "sg5: without enforce-brief-verify the brief check passes"
+  assert_contains "$ERR" "would refuse: missing-verify" "sg5: the hit is a would-refuse line"
+  assert_contains "$ERR" "board-task-detail" "sg5: the mapped feature is named"
+  assert_not_contains "$ERR" "screens-debug-steps" "sg5: a feature of a page the issue does not use is not named"
+  assert_equals 1 "$(brief_log "$dir" | awk -F'\t' '$2 == "would-refuse" && $3 == "missing-verify"' | wc -l | tr -d ' ')" \
+    "sg5: one missing-verify log line"
+  printf 'block\n' > "$dir/home/config/enforce-brief-verify"
+  check_brief "$dir" "$FIXTURE/cfw-modules-1678.body"
+  expect_code 1 "$RC" "sg5: block refuses the brief"
+  assert_contains "$ERR" "refused: missing-verify" "sg5: block names the code"
+
+  dir=$(make_brief_home sg5-named board-task-detail screens-debug-steps)
+  write_brief "$dir" "$CFW_ISSUE" "Run verify-cfw run board-task-detail at 1440 and 390."
+  printf 'block\n' > "$dir/home/config/enforce-brief-verify"
+  check_brief "$dir" "$FIXTURE/cfw-modules-1678.body"
+  expect_code 0 "$RC" "sg5: a brief that names the run passes under block"
+  assert_equals '' "$ERR" "sg5: and prints nothing"
+  assert_equals '' "$(brief_log "$dir")" "sg5: and logs nothing"
+
+  dir=$(make_brief_home sg5-npm board-task-detail)
+  write_brief "$dir" "$CFW_ISSUE" "Run npm run verify-cfw -- run board-task-detail,screens-debug-steps --target storybook:fm/x."
+  check_brief "$dir" "$FIXTURE/cfw-modules-1678.body"
+  assert_equals '' "$ERR" "sg5: the npm form with a feature list names the run too"
+
+  dir=$(make_brief_home sg5-prefix board-task-detail)
+  write_brief "$dir" "$CFW_ISSUE" "Run verify-cfw run board-task-detail-extra only."
+  check_brief "$dir" "$FIXTURE/cfw-modules-1678.body"
+  assert_contains "$ERR" "would refuse: missing-verify" "sg5: a longer feature name does not name board-task-detail"
+  pass "sg5: a brief names the verify-cfw run for each mapped user-visible page"
+}
+
+test_sg5_an_unmapped_page_is_logged_and_never_a_hit() {
+  local dir
+
+  dir=$(make_brief_home sg5-nofiles)
+  write_brief "$dir" "$CFW_ISSUE" "Build the board record."
+  printf 'block\n' > "$dir/home/config/enforce-brief-verify"
+  check_brief "$dir" "$FIXTURE/cfw-modules-1678.body"
+  expect_code 0 "$RC" "sg5: with no feature files every page is unmapped and nothing refuses, even under block"
+  assert_equals '' "$ERR" "sg5: unmapped prints no would-refuse line"
+  assert_equals 1 "$(brief_log "$dir" | awk -F'\t' '$2 == "skip" && $3 == "unmapped"' | wc -l | tr -d ' ')" \
+    "sg5: firstmate.board is logged once as unmapped"
+  assert_contains "$(brief_log "$dir")" "firstmate.board" "sg5: the unmapped page is named"
+
+  dir=$(make_brief_home sg5-other-feature screens-debug-steps)
+  write_brief "$dir" "$CFW_ISSUE" "Build the board record."
+  check_brief "$dir" "$FIXTURE/cfw-modules-1678.body"
+  assert_equals '' "$ERR" "sg5: a feature file for another page leaves firstmate.board unmapped"
+  assert_contains "$(brief_log "$dir")" "unmapped" "sg5: and logs it"
+
+  dir=$(make_brief_home sg5-no-clone)
+  rm -rf "$dir/clone"
+  write_brief "$dir" "$CFW_ISSUE" "Build the board record."
+  check_brief "$dir" "$FIXTURE/cfw-modules-1678.body"
+  expect_code 0 "$RC" "sg5: a missing clone leaves every page unmapped"
+  assert_contains "$(brief_log "$dir")" "unmapped" "sg5: and logs it"
+  pass "sg5: an unmapped page is logged as unmapped and is never a hit"
+}
+
+test_sg5_internal_issues_and_other_repositories_log_nothing() {
+  local dir
+
+  dir=$(make_brief_home sg5-internal board-task-detail)
+  write_brief "$dir" "$CFW_ISSUE" "Change the script."
+  printf 'block\n' > "$dir/home/config/enforce-brief-verify"
+  check_brief "$dir" "$FIXTURE/internal-only.body"
+  expect_code 0 "$RC" "sg5: an issue with only internal scenarios passes"
+  assert_equals '' "$ERR" "sg5: and prints nothing"
+  assert_equals 0 "$(count_logs "$dir")" "sg5: and logs nothing"
+
+  dir=$(make_brief_home sg5-other-repo board-task-detail)
+  write_brief "$dir" https://github.com/acme/widgets/issues/163 "Build the board record."
+  printf 'block\n' > "$dir/home/config/enforce-brief-verify"
+  check_brief "$dir" "$FIXTURE/cfw-modules-1678.body"
+  expect_code 0 "$RC" "sg5: an issue of another repository is not checked"
+  assert_equals 0 "$(count_logs "$dir")" "sg5: and logs nothing"
+  pass "sg5: an internal-only issue and another repository log nothing"
+}
+
 test_sg1_pr_1730_body_hits_phrase_on_lines_4_and_16
 test_sg2_receipt_at_the_live_head_logs_nothing
 test_sg2_each_missing_piece_hits_its_own_code
 test_sg3_receipt_rules_stay_inside_user_visible_cfw_modules
 test_sg4_a_receipt_written_by_the_author_hits_author_receipt
+test_sg5_a_brief_names_the_verify_run_for_each_mapped_page
+test_sg5_an_unmapped_page_is_logged_and_never_a_hit
+test_sg5_internal_issues_and_other_repositories_log_nothing

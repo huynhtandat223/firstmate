@@ -1,0 +1,218 @@
+## Context
+
+Part of the task contract spec (#1675): one record on Dev 5001 that firstmate, every worker and every assistance write and read, shown on the Firstmate board. The spec holds the model (tables, templates, states, events, delivery, owner items, grants) and the order; this is step 7 of 8 (T6).
+
+## Requirements
+
+On a draft copy of `firstmate.board`, then the live row with a pre-image:
+- Read the tables with their generated operations in the owner's session, as the page already does for `push_subscription`.
+- Board columns are the five steps of the task (Queued, Working, PR, On Dev, Passed; change 199, Step 2), and cards show the stepper, the worker and reviewer, the age in the step, the due marker, the next actor and the block kind.
+- The detail tabs are Overview, Timeline (replacing Thread and Activity), Checks (replacing Subtasks) and Plan (unchanged).
+- His answers, passes, fails and approvals go through one published writer operation: an API Builder script row on 5001 that runs `bin/fm-task.sh` with the signed-in owner as actor, so the one writer keeps `seq`, the transitions and the `fm_task` projection (and `fm_owner_check` for an owner row). The page does not call `createFmTaskEvent` directly: the page grammar cannot compute seq + 1 (`src/frontend/CFW.Shadcn/src/composition/page-graph-values.ts:179`), and an event alone leaves `fm_task` stale (change 194).
+- An owner row opens as a checklist item from `fm_owner_check`: the page title as a link to its direct URL (a new tab for a 5001 or Home address; the screen name for the K50), the steps, the data, what he should see, and Pass or Fail with a note.
+- Waiting for you lists next actor owner and closes from the stream or refresh.
+- A `done` that carries a document (145) shows it in Overview (the newest `done`) and on its Timeline event, with #1566's components (markdown in `markdown`, HTML in the sandboxed `html-document` frame, `sandbox="allow-scripts"`) but not its fixed box. By the owner's direction in task board-doc-card-space (feedback e2832ad3), the document fills the remaining height of the detail with one scroll (no nested scroll box), and Open large is a true fullscreen that covers the whole viewport and closes back. List reads select only `documents($select=id,title,mediaType)`, and the text is read once, when the document opens.
+- Golden story at 1440 and 390 first (project rule).
+
+**The document table first (145).** Before the draft row, and not waiting for #1671: publish `fm_event_document` (child `documents` of `fm_task_event`) exactly as the spec's table lists, through the definition API as SysAdmin, and add it to `docs/fm-task-contract/definitions.json` and its README (ten definitions become eleven). This is its own PR, so T4's real run (TR35) can start.
+
+This takes over #168 (Q4 A) and the comments design of #1546 (Q3 A).
+
+**Row surface:** the T1 tables and `fm_event_document` (OData operations); `firstmate-board` stays only for `plan` and images.
+**Grant:** none new (the owner's SysAdmin session).
+
+**Start point (firstmate, planner.inbox 136):** the in-app-feedback worker is changing `fm-board.mjs` and the `firstmate.board` row now (#1671). T6 starts from main after #1671 lands: the draft copy is taken from the `firstmate.board` row as #1671 leaves it, and the pre-image is taken then.
+
+Stop lines: every other tab keeps working; no grant change.
+
+## Steps
+
+- [ ] **Step 1: the task contract board (TR51 to TR53, TR55 to TR58; TR56 first, on its own).** As the Requirements above say: on the draft copy of `firstmate.board`, read the record, the detail tabs, the owner's actions through the published writer operation, Waiting for you, and the `done` document.
+- [ ] **Step 2: cards by step (change 199; TR50, KB1 to KB6).** The owner's own board is the reference: columns by step, a five-step stepper on each card, a worker and reviewer line, the age in the step, an overdue marker, and filters. Build it on the same draft copy after Step 1.
+  - **Fields first (KB1).** Publish five new nullable `fm_task` fields through the definition API as SysAdmin: `stage` (16: `queued`, `working`, `pr`, `dev`, `passed`), `stage_since` (datetime), `last_event_at` (datetime), `last_note` (300) and `reviewer` (64). Add them to `docs/fm-task-contract/definitions.json` and its README. This is its own PR, like TR56, so the writer's projection (huynhtandat223/firstmate#176, Step 5) can fill them.
+  - **The step rule (owned by the writer; the page only reads it).** `done` → `passed`. `review` → `dev` when a `deploy` event follows the newest `done`, else `pr`. `running` → `pr` when a `pr` event follows the newest `started` or `changes`, else `working`. `triage`, `todo` and `ready` → `queued`. `blocked` keeps the step it had. `stage_since` is the time of the event that set the current step. `reviewer` is the actor of the newest `check`, `owner-check`, `approved` or `changes` event. `last_note` is the newest event's note (cut to 300).
+  - **Columns (TR50).** There are five columns, Queued, Working, PR, On Dev and Passed. The kanban groups by `stage` instead of `state`, and archived tasks are hidden. A blocked task stays in its step, its current dot turns red, and its block-kind badge shows. A triage task shows a "Triage" badge in Queued. At 390, the existing "Lane" select shows one column at a time.
+  - **Card (KB2).** Top to bottom:
+    - the title, at most 2 lines;
+    - "Worker: <assignee> · Reviewer: <reviewer>", where the reviewer is the next actor when it is the Tester or firstmate and `reviewer` is empty, and "—" when there is none;
+    - `last_note`, at most 3 lines;
+    - the stepper: passed steps get a check, the current step gets the step tone (red when blocked), later steps are empty;
+    - a footer with "In this step <relative age of `stage_since`>" on the left and the due marker (KB3) on the right.
+
+    The "Your decision" and block badges, and the Changed dot, stay. A click opens the detail (TR51, unchanged).
+  - **Due and overdue (KB3).** Each step has a budget, kept as page constants that firstmate can tune: Working 24 h, PR 12 h, On Dev 24 h. Queued and Passed have no budget. The due time is `stage_since` plus the budget. For a blocked `transient` task, the due time is `hold_until`. Before the due time the card shows "Due HH:mm dd/MM" in the muted tone. After it, the card shows "Overdue HH:mm dd/MM" in the destructive tone and gets a destructive left border.
+  - **Filters (KB4).** Two selects sit above the board. "Waiting on" holds All, Worker, Tester, firstmate and You (`next_actor`). "Repository" holds All, then each short repository name (`huynhtandat223/cfw-modules` counts as `cfw-modules`), then "No repository". The total line reads "<n> tasks · columns by step". The page address keeps both filters.
+  - **The stepper is a neutral component (KB5).** It is `@cfw/components/stepper`, with `steps: {label, status: done|current|blocked|todo}[]`, rendered as a list with `aria-current="step"` on the current step and each step's label as its accessible name. Search the registries in `components.json` first (vendor workflow); it has its own tests and a catalog story.
+  - **Golden story first (KB5).** Update `golden-firstmate-board-record` (story, `.data.json` with at least one card in each step, one blocked, one overdue, one "Your decision" and one long title) on Storybook 5010 at 1440 and 390, and commit its captures. Only then edit the draft row.
+  - Stop lines: the detail, Waiting for you and every other tab stay as Step 1 leaves them. No grant change. The page writes nothing new.
+- [ ] **Step 3: the live row (TR54) and cleanup (KB6).**
+
+## Definition of done
+
+Done when every user-visible scenario × width passes in the Tester's record on the deployed head, firstmate approves after that record, and the cleanup scenario passes; internal work requires a PR, green CI (or the repo checks where the repo has no CI), and the real run each scenario names.
+
+## Scenarios
+
+- [ ] TR50 WHEN the owner opens the Board tab, THE columns SHALL be the five steps (Queued, Working, PR, On Dev, Passed) grouped on `stage` from `listFmTask` in his session with archived tasks hidden, each column SHALL show its count, a blocked task SHALL stay in its step with its block-kind badge, and "Your decision" SHALL mark cards whose next actor is the owner.
+  - page: `firstmate.board` (a draft copy first)
+  - widths: 1440, 390
+  - controls: tab "Board"; select "Lane" (390)
+  - env: Dev 5001 (`http://127.0.0.1:5001`, `https://ubuntu-hermes.tail3278eb.ts.net:8443`), SysAdmin
+  - proof: At 1440 and 390 on the draft row: each column's count against `GET /api/fm_task` grouped by `stage` (archived left out); one blocked task found in its step's column; screenshots.
+  - data: the backfilled record after the writer's projection (huynhtandat223/firstmate#176 Step 5)
+  - mock: none
+  - surface: user-visible
+- [ ] TR51 WHEN he opens a task, THE detail SHALL show Overview (state, assignee, next actor, the last terminal call's template fields), Timeline (every event oldest first with actor, role and links, filterable by kind), Checks (rows by scenario with width, status, next actor, how to check and evidence) and Plan (unchanged).
+  - page: `firstmate.board` (a draft copy first)
+  - widths: 1440, 390
+  - controls: tab "Overview"; tab "Timeline"; tab "Checks"; tab "Plan"
+  - env: Dev 5001 (`http://127.0.0.1:5001`, `https://ubuntu-hermes.tail3278eb.ts.net:8443`), SysAdmin
+  - proof: At 1440 and 390: open #1669's task and the probe task; each tab screenshot; the Timeline count equals the task's event count.
+  - data: the task for #1669; probe task `cfw-1675-probe` and its rows (test-owned, deleted at the end)
+  - mock: none
+  - surface: user-visible
+- [ ] TR52 WHEN he answers a question or a block, or passes or fails an owner row, THE board SHALL write it through the published writer operation (the API Builder script row that runs `bin/fm-task.sh` with him, the signed-in owner, as actor), the row or block SHALL update, and its Waiting card SHALL close within 10 s without a reload.
+  - page: `firstmate.board` (a draft copy first)
+  - widths: 1440, 390
+  - controls: button "Pass"; button "Fail"; textbox "Ghi chú"; button "<option label>"
+  - env: Dev 5001 (`http://127.0.0.1:5001`, `https://ubuntu-hermes.tail3278eb.ts.net:8443`), SysAdmin
+  - proof: At 1440 and 390 on the probe task: one of each action; events read back; Waiting before and after.
+  - data: probe task `cfw-1675-probe` and its rows (test-owned, deleted at the end)
+  - mock: none
+  - surface: user-visible
+- [ ] TR53 WHEN he opens Waiting for you, THE list SHALL hold the record's owner items (the rows, blocks and questions whose next actor is the owner, plan approvals included) plus the open agent-asks that carry no task record (DMS asks, firstmate's own asks), each saying what to check and where.
+  - page: `firstmate.board` (a draft copy first)
+  - widths: 1440, 390
+  - controls: tab "Waiting for you"
+  - env: Dev 5001 (`http://127.0.0.1:5001`, `https://ubuntu-hermes.tail3278eb.ts.net:8443`), SysAdmin
+  - proof: At 1440 and 390: the list against `fm_task_check`, `fm_event_block` and `fm_event_question` filtered on next actor owner, plus the open agent-asks with no task record; screenshot.
+  - data: the backfilled record
+  - mock: none
+  - surface: user-visible
+- [ ] TR55 WHEN he opens an owner row on the board (in Checks or in Waiting for you), THE row SHALL open a checklist item showing the page title as a link to its direct URL, the exact steps and data, what he should see, and Pass and Fail with a note, and the link SHALL open that page.
+  - page: `firstmate.board` (a draft copy first)
+  - widths: 1440, 390
+  - controls: link "<page title>"; button "Pass"; button "Fail"; textbox "Ghi chú"
+  - env: Dev 5001 (`http://127.0.0.1:5001`, `https://ubuntu-hermes.tail3278eb.ts.net:8443`), SysAdmin
+  - proof: At 1440 and 390 on the probe task's owner item (URL `https://ubuntu-hermes.tail3278eb.ts.net:8443/#home.video`): open the item, screenshot it, follow the link (the Video page opens at that hash), come back, press Pass with a note; `fm_owner_check` reads `pass` with the note.
+  - data: probe task `cfw-1675-probe` and its rows (test-owned, deleted at the end)
+  - mock: none
+  - surface: user-visible
+- [ ] TR56 WHEN the `fm_event_document` definition is published, THE table SHALL serve exactly `title` (200), `media_type` (32) and `content` (no length) as the child `documents` of `fm_task_event` with list, get and create only, a deep insert of a `done` with one document SHALL store both, and `docs/fm-task-contract/definitions.json` SHALL equal the Dev 5001 readback.
+  - page: -
+  - widths: -
+  - controls: -
+  - env: Dev 5001 (`http://127.0.0.1:5001`, `https://ubuntu-hermes.tail3278eb.ts.net:8443`), SysAdmin; cfw-modules PR
+  - proof: The definition read back and diffed with the committed JSON; one probe `done` with a 1 MiB markdown document read back byte for byte; a DELETE answers 404. PR CI green.
+  - data: probe task `cfw-1675-probe` and its rows (test-owned, deleted at the end): one `done` with a 1 MiB markdown document
+  - mock: none
+  - surface: internal
+- [ ] TR57 WHEN the owner opens a task whose newest `done` carries a markdown document, THE Overview SHALL show its title with "Open large" and the formatted markdown (a heading, a list, a table, a link and a code block) filling the remaining height of the detail with one scroll (no nested scroll box, as task board-doc-card-space directs), its Timeline `done` event SHALL show the same, and Open large SHALL be a true fullscreen that covers the whole viewport and closes back.
+  - page: `firstmate.board` (a draft copy first)
+  - widths: 1440, 390
+  - controls: tab "Overview"; tab "Timeline"; button "Open large"; button "Close"
+  - env: Dev 5001 (`http://127.0.0.1:5001`, `https://ubuntu-hermes.tail3278eb.ts.net:8443`), SysAdmin
+  - proof: At 1440 and 390 on the probe task: screenshots of Overview, the Timeline event and Open large; the document region ends at the bottom of the viewport and exactly one element in the detail scrolls (DOM read of `scrollHeight > clientHeight` with overflow auto or scroll); the Open large box equals `innerWidth` × `innerHeight`; the task list's network response carries no document `content`.
+  - data: probe task `cfw-1675-probe` and its rows (test-owned, deleted at the end): a `done` with the markdown probe `scout-report.md` (a heading, a list, a table, a link, a code block)
+  - mock: none
+  - surface: user-visible
+- [ ] TR58 WHEN the `done` carries an HTML document, THE Overview and its Timeline event SHALL draw it in the sandboxed `html-document` frame filling the remaining height of the detail with one scroll (task board-doc-card-space), where its own scripts run but it cannot read the board, and Open large SHALL be a true fullscreen that covers the whole viewport and closes back.
+  - page: `firstmate.board` (a draft copy first)
+  - widths: 1440, 390
+  - controls: tab "Overview"; tab "Timeline"; button "Open large"; button "Close"
+  - env: Dev 5001 (`http://127.0.0.1:5001`, `https://ubuntu-hermes.tail3278eb.ts.net:8443`), SysAdmin
+  - proof: At 1440 and 390 on the probe task: screenshots; the frame ends at the bottom of the viewport with no second scroll around it, and the Open large box equals `innerWidth` × `innerHeight`; the frame's `sandbox` attribute reads `allow-scripts` only; an isolation probe page that tries `parent.document` shows "isolated"; a script in the document visibly runs (its button changes text).
+  - data: probe task `cfw-1675-probe` and its rows (test-owned, deleted at the end): a `done` with an HTML explanation that has a script button, and a second `done` with the isolation probe page
+  - mock: none
+  - surface: user-visible
+- [ ] KB1 WHEN the five `fm_task` fields are published, THE table SHALL serve `stage` (16), `stage_since`, `last_event_at`, `last_note` (300) and `reviewer` (64), all nullable, with the operations unchanged, and `docs/fm-task-contract/definitions.json` SHALL equal the Dev 5001 readback.
+  - page: -
+  - widths: -
+  - controls: -
+  - env: Dev 5001 (`http://127.0.0.1:5001`, `https://ubuntu-hermes.tail3278eb.ts.net:8443`), SysAdmin; cfw-modules PR
+  - proof: The definition read back and diffed with the committed JSON; one probe task patched with all five fields and read back; the existing rows still list (`GET /api/fm_task?$top=100` answers 200). PR CI green.
+  - data: probe task `cfw-1678-kb-probe` (test-owned, deleted at the end)
+  - mock: none
+  - surface: internal
+- [ ] KB2 WHEN he looks at a card, THE card SHALL show the title (2 lines at most), "Worker: <assignee> · Reviewer: <reviewer>", the newest event's note (3 lines at most), a five-step stepper with passed steps checked, the current step marked (red when blocked) and later steps empty, and "In this step <age>" from `stage_since`.
+  - page: `firstmate.board` (a draft copy first)
+  - widths: 1440, 390
+  - controls: tab "Board"; list "Steps" on each card
+  - env: Dev 5001 (`http://127.0.0.1:5001`, `https://ubuntu-hermes.tail3278eb.ts.net:8443`), SysAdmin
+  - proof: At 1440 and 390: one card in each step and one blocked card screenshotted; for each, the worker, reviewer, note, current step (the `aria-current="step"` label) and age read from the DOM equal that task's `GET /api/fm_task` row; no text overflows the card (`scrollWidth` of each card equals its `clientWidth`).
+  - data: the backfilled record; one task in each step and one blocked task, named by the Tester from `GET /api/fm_task`
+  - mock: none
+  - surface: user-visible
+- [ ] KB3 WHEN a card's step is past its budget (Working 24 h, PR 12 h, On Dev 24 h from `stage_since`; a blocked `transient` task at `hold_until`), THE card SHALL show "Overdue HH:mm dd/MM" in the destructive tone with a destructive left border, a card before its due time SHALL show "Due HH:mm dd/MM" in the muted tone, and Queued and Passed cards SHALL show neither.
+  - page: `firstmate.board` (a draft copy first)
+  - widths: 1440, 390
+  - controls: tab "Board"
+  - env: Dev 5001 (`http://127.0.0.1:5001`, `https://ubuntu-hermes.tail3278eb.ts.net:8443`), SysAdmin
+  - proof: At 1440 and 390: one overdue card, one due card and one Queued card screenshotted; each marker's time equals `stage_since` plus the budget (or `hold_until`) read from `GET /api/fm_task`; the count of overdue cards equals the count the same rule gives over the API rows.
+  - data: the backfilled record; the overdue, due and Queued tasks named by the Tester from `GET /api/fm_task`
+  - mock: none
+  - surface: user-visible
+- [ ] KB4 WHEN he picks a value in "Waiting on" or "Repository", THE board SHALL show only the matching cards with each column's count and the total line updated, `huynhtandat223/cfw-modules` SHALL count as `cfw-modules`, and a reload SHALL keep both filters.
+  - page: `firstmate.board` (a draft copy first)
+  - widths: 1440, 390
+  - controls: select "Waiting on"; select "Repository"; option "You"; option "cfw-modules"; option "No repository"
+  - env: Dev 5001 (`http://127.0.0.1:5001`, `https://ubuntu-hermes.tail3278eb.ts.net:8443`), SysAdmin
+  - proof: At 1440 and 390: "Waiting on" = You, then "Repository" = cfw-modules, then "No repository"; each total against `GET /api/fm_task` with the same filter; reload and read both selects; screenshots.
+  - data: the backfilled record
+  - mock: none
+  - surface: user-visible
+- [ ] KB5 WHEN the golden story `golden-firstmate-board-record` renders at 1440 and 390, THE board SHALL show five step columns with at least one card in each step, one blocked card, one overdue card, one "Your decision" card and one clamped long title, `@cfw/components/stepper` SHALL expose a list with `aria-current="step"` on the current step, and `golden.visual` for the story SHALL pass against the committed captures.
+  - page: -
+  - widths: -
+  - controls: -
+  - env: Storybook 5010 (branch review), cfw-modules PR
+  - proof: The PR commits the new captures; the story's golden check and the stepper's component tests pass in CI; the 5010 review link is on the PR before the draft row changes.
+  - data: `golden-firstmate-board-record.data.json` (test data)
+  - mock: the story's captured record rows (test data in the repository)
+  - surface: internal
+- [ ] KB6 WHEN the live row carries the board (TR54), THE probe task `cfw-1678-kb-probe` and its events, and the draft copy of `firstmate.board`, SHALL be deleted after a pre-image backup, and the live row SHALL still serve every tab.
+  - page: -
+  - widths: -
+  - controls: -
+  - env: Dev 5001 (`http://127.0.0.1:5001`), SysAdmin
+  - proof: The pre-image paths; `GET` on the probe task and the draft row answer 404; the live `firstmate.board` read back.
+  - data: probe task `cfw-1678-kb-probe` (test-owned), the draft copy of `firstmate.board`
+  - mock: none
+  - surface: internal
+- [ ] TR54 WHEN the draft passes, THE live `firstmate.board` SHALL carry it (pre-image saved, stored and served row read back) with every other tab and route working.
+  - page: `firstmate.board`
+  - widths: 1440, 390
+  - controls: every tab
+  - env: Dev 5001 (`http://127.0.0.1:5001`, `https://ubuntu-hermes.tail3278eb.ts.net:8443`), SysAdmin
+  - proof: At 1440 and 390 on the live row: every tab; TR50 and TR53 once more.
+  - data: the record
+  - mock: none
+  - surface: user-visible
+
+## Mockup
+
+Planner plan `fm-task-record` (Firstmate board, task fm-task-record, Plan tab; source `data/plans/fm-task-record/plan.html` in the Planner home), section `#mockup`; the step cards (change 199): section `#c199` at the top of that plan.
+
+## Links
+
+- Plan: Planner plan `fm-task-record` (Firstmate board, task fm-task-record, Plan tab; source `data/plans/fm-task-record/plan.html` in the Planner home).
+- Parent: #1675 (spec).
+- Blocked by: #1676 and #1671 (firstmate.board and fm-board.mjs, in progress) for the draft row; huynhtandat223/firstmate#178 for the live row (TR54). TR56 (the document table) waits for nothing. Step 2: KB1 (the five fields) waits for nothing; TR50 and KB2 to KB4 on the draft row wait for huynhtandat223/firstmate#176 Step 5 (the writer fills the fields).
+
+## Decisions
+
+Written with the plan's recommended answers (spec #1675, Decisions); firstmate decides for the owner (planner.inbox 133). A change is a logged change here.
+
+Change 145 (firstmate planner.inbox 145, 2026-10-26; approved in 146): a `done` may carry one optional markdown or HTML document (spec, Decisions D1 to D4). Added TR56 (the table, first and on its own), TR57 (markdown) and TR58 (HTML in the sandboxed frame). Approved in planner.inbox 146; TR57 and TR58 follow task board-doc-card-space (fill the remaining height with one scroll; Open large is a true fullscreen).
+
+Change 194 (firstmate planner.inbox 194, 2026-10-29; firstmate's decision key t6-write, option C): the board's owner actions write through one published writer operation, an API Builder script row on 5001 running `bin/fm-task.sh` with the signed-in owner as actor, not direct `createFmTaskEvent` calls. Reason: `fm_task_event.seq` has no server value and the page grammar cannot compute seq + 1, and an event alone leaves `fm_task` (and `fm_owner_check`) stale. TR52 now names that operation; the rest of TR52 is unchanged. TR50: the card keeps its design; next actor and block kind fill its existing badge and tone. No ID was added or retired.
+
+Change 196 (firstmate planner.inbox 196, 2026-10-29): Waiting for you also holds agent-ask cards from outside the task record (DMS asks, firstmate's own asks), and the captain's rule is that every decision for him reaches the board as an agent-ask. TR53 now lists the record's owner items plus the open agent-asks that carry no task record; its proof checks both. Nothing else changes; no ID was added or retired.
+
+Change 199 (firstmate planner.inbox 199, 2026-10-29): the owner's own board is the card reference (columns by step, a five-step stepper, a worker and reviewer line, the age in the step, an overdue marker, filters). Step 2 holds it, and `## Steps` orders the work (Step 1 is the work above, Step 3 is the live row). TR50 is reworded: the columns are the five steps grouped on `stage`, not the seven record states (the ID is kept, and the card no longer keeps its old design). Added KB1 to KB6. The Planner's choices are open to firstmate's overrule:
+- Q1 A: the writer projects `stage`, `stage_since`, `last_event_at`, `last_note` and `reviewer` onto `fm_task` (huynhtandat223/firstmate#176 Step 5). Reason: `fm_task` carries no time today, and with 3,970 events (Dev 5001, 2026-10-29) the page cannot page through them for every card.
+- Q2 A: five step columns; blocked and triage are badges inside a step.
+- Q3 A: overdue comes from step budgets in the page (Working 24 h, PR 12 h, On Dev 24 h; `hold_until` for a transient block). No due field.
+- Q4 A: the filters are "Waiting on" and "Repository". There is no goal filter, because `fm_task_link` holds 0 rows, and no worker filter, because almost every assignee is its own task.
+- Q5 A: English labels, matching the board.
+

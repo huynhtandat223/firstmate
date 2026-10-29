@@ -124,6 +124,10 @@
 # refuses a `# Task` body that names an acceptance id range (ids of capital letters
 # then digits, as the parser reads them, two of them joined by a dash, `..` or `to`):
 # such a copy drifts from the issue, so name the issue instead. Exit 1 prints the range it found.
+# It then runs the brief-verify check (bin/fm-brief-verify-lib.sh, log-only until
+# config/enforce-brief-verify holds `block`): a brief whose `# Acceptance` names a
+# cfw-modules issue must name `verify-cfw run <feature>` for each feature that
+# covers a user-visible scenario's page.
 # There is no --yolo flag here. The worker never owns merge decisions, so yolo is
 # a spawn-time and firstmate-side input only (AGENTS.md section 7).
 # Every scaffold's status protocol distinguishes the configured
@@ -311,6 +315,9 @@ if [ "$CHECK" -eq 1 ]; then
     echo "error: $CHECK_BRIEF names an acceptance id range ($CHECK_RANGE); name the issue instead and let the worker list its scenarios with $FM_ROOT/bin/fm-acceptance.mjs rows <issue-url> (fm-brief.sh --issue renders that)" >&2
     exit 1
   fi
+  # shellcheck source=bin/fm-brief-verify-lib.sh
+  . "$SCRIPT_DIR/fm-brief-verify-lib.sh"
+  fm_brief_verify_check "${POS[0]}" "$CHECK_BRIEF" || exit 1
   exit 0
 fi
 
