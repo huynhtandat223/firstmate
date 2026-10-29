@@ -22,7 +22,7 @@ set -u
 fm_git_identity fmtest fmtest@example.invalid
 TMP_ROOT=$(fm_test_tmproot fm-reply-lint)
 
-LINT_FILES="fm-reply-lint.sh fm-reply-lint.mjs fm-hook-host-lib.sh fm-primary-scope-lib.sh fm-enforce-lib.sh"
+LINT_FILES="fm-reply-lint.sh fm-reply-lint.mjs fm-arm-command-policy.mjs fm-hook-host-lib.sh fm-primary-scope-lib.sh fm-enforce-lib.sh"
 
 make_primary() {  # <dir> [block]
   local dir=$1 f
@@ -243,6 +243,23 @@ test_session_keyed_block_record() {
   pass "the block record is kept per session_id"
 }
 
+test_agent_ask_counts_only_as_a_command() {
+  local dir="$TMP_ROOT/ask-cmd" tr
+  make_primary "$dir" block
+  tr="$dir/t.jsonl"
+  t_session_start "$tr" in-reach
+  t_tool "$tr" Bash '{"command":"grep -rn agent-ask docs | head"}'
+  t_tool "$tr" Bash '{"command":"rg \"agent-ask post\" bin"}'
+  t_tool "$tr" Bash '{"command":"echo agent-ask"}'
+  t_reply "$tr" r1 "$VI_QUESTION"
+  stop "$dir" "$tr"
+  [ "$RC" -eq 2 ] || fail "a grep for agent-ask is not a call, got exit $RC"
+  t_tool "$tr" Bash '{"command":"FM_TASK_ID=x AGENT_ASK_ASKER=firstmate /usr/local/bin/agent-ask post --board b"}'
+  t_reply "$tr" r2 "$VI_QUESTION"
+  stop "$dir" "$tr"
+  [ "$RC" -eq 0 ] && [ -z "$ERR" ] || fail "a real agent-ask invocation must count, got exit $RC: $ERR"
+  pass "agent-ask counts only as an invoked command, never as a word in a search pattern"
+}
 
 
 
@@ -304,6 +321,7 @@ test_rl5_unread_captain_md_blocks_once
 test_rl5_reach_digest_and_shell_read_count
 test_rl5_real_reemit_digest_is_not_a_spill
 test_session_keyed_block_record
+test_agent_ask_counts_only_as_a_command
 test_inert_in_a_task_worktree_and_fails_open
 test_claude_settings_register_the_lint
 test_replay_lists_flagged_turns

@@ -15,7 +15,8 @@
 // findings of the final turn end, one "<uuid><TAB><code><TAB><message>" per line.
 
 import { readFileSync, existsSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
+import { Lexer, splitProgram, commandPosition } from "./fm-arm-command-policy.mjs";
 
 const VIETNAMESE = /[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]/i;
 const REACH_LINES = 470;
@@ -50,6 +51,29 @@ function toolUses(row) {
   return row.message.content.filter((b) => b.type === "tool_use");
 }
 
+// The executed commands of a shell line: [{ name, operands }] for every node,
+// including groups and $(...) substitutions. A word inside a pattern, an echo or
+// a quoted string is an operand, never a command. An unparsable line yields none.
+export function shellCommands(line) {
+  const found = [];
+  const walk = (program) => {
+    const lexed = new Lexer(program).tokenize();
+    if (lexed.error) return;
+    for (const node of splitProgram(lexed.tokens).nodes) {
+      for (const token of node) {
+        if (token.type === "group") walk(token.content);
+        if (token.type === "word") for (const sub of token.subs) walk(sub.content);
+      }
+      const position = commandPosition(node);
+      if (position.command) {
+        found.push({ name: basename(position.command.value), operands: position.words.slice(position.index + 1).map((w) => w.value) });
+      }
+    }
+  };
+  walk(line);
+  return found;
+}
+
 function commandOf(use) {
   return String(use.input?.command ?? use.input?.file_path ?? use.input?.path ?? "");
 }
@@ -79,8 +103,12 @@ function isSpillNotice(text) {
 function readsCaptain(use) {
   const target = commandOf(use);
   if (use.name === "Read") return /(^|\/)data\/captain\.md$/.test(target);
-  if (use.name === "Bash") return /\b(cat|head|tail|sed|less|more|bat|awk|grep|rg)\b[^|;&]*\bdata\/captain\.md\b/.test(target);
-  return false;
+  if (use.name !== "Bash") return false;
+  return /\b(cat|head|tail|sed|less|more|bat|awk|grep|rg)\b[^|;&]*\bdata\/captain\.md\b/.test(target);
+}
+
+function callsAgentAsk(use) {
+  return use.name === "Bash" && shellCommands(commandOf(use)).some((c) => c.name === "agent-ask");
 }
 
 export function findStops(rows, options = {}) {
@@ -94,7 +122,7 @@ export function findStops(rows, options = {}) {
     const codes = [];
     const latin = (text.match(/[A-Za-z]/g) ?? []).length;
     if (language === "vi" && !VIETNAMESE.test(text) && latin >= 20) codes.push("english");
-    if (text.slice(-400).includes("?") && !turnTools.some((u) => /\bagent-ask\b/.test(commandOf(u)))) codes.push("question");
+    if (text.slice(-400).includes("?") && !turnTools.some(callsAgentAsk)) codes.push("question");
     if (sessionStartIdx !== -1 && !readSince && !sessionStartInReach) codes.push("unread");
     return codes;
   };
