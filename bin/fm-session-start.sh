@@ -61,9 +61,13 @@
 #                       can itself reach the digest's runtime bound.
 #   7. network checks - the result of the deferred network stage started back at
 #                       step 1, harvested WITHOUT waiting for it.
-#   8. context digest - data/projects.md, data/secondmates.md, data/captain.md,
-#                       data/captain-shared.md, data/learnings.md: read-only,
-#                       always safe, always runs.
+#   8. context digest - data/projects.md, data/secondmates.md,
+#                       data/learnings.md: read-only, always safe, always runs.
+#                       data/captain.md, the handoff its "Start here" line names,
+#                       and data/captain-shared.md do NOT print here: they print
+#                       first, right after the digest head (step 0 in the body,
+#                       print_captain_context), so a reset session that reads
+#                       only the first ~470 lines still finds them.
 #   9. closing reminder - prints the context-specific watcher next step; this
 #                       script points back to the emitted harness supervision
 #                       block and deliberately never arms the watcher itself.
