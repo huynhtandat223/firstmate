@@ -432,6 +432,14 @@ The second check is `reply-lint`: the Claude Stop hook `bin/fm-reply-lint.sh` re
 It reads `config/enforce-reply-lint`, and it does nothing until `config/reply-language` holds a language word (`vi` today); with the file absent the lint is off.
 A hit blocks at most once per turn, and `bin/fm-reply-lint.sh --replay <transcript>` lists the turn ends a past transcript would have flagged.
 
+## Model deny list (config/model-deny)
+
+`config/model-deny` is captain-private and holds one glob and its reason per line, the glob first; blank lines and `#` comment lines are ignored.
+`bin/fm-spawn.sh` (`--model` and a secondmate model pin) and `bin/fm-control.sh relaunch` refuse a model that matches a glob before any endpoint, worktree or record exists, and print that line's reason.
+A line with a glob and no reason refuses, so a hit always says why; with the file absent nothing changes.
+`bin/fm-model-deny-lib.sh` owns the format and the check.
+The check is log-only until `config/enforce-model-deny` holds `block`: each hit is written to `state/enforce-model-deny.log` and the launch goes ahead.
+
 ## Backlog backend (.tasks.toml / config/backlog-backend)
 
 The tracked `.tasks.toml` pins the default `tasks-axi` markdown backend to `data/backlog.md`, with `done_keep = 10` and an archive at `data/done-archive.md`.

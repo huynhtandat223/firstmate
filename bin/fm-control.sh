@@ -181,6 +181,8 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 # shellcheck source=bin/fm-worker-account-lib.sh
 . "$SCRIPT_DIR/fm-worker-account-lib.sh"
+# shellcheck source=bin/fm-model-deny-lib.sh
+. "$SCRIPT_DIR/fm-model-deny-lib.sh"
 # shellcheck source=bin/fm-exclude-tools-lib.sh
 . "$SCRIPT_DIR/fm-exclude-tools-lib.sh"
 
@@ -973,6 +975,8 @@ resolve_relaunch_profile() {
   else
     TARGET_MODEL=default
   fi
+  # The model deny list (config/model-deny) refuses here, before the old agent stops.
+  fm_model_deny_guard "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}" "$STATE" "$TARGET_MODEL" || return 1
   if [ "$EFFORT_SET" = 1 ]; then
     TARGET_EFFORT=$NEW_EFFORT
   elif [ "$HARNESS_SET" = 0 ] && [ -n "$CONFIG_HARNESS" ]; then
