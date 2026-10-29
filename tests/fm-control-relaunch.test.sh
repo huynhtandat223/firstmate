@@ -952,6 +952,32 @@ test_worker_account_pin_follows_the_relaunch() {
   pass "fm-control relaunch: the replacement follows the home's current worker account pin"
 }
 
+test_dms_account_guard_refuses_a_relaunch_before_stop() {
+  local dir out rc id=rl-dms
+  dir=$(new_case dms "$id")
+  add_ship_task "$dir" "$id" claude
+  make_claude_auth_stub "$dir"
+  mkdir -p "$dir/home/config" "$dir/acct2"
+  : > "$dir/acct2/.credentials.json"
+  printf 'root %s\nproject proj\n' "$dir/acct2" > "$dir/home/config/dms-account"
+  printf 'block\n' > "$dir/home/config/enforce-dms-account"
+  cp "$dir/home/state/$id.meta" "$dir/meta-before"
+  out=$(run_control "$dir" "$id" relaunch --note "wrong account"); rc=$?
+  expect_code 1 "$rc" "a DMS relaunch on the default account must refuse"
+  assert_contains "$out" "config/dms-account" "the refusal should name the file"
+  assert_contains "$out" "$dir/acct2" "the refusal should name the root"
+  [ "$(cat "$dir/fake/command")" = claude ] || fail "the DMS guard must refuse before the running agent stops"
+  [ ! -s "$dir/fake/literal" ] || fail "the DMS guard must refuse before any lifecycle input is sent"
+  cmp -s "$dir/meta-before" "$dir/home/state/$id.meta" || fail "a refused relaunch must leave the task record untouched"
+  printf '%s\n' "$dir/acct2" > "$dir/home/config/claude-account"
+  out=$(run_control "$dir" "$id" relaunch --note "pinned to the root"); rc=$?
+  expect_code 0 "$rc" "a DMS relaunch pinned to the declared root should succeed"$'\n'"$out"
+  printf 'root %s\nproject elsewhere\n' "$dir/other" > "$dir/home/config/dms-account"
+  out=$(run_control "$dir" "$id" relaunch --note "project not listed"); rc=$?
+  expect_code 0 "$rc" "a project outside the file should relaunch on any account"$'\n'"$out"
+  pass "fm-control relaunch: the DMS account guard refuses a wrong account before the old agent stops, and passes the declared root and unlisted projects"
+}
+
 test_model_deny_refuses_a_relaunch_before_stop() {
   local dir out rc id=rl-deny
   dir=$(new_case deny "$id")
@@ -2815,6 +2841,7 @@ test_same_harness_relaunch_keeps_the_profile_axes
 test_native_ultra_relaunch_preserves_profile_and_rejects_before_stop
 test_signed_out_worker_account_pin_refuses_before_stop
 test_worker_account_pin_follows_the_relaunch
+test_dms_account_guard_refuses_a_relaunch_before_stop
 test_model_deny_refuses_a_relaunch_before_stop
 test_secondmate_account_pin_follows_relaunch_and_refuses_before_stop
 test_pi_exclude_tools_follow_the_relaunch

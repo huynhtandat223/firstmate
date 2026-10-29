@@ -456,6 +456,19 @@ The copy is verbatim, tag included, in file order, and sits below the `{FIRSTMAT
 A line without the tag is never copied, a project with no rules file adds nothing, and a repo name with a slash is refused.
 Firstmate tags the lines in its private rules file; the file is not tracked.
 
+## DMS account guard (config/dms-account)
+
+The company watches one Claude account, so DMS work runs only on it.
+`config/dms-account` holds a `root <path>` line (the only Claude config root a DMS launch may use; `~` is allowed), then one `project <name>` line per DMS project and one `assistance <name>` line per DMS assistance.
+Blank lines and `#` comments are ignored; a file that exists but cannot be read, a file with no `root` line, or a file with an unknown line refuses every launch rather than passing.
+With the file absent the guard does nothing, and only a Claude launch is checked.
+`bin/fm-spawn.sh`, `bin/fm-control.sh relaunch` and `bin/fm-assistance.sh start` refuse a listed launch whose resolved `CLAUDE_CONFIG_DIR` is not the root, before any endpoint, worktree or record exists, and the refusal names the file and the root.
+A raw launch command that sets its own `CLAUDE_CONFIG_DIR=` is checked on that value, and a project is matched by the canonical name of its clone directory.
+In block mode a raw launch on a listed project or assistance must start with `claude` (a wrapper such as `env`, `command` or `exec` is refused) and must assign no credential from the shed list, and a guarded launch sheds the environment credentials Claude ranks above the root's login (`ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` and the rest of the shed list).
+Log-only logs those breaches and changes no launch.
+`bin/fm-dms-account-lib.sh` owns the file format and the check.
+The check is log-only until `config/enforce-dms-account` holds `block`: each hit is written to `state/enforce-dms-account.log` and the launch goes ahead.
+
 ## Backlog backend (.tasks.toml / config/backlog-backend)
 
 The tracked `.tasks.toml` pins the default `tasks-axi` markdown backend to `data/backlog.md`, with `done_keep = 10` and an archive at `data/done-archive.md`.

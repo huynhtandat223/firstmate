@@ -137,6 +137,31 @@ for name in missing-one missing-two; do
 done
 cp "$TMP_ROOT/registry" "$parent/data/assistances.md"
 pass 'one recovery refusal does not suppress later enabled assistances'
+# DMS account guard (config/dms-account): start refuses a Claude assistance on the
+# wrong account before anything is seeded or spawned, and passes on the declared root.
+dmshome="$TMP_ROOT/dms-home"
+mkdir -p "$dmshome"/{data,state,config}
+printf 'dms\n' > "$dmshome/.fm-assistance-home"
+printf 'schema=fm-secondmate-parent.v1\nroute=local\nparent_home=%s\n' "$parent" > "$dmshome/.fm-assistance-parent"
+printf -- '- dms - DMS observer (home: %s; scope: observe; projects: ; added 2026-10-13)\n' "$dmshome" >> "$parent/data/assistances.md"
+jq -n '{name:"dms",harness:"claude",model:"test",effort:"medium",charter:"Observe",sources:[],trigger_mode:"event-driven"}' > "$parent/config/assistances/dms.json"
+printf 'root %s\nassistance dms\n' "$TMP_ROOT/acct2" > "$parent/config/dms-account"
+printf 'block\n' > "$parent/config/enforce-dms-account"
+if CLAUDE_CONFIG_DIR="$TMP_ROOT/acct3" "$lab/bin/fm-assistance.sh" start dms > "$TMP_ROOT/dms-refused.out" 2>&1; then fail 'the dms assistance started on the wrong account'; fi
+grep -q "config/dms-account" "$TMP_ROOT/dms-refused.out" || fail "dms refusal lacks the file: $(cat "$TMP_ROOT/dms-refused.out")"
+grep -qF "$TMP_ROOT/acct2" "$TMP_ROOT/dms-refused.out" || fail "dms refusal lacks the root: $(cat "$TMP_ROOT/dms-refused.out")"
+[ ! -e "$dmshome/data/assistance.json" ] || fail 'a refused dms start wrote the profile into the home'
+[ ! -e "$parent/state/dms.meta" ] || fail 'a refused dms start published an endpoint record'
+CLAUDE_CONFIG_DIR="$TMP_ROOT/acct2" "$lab/bin/fm-assistance.sh" start dms || fail 'the dms assistance did not start on the declared root'
+[ -f "$dmshome/data/assistance.json" ] || fail 'a dms start on the declared root did not reach the home'
+printf 'kind=assistance\nharness=claude\nbackend=herdr\nwindow=fixture:pane\nhome=%s\n' "$dmshome" > "$parent/state/dms.meta"
+CLAUDE_CONFIG_DIR="$TMP_ROOT/acct3" "$lab/bin/fm-assistance.sh" start dms > "$TMP_ROOT/dms-attach.out" 2>&1 || fail "attaching to a live dms endpoint was refused by the account guard: $(cat "$TMP_ROOT/dms-attach.out")"
+grep -q 'attached: dms' "$TMP_ROOT/dms-attach.out" || fail "a live dms endpoint was not attached: $(cat "$TMP_ROOT/dms-attach.out")"
+rm -f "$parent/state/dms.meta"
+printf 'root %s\nassistance elsewhere\n' "$TMP_ROOT/acct2" > "$parent/config/dms-account"
+rm -f "$dmshome/data/assistance.json"
+CLAUDE_CONFIG_DIR="$TMP_ROOT/acct3" "$lab/bin/fm-assistance.sh" start dms || fail 'an assistance outside config/dms-account was refused'
+pass 'fm-assistance.sh start applies the DMS account guard before seeding or spawning'
 mkdir -p "$parent/config/assistances"
 printf '{"name":"unsupported","harness":"codex"}\n' > "$parent/config/assistances/unsupported.json"
 if "$ROOT/bin/fm-assistance.sh" start unsupported > "$TMP_ROOT/unsupported.out" 2>&1; then fail 'unsupported rotation harness was accepted'; fi
