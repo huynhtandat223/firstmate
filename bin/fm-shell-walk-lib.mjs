@@ -9,8 +9,9 @@
 // any byte of the submitted command; only lexical command positions are read.
 //
 // scope is a plain object the visitor may write to (a directory it saw `cd`
-// into, a variable it saw assigned). Each group, substitution and payload gets
-// its own copy, so a `cd` inside a subshell does not leak out of it.
+// into, a variable it saw assigned). A brace group shares it; each subshell,
+// substitution and payload gets its own copy, so a `cd` inside a subshell does
+// not leak out of it.
 // context is { next, separator }: the command position that follows in the
 // same list and the operator after this node, so a visitor can read a pipe.
 // A program the classifier cannot tokenize is skipped: these guards target
@@ -59,7 +60,9 @@ function walkCommands(program, visit, scope = {}) {
   const { nodes, separators } = splitProgram(lexed.tokens);
   for (let index = 0; index < nodes.length; index += 1) {
     for (const token of nodes[index]) {
-      if (token.type === "group") walkCommands(token.content, visit, { ...scope });
+      // A brace group runs in the current shell, so what it sets persists; a
+      // subshell and a substitution get their own copy.
+      if (token.type === "group") walkCommands(token.content, visit, token.kind === "brace" ? scope : { ...scope });
       if (token.type === "word") for (const sub of token.subs) walkCommands(sub.content, visit, { ...scope });
     }
     const position = commandPosition(withoutReserved(nodes[index]));

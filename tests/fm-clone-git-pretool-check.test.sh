@@ -16,7 +16,8 @@ fm_git_identity fmtest fmtest@example.invalid
 TMP_ROOT=$(fm_test_tmproot fm-clone-git-pretool-check)
 
 POLICY="$ROOT/bin/fm-clone-git-command-policy.mjs"
-HOME_PATH=/home/dathuynh/codes/firstmate
+# The tilde case reads $HOME, so the lab home path is derived from the run.
+HOME_PATH=$HOME/codes/firstmate
 
 # A primary-shaped checkout: plain git repo, AGENTS.md, bin/ with the wrapper,
 # the policy, the walker, the shared classifier and the enforce lib.
@@ -70,6 +71,13 @@ test_cg2_the_sanctioned_forms_are_allowed() {
     'git -C projects/cfw-modules worktree list' \
     'git -C projects/cfw-modules remote -v' \
     'git -C projects/cfw-modules stash list' \
+    'git -C projects/cfw-modules tag' \
+    'git -C projects/cfw-modules tag -l' \
+    "git -C projects/cfw-modules tag --list 'v*'" \
+    'git -C projects/cfw-modules config --get remote.origin.url' \
+    'git -C projects/cfw-modules config --list' \
+    'git -C projects/cfw-modules config --local remote.origin.url' \
+    'git -C projects/cfw-modules branch --show-current' \
     'git -C projects/cfw-modules stash show -p stash@{0}' \
     'git -C projects/cfw-modules cat-file -p origin/main:README.md'; do
     [ "$(policy "$cmd")" = allow ] || fail "must allow: $cmd => $(policy "$cmd")"
@@ -92,6 +100,14 @@ test_state_changing_verbs_are_denied() {
     'git -C projects/x commit -m x' \
     'git -C projects/x stash' \
     'git -C projects/x stash push -m wip' \
+    'git -C projects/x fetch --stdin origin' \
+    'git -C projects/x tag v1' \
+    'git -C projects/x tag -a v1 -m release' \
+    'git -C projects/x tag -d v1' \
+    'git -C projects/x config --local user.name someone' \
+    'git -C projects/x config user.name someone' \
+    'git -C projects/x config --unset user.name' \
+    'git -C projects/x branch --edit-description' \
     'git -C projects/x stash pop' \
     'git -C projects/x rebase origin/main' \
     'git -C projects/x cherry-pick abc123' \
@@ -126,6 +142,11 @@ test_clone_targets_are_resolved() {
     "F=$HOME_PATH; git -C \$F/projects/x reset --hard" \
     'git -C "$FM_HOME/projects/x" reset --hard' \
     '(cd projects/x && git reset --hard)' \
+    '{ cd projects/x; }; git reset --hard' \
+    '{ cd projects/x && git status; }; git reset --hard' \
+    '(cd projects/x; cd sub; git reset --hard)' \
+    'git -C projects/x/sub/.. reset --hard' \
+    'git -C projects/other/../x reset --hard' \
     'cd projects/x; git reset --hard' \
     "cd $HOME_PATH/projects/x && git commit -m x" \
     'git -C projects/x status; git -C projects/x reset --hard' \
@@ -152,6 +173,9 @@ test_other_targets_and_mentions_are_allowed() {
     'git -C /srv/other/projects/x push' \
     'git -C "$WT" push origin HEAD' \
     '(cd /tmp/wt && git reset --hard)' \
+    'git -C projects/x/../../wt reset --hard' \
+    '(cd projects/x && cd ..; git reset --hard)' \
+    '(cd projects/x; true); { true; }; git reset --hard' \
     '(cd projects/x && true); git commit -m x' \
     'echo "git -C projects/x reset --hard"' \
     'grep -n "git -C projects/x push" docs/notes.md' \

@@ -36,8 +36,12 @@ const ALWAYS_DENIED = new Set([
   "pull", "checkout", "switch", "reset", "commit", "stash", "rebase", "cherry-pick", "revert",
   "restore", "add", "rm", "mv", "am", "apply", "clean", "push",
 ]);
-const BRANCH_MUTATING = new Set(["-d", "-D", "-m", "-M", "-c", "-C", "-f", "--delete", "--move", "--copy", "--force", "--set-upstream-to", "-u", "--unset-upstream"]);
+const BRANCH_MUTATING = new Set(["-d", "-D", "-m", "-M", "-c", "-C", "-f", "--delete", "--move", "--copy", "--force", "--set-upstream-to", "-u", "--unset-upstream", "--edit-description"]);
 const BRANCH_LISTING = new Set(["-l", "--list", "-a", "--all", "-r", "--remotes", "-v", "-vv", "--verbose", "--contains", "--no-contains", "--merged", "--no-merged", "--points-at", "--show-current"]);
+const TAG_MUTATING = new Set(["-d", "--delete", "-a", "--annotate", "-s", "--sign", "-f", "--force", "-m", "--message", "-F", "--file", "-u", "--local-user"]);
+const TAG_LISTING = new Set(["-l", "--list", "-n", "--contains", "--no-contains", "--merged", "--no-merged", "--points-at", "-v", "--verify"]);
+const CONFIG_MUTATING = new Set(["--add", "--unset", "--unset-all", "--replace-all", "--rename-section", "--remove-section", "-e", "--edit"]);
+const CONFIG_READING = new Set(["--get", "--get-all", "--get-regexp", "--get-urlmatch", "-l", "--list", "--show-origin", "--show-scope", "--name-only"]);
 const WORKTREE_MUTATING = new Set(["add", "remove", "move", "prune", "lock", "unlock", "repair"]);
 const REMOTE_MUTATING = new Set(["add", "remove", "rm", "rename", "set-url", "set-head", "set-branches"]);
 // Global options that take the next word as their value.
@@ -58,6 +62,20 @@ function expand(value, scope, userHome) {
   return out;
 }
 
+// Resolve . and .. segments lexically, so projects/x/../../wt reads as wt. A
+// leading variable stays one opaque segment.
+function normalizePath(path) {
+  const absolute = path.startsWith("/");
+  const out = [];
+  for (const part of path.split("/")) {
+    if (part === "" || part === ".") continue;
+    if (part === ".." && out.length > 0 && out.at(-1) !== ".." && !/^[$~]/.test(out.at(-1))) out.pop();
+    else if (part === ".." && absolute) continue;
+    else out.push(part);
+  }
+  return (absolute ? "/" : "") + out.join("/");
+}
+
 // Join the next -C value onto the one before it, as git does.
 function joinDir(base, next) {
   if (base === "" || next.startsWith("/") || next.startsWith("~")) return next;
@@ -68,7 +86,7 @@ function joinDir(base, next) {
 // against the home, which the cd-guard keeps as the shell's directory.
 function isCloneDir(path, home) {
   if (!path) return false;
-  const normalized = path.replace(/\/{2,}/g, "/").replace(/^(\.\/)+/, "");
+  const normalized = normalizePath(path);
   const prefix = `${home.replace(/\/+$/, "")}/projects/`;
   let rest;
   if (normalized.startsWith(prefix)) rest = normalized.slice(prefix.length);
@@ -92,6 +110,7 @@ function verdict(verb, args) {
   if (verb === "stash" && ["list", "show"].includes(positionals(args)[0])) return null;
   if (ALWAYS_DENIED.has(verb)) return { code: `git-${verb}`, reason: reason(verb, "changes the clone") };
   if (verb === "fetch") {
+    if (args.includes("--stdin")) return { code: "git-fetch-refspec", reason: reason("fetch", "--stdin reads refspecs from input and writes refs into the clone") };
     const refs = positionals(args).slice(1);
     const bad = refs.find((ref) => !plainRef(ref));
     if (bad) return { code: "git-fetch-refspec", reason: reason("fetch", `of the refspec ${bad} writes refs into the clone`) };
@@ -104,6 +123,16 @@ function verdict(verb, args) {
   if (verb === "branch") {
     if (args.some((word) => BRANCH_MUTATING.has(word) || word.startsWith("--set-upstream-to="))) return { code: "git-branch", reason: reason("branch", "changes a branch") };
     if (positionals(args).length > 0 && !args.some((word) => BRANCH_LISTING.has(word))) return { code: "git-branch", reason: reason("branch", "creates a branch") };
+    return null;
+  }
+  if (verb === "tag") {
+    if (args.some((word) => TAG_MUTATING.has(word))) return { code: "git-tag", reason: reason("tag", "changes a tag") };
+    if (positionals(args).length > 0 && !args.some((word) => TAG_LISTING.has(word))) return { code: "git-tag", reason: reason("tag", "creates a tag") };
+    return null;
+  }
+  if (verb === "config") {
+    if (args.some((word) => CONFIG_MUTATING.has(word))) return { code: "git-config", reason: reason("config", "changes the clone's config") };
+    if (!args.some((word) => CONFIG_READING.has(word)) && positionals(args).length >= 2) return { code: "git-config", reason: reason("config", "writes a key in the clone's config") };
     return null;
   }
   if (verb === "worktree") {
@@ -164,7 +193,9 @@ function decision(command, options = {}) {
     const name = basename(position.command.value);
     if (name === "cd" || name === "pushd") {
       const target = position.words[position.index + 1];
-      if (target) scope.cwd = expand(target.value, scope, userHome);
+      // A later cd is relative to the one before it, as in the shell.
+      if (target) scope.cwd = joinDir(scope.cwd || "", expand(target.value, scope, userHome));
+      else scope.cwd = "";
       return;
     }
     const git = parseGit(position);
