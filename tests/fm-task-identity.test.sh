@@ -45,7 +45,7 @@ test_ti1_a_done_id_is_refused_with_its_line() {
 }
 
 test_a_create_after_dispatch_is_not_refused_for_its_own_branch() {
-  local out
+  local out env_prefix
   new_home after-dispatch
   git init -q "$HOME_DIR/projects/proj"
   git -C "$HOME_DIR/projects/proj" commit -q --allow-empty -m i
@@ -54,15 +54,23 @@ test_a_create_after_dispatch_is_not_refused_for_its_own_branch() {
   printf 'token\n' > "$HOME_DIR/token"
   printf -- '- [x] done-task - old (kind: ship)\n' > "$HOME_DIR/data/done-archive.md"
   # The API address is closed: a create that passes the identity check fails on the network,
-  # one the check refuses stops before it.
-  out=$(FM_HOME="$HOME_DIR" FM_TASK_BASE_URL=http://127.0.0.1:9 FM_TASK_TOKEN_FILE="$HOME_DIR/token" "$ROOT/bin/fm-task.sh" create spawned-task --title "Spawned" --kind ship --repo proj 2>&1)
-  assert_not_contains "$out" "task identity" "a create after dispatch must not be refused for the branch its own spawn made: $out"
-  out=$(FM_HOME="$HOME_DIR" FM_TASK_BASE_URL=http://127.0.0.1:9 FM_TASK_TOKEN_FILE="$HOME_DIR/token" "$ROOT/bin/fm-task.sh" create done-task --title "Again" --kind ship --repo proj 2>&1)
-  assert_contains "$out" "task identity" "a create of a done id is still refused: $out"
+  # one the check refuses stops before it. The writer is the real fm-task.sh in both runs.
+  env_prefix=(env FM_HOME="$HOME_DIR" FM_TASK_BASE_URL=http://127.0.0.1:9 FM_TASK_TOKEN_FILE="$HOME_DIR/token")
+  # Every ordinary create runs the whole check WITH the repo.
+  out=$("${env_prefix[@]}" "$ROOT/bin/fm-task.sh" create spawned-task --title "Spawned" --kind ship --repo proj 2>&1)
+  assert_contains "$out" "fm/spawned-task" "an ordinary create must run the branch check with its repo: $out"
+  out=$("${env_prefix[@]}" "$ROOT/bin/fm-task.sh" create done-task --title "Again" --kind ship --repo proj 2>&1)
+  assert_contains "$out" "task identity" "a create of a done id is refused: $out"
+  # The post-dispatch shadow create skips it, spawn-then-create: the branch its own spawn made does not refuse it.
+  : > "$HOME_DIR/config/task-shadow"
+  out=$("${env_prefix[@]}" FM_TASK_SHADOW_WRITER="$ROOT/bin/fm-task.sh" FM_STATE_OVERRIDE="$HOME_DIR/state" FM_DATA_OVERRIDE="$HOME_DIR/data" \
+    "$ROOT/bin/fm-task-shadow.sh" dispatched spawned-task ship proj claude 2>&1)
+  grep -q ' spawned-task dispatched create rc=' "$HOME_DIR/state/task-shadow.log" || fail "the shadow create did not run: $out $(cat "$HOME_DIR/state/task-shadow.log" 2>&1)"
+  if grep -q 'task identity' "$HOME_DIR/state/task-shadow.log"; then fail "the shadow create was refused by the identity check: $(cat "$HOME_DIR/state/task-shadow.log")"; fi
   # Intake keeps the branch check: the tasks-axi add path passes the repo.
   run add spawned-task "Spawned" proj
   expect_code 1 "$RC" "intake must still refuse an id whose branch exists: $OUT"
-  pass "a fm-task.sh create after dispatch is not refused for its own fm/<id> branch, while a done id and the intake branch check still refuse"
+  pass "an ordinary fm-task.sh create runs the branch check with its repo; the shadow create after dispatch skips the identity check; intake still refuses"
 }
 
 test_the_fm_branch_blocks_reuse() {
@@ -100,6 +108,11 @@ test_ti2_a_second_task_for_one_ticket_key_is_refused() {
   expect_code 0 "$RC" "a task is not its own duplicate: $OUT"
   run add ps-9-b "ps-9 lowercase"
   expect_code 1 "$RC" "the key match ignores case: $OUT"
+  run add dev-15769-b "DEV-15769A suffixed"
+  expect_code 0 "$RC" "DEV-15769A is not the key DEV-15769: $OUT"
+  printf -- '- [ ] dev-12a-live - DEV-12A something (kind: ship)\n' >> "$HOME_DIR/data/backlog.md"
+  run add dev-12-new "DEV-12 other ticket"
+  expect_code 0 "$RC" "DEV-12 must not match the live DEV-12A: $OUT"
   pass "TI2: a title carrying a live task's ticket key is refused naming that task; done tasks, other keys and the task itself pass"
 }
 

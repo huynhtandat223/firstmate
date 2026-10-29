@@ -12,9 +12,12 @@
 #     citing the file and line;
 #   - an id with a local fm/<id> branch in the project clone <repo> (the pool
 #     worktrees share that clone's refs), naming the branch; only when <repo> is
-#     given, which intake does and the create that follows dispatch does not;
+#     given. bin/fm-task.sh create passes it, except the shadow create that follows
+#     dispatch (FM_TASK_IDENTITY_SKIP=1), where the spawn's own branch is visible;
 #   - a title that carries a ticket key (DEV-n, PS-n) already carried by the
-#     title of a live (unchecked) backlog task, naming that task.
+#     title of a live (unchecked) backlog task, naming that task. The key matches
+#     whole (DEV-12 does not match DEV-12A). The task record's live tasks are not
+#     read here: that needs an API call at intake, so the backlog is the source.
 # pr: called by bin/fm-pr-check.sh. The task's linked issue is the first
 #   .../issues/<n> URL in its backlog item. It refuses a GitHub PR whose closing
 #   references name other issues and omit that one, naming both. A PR with no
@@ -65,7 +68,7 @@ check_add() {
       /^- \[ \] [^ ]+ - / {
         row = $0; sub(/^- \[ \] /, "", row); rid = row; sub(/ .*/, "", rid)
         title = row; sub(/^[^ ]+ - /, "", title)
-        if (rid != id && match(toupper(title), "(^|[^A-Z0-9])" key "([^0-9]|$)")) { print rid; exit }
+        if (rid != id && match(toupper(title), "(^|[^A-Z0-9_])" key "([^A-Z0-9_]|$)")) { print rid; exit }
       }' "$DATA/backlog.md")
     [ -z "$other" ] || hit duplicate-key "ticket $key is already carried by the live task $other; continue that task, or finish it before adding $id"
   done

@@ -436,7 +436,9 @@ A hit blocks at most once per turn, and `bin/fm-reply-lint.sh --replay <transcri
 
 `bin/fm-task-identity-check.sh` owns three checks on task identity.
 `add` runs before `bin/fm-tasks-axi.sh add|create` and `bin/fm-task.sh create`: it refuses an id that is already a done row in `data/done-archive.md` or `data/backlog.md` (citing file and line), an id with a local `fm/<id>` branch in the `--repo` clone, and a title whose ticket key (`DEV-n`, `PS-n`) a live task already carries (naming that task).
-`pr` runs in `bin/fm-pr-check.sh`: it refuses a GitHub PR whose closing references name other issues and omit the task's linked issue, the first `.../issues/<n>` URL in its backlog item, naming both.
+The shadow create that follows dispatch (`bin/fm-task-shadow.sh`) skips `add`, because the spawn has already made the `fm/<id>` branch visible in the clone.
+A ticket key matches whole (`DEV-12` does not match `DEV-12A`), and only `data/backlog.md` is read for live tasks, not the task record.
+`pr` runs in `bin/fm-pr-check.sh`, on the merge path too: it refuses a GitHub PR whose closing references name other issues and omit the task's linked issue, the first `.../issues/<n>` URL in its backlog item, naming both.
 A PR with no closing reference, a task with no linked issue, or an unreadable forge passes.
 The checks are log-only until `config/enforce-task-identity` holds `block`: each hit is written to `state/enforce-task-identity.log` and the command goes on.
 
