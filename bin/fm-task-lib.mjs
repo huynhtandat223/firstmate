@@ -51,7 +51,8 @@
 //            a row that has an item needs all five template fields again; a re-sent --key never writes the item twice)
 //   row      <task> --section S --row-file F --notes-file F [--file BACKLOG] | --gone   one backlog row, verbatim: the
 //            header after the checkbox (one line, starting "<task> - "), the lines under it (each ending in a newline)
-//            and its section, in the view of BACKLOG (default as for backlog below); --gone takes it out of that view. Text over one event body goes in a documents child.
+//            and its section, in the view of BACKLOG (default as for backlog below), which is then synced with that
+//            row taken from the record; --gone takes it out of that view. Text over one event body goes in a documents child.
 //   backlog  sync|render [--file BACKLOG] [--out F] [--absorb-only]   the backlog view (T7): sync writes every row the
 //            file holds differently to the record (a task the record lacks is imported first), then renders the file
 //            from the record (--absorb-only leaves the file); render prints or writes (--out) the view only. BACKLOG defaults to FM_DATA_OVERRIDE, else
@@ -842,10 +843,21 @@ async function cmdRow(args) {
     if (f.section === undefined || f['row-file'] === undefined || f['notes-file'] === undefined) throw usage('row needs --section, --row-file and --notes-file, or --gone');
     set = rowValues(taskId, f.section, readText(f['row-file'], 'the row file'), readText(f['notes-file'], 'the notes file'));
   }
-  return write(taskId, who, async ({ task }) => {
+  const file = backlogFile(f.file);
+  const result = await write(taskId, who, async ({ task }) => {
     if (!task) throw rule('no such task');
-    return rowSpec(taskId, set, noteOf(args), backlogFile(f.file));
+    return rowSpec(taskId, set, noteOf(args), file);
   });
+  // the view shows the row at once, so the next sync does not take the file's older copy back
+  if (fs.existsSync(file)) {
+    try {
+      out(await syncBacklog(file, who, { skip: taskId }));
+    } catch (error) {
+      if (error instanceof Fail) throw new Fail(error.code, `the row is stored; ${file} was not generated: ${error.message}`);
+      throw error;
+    }
+  }
+  return result;
 }
 
 // The rows of a backlog file in file order, and the first line the record cannot hold (null when there is none).
@@ -968,9 +980,14 @@ async function cmdBacklog(args) {
     return out(`rendered ${args.flags.out}`);
   }
   if (args.flags.out) throw usage('--out is for render');
+  out(await syncBacklog(file, identity(args, 'firstmate'), { absorbOnly: args.flags['absorb-only'] }));
+}
+
+// Absorb a backlog file into the record, then render it from the record. `skip` names a task whose record row was just
+// written by `row`: the file's copy of that row is not absorbed, so the render carries the record's.
+async function syncBacklog(file, who, { absorbOnly = false, skip = null } = {}) {
   const text = readText(file, 'the backlog file');
   const { rows, problem } = parseBacklogFile(text, file);
-  const who = identity(args, 'firstmate');
   let record = await backlogRecord(file);
   let written = 0;
   for (const r of rows) {
@@ -983,20 +1000,22 @@ async function cmdBacklog(args) {
   if (written) record = await backlogRecord(file);
   for (const r of writeOrder(rows)) {
     const t = record.tasks.get(r.id);
+    if (r.id === skip) continue;
     if (record.mine(r.id) && t.section === r.section && t.row === r.row && (t.notes ?? '') === r.notes) continue;
     await rowWrite(r.id, { section: r.section, row: r.row, notes: r.notes }, who, record.last.get(r.id) ?? 0, file);
     written++;
   }
   const inFile = new Set(rows.map((r) => r.id));
   for (const t of record.tasks.values()) {
-    if (!t.section || inFile.has(t.taskId) || !record.mine(t.taskId)) continue;
+    if (!t.section || inFile.has(t.taskId) || !record.mine(t.taskId) || t.taskId === skip) continue;
     await rowWrite(t.taskId, { section: null }, who, record.last.get(t.taskId) ?? 0, file);
     written++;
   }
-  if (args.flags['absorb-only']) return out(`backlog: ${rows.length} rows, ${written} written, file left as it is (--absorb-only)`);
+  if (absorbOnly) return `backlog: ${rows.length} rows, ${written} written, file left as it is (--absorb-only)`;
   if (written) record = await backlogRecord(file);
   const view = recordRows(record);
-  if (view.map((r) => r.id).sort().join('\n') !== [...inFile].sort().join('\n')) {
+  const ids = (list) => list.filter((id) => id !== skip).sort().join('\n');
+  if (ids(view.map((r) => r.id)) !== ids([...inFile])) {
     throw new Fail(3, `the record does not hold the rows ${file} holds (another writer moved meanwhile); the file is left as it is; run backlog sync again`);
   }
   const next = renderBacklog(view);
@@ -1011,7 +1030,7 @@ async function cmdBacklog(args) {
       state = 'generated';
     }
   }
-  out(`backlog: ${rows.length} rows, ${written} written, file ${state}`);
+  return `backlog: ${rows.length} rows, ${written} written, file ${state}`;
 }
 
 async function cmdComment(args) {

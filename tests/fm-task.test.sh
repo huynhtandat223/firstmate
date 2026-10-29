@@ -1725,13 +1725,18 @@ case_backlog() {
   must 'second sync' 0 || return 1
   [ "$(count fm_task_event)" = "$events" ] || { echo "an unchanged file wrote events"; return 1; }
   cmp -s "$f" "$d/after1.md" || { echo "an unchanged file was rewritten"; return 1; }
-  # a row call without --file belongs to the home's own backlog view
+  # a row call without --file belongs to the home's own backlog view, and renders it at once, so the next sync keeps it
   printf '  Note one: by row\n\n' > "$d/f1-notes"; printf '%s' "$(sed -n 's/^- \[ \] \(bl-f1 - .*\)$/\1/p' "$f")" > "$d/f1-row"
   FM_DATA_OVERRIDE=$d ft row bl-f1 --section 'In flight' --row-file "$d/f1-row" --notes-file "$d/f1-notes"
   must 'row without --file' 0 || return 1
-  ft backlog render --file "$f" --out "$d/row-render.md"
-  grep -qx '  Note one: by row' "$d/row-render.md" || { echo "a row call without --file left the home's view: $(grep -c '^- \[' "$d/row-render.md") rows"; return 1; }
-  ft backlog sync --file "$f" >/dev/null || return 1
+  grep -qx '  Note one: by row' "$f" || { echo "a row call did not render the home's view"; return 1; }
+  FM_DATA_OVERRIDE=$d ft row bl-d1 --gone
+  must 'row --gone' 0 || return 1
+  ft backlog sync --file "$f"
+  must 'sync after row calls' 0 || return 1
+  if ! grep -qx '  Note one: by row' "$f" || grep -q 'bl-d1' "$f"; then echo "the next sync undid the row calls"; return 1; fi
+  cp "$d/after1.md" "$f"; ft backlog sync --file "$f" >/dev/null || return 1
+  cmp -s "$f" "$d/after1.md" || { echo "setup: the fixture did not come back"; return 1; }
   events=$(count fm_task_event)
   # a link to the file names the same view: nothing is written and the link stays a link
   ln -s "$f" "$d/link.md"
@@ -1965,14 +1970,20 @@ mutate 'notes cannot hold a row or a section' row 'if (ROW_LINE.test(line) || SE
 mutate 'sync writes a changed row to the record' backlog 'await rowWrite(r.id, { section: r.section, row: r.row, notes: r.notes }, who, record.last.get(r.id) ?? 0, file);' ';'
 mutate 'an unchanged row writes no event' backlog "if (record.mine(r.id) && t.section === r.section && t.row === r.row && (t.notes ?? '') === r.notes) continue;" 'if (false) continue;'
 mutate 'a row the file no longer has leaves its section' backlog 'await rowWrite(t.taskId, { section: null }, who, record.last.get(t.taskId) ?? 0, file);' ';'
-mutate 'a sync leaves the rows of another backlog file' backlog '|| !record.mine(t.taskId)) continue;' ') continue;'
+mutate 'a sync leaves the rows of another backlog file' backlog '|| !record.mine(t.taskId) || t.taskId === skip) continue;' '|| t.taskId === skip) continue;'
 mutate 'a view renders only the rows of its own file' backlog '.filter((t) => t.section && t.row && record.mine(t.taskId))' '.filter((t) => t.section && t.row)'
 mutate 'In flight and Done list the newest entry first' backlog 'NEWEST_FIRST.includes(name) ? b.entry - a.entry : a.entry - b.entry' 'a.entry - b.entry'
 mutate 'a row keeps its place until it changes section' backlog 'if (place.get(e.taskId) !== where) entry.set(e.taskId, e.seq);' 'entry.set(e.taskId, e.seq);'
-mutate 'a row call without --file names the home backlog' backlog 'return rowSpec(taskId, set, noteOf(args), backlogFile(f.file));' 'return rowSpec(taskId, set, noteOf(args), f.file ? backlogPath(f.file) : null);'
+mutate 'a row call without --file names the home backlog' backlog '  const file = backlogFile(f.file);
+  const result' "  const file = f.file ? backlogPath(f.file) : '-';
+  const result"
 mutate 'a replayed older deploy adds no deployed line' verify_view 'if (newer.some((e) => bodyOf(e).head)) return;' ';'
 mutate 'a link to the backlog names the same view' backlog '    return fs.realpathSync(file);' '    return path.resolve(file);'
-mutate '--absorb-only leaves the file' backlog "if (args.flags['absorb-only']) return out(" 'if (false) return out('
+mutate '--absorb-only leaves the file' backlog 'if (absorbOnly) return' 'if (false) return'
+mutate 'a row call renders its view without taking the file copy back' backlog '    if (r.id === skip) continue;' ''
+mutate 'a row call renders its home view' backlog '  if (fs.existsSync(file)) {
+    try {' '  if (false) {
+    try {'
 mutate 'a line the record cannot hold refuses the sync' backlog 'if (problem) throw rule(problem);' ';'
 mutate 'a refused file still imports its new tasks' backlog $'  let written = 0;\n  for (const r of rows) {' $'  let written = 0;\n  if (problem) throw rule(problem);\n  for (const r of rows) {'
 mutate 'a status file the writer creates names the record on line 1' status_view 'const head = prior === null ?' 'const head = false ?'
