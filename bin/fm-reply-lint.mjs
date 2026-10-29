@@ -56,8 +56,10 @@ function toolUses(row) {
 const SHELLS = new Set(["sh", "bash", "zsh"]);
 
 // The exit status a node is known to have before it runs: `false` is 1, `true`
-// and `:` are 0, anything else is not known.
-function literalStatus(position) {
+// and `:` are 0, anything else is not known. A node with a redirection is not
+// known either: `true < /missing` fails before `true` runs.
+function literalStatus(position, node) {
+  if (node.some((token) => token.type === "redir")) return null;
   const name = position.command ? basename(position.command.value) : "";
   if (name === "false") return 1;
   if (name === "true" || name === ":") return 0;
@@ -103,8 +105,10 @@ export function shellCommands(line) {
         const payload = SHELLS.has(name) && !noExecShell(position) ? shellPayload(position) : null;
         if (payload !== null) walk(payload);
       }
+      // A node that an unknown status may have skipped leaves the status unknown.
+      const conditional = (before === "&&" || before === "||") && known === null;
       const next = separators[index];
-      known = next === "|" || next === "|&" ? null : literalStatus(position);
+      known = conditional || next === "|" || next === "|&" ? null : literalStatus(position, node);
     });
   };
   walk(line);

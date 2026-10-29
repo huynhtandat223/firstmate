@@ -276,6 +276,23 @@ test_no_exec_shell_payloads_credit_nothing() {
   pass "#208 round 1: the payload of bash -n -c or bash -o noexec -c credits nothing; +n turns execution back on"
 }
 
+# Reader round 2 on PR 220: a node with a redirection can fail before it runs.
+test_a_redirected_literal_has_an_unknown_status() {
+  local dir="$TMP_ROOT/redirected-literal"
+  make_primary "$dir" block
+  run_shell_cases "$dir" 0 question \
+    'true < /nonexistent/file || agent-ask post --board b' \
+    'false > /nonexistent/dir/f && true || agent-ask post --board b' \
+    ': < /nonexistent/file || agent-ask post --board b' \
+    'cd . && true || agent-ask post --board b'
+  run_shell_cases "$dir" 0 late \
+    'true < /nonexistent/file || cat data/captain.md'
+  run_shell_cases "$dir" 2 question \
+    'true || agent-ask post --board b' \
+    'false && agent-ask post --board b'
+  pass "#208 round 2: a true or false with a redirection has an unknown status, so the || branch after it counts"
+}
+
 test_input_redirect_read_counts() {
   local dir="$TMP_ROOT/redirect"
   make_primary "$dir" block
@@ -537,6 +554,7 @@ test_rl5_only_a_successful_read_of_this_homes_file_counts
 test_skipped_and_branches_credit_nothing
 test_bash_c_payloads_are_inspected
 test_input_redirect_read_counts
+test_a_redirected_literal_has_an_unknown_status
 test_no_exec_shell_payloads_credit_nothing
 test_session_keyed_block_record
 test_agent_ask_counts_only_as_a_command
