@@ -1725,6 +1725,11 @@ case_backlog() {
   must 'second sync' 0 || return 1
   [ "$(count fm_task_event)" = "$events" ] || { echo "an unchanged file wrote events"; return 1; }
   cmp -s "$f" "$d/after1.md" || { echo "an unchanged file was rewritten"; return 1; }
+  # a link to the file names the same view: nothing is written and the link stays a link
+  ln -s "$f" "$d/link.md"
+  ft backlog sync --file "$d/link.md"
+  must 'sync through a link' 0 || return 1
+  [ "$(count fm_task_event)" = "$events" ] && [ -L "$d/link.md" ] || { echo "a sync through a link rewrote the view"; return 1; }
   ft backlog render --file "$f" --out "$d/render.md"
   must 'render' 0 || return 1
   cmp -s "$f" "$d/render.md" || { echo "render differs from the synced file"; return 1; }
@@ -1954,6 +1959,7 @@ mutate 'a sync leaves the rows of another backlog file' backlog '|| !record.mine
 mutate 'a view renders only the rows of its own file' backlog '.filter((t) => t.section && t.row && record.mine(t.taskId))' '.filter((t) => t.section && t.row)'
 mutate 'In flight and Done list the newest entry first' backlog 'NEWEST_FIRST.includes(name) ? b.entry - a.entry : a.entry - b.entry' 'a.entry - b.entry'
 mutate 'a row keeps its place until it changes section' backlog 'if (place.get(e.taskId) !== where) entry.set(e.taskId, e.seq);' 'entry.set(e.taskId, e.seq);'
+mutate 'a link to the backlog names the same view' backlog '    return fs.realpathSync(file);' '    return path.resolve(file);'
 mutate '--absorb-only leaves the file' backlog "if (args.flags['absorb-only']) return out(" 'if (false) return out('
 mutate 'a line the record cannot hold refuses the sync' backlog 'if (problem) throw rule(problem);' ';'
 mutate 'a refused file still imports its new tasks' backlog $'  let written = 0;\n  for (const r of rows) {' $'  let written = 0;\n  if (problem) throw rule(problem);\n  for (const r of rows) {'

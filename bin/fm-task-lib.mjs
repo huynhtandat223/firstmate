@@ -816,7 +816,14 @@ function rowSpec(taskId, set, note, file) {
   const doc = { title: `backlog row ${taskId}`, mediaType: 'text/markdown', content: `${set.row}\n${set.notes}` };
   return { kind: 'row', note, set: { section: set.section, rowDocument: true }, extra, children: { documents: [doc] } };
 }
-const backlogPath = (file) => path.resolve(file);
+// A backlog file's identity: its real path, so a link to the file names the same view (and a write lands in the file).
+const backlogPath = (file) => {
+  try {
+    return fs.realpathSync(file);
+  } catch {
+    return path.resolve(file);
+  }
+};
 
 async function cmdRow(args) {
   const taskId = taskIdOf(args);
