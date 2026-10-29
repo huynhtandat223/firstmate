@@ -174,6 +174,12 @@
 # explicit captain instruction and never skips the live green check, the
 # away-record read, or a captain hold.
 #
+# On GitHub the PR body is also read once after mergeability passes, through
+# bin/fm-selftest-gate-lib.sh: a "do not merge" line and a missing or stale
+# verify-cfw self-test receipt are logged to state/enforce-merge-selftest.log
+# and state/enforce-merge-verifier.log, and refuse the merge only when the
+# matching config/enforce-<check> file holds `block`.
+#
 # Usage: fm-pr-merge.sh <task-id> <pr-url> [--attended-override] [--allow-red <check-name>] [--allow-missing <check-name>] [--allow-no-pipeline] [-- <extra forge merge args>]
 #
 # On GitLab, this script confirms the MR is actually merged before reporting it;
@@ -199,6 +205,8 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 . "$SCRIPT_DIR/fm-merge-authority-lib.sh"
 # shellcheck source=bin/fm-afk-contract.sh
 . "$SCRIPT_DIR/fm-afk-contract.sh"
+# shellcheck source=bin/fm-selftest-gate-lib.sh
+. "$SCRIPT_DIR/fm-selftest-gate-lib.sh"
 
 if [ "$#" -lt 2 ]; then
   echo "error: invalid PR merge request" >&2
@@ -1690,6 +1698,9 @@ case "$PROVIDER" in
       fi
       exit 1
     fi
+    # Log-only until config/enforce-merge-selftest or config/enforce-merge-verifier
+    # holds `block`; bin/fm-selftest-gate-lib.sh owns the rules.
+    fm_selftest_gate "$URL" "$ID" "$FM_PR_MERGE_HEAD" || exit 1
     # The away record is locked first, so this last presence and authority read
     # and the forge command below share one live-owner critical section.
     hold_away_record_for_merge || exit 1

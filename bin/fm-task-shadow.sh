@@ -80,7 +80,8 @@ cut_to() { local text; text=$(oneline "$1"); printf '%s' "${text:0:$2}"; }
 w() {
   local suffix=$1 out rc
   shift
-  local -a run=("$WRITER" "$@" --key "shadow:$TASK:$suffix" --actor shadow --role system)
+  # The shadow create follows dispatch, so it skips the intake identity check (bin/fm-task-identity-check.sh).
+  local -a run=(env FM_TASK_IDENTITY_SKIP=1 "$WRITER" "$@" --key "shadow:$TASK:$suffix" --actor shadow --role system)
   if command -v timeout >/dev/null 2>&1; then run=(timeout "$TIMEOUT" "${run[@]}"); fi
   out=$("${run[@]}" 2>&1 </dev/null)
   rc=$?

@@ -3,7 +3,7 @@
 # Usage:
 #   fm-assistance.sh start <name>
 #   fm-assistance.sh stop <name> --captain [--captain-words <verbatim instruction>]
-#   fm-assistance.sh steer <name> --captain-words <verbatim instruction> <text>
+#   fm-assistance.sh steer <name> [--again] --captain-words <verbatim instruction> <text>
 #   fm-assistance.sh validate <name>
 #   fm-assistance.sh source-event <name> <pending-record-basename>
 #   FM_HOME=<assistance-home> fm-assistance.sh self-event <pending-record-basename>
@@ -36,7 +36,8 @@
 # stop accepts a human terminal, or a dispatcher with nonblank --captain-words.
 # Before mutation, it appends an action-bound JSON record (name, action, words,
 # epoch, harness) to data/assistance-authority.jsonl in both homes; no reuse.
-# steer uses fm-send's ordinary durable inbox, recording words in both homes.
+# steer uses fm-send's ordinary durable inbox, recording words in both homes,
+# and so applies fm-send's short-text and duplicate-body rule; --again resends on purpose.
 # It disables restart and exits only the recorded endpoint, retaining the home.
 # propose is assistance-only; record is parent-only and uses the hold wrapper.
 set -euo pipefail
@@ -54,12 +55,16 @@ export FM_HOME
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 # shellcheck source=bin/fm-backend.sh
 . "$SCRIPT_DIR/fm-backend.sh"
+# shellcheck source=bin/fm-worker-account-lib.sh
+. "$SCRIPT_DIR/fm-worker-account-lib.sh"
+# shellcheck source=bin/fm-dms-account-lib.sh
+. "$SCRIPT_DIR/fm-dms-account-lib.sh"
 DATA="$FM_HOME/data"
 STATE="$FM_HOME/state"
 REG="$DATA/assistances.md"
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 valid_id() { [[ "$1" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]] || die 'invalid identifier'; }
-help() { printf '%s\n' 'fm-assistance.sh validate <name> | source-event <name> <pending-record-basename>' 'FM_HOME=<assistance-home> fm-assistance.sh self-event <pending-record-basename> | acknowledge-source <pending-record-basename>' 'fm-assistance.sh start <name> | stop <name> --captain [--captain-words <verbatim instruction>] | recover' 'fm-assistance.sh steer <name> --captain-words <verbatim instruction> <text>' 'fm-assistance.sh propose <title> <why> <evidence> <from-json> | record <inbox-id>'; }
+help() { printf '%s\n' 'fm-assistance.sh validate <name> | source-event <name> <pending-record-basename>' 'FM_HOME=<assistance-home> fm-assistance.sh self-event <pending-record-basename> | acknowledge-source <pending-record-basename>' 'fm-assistance.sh start <name> | stop <name> --captain [--captain-words <verbatim instruction>] | recover' 'fm-assistance.sh steer <name> [--again] --captain-words <verbatim instruction> <text>' 'fm-assistance.sh propose <title> <why> <evidence> <from-json> | record <inbox-id>'; }
 profile() {
   valid_id "$1"
   PROFILE="$FM_HOME/config/assistances/$1.json"
@@ -169,6 +174,15 @@ start() {
       dead|missing) ;;
       *) die "assistance endpoint cannot be safely classified: $status" ;;
     esac
+  fi
+  # DMS account guard (config/dms-account): refuse just before the home is seeded or
+  # anything is spawned; an attach to a live endpoint starts nothing.
+  # The root is the pin's, else this process's own.
+  if [ "$(jq -r .harness "$PROFILE")" = claude ]; then
+    local selection root
+    selection=$(fm_worker_account_select claude "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}" '' claude '' '' 2>/dev/null || true)
+    if [ -n "$selection" ]; then root=${selection#*$'\t'}; root=${root%%$'\t'*}; else root=${CLAUDE_CONFIG_DIR:-}; fi
+    fm_dms_account_guard "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}" "$STATE" assistance "$name" claude "$root" || exit 1
   fi
   home=$(secondmate_registry_field "$REG" "$name" home 2>/dev/null || true)
   if [ -z "$home" ]; then
@@ -323,7 +337,9 @@ case "${1:-}" in
     exit "$failed"
     ;;
   steer)
-    [ $# -eq 5 ] && [ "$3" = --captain-words ] || die 'usage: fm-assistance.sh steer <name> --captain-words <verbatim instruction> <text>'
+    again=
+    if [ "${3:-}" = --again ]; then again=--again; set -- "$1" "$2" "${@:4}"; fi
+    [ $# -eq 5 ] && [ "$3" = --captain-words ] || die 'usage: fm-assistance.sh steer <name> [--again] --captain-words <verbatim instruction> <text>'
     fm_assistance_require_dispatcher || exit 1
     valid_id "$2"
     [[ "$4" =~ [^[:space:]] ]] || die 'assistance rule: captain words must not be blank'
@@ -332,7 +348,7 @@ case "${1:-}" in
     fi
     home=$(assistance_home "$2")
     check_binding "$2" "$home"
-    "$SCRIPT_DIR/fm-send.sh" "$2" --assistance-captain-words "$4" "$5"
+    "$SCRIPT_DIR/fm-send.sh" "$2" --assistance-captain-words "$4" ${again:+"$again"} "$5"
     ;;
   stop)
     [ $# -ge 3 ] && [ "$3" = --captain ] || die 'usage: fm-assistance.sh stop <name> --captain [--captain-words <verbatim instruction>]'

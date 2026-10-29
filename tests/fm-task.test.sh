@@ -23,6 +23,20 @@ command -v curl >/dev/null 2>&1 || fail 'curl is required'
 
 TMP_ROOT=$(fm_test_tmproot fm-task)
 mkdir -p "$TMP_ROOT/fakebin"
+# Every case runs under a temporary home: a write that keeps the legacy status file must never reach the caller's own
+# FM_HOME. The caller's state/ listing is taken now and checked after the cases.
+LIVE_HOME=${FM_HOME:-}
+LIVE_STATE_BEFORE="$TMP_ROOT/live-state-before"
+if [ -n "$LIVE_HOME" ] && [ -d "$LIVE_HOME/state" ]; then (cd "$LIVE_HOME/state" && find . -mindepth 1 -maxdepth 1) | sort > "$LIVE_STATE_BEFORE"; fi
+export FM_HOME="$TMP_ROOT/home"
+mkdir -p "$FM_HOME/state"
+live_home_untouched() {  # fail when the caller's state/ holds a file it did not hold before the cases ran
+  [ -f "$LIVE_STATE_BEFORE" ] || return 0
+  local added
+  added=$( (cd "$LIVE_HOME/state" && find . -mindepth 1 -maxdepth 1) | sort | comm -13 "$LIVE_STATE_BEFORE" -)
+  [ -z "$added" ] || fail "a case wrote into the caller's FM_HOME state/: $(tr '\n' ' ' <<<"$added")"
+  pass "fm-task leaves the caller's FM_HOME state/ unchanged"
+}
 TOKEN="tok-$$-$RANDOM"
 printf '%s\n' "$TOKEN" > "$TMP_ROOT/token"
 chmod 600 "$TMP_ROOT/token"
@@ -36,7 +50,8 @@ node - "$TMP_ROOT/schema.json" <<'JS'
 const fs = require('fs');
 const file = process.argv[2]; const s = JSON.parse(fs.readFileSync(file));
 s.fm_event_document = {ops:['list','get','create'],f:{title:{t:'s',m:200},mediaType:{t:'s',m:100},content:{t:'s'}},u:[['fmTaskEventId']],parent:['fmTaskEvent','documents']};
-Object.assign(s.fm_task.f, {row:{t:'s',n:1},notes:{t:'s',n:1},section:{t:'s',n:1,m:32}});
+Object.assign(s.fm_task.f, {row:{t:'s',n:1},notes:{t:'s',n:1},section:{t:'s',n:1,m:32},
+  stage:{t:'s',n:1,m:16},stageSince:{t:'d',n:1},lastEventAt:{t:'d',n:1},lastNote:{t:'s',n:1,m:300},reviewer:{t:'s',n:1,m:64}});
 fs.writeFileSync(file, JSON.stringify(s));
 JS
 
@@ -1970,7 +1985,134 @@ case_carry() {
   must 'touched with a bad id' 2 || return 1
 }
 
-CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed row backlog status_view verify_view wait carry"}
+
+# cfw-modules#1678 TR52 (change 194): the board's writer operation runs the one writer as the signed-in owner. An
+# answer comments and unblocks, a pass or fail by the owner also sets the row's owner item, and a call without the
+# owner the script row appends writes nothing.
+case_owner_writer() {
+  BIN=$1; reset_db
+  export FM_HOME="$TMP_ROOT/owner-writer-home"
+  rm -rf "$FM_HOME"; mkdir -p "$FM_HOME/state"
+  local t=tk-ow1 before ow
+  ow() { OUT=$("$BIN/fm-task-owner.sh" "$@" 2>"$TMP_ROOT/err"); RC=$?; ERR=$(cat "$TMP_ROOT/err"); }
+  mk_running $t >/dev/null || { echo "setup: $ERR"; return 1; }
+  ft ask $t "${ASK_FLAGS[@]}" --next-actor owner >/dev/null || { echo "setup ask: $ERR"; return 1; }
+  before=$(count fm_task_event)
+  ow --action answer --task $t --option 'Option A'
+  must 'no owner' 2 || return 1
+  jq -e '.ok == false and (.error | test("owner"))' <<<"$OUT" >/dev/null || { echo "no-owner answer: $OUT"; return 1; }
+  ow --action approve --task $t --owner u-1
+  must 'an action outside the list' 2 || return 1
+  ow --action answer --task $t --owner u-1
+  must 'answer without an option' 2 || return 1
+  [ "$(count fm_task_event)" = "$before" ] || { echo "a refused call wrote an event"; return 1; }
+  ow --action answer --task $t --option 'Option A' --note 'go' --owner u-1
+  must 'answer' 0 || return 1
+  jq -e '.ok and .action == "answer" and (.writes | length) == 2' <<<"$OUT" >/dev/null || { echo "answer reply: $OUT"; return 1; }
+  [ "$(task_state $t)" = ready ] || { echo "the answer did not unblock: $(task_state $t)"; return 1; }
+  db fm_task_event | jq -e --arg t $t '[.[] | select(.taskId == $t and (.kind == "comment" or .kind == "unblocked"))] | length == 2 and all(.actor == "owner:u-1" and .actorRole == "owner") and (map(select(.kind == "comment"))[0].body | fromjson | .note == "answer: Option A - go")' >/dev/null \
+    || { echo "the answer events: $(db fm_task_event | jq -c --arg t $t '[.[] | select(.taskId == $t) | {kind, actor, actorRole}]')"; return 1; }
+  tail -n 1 "$FM_HOME/state/$t.status" | grep -q '^resolved ' || { echo "the answer wrote no resolved line: $(tail -n 2 "$FM_HOME/state/$t.status")"; return 1; }
+  ow --action answer --task $t --option 'Option A' --owner u-1
+  must 'answer on a task that is not blocked' 5 || return 1
+  jq -e '.ok == false and (.error | test("unblock is not allowed"))' <<<"$OUT" >/dev/null || { echo "a refused unblock: $OUT"; return 1; }
+  # an owner row: the owner's pass sets the item, a Tester's check does not
+  t=tk-ow2
+  ft create $t --title t --kind ship >/dev/null; use_issue v1; ft rows $t "$ISSUE" >/dev/null
+  ft owner-check $t A1@1440 --page-title 'Home page' --url 'http://100.88.10.58:5001/#home' --steps '1. open it' --data d --expected e >/dev/null || { echo "setup: $ERR"; return 1; }
+  ft check $t A1@1440 pass --evidence tester-shot >/dev/null || return 1
+  [ "$(db fm_owner_check | jq -r '.[] | select(.taskId == "tk-ow2") | .status')" = pending ] || { echo "a Tester check set the owner item"; return 1; }
+  ow --action fail --task $t --row A1@1440 --owner u-1
+  must 'fail without a note' 2 || return 1
+  ow --action pass --task $t --row A1@1440 --note 'looks right' --owner u-1
+  must 'pass' 0 || return 1
+  db fm_owner_check | jq -e '.[] | select(.taskId == "tk-ow2") | .status == "pass" and .note == "looks right" and (.decidedAt | type == "string")' >/dev/null || { echo "owner item after pass: $(db fm_owner_check | jq -c '.[] | select(.taskId == "tk-ow2")')"; return 1; }
+  ow --action fail --task $t --row A1@1440 --note 'the title is cut' --owner u-1
+  must 'fail' 0 || return 1
+  db fm_owner_check | jq -e '.[] | select(.taskId == "tk-ow2") | .status == "fail" and .note == "the title is cut"' >/dev/null || { echo "owner item after fail: $(db fm_owner_check | jq -c '.[] | select(.taskId == "tk-ow2")')"; return 1; }
+  [ "$(db fm_task_check | jq -r '.[] | select(.taskId == "tk-ow2" and .scenarioId == "A1" and .width == "1440") | .status')" = fail ] || { echo "the check row did not take the fail"; return 1; }
+}
+
+# SG1 (#176 Step 5): every write folds the board card's step onto the row: stage by the step rule, stageSince only
+# when the step changes, lastEventAt and lastNote from the newest event that is not a backlog view row event,
+# reviewer from the newest check, owner-check, approved or changes event.
+case_stage() {
+  BIN=$1; reset_db
+  local t=tk-sg row since prev long
+  at_of() { db fm_task_event | jq -r --arg t "$1" --argjson s "$2" '.[] | select(.taskId == $t and .seq == $s) | .createdAt'; }
+  step() {  # <label> <want stage> <stageSince: same|new>: the row after the last ft call
+    must "$1" 0 || return 1
+    row=$(task_row $t); local seq; seq=$(seq_of)
+    [ "$(jq -r .stage <<<"$row")" = "$2" ] || { echo "$1: stage $(jq -r .stage <<<"$row"), want $2: $row"; return 1; }
+    [ "$(jq -r .lastEventAt <<<"$row")" = "$(at_of $t "$seq")" ] || { echo "$1: lastEventAt is not the newest event's time: $row"; return 1; }
+    since=$(jq -r .stageSince <<<"$row")
+    if [ "$3" = new ]; then [ "$since" = "$(at_of $t "$seq")" ] || { echo "$1: stageSince did not move to this event: $row"; return 1; }
+    else [ "$since" = "$prev" ] || { echo "$1: stageSince moved inside the step ($prev -> $since)"; return 1; }; fi
+    prev=$since
+  }
+  ft create $t --title t --kind ship --repo example/repo; step 'created: triage is queued' queued new || return 1
+  ft assign $t --to worker-1; step 'assigned: ready stays queued' queued same || return 1
+  ft start $t; step 'started: running is working' working new || return 1
+  ft heartbeat $t --note 'still building'; step 'a heartbeat stays working' working same || return 1
+  [ "$(task_row $t | jq -r .lastNote)" = 'still building' ] || { echo "lastNote is not the newest note: $(task_row $t)"; return 1; }
+  ft event $t pr --note 'opened' --pr-url https://github.com/example/repo/pull/1; step 'a pr event after started is pr' pr new || return 1
+  ft block transient $t --reason 'waiting on CI' --next-actor firstmate; step 'blocked keeps its step' pr same || return 1
+  [ "$(task_state $t)" = blocked ] || { echo "the block did not block: $(task_row $t)"; return 1; }
+  ft unblock $t; step 'unblocked: ready is queued' queued new || return 1
+  ft start $t; step 'started again: no pr since the newest started is working' working new || return 1
+  ft "done" $t "${DONE_FLAGS[@]}"; step 'done with no deploy is pr' pr new || return 1
+  ft changes $t --note 'fix the label' --actor reviewer-1; step 'changes: ready is queued' queued new || return 1
+  [ "$(task_row $t | jq -r .reviewer)" = reviewer-1 ] || { echo "reviewer is not the actor of the newest changes: $(task_row $t)"; return 1; }
+  ft start $t; step 'started after changes' working new || return 1
+  ft "done" $t "${DONE_FLAGS[@]}"; step 'done again is pr' pr new || return 1
+  ft event $t deploy --note 'deployed' --head abc123; step 'a deploy after the newest done is dev' dev new || return 1
+  ft comment $t --note 'looks fine'; step 'a comment stays dev' dev same || return 1
+  ft approve $t --actor firstmate-1; step 'approved: done is passed' passed new || return 1
+  [ "$(task_row $t | jq -r .reviewer)" = firstmate-1 ] || { echo "reviewer is not the actor of the newest approved: $(task_row $t)"; return 1; }
+  ft archive $t; step 'archived keeps its step' passed same || return 1
+  # lastNote is cut to 300; an event with no note clears it
+  t=tk-sg2; prev=''
+  mk_running $t >/dev/null || { echo "setup: $ERR"; return 1; }
+  long=$(printf 'x%.0s' $(seq 1 400))
+  ft comment $t --note "$long"; must 'long note' 0 || return 1
+  [ "$(task_row $t | jq -r '.lastNote | length')" = 300 ] || { echo "lastNote is not cut to 300: $(task_row $t | jq -r '.lastNote | length')"; return 1; }
+  [ "$(task_row $t | jq -r .reviewer)" = null ] || { echo "a task with no review event has a reviewer: $(task_row $t)"; return 1; }
+  # a backlog view row event is not a real event: lastNote and lastEventAt stay on the newest other event
+  ft comment $t --note 'real note'; must 'real note' 0 || return 1
+  local real_at; real_at=$(at_of $t "$(seq_of)")
+  printf '%s' "$t - row text" > "$TMP_ROOT/sg-row"; : > "$TMP_ROOT/sg-notes"
+  ft row $t --section 'In flight' --row-file "$TMP_ROOT/sg-row" --notes-file "$TMP_ROOT/sg-notes"; must 'row event' 0 || return 1
+  task_row $t | jq -e --arg at "$real_at" '.lastNote == "real note" and .lastEventAt == $at and .section == "In flight"' >/dev/null \
+    || { echo "a row event moved lastNote or lastEventAt: $(task_row $t)"; return 1; }
+  # an import's source stamp ({"source","sha256"} under a backfill:<task>: key, fm-task-backfill-lib.mjs) points at a note
+  # and is not one: lastNote stays
+  local stamp='{"source":"backlog","sha256":"0123abcd"}'
+  ft event $t comment --note "$stamp" --key "backfill:$t:backlog:0123abcd"; must 'source stamp' 0 || return 1
+  task_row $t | jq -e --arg at "$(at_of $t "$(seq_of)")" '.lastNote == "real note" and .lastEventAt == $at' >/dev/null \
+    || { echo "a source stamp became lastNote: $(task_row $t)"; return 1; }
+  # the same JSON in a real comment, with no backfill key, is a note
+  ft comment $t --note "$stamp"; must 'real comment with stamp JSON' 0 || return 1
+  task_row $t | jq -e --arg note "$stamp" '.lastNote == $note' >/dev/null \
+    || { echo "a real comment shaped like a stamp did not become lastNote: $(task_row $t)"; return 1; }
+  ft comment $t --note 'real note'; must 'real note again' 0 || return 1  # the note SG2 expects reproject to restore
+  # a reconcile divergence ({"field","oldSource","record"} under a reconcile:<task>: key, fm-task-reconcile-lib.mjs) is a
+  # comparison record, not a note: lastNote stays
+  local diverged='{"field":"nextActor","oldSource":"tester","record":"worker"}'
+  ft event $t divergence --note "$diverged" --key "reconcile:$t:nextActor:0123abcd"; must 'reconcile divergence' 0 || return 1
+  task_row $t | jq -e --arg at "$(at_of $t "$(seq_of)")" '.lastNote == "real note" and .lastEventAt == $at' >/dev/null \
+    || { echo "a reconcile divergence became lastNote: $(task_row $t)"; return 1; }
+  # SG2: reproject --all fills the step fields of every row, and a second run repairs nothing
+  api -X PATCH "$BASE/api/fm_task/$(task_row tk-sg | jq -r .id)" -d '{"stage":null,"stageSince":null}' >/dev/null
+  api -X PATCH "$BASE/api/fm_task/$(task_row tk-sg2 | jq -r .id)" -d '{"lastNote":null}' >/dev/null
+  ft reproject --all; must 'reproject --all' 0 || return 1
+  grep -q '^reproject --all: 2 tasks, 2 repaired$' <<<"$OUT" || { echo "reproject --all did not repair both rows: $OUT"; return 1; }
+  [ "$(task_row tk-sg | jq -r .stage)" = passed ] && [ "$(task_row tk-sg2 | jq -r .lastNote)" = 'real note' ] || { echo "reproject --all left a row unfilled: $(task_row tk-sg) $(task_row tk-sg2)"; return 1; }
+  ft reproject --all; must 'reproject --all again' 0 || return 1
+  [ "$OUT" = 'reproject --all: 2 tasks, 0 repaired' ] || { echo "a second reproject --all repaired again: $OUT"; return 1; }
+  return 0
+}
+
+CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed row backlog status_view verify_view owner_writer stage wait carry"}
 
 # ---- real command -------------------------------------------------------------------
 
@@ -1979,6 +2121,8 @@ for c in $CASES; do
   pass "fm-task $c"
 done
 
+live_home_untouched
+
 # FM_TASK_CASES="a b" runs just those cases and skips the mutation proofs.
 [ -z "${FM_TASK_CASES:-}" ] || exit 0
 
@@ -1986,7 +2130,8 @@ done
 
 MBIN="$TMP_ROOT/mbin"
 mkdir -p "$MBIN"
-for f in fm-task.sh fm-task-lib.mjs fm-acceptance.mjs; do cp "$ROOT/bin/$f" "$TMP_ROOT/$f.orig"; done
+for f in fm-task.sh fm-task-lib.mjs fm-acceptance.mjs fm-task-owner.sh; do cp "$ROOT/bin/$f" "$TMP_ROOT/$f.orig"; done
+cp "$TMP_ROOT/fm-task-owner.sh.orig" "$MBIN/fm-task-owner.sh"; chmod +x "$MBIN/fm-task-owner.sh"
 cp "$TMP_ROOT/fm-acceptance.mjs.orig" "$MBIN/fm-acceptance.mjs"
 cp "$TMP_ROOT/fm-task.sh.orig" "$MBIN/fm-task.sh"
 chmod +x "$MBIN/fm-task.sh"
@@ -2052,6 +2197,18 @@ mutate 'a re-sent owner-check does not write its item again' owner_replay "const
 mutate 'a re-sent owner-check key with another call is refused' owner_replay "if (prior && (prior.taskId !== taskId ||" "if (false && (prior.taskId !== taskId ||"
 mutate 'a new result clears the head and evidence of an older one' check_nulls "evidence: v.evidence ?? null, head: v.head ?? null };" "...(v.evidence ? { evidence: v.evidence } : {}), ...(v.head ? { head: v.head } : {}) };"
 mutate 'a check on a task that closed meanwhile is refused' check_close "if (CLOSED.includes(task.state)) throw rule(\`check is refused:" "if (false) throw rule(\`check is refused:"
+mutate 'blocked keeps the step it had' stage "task.stage ?? 'queued'" "'queued'"
+mutate 'a deploy after the newest done is dev' stage "if (event.kind === 'deploy') deployed = true;" ";"
+mutate 'a pr event after the newest started is pr' stage "if (event.kind === 'pr') pullRequest = true;" ";"
+mutate 'stageSince moves only when the step changes' stage "if (stage !== task.stage) Object.assign(task, { stage, stageSince: event.createdAt ?? null });" "Object.assign(task, { stage, stageSince: event.createdAt ?? null });"
+mutate 'the reviewer is the actor of the newest review event' stage "if (REVIEWER_KINDS.includes(event.kind)) task.reviewer = event.actor ?? null;" ";"
+mutate 'a row event does not move lastNote or lastEventAt' stage "if (event.kind !== 'row') {" "if (true) {"
+mutate 'a machine record does not become lastNote' stage "if (!isMachineRecord(event, note)) task.lastNote" "task.lastNote"
+mutate 'a machine record is one only under its own key' stage "if (!Object.hasOwn(MACHINE_RECORDS, prefix) || taskId !== event.taskId) return false;" ";"
+mutate 'a reconcile divergence is a machine record' stage "{ backfill: 'sha256,source', reconcile: 'field,oldSource,record' }" "{ backfill: 'sha256,source' }"
+mutate 'lastNote is cut to 300' stage "task.lastNote = note.slice(0, 300) || null" "task.lastNote = note || null"
+mutate 'reproject --all repairs every row' stage "      const result = await project(taskId);
+      if (!result?.changed.length) continue;" "      continue;"
 mutate 'approve judges a row by its newest check event' approve_newest "return v ? { ...r, status: v.status," "return false ? { ...r, status: v.status,"
 mutate 'an owner-check update needs --url and --steps' owner_update "if (missing.length) throw rule(" "if (false) throw rule("
 mutate 'an owner-check on a task that closed meanwhile is refused' owner_close "if (CLOSED.includes(task.state)) throw rule(\`owner-check is refused:" "if (false) throw rule(\`owner-check is refused:"
@@ -2119,4 +2276,18 @@ mutate 'a deploy that names an id brings its row back' carry "Array.isArray(body
 mutate 'a deploy that records nothing touches every row' carry "Array.isArray(bodyOf(e).touched) && !bodyOf(e).touched.includes(row.scenarioId)" "!(bodyOf(e).touched || []).includes(row.scenarioId)"
 mutate 'the gate prints each carried pass with its head' carry "&& carried(row, events)) out(" "&& false) out("
 mutate 'checks --as-deployed reads a next deploy' carry "const view = as ? [" "const view = false ? ["
+mutate 'an owner pass or fail sets the owner item' owner_writer "if (who.role === 'owner' && status !== 'pending') await ownerVerdict(" "if (false) await ownerVerdict("
+mutate_owner() {  # <label> <exact wrapper text> <replacement>: the owner_writer case goes red
+  cp "$TMP_ROOT/fm-task-lib.mjs.orig" "$LIB"
+  cp "$TMP_ROOT/fm-task-owner.sh.orig" "$MBIN/fm-task-owner.sh"
+  S="$2" R="$3" perl -0pi -e 's/\Q$ENV{S}\E/$ENV{R}/' "$MBIN/fm-task-owner.sh"
+  cmp -s "$TMP_ROOT/fm-task-owner.sh.orig" "$MBIN/fm-task-owner.sh" && fail "mutation '$1' changed nothing"
+  if out=$(case_owner_writer "$MBIN" 2>&1); then fail "removing the guard '$1' left case owner_writer green"; fi
+  cp "$TMP_ROOT/fm-task-owner.sh.orig" "$MBIN/fm-task-owner.sh"
+  pass "guard '$1' is needed: case owner_writer goes red without it"
+}
+mutate_owner 'the writer operation needs the owner the row appends' "case \"\$OWNER\" in ''|" "case \"\$OWNER\" in x|"
+mutate_owner 'the writer runs as the owner' 'FM_TASK_ROLE=owner' 'FM_TASK_ROLE=worker'
+mutate_owner 'an answer unblocks after its comment' 'run comment "$TASK" --note "$text" && run unblock "$TASK" || RC=$?' 'run comment "$TASK" --note "$text" || RC=$?'
 pass 'every guarded behavior has a red mutation proof'
+live_home_untouched

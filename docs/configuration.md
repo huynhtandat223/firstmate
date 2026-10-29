@@ -401,6 +401,15 @@ A batch is refused whole when its members' distinct specs would exceed two.
 
 The gate is a process check, not an authorship or access-control check.
 
+## Steer checks (config/enforce-steer-dedupe)
+
+`bin/fm-send.sh` checks a local steer before it writes the record.
+It refuses a text under 8 characters, and a body identical to an unhandled record in that task's inbox or to one written there in the last 30 minutes.
+The refusal names the existing `NNN.msg`, and `--again` resends an identical body on purpose; `fm-assistance.sh steer` takes the same flag.
+`bin/fm-task-inbox-lib.sh` owns the rule, and `FM_STEER_MIN_CHARS` and `FM_STEER_DEDUPE_SECS` tune it.
+The check is log-only until `config/enforce-steer-dedupe` holds `block`: each hit is written to `state/enforce-steer-dedupe.log` and the steer is still sent.
+`bin/fm-enforce-lib.sh` owns that switch.
+
 ## Firstmate-owed waits (config/firstmate-wait-minutes)
 
 A worker's `done`, `needs-decision` or `blocked` line waits on firstmate, and `bin/fm-wake-drain.sh` lists each such wait older than `config/firstmate-wait-minutes` under `FIRSTMATE OWES` and refuses its acknowledgement while any is listed.
@@ -409,6 +418,94 @@ A `paused` line waits on something outside firstmate and keeps the `config/wait-
 `bin/fm-firstmate-wait-lib.sh` owns the threshold, the verb list, and the clearing rule.
 A newer status line, a steering message from `bin/fm-send.sh`, a captain hold, or a merge clears the listed wait.
 The refusal names each task, its verb, and its age, and the drain consumes nothing while it stands.
+
+## Harness check switches (config/enforce-<check>)
+
+A harness check that can block starts in log-only mode: each hit is written to `state/enforce-<check>.log` and nothing is blocked.
+Firstmate reviews that log for false positives, then writes `block` on the first line of `config/enforce-<check>` to make the check block.
+A missing file, an empty file, or any other word keeps the check in log-only mode.
+`bin/fm-enforce-lib.sh` owns the switch and the log line format (epoch, mode, code, text).
+The first check is `drain-ack`: `bin/fm-drain-pretool-check.sh` denies one command that acknowledges a wake drain and runs another drain, and `bin/fm-wake-drain.sh` refuses an acknowledgement while a captain note waits in `state/inbox/`.
+Both read `config/enforce-drain-ack`.
+A drain piped into `grep`, `head`, `cut` or `sed` is only ever logged.
+The second check is `reply-lint`: the Claude Stop hook `bin/fm-reply-lint.sh` reads the turn that just ended and flags a reply with no Vietnamese letter, a question with no `agent-ask` call in the turn, a waiting captain note, and a session that has not read `data/captain.md` since its last SessionStart.
+It reads `config/enforce-reply-lint`, and it does nothing until `config/reply-language` holds a language word (`vi` today); with the file absent the lint is off.
+A hit blocks at most once per turn, and `bin/fm-reply-lint.sh --replay <transcript>` lists the turn ends a past transcript would have flagged.
+The third check is `clone-git`: `bin/fm-clone-git-pretool-check.sh` denies a state-changing git command aimed at a clone under `projects/` (AGENTS.md hard rule 1).
+It denies fetch of a refspec such as `pull/<n>/head` (or `--stdin`), pull, checkout, switch, reset, commit, stash, rebase, cherry-pick, push, clean, add, branch, tag, config, worktree and remote writes, and merge without `--ff-only`.
+It allows `fetch <remote> [<branch>]`, `merge --ff-only`, and every read.
+The refusal names `gh pr diff <n>` to read a PR and `git -C <worker worktree>` to change code.
+It reads `config/enforce-clone-git`, and `bin/fm-clone-git-command-policy.mjs --replay <transcript or directory>` lists the commands a past transcript would have denied with their session ids.
+The fourth check is `browser-kill`: `bin/fm-browser-kill-pretool-check.sh` denies `kill`, `pkill`, `killall`, `xargs kill` and `fuser -k` aimed at chrome, chromium, chrome-devtools, a pid that listens on a watched port or runs a browser, or a watched port named in the command or the pipe that feeds it.
+The watched ports are 9222, 9333 and every port in `config/browser-ports` (one per line; blank lines and `#` comments are ignored; put the Tester's port there).
+The refusal names the safe form: `CHROME_DEVTOOLS_AXI_SESSION=<name> chrome-devtools-axi stop`, and only for a session whose owner task is done.
+A heredoc, `echo` or `grep` that only mentions `pkill chrome` is never matched, and the check reads `config/enforce-browser-kill`.
+The fifth check is `merge-selftest`: `bin/fm-selftest-gate-lib.sh` reads the PR body once before a GitHub merge in `bin/fm-pr-merge.sh`.
+Code `phrase` hits a body line outside fenced code and `>` quotes that says "do not merge", "don't merge" or "not ready to merge".
+For a task with `surface=user-visible` on `huynhtandat223/cfw-modules`, the body also needs a `Self-test: verify-cfw run <features> --target storybook:<branch> head=<sha> PASS` line whose sha is a prefix of the live head, and `data/<task>/selftest-<head>.json` must read PASS at that head, with the same features and target as the line and both widths 1440 and 390.
+Codes `no-selftest-line`, `stale-head`, `no-receipt` and `receipt-fail` name what is missing, and each prints the `verify-cfw run` command that writes a fresh receipt.
+A hit also prints one `would refuse:` line on stderr, and `config/enforce-merge-selftest` set to `block` makes it refuse the merge.
+The sixth check is `merge-verifier`, in the same library: the receipt's `actor` must not be the task id.
+Code `author-receipt` names the actor and says the Tester or a fresh verifier session runs it, and code `no-actor` hits a receipt with no actor.
+It reads `config/enforce-merge-verifier`, a switch apart from the fifth check's.
+The seventh check is `brief-verify`: `bin/fm-brief.sh --check <task>` calls `bin/fm-brief-verify-lib.sh`.
+When the brief's `# Acceptance` names a `huynhtandat223/cfw-modules` issue, each user-visible scenario's page maps to a feature through the `pages:` line of the feature files at `origin/main` of the `projects/cfw-modules` clone, and the brief must name `verify-cfw run <feature>` for each mapped feature.
+Code `missing-verify` lists the features it does not name.
+Code `issue-unread` hits when the issue's scenarios cannot be read or the parser reports problems with them, because nothing was checked.
+A page with no feature file is logged as `unmapped` and never refuses.
+It reads `config/enforce-brief-verify`.
+
+## Model deny list (config/model-deny)
+
+`config/model-deny` is captain-private and holds one glob and its reason per line, the glob first; blank lines and `#` comment lines are ignored.
+`bin/fm-spawn.sh` (`--model` and a secondmate model pin, local or remote), `bin/fm-control.sh relaunch` and `bin/fm-remote-secondmate-relaunch.sh` (a remote mate, on the parent's config before the relaunch crosses the hop, for a direct run and for `bin/fm-secondmate-restart.sh`) refuse a model that matches a glob before any endpoint, worktree or record exists, and print that line's reason.
+A line with a glob and no reason refuses, so a hit always says why; with the file absent nothing changes.
+`bin/fm-model-deny-lib.sh` owns the format and the check.
+The check is log-only until `config/enforce-model-deny` holds `block`: each hit is written to `state/enforce-model-deny.log` and the launch goes ahead.
+
+## Project rules in briefs (data/project-rules/<repo>.md)
+
+`bin/fm-brief.sh` copies every line of `data/project-rules/<repo-name>.md` that starts with `brief:` into the brief's `## Firstmate spec`.
+The copy is verbatim, tag included, in file order, and sits below the `{FIRSTMATE_SPEC}` fill under its own `### Project rules` subheading, so a spec filled with `###` subsections does not swallow it.
+A line without the tag is never copied, a project with no rules file adds nothing, and a repo name with a slash is refused.
+Firstmate tags the lines in its private rules file; the file is not tracked.
+
+## DMS account guard (config/dms-account)
+
+The company watches one Claude account, so DMS work runs only on it.
+`config/dms-account` holds a `root <path>` line (the only Claude config root a DMS launch may use; `~` is allowed), then one `project <name>` line per DMS project and one `assistance <name>` line per DMS assistance.
+Blank lines and `#` comments are ignored; a file that exists but cannot be read, a file with no `root` line, or a file with an unknown line refuses every launch rather than passing.
+With the file absent the guard does nothing, and only a Claude launch is checked.
+`bin/fm-spawn.sh`, `bin/fm-control.sh relaunch` and `bin/fm-assistance.sh start` refuse a listed launch whose resolved `CLAUDE_CONFIG_DIR` is not the root, before any endpoint, worktree or record exists, and the refusal names the file and the root.
+A raw launch command that sets its own `CLAUDE_CONFIG_DIR=` is checked on that value, and a project is matched by the canonical name of its clone directory.
+In block mode a raw launch on a listed project or assistance must start with `claude` (a wrapper such as `env`, `command` or `exec` is refused) and must assign no credential from the shed list, and a guarded launch sheds the environment credentials Claude ranks above the root's login (`ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` and the rest of the shed list).
+Log-only logs those breaches and changes no launch.
+`bin/fm-dms-account-lib.sh` owns the file format and the check.
+The check is log-only until `config/enforce-dms-account` holds `block`: each hit is written to `state/enforce-dms-account.log` and the launch goes ahead.
+
+## Task identity checks (config/enforce-task-identity)
+
+`bin/fm-task-identity-check.sh` owns three checks on task identity.
+`add` runs before `bin/fm-tasks-axi.sh add|create` and `bin/fm-task.sh create`: it refuses an id that is already a done row in `data/done-archive.md` or `data/backlog.md` (citing file and line), an id with a local `fm/<id>` branch in the `--repo` clone, and a title whose ticket key (`DEV-n`, `PS-n`) a live task already carries (naming that task).
+The shadow create that follows dispatch (`bin/fm-task-shadow.sh`) skips `add`, because the spawn has already made the `fm/<id>` branch visible in the clone.
+A ticket key matches whole (`DEV-12` does not match `DEV-12A`), and only `data/backlog.md` is read for live tasks, not the task record.
+`pr` runs in `bin/fm-pr-check.sh`, on the merge path too: it refuses a GitHub PR whose closing references name other issues and omit the task's linked issue, the first `.../issues/<n>` URL in its backlog item, naming both.
+The linked and closing issue URLs are compared as host, owner, repo and number, so scheme, host case and a trailing slash do not matter.
+A PR with no closing reference, a task with no linked issue, or an unreadable forge passes.
+The checks are log-only until `config/enforce-task-identity` holds `block`: each hit is written to `state/enforce-task-identity.log` and the command goes on.
+
+## Herdr-lab brief check (config/enforce-herdr-lab-brief)
+
+A task that starts, stops, rotates or otherwise drives a pane, an assistance or an agent needs the Herdr lab block that `bin/fm-brief.sh --herdr-lab` adds.
+`bin/fm-brief.sh --check <task-id>` flags a brief without that block when its `# Task` text, or the scenarios of the issue its `# Acceptance` section names, hold a lifecycle verb within 60 characters of the word pane, assistance or agent.
+The block is the `# Herdr isolation - HARD SAFETY CONTRACT` section; no other text counts.
+An unreadable scenario list is logged in log mode and refuses in block mode, and is never read as empty.
+`bin/fm-send.sh` applies the same rule to a steer sent to a crewmate task whose brief has no lab block, on the inbox plane and on the typed plane alike; a secondmate target is skipped.
+A period inside a file name such as `fm-assistance.sh` does not break the link between verb and noun.
+Both say to re-scaffold with `--herdr-lab`.
+`bin/fm-herdr-lab-phrase-lib.sh` owns the phrase rule.
+The check is log-only until `config/enforce-herdr-lab-brief` holds `block`: each hit is written to `state/enforce-herdr-lab-brief.log` and the brief or steer still passes.
+`bin/fm-enforce-lib.sh` owns that switch.
 
 ## Backlog backend (.tasks.toml / config/backlog-backend)
 

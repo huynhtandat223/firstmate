@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# fm-task-owner.sh - the Firstmate board's one writer operation (cfw-modules#1678, change 194).
+#
+# The API Builder script row `fm-task-owner` on Dev 5001 runs this file over SSH for the owner's buttons on the
+# board. The row declares `callerArgument: owner`, so --owner is the signed-in user id that the row appends, never
+# a page value. Each action runs bin/fm-task.sh, the one writer, with that owner as actor (`owner:<id>`, role
+# owner); the writer keeps seq, the transitions and the projection, and this file adds no rule of its own.
+#
+# Usage: fm-task-owner.sh --action ACTION --task TASK [--option O] [--row ID@W] [--note N] --owner ID
+#   answer   a question:     comment "answer: <option>" (and " - <note>"), then unblock    needs --option
+#   unblock  a block:        comment "<note>", then unblock                                needs --note
+#   pass     an owner row:   check TASK ROW pass --evidence "<note>" (or "owner pass")     needs --row
+#   fail     an owner row:   check TASK ROW fail --evidence "<note>"                        needs --row and --note
+#   A pass or fail by role owner also sets the row's owner item (bin/fm-task-lib.mjs, check).
+#
+# Prints one JSON line for the page: {"ok":true|false,"action","task","writes":[writer lines],"error"?}.
+# Exits 0, 2 for a usage refusal (nothing written), or the first refusing writer call's code; a refused comment
+# stops before the unblock.
+# Environment: FM_HOME defaults to this file's home (its parent directory), so the status view lands where the
+# watcher reads it. FM_TASK_OWNER_WRITER replaces bin/fm-task.sh (the tests); the writer's own settings
+# (FM_TASK_BASE_URL, FM_TASK_TOKEN_FILE) keep their defaults.
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export FM_HOME="${FM_HOME:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+WRITER="${FM_TASK_OWNER_WRITER:-$SCRIPT_DIR/fm-task.sh}"
+
+ACTION='' TASK='' OPTION='' ROW='' NOTE='' OWNER=''
+WRITES='[]'
+
+reply() {  # <ok> [error]: the one JSON line, then exit with the code in RC
+  jq -cn --argjson ok "$1" --arg action "$ACTION" --arg task "$TASK" --argjson writes "$WRITES" --arg error "${2:-}" \
+    '{ok: $ok, action: $action, task: $task, writes: $writes} + (if $error == "" then {} else {error: $error} end)'
+  exit "$RC"
+}
+usage() { RC=2; reply false "$1"; }
+
+while [ "$#" -gt 0 ]; do
+  [ "$#" -ge 2 ] || usage "$1 needs a value"
+  case "$1" in
+    --action) ACTION=$2 ;;
+    --task) TASK=$2 ;;
+    --option) OPTION=$2 ;;
+    --row) ROW=$2 ;;
+    --note) NOTE=$2 ;;
+    --owner) OWNER=$2 ;;
+    *) usage "unknown argument $1" ;;
+  esac
+  shift 2
+done
+
+case "$OWNER" in ''|*[!A-Za-z0-9-]*) usage 'no signed-in owner: the script row must append --owner' ;; esac
+[ "${#OWNER}" -le 56 ] || usage 'the owner id is longer than 56 characters'
+[ -n "$TASK" ] || usage '--task is required'
+export FM_TASK_ACTOR="owner:$OWNER" FM_TASK_ROLE=owner
+unset FM_TASK_ID
+
+# Run one writer call; its stdout lines join WRITES. Returns the writer's code, with its first error line in ERROR.
+ERROR=''
+run() {
+  local out err rc
+  err=$(mktemp "${TMPDIR:-/tmp}/fm-task-owner.XXXXXX") || { ERROR='no temporary file'; return 3; }
+  out=$("$WRITER" "$@" 2>"$err" </dev/null)
+  rc=$?
+  ERROR=$(sed -n '1p' "$err")
+  rm -f "$err"
+  WRITES=$(jq -c --arg o "$out" '. + ($o | split("\n") | map(select(. != "")))' <<<"$WRITES")
+  return "$rc"
+}
+
+RC=0
+case "$ACTION" in
+  answer)
+    [ -n "$OPTION" ] || usage 'answer needs --option'
+    text="answer: $OPTION${NOTE:+ - $NOTE}"
+    run comment "$TASK" --note "$text" && run unblock "$TASK" || RC=$?
+    ;;
+  unblock)
+    [ -n "$NOTE" ] || usage 'unblock needs --note'
+    run comment "$TASK" --note "$NOTE" && run unblock "$TASK" || RC=$?
+    ;;
+  pass|fail)
+    [ -n "$ROW" ] || usage "$ACTION needs --row ID@WIDTH"
+    [ "$ACTION" = pass ] || [ -n "$NOTE" ] || usage 'fail needs --note'
+    run check "$TASK" "$ROW" "$ACTION" --evidence "${NOTE:-owner pass}" || RC=$?
+    ;;
+  *) usage "--action must be answer, unblock, pass or fail" ;;
+esac
+if [ "$RC" -eq 0 ]; then reply true; else reply false "$ERROR"; fi

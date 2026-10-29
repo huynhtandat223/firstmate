@@ -184,6 +184,10 @@ printf '%s\n' "$*" >> "$FM_TEST_GH_LOG"
 case "${1:-} ${2:-}" in
   "pr view")
     case " $* " in
+      *" --json body "*)
+        [ ! -f "${FM_TEST_GH_BODY:-}" ] || cat "$FM_TEST_GH_BODY"
+        exit 0
+        ;;
       *statusCheckRollup*)
         if [ -n "${FM_TEST_GH_MERGEABLE_SEQUENCE:-}" ]; then
           call_n=$(( $(cat "$FM_TEST_GH_MERGEABLE_CALLS" 2>/dev/null || echo 0) + 1 ))
@@ -670,6 +674,7 @@ run_pr_merge() {
   FM_TEST_GH_MERGEABLE_SEQUENCE="${FM_TEST_GH_MERGEABLE_SEQUENCE:-}" \
   FM_TEST_GH_MERGEABLE_CALLS="$case_dir/mergeable-calls" \
   FM_TEST_GH_HEAD="$case_dir/github-head" \
+  FM_TEST_GH_BODY="$case_dir/github-body.json" \
   FM_TEST_GH_RUNS="$case_dir/github-runs.json" \
   FM_TEST_GH_MERGE_RC_FILE="$case_dir/github-merge-rc" \
   FM_TEST_GH_MERGE_OUTPUT="$(cat "$case_dir/github-merge-output" 2>/dev/null || true)" \
@@ -4587,6 +4592,53 @@ test_allow_no_pipeline_is_attended_only_and_gitlab_only() {
   pass "fm-pr-merge --allow-no-pipeline is attended-only, takes no value, and applies only to GitLab"
 }
 
+# The self-test gate (bin/fm-selftest-gate-lib.sh) reads the PR body after
+# mergeability passes. Log-only without config/enforce-merge-selftest: the merge
+# goes through and the hit is logged; with `block` the merge is refused before
+# the forge merge call.
+test_selftest_gate_logs_and_continues_without_its_config_file() {
+  local case_dir rc
+  case_dir=$(make_case selftest-gate-log)
+  add_gh_mocks "$case_dir" 7171717171717171717171717171717171717171
+  jq -n --arg body $'Part of #1.\n\nDo not merge yet.\n' '{body: $body}' > "$case_dir/github-body.json"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/71 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "selftest-gate-log: a hit without the config file still merges"
+  assert_grep 'would refuse: phrase body line 3: Do not merge yet.' "$case_dir/stderr" \
+    "selftest-gate-log: the hit is one would-refuse line on stderr"
+  assert_grep 'would-refuse	phrase	body line 3: Do not merge yet.' "$case_dir/state/enforce-merge-selftest.log" \
+    "selftest-gate-log: the hit is one line in the log"
+  assert_logged_gh_merge "$case_dir" 71 example/repo --squash
+  pass "fm-pr-merge merges and logs a self-test gate hit while the check is log-only"
+}
+
+test_selftest_gate_blocks_the_merge_when_its_config_holds_block() {
+  local case_dir rc
+  case_dir=$(make_case selftest-gate-block)
+  add_gh_mocks "$case_dir" 7272727272727272727272727272727272727272
+  jq -n --arg body $'Part of #1.\n\nDo not merge yet.\n' '{body: $body}' > "$case_dir/github-body.json"
+  printf 'block\n' > "$case_dir/home/config/enforce-merge-selftest"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/72 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "selftest-gate-block: block refuses the merge"
+  assert_grep 'refused: phrase body line 3: Do not merge yet.' "$case_dir/stderr" \
+    "selftest-gate-block: the refusal names the line"
+  assert_no_grep 'pr merge ' "$case_dir/gh.log" "selftest-gate-block: the forge merge was never called"
+  pass "fm-pr-merge refuses before the forge call when the self-test gate holds block"
+}
+
+test_selftest_gate_logs_and_continues_without_its_config_file
+test_selftest_gate_blocks_the_merge_when_its_config_holds_block
 test_gitlab_head_override_args_refuse_before_recording
 test_secondmate_merge_reports_upward_once
 test_secondmate_merge_reports_on_the_local_route

@@ -61,9 +61,13 @@
 #                       can itself reach the digest's runtime bound.
 #   7. network checks - the result of the deferred network stage started back at
 #                       step 1, harvested WITHOUT waiting for it.
-#   8. context digest - data/projects.md, data/secondmates.md, data/captain.md,
-#                       data/captain-shared.md, data/learnings.md: read-only,
-#                       always safe, always runs.
+#   8. context digest - data/projects.md, data/secondmates.md,
+#                       data/learnings.md: read-only, always safe, always runs.
+#                       data/captain.md, the handoff its "Start here" line names,
+#                       and data/captain-shared.md do NOT print here: they print
+#                       first, right after the digest head (step 0 in the body,
+#                       print_captain_context), so a reset session that reads
+#                       only the first ~470 lines still finds them.
 #   9. closing reminder - prints the context-specific watcher next step; this
 #                       script points back to the emitted harness supervision
 #                       block and deliberately never arms the watcher itself.
@@ -436,6 +440,47 @@ print_file_or_absent() {
   else
     printf 'ABSENT\n'
   fi
+}
+
+# print_captain_context: the captain's standing instructions and the handoff
+# their "Start here" line names, printed right after the digest head. A harness
+# that shows only the first ~470 lines after a reset (Claude's Read tool) must
+# find them there, so they print before the bulk sections, not in CONTEXT. The
+# handoff text rides under the data/captain.md subsection with a plain marker
+# line, never a new heading, so the set of section headings is unchanged. The
+# named path, after every symlink is resolved, must be a regular file inside
+# this home.
+HANDOFF_PRINT_MAX_BYTES=40000
+print_captain_context() {
+  local start_line rel resolved home_real size
+  print_file_or_absent "$DATA/captain.md" "data/captain.md"
+  if [ -f "$DATA/captain.md" ] && [ -s "$DATA/captain.md" ]; then
+    start_line=$(grep -m1 -F 'Start here' "$DATA/captain.md" 2>/dev/null || true)
+    # shellcheck disable=SC2016 # the backticks are literal sed text
+    rel=$(printf '%s\n' "$start_line" | sed -n 's/^[^`]*`\([^`]*\)`.*$/\1/p')
+    if [ -n "$rel" ]; then
+      case "$rel" in /*) resolved=$rel ;; *) resolved="$FM_HOME/$rel" ;; esac
+      home_real=$(cd "$FM_HOME" 2>/dev/null && pwd -P) || home_real=
+      # Resolve the whole path, the final symlink included, so a link inside the
+      # home that points outside it fails the containment test below.
+      resolved=$(perl -MCwd=realpath -e 'my $p = realpath($ARGV[0]); print $p if defined $p' "$resolved" 2>/dev/null) || resolved=
+      if [ -n "$home_real" ] && [ -n "$resolved" ] && [ -f "$resolved" ]; then
+        case "$resolved" in
+          "$home_real"/*)
+            printf '\n--- handoff named by the Start here line: %s ---\n' "$rel"
+            size=$(wc -c < "$resolved" | tr -d ' ')
+            if [ "$size" -le "$HANDOFF_PRINT_MAX_BYTES" ]; then
+              cat "$resolved"
+            else
+              head -c "$HANDOFF_PRINT_MAX_BYTES" "$resolved"
+              printf '\n(handoff cut at %s bytes; read %s for the rest)\n' "$HANDOFF_PRINT_MAX_BYTES" "$rel"
+            fi
+            ;;
+        esac
+      fi
+    fi
+  fi
+  print_file_or_absent "$DATA/captain-shared.md" "data/captain-shared.md (shared, main-authoritative, read-only in secondmate homes)"
 }
 
 print_backlog_pointer() {
@@ -843,6 +888,10 @@ if [ "$REEMIT" -eq 1 ]; then
 else
   section "SESSION START - $FM_HOME"
 fi
+# --- 0. captain context ------------------------------------------------
+# Directly after the head (and, on a re-emit, the RE-EMIT CUE that must stay
+# first): the lines a reset session most needs sit inside its first 470 lines.
+print_captain_context
 # --- 1. lock -----------------------------------------------------------
 stage lock
 subsection "LOCK"
@@ -1031,10 +1080,12 @@ fi
 stage read-once
 section "READ-ONCE CONTRACT"
 cat <<'EOF'
-Everything below is printed in full for this session start: every state/*.meta,
-a compact data/backlog.md listing, a bounded tail of every state/*.status,
-data/projects.md, data/secondmates.md, data/captain.md, data/captain-shared.md,
-and data/learnings.md.
+This digest prints in full: data/captain.md and data/captain-shared.md, plus the
+handoff its Start here line names (capped at 40000 bytes), all at the top, right
+after the head,
+then every state/*.meta, a compact data/backlog.md listing,
+a bounded tail of every state/*.status,
+data/projects.md, data/secondmates.md, and data/learnings.md.
 Do NOT re-read any of them after reading this digest, and do NOT bulk-read
 data/backlog.md or state/*.status: re-reading everything defeats the entire
 point of this command.
@@ -1047,6 +1098,8 @@ Go to a source directly only when:
     printed with its tail),
   - a full task body is needed (bin/fm-tasks-axi.sh show <id> --full, or data/backlog.md),
   - the backlog listing disclosed omitted queued items and this turn needs them,
+  - the handoff printed a "handoff cut at 40000 bytes" marker (then read the
+    rest of that handoff file from the byte where it was cut),
   - the NETWORK CHECKS section reported its checks still IN PROGRESS and this
     turn needs their verdict (bin/fm-startup-network.sh report),
   - or a STARTUP TRUNCATED banner named the stage that would have printed it, in
@@ -1191,8 +1244,6 @@ stage context
 section "CONTEXT"
 print_file_or_absent "$DATA/projects.md" "data/projects.md"
 print_file_or_absent "$DATA/secondmates.md" "data/secondmates.md"
-print_file_or_absent "$DATA/captain.md" "data/captain.md"
-print_file_or_absent "$DATA/captain-shared.md" "data/captain-shared.md (shared, main-authoritative, read-only in secondmate homes)"
 print_file_or_absent "$DATA/learnings.md" "data/learnings.md"
 
 # --- 9. closing reminder -----------------------------------------------
