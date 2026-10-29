@@ -435,7 +435,7 @@ A hit blocks at most once per turn, and `bin/fm-reply-lint.sh --replay <transcri
 ## Model deny list (config/model-deny)
 
 `config/model-deny` is captain-private and holds one glob and its reason per line, the glob first; blank lines and `#` comment lines are ignored.
-`bin/fm-spawn.sh` (`--model` and a secondmate model pin) and `bin/fm-control.sh relaunch` refuse a model that matches a glob before any endpoint, worktree or record exists, and print that line's reason.
+`bin/fm-spawn.sh` (`--model` and a secondmate model pin, local or remote), `bin/fm-control.sh relaunch` and `bin/fm-secondmate-restart.sh` (a remote mate, on the parent's config before the relaunch crosses the hop) refuse a model that matches a glob before any endpoint, worktree or record exists, and print that line's reason.
 A line with a glob and no reason refuses, so a hit always says why; with the file absent nothing changes.
 `bin/fm-model-deny-lib.sh` owns the format and the check.
 The check is log-only until `config/enforce-model-deny` holds `block`: each hit is written to `state/enforce-model-deny.log` and the launch goes ahead.

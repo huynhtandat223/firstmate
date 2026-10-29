@@ -531,6 +531,29 @@ test_remote_mate_restarts_over_the_transport_hop() {
   pass "T6 a remote mate restarts through the host-local control plane over the fm-on hop"
 }
 
+# --- A remote restart obeys the parent's config/model-deny before the hop -----
+test_remote_restart_checks_the_parent_model_deny_list() {
+  local dir out rc
+  dir=$(new_case remote-deny)
+  setup_remote_case "$dir" sm2 ok
+  export FM_FAKE_ANSWER_STATUS="$dir/home/state/sm2.status"
+  printf 'codex deny-me-big high\n' > "$dir/home/config/secondmate-harness"
+  printf '*deny-me*  captain rule: this model is never used\n' > "$dir/home/config/model-deny"
+  printf 'block\n' > "$dir/home/config/enforce-model-deny"
+  out=$(run_restart "$dir" sm2); rc=$?
+  expect_code 3 "$rc" "a denied model must not restart the remote mate"$'\n'"$out"
+  assert_contains "$out" "captain rule: this model is never used" "the refusal should carry the deny reason"
+  assert_not_contains "$out" "restarted: sm2" "a denied model must not be reported as restarted"
+  if grep -q '^fm-remote-secondmate-control.sh relaunch' "$dir/ssh.log"; then fail "the relaunch crossed the hop despite the deny list"; fi
+  # Log-only: the same restart goes through and the would-be refusal is logged.
+  rm -f "$dir/home/config/enforce-model-deny"
+  out=$(run_restart "$dir" sm2); rc=$?
+  unset FM_FAKE_ANSWER_STATUS
+  expect_code 0 "$rc" "log-only must not refuse"$'\n'"$out"
+  grep -q 'would-refuse	deny-me-big	' "$dir/home/state/enforce-model-deny.log" || fail "log-only wrote no would-refuse line"
+  pass "a remote restart checks the parent's config/model-deny before the relaunch crosses the hop"
+}
+
 # --- T7: an unreachable host is unknown, never a claimed reload --------------
 test_unreachable_host_is_reported_unknown() {
   local dir out rc
@@ -857,6 +880,7 @@ test_refused_restart_falls_back_without_claiming_a_reload
 test_local_restart_uses_the_home_pin_and_reports_what_ran
 test_native_ultra_restart_keeps_local_and_remote_profiles
 test_remote_mate_restarts_over_the_transport_hop
+test_remote_restart_checks_the_parent_model_deny_list
 test_unreachable_host_is_reported_unknown
 test_concurrent_reply_cannot_release_persist_gate
 test_persist_waits_are_polled_together
