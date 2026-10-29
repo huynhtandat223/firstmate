@@ -431,6 +431,11 @@ A drain piped into `grep`, `head`, `cut` or `sed` is only ever logged.
 The second check is `reply-lint`: the Claude Stop hook `bin/fm-reply-lint.sh` reads the turn that just ended and flags a reply with no Vietnamese letter, a question with no `agent-ask` call in the turn, a waiting captain note, and a session that has not read `data/captain.md` since its last SessionStart.
 It reads `config/enforce-reply-lint`, and it does nothing until `config/reply-language` holds a language word (`vi` today); with the file absent the lint is off.
 A hit blocks at most once per turn, and `bin/fm-reply-lint.sh --replay <transcript>` lists the turn ends a past transcript would have flagged.
+The third check is `clone-git`: `bin/fm-clone-git-pretool-check.sh` denies a state-changing git command aimed at a clone under `projects/` (AGENTS.md hard rule 1).
+It denies fetch of a refspec such as `pull/<n>/head` (or `--stdin`), pull, checkout, switch, reset, commit, stash, rebase, cherry-pick, push, clean, add, branch, tag, config, worktree and remote writes, and merge without `--ff-only`.
+It allows `fetch <remote> [<branch>]`, `merge --ff-only`, and every read.
+The refusal names `gh pr diff <n>` to read a PR and `git -C <worker worktree>` to change code.
+It reads `config/enforce-clone-git`, and `bin/fm-clone-git-command-policy.mjs --replay <transcript or directory>` lists the commands a past transcript would have denied with their session ids.
 
 ## Backlog backend (.tasks.toml / config/backlog-backend)
 
