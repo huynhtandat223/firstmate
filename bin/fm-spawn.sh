@@ -459,10 +459,11 @@
 # DMS account guard (config/dms-account):
 #   Opt-in. A Claude launch on a project listed there, or an assistance listed
 #   there, must resolve CLAUDE_CONFIG_DIR to the file's root (a raw launch
-#   command's own CLAUDE_CONFIG_DIR= assignment counts, read quote-aware and
-#   through a leading `env`), or the spawn refuses before any endpoint,
-#   worktree, or record exists. A guarded launch also sheds the environment
-#   credentials Claude ranks above the root's login. It is log-only
+#   command's own CLAUDE_CONFIG_DIR= assignment counts), or the spawn refuses
+#   before any endpoint, worktree, or record exists. In block mode a raw
+#   launch there must start with claude and assign no shed-list credential,
+#   and the launch sheds the environment credentials Claude ranks above the
+#   root's login; log-only logs and changes nothing. It is log-only
 #   until config/enforce-dms-account holds block. bin/fm-dms-account-lib.sh
 #   owns the file format and the check.
 #   Launch templates live in launch_template() below; placeholders replaced before launch:
@@ -3083,24 +3084,31 @@ fi
 # DMS account guard (config/dms-account, bin/fm-dms-account-lib.sh): a Claude
 # launch on a DMS project, or the dms assistance, must resolve to the declared
 # root. Still before any endpoint, worktree, or record exists.
-DMS_LISTED=0
-DMS_HARNESS=$HARNESS
+DMS_SHED=0
 DMS_ROOT=${CLAUDE_CONFIG_DIR:-}
-# A raw launch command is read quote-aware and through a leading `env`: the
-# command it runs is the harness to guard, and a CLAUDE_CONFIG_DIR it sets for
-# itself overrides the caller's environment and any pinned account.
+# A raw launch command is read through its leading assignments: a CLAUDE_CONFIG_DIR it
+# sets for itself overrides the caller's environment and any pinned account. Whatever
+# command it runs, a listed DMS launch is guarded as a Claude launch, and the raw guard
+# then requires the command to start with claude and assign no shed-list credential.
 if [ "$RAW_LAUNCH" = 1 ]; then
   fm_dms_account_raw_parse "$LAUNCH"
-  DMS_HARNESS=$FM_DMS_RAW_HARNESS
   if [ "$FM_DMS_RAW_ROOT_SET" = 1 ]; then DMS_ROOT=$FM_DMS_RAW_ROOT; fi
 fi
-if [ "$DMS_HARNESS" = claude ]; then
+if [ "$HARNESS" = claude ] || [ "$RAW_LAUNCH" = 1 ]; then
   if [ "$ASSISTANCE" = 1 ]; then
-    fm_dms_account_guard "$CONFIG" "$STATE" assistance "$ID" claude "$DMS_ROOT" || exit 1
-    DMS_LISTED=$FM_DMS_ACCOUNT_LISTED
+    DMS_KIND=assistance DMS_NAME=$ID
   elif [ -n "$PROJ" ]; then
-    fm_dms_account_guard "$CONFIG" "$STATE" project "$(fm_dms_account_project_name "$PROJ")" claude "$DMS_ROOT" || exit 1
-    DMS_LISTED=$FM_DMS_ACCOUNT_LISTED
+    DMS_KIND=project DMS_NAME=$(fm_dms_account_project_name "$PROJ")
+  else
+    DMS_KIND=''
+  fi
+  if [ -n "$DMS_KIND" ]; then
+    fm_dms_account_guard "$CONFIG" "$STATE" "$DMS_KIND" "$DMS_NAME" claude "$DMS_ROOT" || exit 1
+    if [ "$FM_DMS_ACCOUNT_LISTED" = 1 ]; then
+      [ "$RAW_LAUNCH" = 0 ] || fm_dms_account_raw_guard "$CONFIG" "$STATE" "$DMS_KIND" "$DMS_NAME" "$LAUNCH" || exit 1
+      # Only a blocking guard changes the launch: log-only must leave it exactly as it was.
+      [ "$(fm_enforce_mode "$CONFIG" dms-account)" != block ] || DMS_SHED=1
+    fi
   fi
 fi
 
@@ -6473,8 +6481,8 @@ if [ -n "$WORKER_ACCOUNT" ]; then
     LAUNCH="PI_CODING_AGENT_DIR=$(shell_quote "$WORKER_ACCOUNT_ROOT") $LAUNCH"
     ;;
   esac
-elif [ "$DMS_LISTED" = 1 ]; then
-  # A guarded DMS launch must run on the declared root's own login, so the
+elif [ "$DMS_SHED" = 1 ]; then
+  # A launch the blocking DMS guard covers must run on the declared root's own login, so the
   # environment credentials Claude ranks above it are shed, as for a pinned account.
   if [ "$HARNESS" = claude ] && [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
     LAUNCH="$(fm_worker_account_claude_shed) CLAUDE_CONFIG_DIR=$(shell_quote "$CLAUDE_CONFIG_DIR") $LAUNCH"

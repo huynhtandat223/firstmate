@@ -18,10 +18,12 @@
 #   prints the refusal to stderr and returns 1 once config/enforce-dms-account
 #   holds `block` (bin/fm-enforce-lib.sh); until then it writes the would-be
 #   refusal to state/enforce-dms-account.log and returns 0.
-# fm_dms_account_raw_parse <launch-command>   reads a raw launch command, quote-aware and
-#   through a leading `env`, for the harness it runs and the CLAUDE_CONFIG_DIR it
-#   sets for itself (see the function). Such a setting overrides the caller's
-#   environment and a pinned account.
+# fm_dms_account_raw_parse <launch-command>   reads a raw launch command's leading
+#   assignments, quote-aware, for the CLAUDE_CONFIG_DIR it sets for itself (which
+#   overrides the caller's environment and a pinned account), its first command
+#   word and any shed-list credential it assigns.
+# fm_dms_account_raw_guard   on a listed launch, a raw command must start with claude
+#   and assign no shed-list credential (block mode refuses, log-only logs).
 # FM_DMS_ACCOUNT_LISTED is 1 after a guard call when the launch is a listed DMS
 #   project or assistance, so the caller can shed other credentials from it.
 # fm_dms_account_project_name <project-dir>   prints the clone's basename after
@@ -71,37 +73,58 @@ _fm_dms_account_words() {  # <command>
 }
 
 # fm_dms_account_raw_parse <launch-command>
-#   Reads a raw launch command through its leading NAME=value words and a leading
-#   `env` (its options, `-u NAME`, and assignments) and sets:
-#   FM_DMS_RAW_HARNESS  the basename of the command that runs (claude for
-#                       `env CLAUDE_CONFIG_DIR=/x claude --flag`)
-#   FM_DMS_RAW_ROOT_SET 1 when the command sets or unsets CLAUDE_CONFIG_DIR for
-#                       itself, and FM_DMS_RAW_ROOT its value (empty = unset). The
-#                       last such word wins, as in the shell, and it overrides the
-#                       caller's environment and a pinned account.
+#   Reads a raw launch command through its leading NAME=value words (quote-aware)
+#   and sets:
+#   FM_DMS_RAW_HARNESS   the basename of the first word that is not an assignment
+#   FM_DMS_RAW_ROOT_SET  1 when a leading word assigns CLAUDE_CONFIG_DIR, and
+#   FM_DMS_RAW_ROOT      its value; the last such word wins, as in the shell, and
+#                        it overrides the caller's environment and a pinned account
+#   FM_DMS_RAW_CREDENTIALS  the names of leading assignments on the Claude
+#                        credential shed list (FM_WORKER_ACCOUNT_CLAUDE_SHED)
 fm_dms_account_raw_parse() {  # <launch-command>
-  local word skip_unset=0 env_mode=0
-  FM_DMS_RAW_HARNESS='' FM_DMS_RAW_ROOT='' FM_DMS_RAW_ROOT_SET=0
+  local word name shed
+  FM_DMS_RAW_HARNESS='' FM_DMS_RAW_ROOT='' FM_DMS_RAW_ROOT_SET=0 FM_DMS_RAW_CREDENTIALS=''
   _fm_dms_account_words "$1"
   for word in "${FM_DMS_WORDS[@]}"; do
-    if [ "$skip_unset" -eq 1 ]; then
-      skip_unset=0
-      if [ "$word" = CLAUDE_CONFIG_DIR ]; then FM_DMS_RAW_ROOT='' FM_DMS_RAW_ROOT_SET=1; fi
-      continue
-    fi
     case "$word" in
       [A-Za-z_]*=*)
-        if [ "${word%%=*}" = CLAUDE_CONFIG_DIR ]; then FM_DMS_RAW_ROOT=${word#*=} FM_DMS_RAW_ROOT_SET=1; fi
+        name=${word%%=*}
+        if [ "$name" = CLAUDE_CONFIG_DIR ]; then FM_DMS_RAW_ROOT=${word#*=} FM_DMS_RAW_ROOT_SET=1; fi
+        for shed in ${FM_WORKER_ACCOUNT_CLAUDE_SHED:-}; do
+          if [ "$name" = "$shed" ]; then FM_DMS_RAW_CREDENTIALS="${FM_DMS_RAW_CREDENTIALS:+$FM_DMS_RAW_CREDENTIALS }$name"; fi
+        done
         ;;
-      env) [ "$env_mode" -eq 0 ] && [ -z "$FM_DMS_RAW_HARNESS" ] && env_mode=1 || { FM_DMS_RAW_HARNESS=$(basename -- "$word"); break; } ;;
-      -u | --unset) [ "$env_mode" -eq 1 ] && skip_unset=1 || { FM_DMS_RAW_HARNESS=$(basename -- "$word"); break; } ;;
-      -i | --ignore-environment | -)
-        if [ "$env_mode" -eq 1 ]; then FM_DMS_RAW_ROOT='' FM_DMS_RAW_ROOT_SET=1; else FM_DMS_RAW_HARNESS=$(basename -- "$word"); break; fi
-        ;;
-      -*) [ "$env_mode" -eq 1 ] || { FM_DMS_RAW_HARNESS=$(basename -- "$word"); break; } ;;
       *) FM_DMS_RAW_HARNESS=$(basename -- "$word"); break ;;
     esac
   done
+}
+
+# fm_dms_account_raw_guard <config-dir> <state-dir> <kind> <name> <launch-command>
+#   Run after fm_dms_account_guard, for a raw launch command on a launch the file
+#   lists (FM_DMS_ACCOUNT_LISTED=1). A raw command is not read through wrappers:
+#   its first non-assignment word must be claude, and it must assign no
+#   credential from the shed list. On a breach it prints the refusal to stderr
+#   and returns 1 once config/enforce-dms-account holds `block`; until then it
+#   writes the would-be refusal to state/enforce-dms-account.log and returns 0.
+fm_dms_account_raw_guard() {  # <config-dir> <state-dir> <kind> <name> <launch-command>
+  local config=$1 state=$2 kind=$3 name=$4 problem=''
+  [ "${FM_DMS_ACCOUNT_LISTED:-0}" = 1 ] || return 0
+  fm_dms_account_raw_parse "$5"
+  if [ "$FM_DMS_RAW_HARNESS" != claude ]; then
+    problem="its first non-assignment word is '${FM_DMS_RAW_HARNESS:-none}', not claude (a wrapper such as env, command or exec is not read)"
+  elif [ -n "$FM_DMS_RAW_CREDENTIALS" ]; then
+    problem="it assigns $FM_DMS_RAW_CREDENTIALS, which outranks the root's own login"
+  else
+    return 0
+  fi
+  local text="$kind $name is listed in config/dms-account, but the raw launch command is refused: $problem. Launch it as [CLAUDE_CONFIG_DIR=<root>] claude ... with no credential assignment."
+  if [ "$(fm_enforce_mode "$config" dms-account)" != block ]; then
+    fm_enforce_log "$state" dms-account would-refuse "$kind-$name" "$text"
+    return 0
+  fi
+  fm_enforce_log "$state" dms-account refuse "$kind-$name" "$text"
+  echo "error: launch refused: $text" >&2
+  return 1
 }
 
 fm_dms_account_project_name() {  # <project-dir>

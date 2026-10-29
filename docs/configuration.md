@@ -439,8 +439,9 @@ The company watches one Claude account, so DMS work runs only on it.
 Blank lines and `#` comments are ignored; a file that exists but cannot be read, a file with no `root` line, or a file with an unknown line refuses every launch rather than passing.
 With the file absent the guard does nothing, and only a Claude launch is checked.
 `bin/fm-spawn.sh`, `bin/fm-control.sh relaunch` and `bin/fm-assistance.sh start` refuse a listed launch whose resolved `CLAUDE_CONFIG_DIR` is not the root, before any endpoint, worktree or record exists, and the refusal names the file and the root.
-A raw launch command is read quote-aware and through a leading `env`; one that sets its own `CLAUDE_CONFIG_DIR=` is checked on that value, and a project is matched by the canonical name of its clone directory.
-A guarded launch also sheds the environment credentials Claude ranks above the root's login (`ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` and the rest of the shed list).
+A raw launch command that sets its own `CLAUDE_CONFIG_DIR=` is checked on that value, and a project is matched by the canonical name of its clone directory.
+In block mode a raw launch on a listed project or assistance must start with `claude` (a wrapper such as `env`, `command` or `exec` is refused) and must assign no credential from the shed list, and a guarded launch sheds the environment credentials Claude ranks above the root's login (`ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` and the rest of the shed list).
+Log-only logs those breaches and changes no launch.
 `bin/fm-dms-account-lib.sh` owns the file format and the check.
 The check is log-only until `config/enforce-dms-account` holds `block`: each hit is written to `state/enforce-dms-account.log` and the launch goes ahead.
 

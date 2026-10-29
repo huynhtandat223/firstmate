@@ -143,17 +143,52 @@ test_a_raw_command_with_its_own_account_is_checked() {
   out=$(FM_FAKE_LAUNCH_LOG="$CASE/launch.log" FM_TEST_CLAUDE_CONFIG_DIR="$CASE/account3" \
     fm_test_run_spawn "$HOME_DIR" "$WT" "$FAKEBIN" "$id" "$PROJ" "CLAUDE_CONFIG_DIR='$HOME_DIR/user-home/.claude-account2' claude --flag" --scout); rc=$?
   expect_code 0 "$rc" "a raw claude command that sets the declared root must pass though the caller env is wrong: $out"
-  # Through a leading env, which classifies the raw command as the harness `env`.
-  fm_test_spawn_brief "$HOME_DIR" env-task
-  fm_test_spawn_brief "$HOME_DIR" env-ok
-  out=$(FM_FAKE_LAUNCH_LOG="$CASE/launch.log" FM_TEST_CLAUDE_CONFIG_DIR="$HOME_DIR/user-home/.claude-account2" \
-    fm_test_run_spawn "$HOME_DIR" "$WT" "$FAKEBIN" env-task "$PROJ" "env CLAUDE_CONFIG_DIR=$CASE/account3 claude --flag" --scout); rc=$?
-  expect_code 1 "$rc" "a raw env claude command with another CLAUDE_CONFIG_DIR must refuse: $out"
-  assert_absent "$HOME_DIR/state/env-task.meta" "a refused raw env spawn must not publish a task record"
-  out=$(FM_FAKE_LAUNCH_LOG="$CASE/launch.log" FM_TEST_CLAUDE_CONFIG_DIR="$CASE/account3" \
-    fm_test_run_spawn "$HOME_DIR" "$WT" "$FAKEBIN" env-ok "$PROJ" "env -u FOO CLAUDE_CONFIG_DIR=$HOME_DIR/user-home/.claude-account2 claude --flag" --scout); rc=$?
-  expect_code 0 "$rc" "a raw env claude command that sets the declared root must pass: $out"
-  pass "a raw claude launch command's own CLAUDE_CONFIG_DIR= is the account that is checked, not the caller's, also through a leading env"
+  pass "a raw claude launch command's own CLAUDE_CONFIG_DIR= is the account that is checked, not the caller's"
+}
+
+# spawn_raw <id> <raw-command> [caller-account]: a scout spawn with a raw launch command.
+spawn_raw() {
+  local id=$1 raw=$2 root=${3:-$HOME_DIR/user-home/.claude-account2}
+  fm_test_spawn_brief "$HOME_DIR" "$id"
+  : > "$CASE/launch.log"
+  FM_FAKE_LAUNCH_LOG="$CASE/launch.log" FM_TEST_CLAUDE_CONFIG_DIR="$root" \
+    fm_test_run_spawn "$HOME_DIR" "$WT" "$FAKEBIN" "$id" "$PROJ" "$raw" --scout
+}
+
+test_a_raw_launch_on_a_listed_project_must_start_with_claude() {
+  local out rc raw declared
+  new_case rawshape dms-workspaces
+  write_dms_account "$TILDE/.claude-account2" block
+  declared="$HOME_DIR/user-home/.claude-account2"
+  for raw in \
+    "env CLAUDE_CONFIG_DIR=$declared claude --flag" \
+    "command claude --flag" \
+    "exec claude --flag" \
+    "ANTHROPIC_API_KEY=account3key CLAUDE_CONFIG_DIR=$declared claude --flag" \
+    "CLAUDE_CODE_OAUTH_TOKEN=x claude --flag" \
+    "custom-agent --flag"; do
+    out=$(spawn_raw "shape-task" "$raw"); rc=$?
+    expect_code 1 "$rc" "block mode must refuse the raw launch '$raw': $out"
+    assert_contains "$out" "raw launch command is refused" "the refusal should say it is the raw command ($raw)"
+    assert_absent "$HOME_DIR/state/shape-task.meta" "a refused raw launch must not publish a record ($raw)"
+  done
+  out=$(spawn_raw shape-ok "CLAUDE_CONFIG_DIR='$declared' FOO=1 claude --flag"); rc=$?
+  expect_code 0 "$rc" "a raw launch that starts with claude and assigns no credential must pass: $out"
+  # A project outside the file keeps every shape.
+  new_case rawshape-other other-project
+  write_dms_account "$TILDE/.claude-account2" block
+  out=$(spawn_raw other-shape "env FOO=1 custom-agent --flag" "$CASE/account3"); rc=$?
+  expect_code 0 "$rc" "a raw launch on an unlisted project is untouched: $out"
+  # Log-only logs each breach and refuses nothing.
+  new_case rawshape-log dms-workspaces
+  write_dms_account "$TILDE/.claude-account2"
+  out=$(spawn_raw log-shape "env CLAUDE_CONFIG_DIR=$declared claude --flag"); rc=$?
+  expect_code 0 "$rc" "log-only must launch the env wrapper: $out"
+  grep -q 'would-refuse	project-dms-workspaces	.*not claude' "$HOME_DIR/state/enforce-dms-account.log" || fail "log-only wrote no wrapper line: $(cat "$HOME_DIR/state/enforce-dms-account.log" 2>&1)"
+  out=$(spawn_raw log-cred "ANTHROPIC_API_KEY=k CLAUDE_CONFIG_DIR=$declared claude --flag"); rc=$?
+  expect_code 0 "$rc" "log-only must launch the credential assignment: $out"
+  grep -q 'would-refuse	project-dms-workspaces	.*assigns ANTHROPIC_API_KEY' "$HOME_DIR/state/enforce-dms-account.log" || fail "log-only wrote no credential line"
+  pass "block mode refuses a raw launch on a listed project unless it starts with claude and assigns no shed-list credential; log-only logs both"
 }
 
 test_a_quoted_root_with_a_space_is_read_whole() {
@@ -184,7 +219,13 @@ test_a_guarded_launch_sheds_the_other_credentials() {
   out=$(spawn_scout shed-other "$CASE/account3"); rc=$?
   expect_code 0 "$rc" "a project outside the file should launch: $out"
   assert_no_grep '-u ANTHROPIC_API_KEY' "$CASE/launch.log" "a launch outside config/dms-account must not shed credentials"
-  pass "a guarded DMS launch sheds ANTHROPIC_API_KEY and CLAUDE_CODE_OAUTH_TOKEN, and an unlisted project is left alone"
+  # Log-only must not change the launch: an existing key-only login keeps working.
+  new_case shed-log dms-workspaces
+  write_dms_account "$TILDE/.claude-account2"
+  out=$(spawn_scout shed-log "$HOME_DIR/user-home/.claude-account2"); rc=$?
+  expect_code 0 "$rc" "a DMS spawn in log-only mode should succeed: $out"
+  assert_no_grep '-u ANTHROPIC_API_KEY' "$CASE/launch.log" "log-only must not shed credentials"
+  pass "a DMS launch sheds ANTHROPIC_API_KEY and CLAUDE_CODE_OAUTH_TOKEN only in block mode, and an unlisted project is left alone"
 }
 
 test_a_dotted_project_dir_names_the_clone() {
@@ -218,6 +259,7 @@ test_an_unreadable_file_refuses() {
 
 test_ca1_a_dms_spawn_on_the_wrong_account_is_refused
 test_a_raw_command_with_its_own_account_is_checked
+test_a_raw_launch_on_a_listed_project_must_start_with_claude
 test_a_quoted_root_with_a_space_is_read_whole
 test_a_guarded_launch_sheds_the_other_credentials
 test_a_dotted_project_dir_names_the_clone
