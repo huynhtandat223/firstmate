@@ -538,11 +538,15 @@ fm_send_steer_problem() { # <"kind<TAB>record<TAB>age">
   exit 1
 }
 # Herdr-lab check (config/enforce-herdr-lab-brief, bin/fm-herdr-lab-phrase-lib.sh): a steer that
-# names a pane or assistance lifecycle action, to a task whose brief has no Herdr lab block.
+# names a pane or assistance lifecycle action, to a crewmate task whose brief has no Herdr lab block
+# (a secondmate target is skipped).
 # Called on the inbox plane (INBOX_TASK_ID, meta lock held) and on the typed plane for a recorded
 # task (TARGET_META); both refuse before anything is written or typed.
 fm_send_lab_check() {  # <task-id>
-  local task=$1 brief phrase mode
+  local task=$1 brief phrase mode meta
+  # A secondmate is not a crewmate with a task brief: its charter is not a lab-block brief.
+  meta="$STATE/$task.meta"
+  if [ -f "$meta" ] && [ "$(fm_meta_get "$meta" kind)" = secondmate ]; then return 0; fi
   brief="${FM_DATA_OVERRIDE:-$FM_HOME/data}/$task/brief.md"
   [ -f "$brief" ] || return 0
   # shellcheck source=bin/fm-herdr-lab-phrase-lib.sh
