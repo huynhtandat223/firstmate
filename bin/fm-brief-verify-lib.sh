@@ -10,6 +10,8 @@
 # clone (git show, read only), and requires `verify-cfw run <feature>` in the
 # brief for each mapped feature:
 #   missing-verify  a hit: the brief does not name the run for a mapped feature.
+#   issue-unread    a hit: the issue's scenarios could not be read (parse failed
+#                   or printed nothing), so nothing was checked.
 #   unmapped        logged, never a hit: no feature file lists the page, which is
 #                   every page until the feature files reach origin/main.
 # An issue with only internal scenarios, or a brief with no cfw-modules issue,
@@ -65,19 +67,39 @@ fm_brief_verify_names_run() {  # <brief> <feature>
   grep -Eq "verify-cfw[[:space:]]+(--[[:space:]]+)?run[[:space:]]+([A-Za-z0-9_-]+,)*$2([^A-Za-z0-9_-]|\$)" "$1"
 }
 
+# One hit: log it, tell stderr, and return 1 when the check holds `block`.
+# fm_brief_verify_hit <config-dir> <state-dir> <code> <text>
+fm_brief_verify_hit() {
+  local config=$1 state=$2 code=$3 text=$4
+  if [ "$(fm_enforce_mode "$config" brief-verify)" = block ]; then
+    fm_enforce_log "$state" brief-verify refuse "$code" "$text"
+    printf 'refused: %s %s\n' "$code" "$text" >&2
+    return 1
+  fi
+  fm_enforce_log "$state" brief-verify would-refuse "$code" "$text"
+  printf 'would refuse: %s %s\n' "$code" "$text" >&2
+  return 0
+}
+
 fm_brief_verify_check() {  # <task-id> <brief-file>
   local task=$1 brief=$2 home=${FM_HOME:?} root=${FM_ROOT:?}
   local config=${CONFIG:-${FM_CONFIG_OVERRIDE:-$home/config}} state=${STATE:-${FM_STATE_OVERRIDE:-$home/state}}
   local clone=${FM_BRIEF_CFW_CLONE:-$home/projects/cfw-modules}
-  local section issue json pages page id features map feature missing='' mode text
+  local section issue json pages page id features map feature missing='' unread
   section=$(fm_brief_heading_body "$brief" "# Acceptance" 2>/dev/null) || return 0
   issue=$(printf '%s\n' "$section" | grep -oE "$FM_BRIEF_VERIFY_CFW_ISSUE" | head -1) || true
   [ -n "$issue" ] || return 0
-  command -v node >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 || return 0
+  unread="the brief for $task names $issue, whose scenarios could not be read (fm-acceptance.mjs parse failed or printed nothing), so the verify-cfw run cannot be checked; retry"
+  if ! command -v node >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
+    fm_brief_verify_hit "$config" "$state" issue-unread "$unread"
+    return
+  fi
   json=$(node "$root/bin/fm-acceptance.mjs" parse "$issue" 2>/dev/null) || true
-  [ -n "$json" ] || return 0
-  pages=$(printf '%s' "$json" \
-    | jq -r '.scenarios[]? | select(.surface == "user-visible") | .page // ""' 2>/dev/null | sort -u) || return 0
+  if [ -z "$json" ] || ! printf '%s' "$json" | jq -e '.scenarios | type == "array"' >/dev/null 2>&1; then
+    fm_brief_verify_hit "$config" "$state" issue-unread "$unread"
+    return
+  fi
+  pages=$(printf '%s' "$json" | jq -r '[.scenarios[] | select(.surface == "user-visible") | .page // ""] | unique | .[]')
   map=$(fm_brief_verify_feature_pages "$clone")
   features=
   while IFS= read -r id; do
@@ -95,14 +117,6 @@ fm_brief_verify_check() {  # <task-id> <brief-file>
     fm_brief_verify_names_run "$brief" "$feature" || missing="${missing:+$missing, }$feature"
   done < <(printf '%s\n' "$features" | sort -u)
   [ -n "$missing" ] || return 0
-  text="the brief for $task names no \`verify-cfw run <feature>\` for: $missing; name the run (npm run verify-cfw -- run <feature> --target storybook:<branch> --widths 1440,390 --json --out data/$task/) in the brief"
-  mode=$(fm_enforce_mode "$config" brief-verify)
-  if [ "$mode" = block ]; then
-    fm_enforce_log "$state" brief-verify refuse missing-verify "$text"
-    printf 'refused: missing-verify %s\n' "$text" >&2
-    return 1
-  fi
-  fm_enforce_log "$state" brief-verify would-refuse missing-verify "$text"
-  printf 'would refuse: missing-verify %s\n' "$text" >&2
-  return 0
+  fm_brief_verify_hit "$config" "$state" missing-verify \
+    "the brief for $task names no \`verify-cfw run <feature>\` for: $missing; name the run (npm run verify-cfw -- run <feature> --target storybook:<branch> --widths 1440,390 --json --out data/$task/) in the brief"
 }

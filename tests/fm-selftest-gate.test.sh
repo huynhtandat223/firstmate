@@ -500,6 +500,32 @@ test_sg5_internal_issues_and_other_repositories_log_nothing() {
   pass "sg5: an internal-only issue and another repository log nothing"
 }
 
+test_sg5_an_unreadable_issue_is_logged_and_refuses_under_block() {
+  local dir
+
+  dir=$(make_brief_home sg5-unread board-task-detail)
+  write_brief "$dir" "$CFW_ISSUE" "Build the board record."
+  printf '#!/usr/bin/env bash\necho "gh: could not reach GitHub" >&2\nexit 1\n' > "$dir/gh"
+  check_brief "$dir" "$FIXTURE/cfw-modules-1678.body"
+  expect_code 0 "$RC" "sg5: an unreadable issue passes while the check is log-only"
+  assert_contains "$ERR" "would refuse: issue-unread" "sg5: the unreadable issue is a would-refuse line"
+  assert_contains "$ERR" "$CFW_ISSUE" "sg5: and names the issue"
+  assert_equals 1 "$(brief_log "$dir" | awk -F'\t' '$2 == "would-refuse" && $3 == "issue-unread"' | wc -l | tr -d ' ')" \
+    "sg5: one issue-unread log line"
+  printf 'block\n' > "$dir/home/config/enforce-brief-verify"
+  check_brief "$dir" "$FIXTURE/cfw-modules-1678.body"
+  expect_code 1 "$RC" "sg5: block refuses a brief whose issue cannot be read"
+  assert_contains "$ERR" "refused: issue-unread" "sg5: block names the code"
+
+  # An answer that is not an issue body is unreadable too.
+  dir=$(make_brief_home sg5-garbage board-task-detail)
+  write_brief "$dir" "$CFW_ISSUE" "Build the board record."
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$dir/gh"
+  check_brief "$dir" "$FIXTURE/cfw-modules-1678.body"
+  assert_contains "$ERR" "would refuse: issue-unread" "sg5: an empty answer is unreadable"
+  pass "sg5: an unreadable issue is logged as issue-unread and refuses under block"
+}
+
 test_sg1_pr_1730_body_hits_phrase_on_lines_4_and_16
 test_sg2_receipt_at_the_live_head_logs_nothing
 test_sg2_each_missing_piece_hits_its_own_code
@@ -508,3 +534,4 @@ test_sg4_a_receipt_written_by_the_author_hits_author_receipt
 test_sg5_a_brief_names_the_verify_run_for_each_mapped_page
 test_sg5_an_unmapped_page_is_logged_and_never_a_hit
 test_sg5_internal_issues_and_other_repositories_log_nothing
+test_sg5_an_unreadable_issue_is_logged_and_refuses_under_block

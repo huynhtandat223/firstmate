@@ -451,6 +451,7 @@ It reads `config/enforce-merge-verifier`, a switch apart from the fifth check's.
 The seventh check is `brief-verify`: `bin/fm-brief.sh --check <task>` calls `bin/fm-brief-verify-lib.sh`.
 When the brief's `# Acceptance` names a `huynhtandat223/cfw-modules` issue, each user-visible scenario's page maps to a feature through the `pages:` line of the feature files at `origin/main` of the `projects/cfw-modules` clone, and the brief must name `verify-cfw run <feature>` for each mapped feature.
 Code `missing-verify` lists the features it does not name.
+Code `issue-unread` hits when the issue's scenarios cannot be read, because nothing was checked.
 A page with no feature file is logged as `unmapped` and never refuses.
 It reads `config/enforce-brief-verify`.
 
