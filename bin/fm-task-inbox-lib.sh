@@ -240,8 +240,9 @@ fm_task_inbox_write() {  # <state-dir> <task-id> <text> [delivery-mode]
 # same record instead of a duplicate the worker would act on twice. Two
 # distinct logical requests never collapse in practice because a marked
 # secondmate request embeds a per-request correlation token in its body. The
-# local plane keeps plain fm_task_inbox_write: its outcome is synchronous, so
-# a repeated identical local steer is a deliberate new instruction.
+# local plane keeps plain fm_task_inbox_write, but bin/fm-send.sh runs
+# fm_task_inbox_steer_problem first: retros 10-25#13 and 10-26#5 showed a
+# repeated identical local steer was a mistake, not a deliberate instruction.
 fm_task_inbox_write_idempotent() {  # <state-dir> <task-id> <text> [delivery-mode]
   local state=$1 task=$2 text=$3 delivery_mode=${4:-} dir lock want have f rec='' status=0
   dir=$(fm_task_inbox_dir "$state" "$task")
@@ -293,6 +294,56 @@ fm_task_inbox_write_idempotent() {  # <state-dir> <task-id> <text> [delivery-mod
   fm_lock_release "$lock"
   [ "$status" -eq 0 ] || return 1
   printf '%s' "$rec"
+}
+
+# Steer problems (spec huynhtandat223/firstmate#200, E5). A local steer is
+# checked before it is written:
+#   short      the text (before any marker) is under FM_STEER_MIN_CHARS
+#              characters (default 8), too little to act on (retro 10-25#4);
+#   duplicate  the exact body is already in the inbox unhandled, or sits in
+#              handled/ and was written within FM_STEER_DEDUPE_SECS (default
+#              1800, 30 minutes) - retros 10-23#10, 10-25#13, 10-26#5.
+# `--again` on bin/fm-send.sh skips the duplicate check on purpose. A record
+# marked fire-and-forget is a separate plane and never matches an ordinary one.
+# Prints "short<TAB>" or "duplicate<TAB><record path><TAB><age seconds>" and
+# returns 0 when there is a problem; returns 1 and prints nothing otherwise.
+# bin/fm-send.sh applies the log-only switch (bin/fm-enforce-lib.sh).
+fm_task_inbox_steer_problem() {  # <state-dir> <task-id> <raw-text> <body-text> [again]
+  local state=$1 task=$2 raw=$3 body=$4 again=${5:-} dir min window now mtime age f have want status=1 trimmed
+  min=${FM_STEER_MIN_CHARS:-8}
+  window=${FM_STEER_DEDUPE_SECS:-1800}
+  case "$min" in ''|*[!0-9]*) min=8 ;; esac
+  case "$window" in ''|*[!0-9]*) window=1800 ;; esac
+  trimmed=${raw#"${raw%%[![:space:]]*}"}
+  trimmed=${trimmed%"${trimmed##*[![:space:]]}"}
+  if [ "${#trimmed}" -lt "$min" ]; then
+    printf 'short\t\n'
+    return 0
+  fi
+  [ -z "$again" ] || return 1
+  dir=$(fm_task_inbox_dir "$state" "$task")
+  [ -d "$dir" ] || return 1
+  now=$(date +%s)
+  want=$(mktemp "${TMPDIR:-/tmp}/fm-steer-want.XXXXXX") || return 1
+  have=$(mktemp "${TMPDIR:-/tmp}/fm-steer-have.XXXXXX") || { rm -f "$want"; return 1; }
+  printf '%s' "$body" > "$want"
+  for f in "$dir"/*.msg "$dir/handled"/*.msg; do
+    [ -f "$f" ] || continue
+    if fm_task_inbox_is_fire_and_forget "$f"; then continue; fi
+    mtime=$(fm_path_mtime "$f") || continue
+    age=$((now - mtime))
+    case "$f" in
+      "$dir/handled"/*) [ "$age" -le "$window" ] || continue ;;
+    esac
+    fm_task_inbox_body "$f" > "$have" 2>/dev/null || continue
+    if cmp -s "$want" "$have"; then
+      printf 'duplicate\t%s\t%s\n' "$f" "$age"
+      status=0
+      break
+    fi
+  done
+  rm -f "$want" "$have"
+  return "$status"
 }
 
 # The exact enqueued text back out of a record.

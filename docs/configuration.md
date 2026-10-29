@@ -401,6 +401,15 @@ A batch is refused whole when its members' distinct specs would exceed two.
 
 The gate is a process check, not an authorship or access-control check.
 
+## Steer checks (config/enforce-steer-dedupe)
+
+`bin/fm-send.sh` checks a local steer before it writes the record.
+It refuses a text under 8 characters, and a body identical to an unhandled record in that task's inbox or to one written there in the last 30 minutes.
+The refusal names the existing `NNN.msg`, and `--again` resends an identical body on purpose; `fm-assistance.sh steer` takes the same flag.
+`bin/fm-task-inbox-lib.sh` owns the rule, and `FM_STEER_MIN_CHARS` and `FM_STEER_DEDUPE_SECS` tune it.
+The check is log-only until `config/enforce-steer-dedupe` holds `block`: each hit is written to `state/enforce-steer-dedupe.log` and the steer is still sent.
+`bin/fm-enforce-lib.sh` owns that switch.
+
 ## Firstmate-owed waits (config/firstmate-wait-minutes)
 
 A worker's `done`, `needs-decision` or `blocked` line waits on firstmate, and `bin/fm-wake-drain.sh` lists each such wait older than `config/firstmate-wait-minutes` under `FIRSTMATE OWES` and refuses its acknowledgement while any is listed.
