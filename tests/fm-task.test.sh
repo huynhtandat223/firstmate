@@ -2086,8 +2086,9 @@ mutate 'a deploy after the newest done is dev' stage "if (event.kind === 'deploy
 mutate 'a pr event after the newest started is pr' stage "if (event.kind === 'pr') pullRequest = true;" ";"
 mutate 'stageSince moves only when the step changes' stage "if (stage !== task.stage) Object.assign(task, { stage, stageSince: event.createdAt ?? null });" "Object.assign(task, { stage, stageSince: event.createdAt ?? null });"
 mutate 'the reviewer is the actor of the newest review event' stage "if (REVIEWER_KINDS.includes(event.kind)) task.reviewer = event.actor ?? null;" ";"
-mutate 'a row event does not move lastNote or lastEventAt' stage "if (event.kind !== 'row') Object.assign(task, { lastEventAt" "Object.assign(task, { lastEventAt"
-mutate 'lastNote is cut to 300' stage "String(bodyOf(event).note ?? '').slice(0, 300)" "String(bodyOf(event).note ?? '')"
+mutate 'a row event does not move lastNote or lastEventAt' stage "if (event.kind !== 'row') {" "if (true) {"
+mutate 'a source stamp does not become lastNote' stage "if (!isSourceStamp(note)) task.lastNote" "task.lastNote"
+mutate 'lastNote is cut to 300' stage "task.lastNote = note.slice(0, 300) || null" "task.lastNote = note || null"
 mutate 'reproject --all repairs every row' stage "      const result = await project(taskId);
       if (!result?.changed.length) continue;" "      continue;"
 mutate 'approve judges a row by its newest check event' approve_newest "return v ? { ...r, status: v.status," "return false ? { ...r, status: v.status,"
