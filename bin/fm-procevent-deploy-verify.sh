@@ -49,6 +49,9 @@
 # user-visible scenarios, draft mode for the scenarios on a draft page. Each ask
 # carries `lines` (the scenario ids) and `rows` (the parser's `rows` output: one
 # pending row per scenario and width), so the Tester starts its record from them.
+# For a task begun after T5 ('record: rows' in data/<task>/verify.md) the ask also
+# carries `check`, the bin/fm-task.sh call that records each row's result on the
+# deployed head; bin/fm-task-shadow.sh writes the task's rows and that head.
 # An issue the parser refuses is a `template-refused` skip naming its problems; it
 # wakes firstmate once like a visible skip below, and a refused draft round is only
 # a draft-skip, because the deploy round of the same issue refuses and wakes.
@@ -493,8 +496,13 @@ cmd_wait() {
 # ---- delivery --------------------------------------------------------------
 
 deliver_ask() {  # <ask-json>
-  local ask=$1 content record
-  content=$(jq -c 'del(.arrival, .key) + {schema: "fm-tester-verify.v1"} | {schema, round, task, issue, issue_url, prs, sha, run, head, pushed, lines, rows}
+  local ask=$1 content record check=
+  # A task begun after T5 is verified on its check rows in the task record: the ask names the call for each result.
+  if grep -qx 'record: rows' "$FM_HOME/data/$(jq -r .task <<<"$ask")/verify.md" 2>/dev/null; then
+    check=$(jq -r '"bin/fm-task.sh check \(.task) <id>@<width> pass|fail --evidence <path|url> --head \(.sha)"' <<<"$ask")
+  fi
+  content=$(jq -c --arg check "$check" 'del(.arrival, .key) + {schema: "fm-tester-verify.v1", check: (if $check == "" then null else $check end)}
+    | {schema, round, task, issue, issue_url, prs, sha, run, head, pushed, lines, rows, check}
     | with_entries(select(.value != null))' <<<"$ask")
   record=$(jq -cn --arg id "$(jq -r .key <<<"$ask")" --argjson at "$(jq -r .arrival <<<"$ask")" --arg c "$content" \
     '{schema: "fm-assistance-mentions.v1", messages: [{id: $id, arrival: $at, content: $c}]}')
@@ -502,7 +510,7 @@ deliver_ask() {  # <ask-json>
   ledger_append "$(jq -c --arg r "$DELIVER_BASE" --argjson at "$(date +%s)" 'del(.arrival) + {type: "ask", record: $r, at: $at}' <<<"$ask")"
   # Opt-in task record shadow (bin/fm-task-shadow.sh): the delivered ask is a deploy event of its task; off costs one file test.
   [ ! -e "$CONFIG/task-shadow" ] || FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_CONFIG_OVERRIDE=$CONFIG "$SCRIPT_DIR/fm-task-shadow.sh" deploy-verify \
-    "$(jq -r .task <<<"$ask")" "$(jq -r .sha <<<"$ask")" "$(jq -r .round <<<"$ask")" "$(jq -r .issue <<<"$ask")" >/dev/null 2>&1 || true
+    "$(jq -r .task <<<"$ask")" "$(jq -r .sha <<<"$ask")" "$(jq -r .round <<<"$ask")" "$(jq -r .issue <<<"$ask")" "$(jq -r '.issue_url // empty' <<<"$ask")" >/dev/null 2>&1 || true
 }
 
 cmd_autohandle() {  # <source-id> <sequence> <result-file>

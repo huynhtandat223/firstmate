@@ -17,7 +17,8 @@
 #   fm-task-shadow.sh verified <task>                                a comment event               (bin/fm-verify-close.sh)
 #   fm-task-shadow.sh held <task> <hold-kind> <reason>               ask (captain) or block        (bin/fm-captain-hold.sh hold)
 #   fm-task-shadow.sh answered <task> <released|closed>              unblock or approve            (bin/fm-captain-hold.sh answer)
-#   fm-task-shadow.sh deploy-verify <task> <sha> <round> <issue>     a deploy event                (bin/fm-procevent-deploy-verify.sh)
+#   fm-task-shadow.sh deploy-verify <task> <sha> <round> <issue> [<issue-url>]
+#                                                                    a deploy event                (bin/fm-procevent-deploy-verify.sh)
 #   fm-task-shadow.sh backlog <verb> <task> [<hold-kind> <reason>]   done | reopen | hold | unhold (bin/fm-backlog-transition-lib.sh;
 #                                                                    a captain hold is left to bin/fm-captain-hold.sh)
 #
@@ -25,6 +26,10 @@
 # done -> done (the line is the summary; the other template fields read "-"); needs-decision -> ask with the options
 # "Decide now" and "Decide later"; blocked and paused -> block transient (paused keeps its "until"); failed -> block failure;
 # resolved -> unblock. A writer rule refusal (a transition the record does not allow) is logged and left to the reconciler.
+#
+# A task begun after T5 ('record: rows' in data/<task>/verify.md, bin/fm-verify-gate-lib.sh) is verified on check rows:
+# its deploy-verify ask first writes the rows of <issue-url>, then a deploy event that names <sha> as the deployed head,
+# and a verification-pending hold leaves the task as it is while the record holds it in review.
 #
 # Every writer call carries an idempotency key built from the task, the hook event and the change, so a repeated hook
 # call, or two hooks that report one change, store one event.
@@ -92,6 +97,8 @@ title_of() {
   row=$(printf '%s' "$row" | sed -E 's# https?://.*##; s# \((repo|kind|since|hold|hold-kind|hold-until|merged|done)\b.*##')
   printf '%s' "$(cut_to "$row" 300)"
 }
+
+rows_task() { grep -qx 'record: rows' "$DATA/$TASK/verify.md" 2>/dev/null; }
 
 record_kind() {
   case "$1" in ship|scout|assistance|secondmate|plan) printf '%s' "$1" ;; *) printf other ;; esac
@@ -200,6 +207,9 @@ hold_event() {  # <hold-kind> <reason>: make the record capable of taking this o
       return 0
     fi
   fi
+  if [ "$current" = review ] && rows_task && printf '%s' "$reason" | grep -qi 'verification pending'; then
+    return 0
+  fi
   case "$current" in
     review) w "hold-$key-changes" changes "$TASK" --note 'old source holds the task' || return 0 ;;
     blocked) w "hold-$key-unblock" unblock "$TASK" || return 0 ;;
@@ -244,7 +254,12 @@ case "$EVENT" in
     esac
     ;;
   deploy-verify)
-    w "deploy-$(short "${2:-}|${3:-}")" event "$TASK" deploy --note "deploy ${3:-} at ${2:-}: verify ask sent (${4:-})"
+    if rows_task && [ -n "${5:-}" ]; then
+      w "rows-$(short "${2:-}|${5}")" rows "$TASK" "$5"
+      w "deploy-$(short "${2:-}|${3:-}")" event "$TASK" deploy --note "deploy ${3:-} at ${2:-}: verify ask sent (${4:-})" --head "${2:-}"
+    else
+      w "deploy-$(short "${2:-}|${3:-}")" event "$TASK" deploy --note "deploy ${3:-} at ${2:-}: verify ask sent (${4:-})"
+    fi
     ;;
   backlog)
     case "${1:-}" in

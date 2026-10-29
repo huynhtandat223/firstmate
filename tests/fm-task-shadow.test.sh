@@ -180,6 +180,30 @@ test_events_of_the_other_scripts() {
   pass "cleaned-up, verified, held, answered and deploy-verify become the writer commands the header names"
 }
 
+# A task begun after T5 ('record: rows' in firstmate's record) is verified on check rows: a deploy-verify ask writes the
+# rows of the issue, then a deploy event that names the deployed head; a verification-pending hold leaves a task the
+# record already holds in review as it is, so the deployed head stays the head its passes count on.
+test_rows_task_gets_rows_and_the_deployed_head() {
+  make_case rows-task on
+  mkdir -p "$HOME_DIR/data/t1" "$HOME_DIR/data/t2"
+  printf 'surface: user-visible\nissue: %s\nrecord: rows\n' "$VG_ISSUE" > "$HOME_DIR/data/t1/verify.md"
+  printf 'surface: user-visible\nissue: %s\n' "$VG_ISSUE" > "$HOME_DIR/data/t2/verify.md"
+  hook deploy-verify t1 abc123 deploy 9 "$VG_ISSUE"
+  hook deploy-verify t2 abc123 deploy 9 "$VG_ISSUE"
+  FAKE_STATE=review hook held t1 external 'verification pending: A1@1440 is pending'
+  FAKE_STATE=review hook held t2 external 'verification pending: A1@1440 is pending'
+  assert_equals "$(printf '%s\n' \
+    "rows t1 $VG_ISSUE" \
+    'event t1 deploy --note deploy deploy at abc123: verify ask sent (9) --head abc123' \
+    'event t2 deploy --note deploy deploy at abc123: verify ask sent (9)' \
+    'changes t2 --note old source holds the task' \
+    'assign t2 --to t2' \
+    'start t2' \
+    'done t2 --summary verification pending: A1@1440 is pending --changed-files - --verification old source verification pending --residual-risk - --next-actor tester')" \
+    "$(calls)" "a rows task and a task begun before T5"
+  pass "a task begun after T5 gets its check rows and the deployed head, and keeps its review on a verification-pending hold"
+}
+
 test_backlog_verbs() {
   make_case backlog on
   hook backlog "done" t1; hook backlog reopen t1; hook backlog hold t1 external "waiting"; hook backlog hold t1 captain "a question"; hook backlog unhold t1
@@ -359,6 +383,7 @@ test_the_hook_never_fails_the_script
 test_the_flag_file_carries_the_writer_settings
 test_events_of_the_other_scripts
 test_backlog_verbs
+test_rows_task_gets_rows_and_the_deployed_head
 test_spawn_writes_the_record
 test_worker_status_command_writes_the_record
 test_teardown_writes_the_record
@@ -367,12 +392,16 @@ test_captain_hold_writes_the_record
 
 # ---- mutation proofs: remove one rule of the hook, the case guarding it goes red ------------------------------
 
+# The hook sources its settings lib from its own directory, so the lib is copied beside the mutated hook, and a
+# mutation applies to whichever of the two holds the text.
 MHOOK="$TMP_ROOT/mhook.sh"
+MCONF="$TMP_ROOT/fm-task-shadow-config-lib.sh"
 mutate_hook() {  # <label> <case function> <exact source text> <replacement>
   cp "$ROOT/bin/fm-task-shadow.sh" "$MHOOK"
-  S="$3" R="$4" perl -0pi -e 's/\Q$ENV{S}\E/$ENV{R}/' "$MHOOK"
-  cmp -s "$ROOT/bin/fm-task-shadow.sh" "$MHOOK" && fail "mutation '$1' changed nothing"
-  bash -n "$MHOOK" 2>/dev/null || fail "mutation '$1' is not valid shell"
+  cp "$ROOT/bin/fm-task-shadow-config-lib.sh" "$MCONF"
+  S="$3" R="$4" perl -0pi -e 's/\Q$ENV{S}\E/$ENV{R}/' "$MHOOK" "$MCONF"
+  cmp -s "$ROOT/bin/fm-task-shadow.sh" "$MHOOK" && cmp -s "$ROOT/bin/fm-task-shadow-config-lib.sh" "$MCONF" && fail "mutation '$1' changed nothing"
+  { bash -n "$MHOOK" && bash -n "$MCONF"; } 2>/dev/null || fail "mutation '$1' is not valid shell"
   if ( HOOK="$MHOOK"; "$2" ) >/dev/null 2>&1; then
     fail "removing the rule '$1' left $2 green"
   fi
@@ -389,6 +418,9 @@ mutate_hook 'a hung writer is cut off' test_the_hook_never_fails_the_script 'run
 mutate_hook 'the hook always exits 0' test_the_hook_never_fails_the_script $'esac\nexit 0' $'esac\nexit $?'
 mutate_hook 'the flag file hands the writer its settings' test_the_flag_file_carries_the_writer_settings 'export "${line?}"' ':'
 mutate_hook 'the flag file hands over only the writer settings' test_the_flag_file_carries_the_writer_settings 'FM_TASK_BASE_URL=*|FM_TASK_AUTH=*|FM_TASK_TOKEN_FILE=*' '*=*'
+mutate_hook 'a rows task gets its check rows' test_rows_task_gets_rows_and_the_deployed_head '      w "rows-$(short "${2:-}|${5}")" rows "$TASK" "$5"' '      :'
+mutate_hook 'a rows task deploy event names the deployed head' test_rows_task_gets_rows_and_the_deployed_head 'verify ask sent (${4:-})" --head "${2:-}"' 'verify ask sent (${4:-})"'
+mutate_hook 'a verification-pending hold keeps a rows task in review' test_rows_task_gets_rows_and_the_deployed_head '  if [ "$current" = review ] && rows_task &&' '  if false &&'
 mutate_hook 'a captain hold is an ask for the owner' test_events_of_the_other_scripts '--why '"'"'a captain hold'"'"' --next-actor owner' '--why '"'"'a captain hold'"'"''
 mutate_hook 'a refused hold leaves a comment' test_events_of_the_other_scripts '|| w "hold-$key-comment" event' '|| : event'
 mutate_hook 'a close goes through done when the record holds the task running' test_events_of_the_other_scripts 'w "$1-done" "done" "$TASK" --summary "closed by the old source" --changed-files - --verification - --residual-risk - || return 1' 'return 1'
