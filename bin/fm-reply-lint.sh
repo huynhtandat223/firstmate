@@ -18,8 +18,8 @@
 #                           the message on stderr). Anything else, or no file,
 #                           only appends the hit to state/enforce-reply-lint.log.
 #
-# Once per turn: a block is remembered in state/.reply-lint-blocked by the uuid of
-# the reply it blocked. The next Stop that follows that reply (stop_hook_active)
+# Once per turn: a block is remembered in state/.reply-lint-blocked.<session_id>
+# by the uuid of the reply it blocked. The next Stop that follows that reply (stop_hook_active)
 # is allowed, so a turn is never blocked twice and never wedged.
 #
 # Usage:
@@ -106,7 +106,8 @@ FINDINGS=$(printf '%s\n' "$RESULT" | sed '1d')
 [ -n "$FINDINGS" ] || exit 0
 
 # Second stop of one turn: this Stop follows the reply the lint already blocked.
-BLOCKED_FILE="$STATE/.reply-lint-blocked"
+SESSION_KEY=$(printf '%s' "$PAYLOAD" | jq -r '.session_id // "unknown"' 2>/dev/null | tr -c 'A-Za-z0-9._-' '_')
+BLOCKED_FILE="$STATE/.reply-lint-blocked.${SESSION_KEY:-unknown}"
 if [ "$STOP_ACTIVE" = true ] && [ -n "$PREV_UUID" ] && [ -f "$BLOCKED_FILE" ] \
   && [ "$(head -n 1 "$BLOCKED_FILE" 2>/dev/null)" = "$PREV_UUID" ]; then
   fm_enforce_log "$STATE" reply-lint second-stop - "$STOP_UUID"
@@ -123,6 +124,13 @@ done <<< "$FINDINGS"
 
 [ "$MODE" = block ] || exit 0
 [ -n "$MESSAGE" ] || exit 0
-mkdir -p "$STATE" 2>/dev/null && printf '%s\n' "$STOP_UUID" > "$BLOCKED_FILE" 2>/dev/null || exit 0
+# Write the record whole or not at all: a torn file would read as another reply's uuid.
+if mkdir -p "$STATE" 2>/dev/null && printf '%s\n' "$STOP_UUID" > "$BLOCKED_FILE.tmp.$$" 2>/dev/null \
+  && mv -f "$BLOCKED_FILE.tmp.$$" "$BLOCKED_FILE" 2>/dev/null; then
+  :
+else
+  rm -f "$BLOCKED_FILE.tmp.$$" 2>/dev/null
+  exit 0
+fi
 printf '%s' "$MESSAGE" >&2
 exit 2

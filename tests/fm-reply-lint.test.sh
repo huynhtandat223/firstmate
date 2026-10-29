@@ -141,7 +141,7 @@ test_log_only_until_the_switch_is_set() {
   stop "$dir" "$tr"
   [ "$RC" -eq 0 ] && [ -z "$ERR" ] || fail "log-only must not block, got exit $RC: $ERR"
   grep -q 'would-block	english	' "$dir/state/enforce-reply-lint.log" || fail "log-only wrote no would-block line: $(cat "$dir/state/enforce-reply-lint.log" 2>&1)"
-  [ ! -e "$dir/state/.reply-lint-blocked" ] || fail "log-only recorded a block"
+  [ -z "$(find "$dir/state" -maxdepth 1 -name ".reply-lint-blocked*")" ] || fail "log-only recorded a block"
   pass "log-only: with config/enforce-reply-lint absent a hit is logged and nothing is blocked"
 }
 
@@ -225,6 +225,23 @@ test_rl5_real_reemit_digest_is_not_a_spill() {
   pass "RL5: the RE-EMIT CUE text is not mistaken for a spill; a real persisted-output notice is"
 }
 
+test_session_keyed_block_record() {
+  local dir="$TMP_ROOT/session-key" tr
+  make_primary "$dir" block
+  tr="$dir/t.jsonl"
+  t_session_start "$tr" in-reach
+  t_reply "$tr" r1 "$EN_REPLY"
+  STOP_SESSION=sA stop "$dir" "$tr"
+  [ "$RC" -eq 2 ] || fail "session A's first stop must block, got exit $RC"
+  t_reply "$tr" r2 "$EN_REPLY, again."
+  STOP_SESSION=sB stop "$dir" "$tr" true
+  [ "$RC" -eq 2 ] || fail "session B must not inherit session A's block record, got exit $RC"
+  t_reply "$tr" r3 "$EN_REPLY, a third time."
+  STOP_SESSION=sB stop "$dir" "$tr" true
+  [ "$RC" -eq 0 ] || fail "session B's own follow-up stop must pass, got exit $RC: $ERR"
+  [ ! -e "$dir/state/.reply-lint-blocked" ] || fail "the old single shared block file is still written"
+  pass "the block record is kept per session_id"
+}
 
 
 
@@ -286,6 +303,7 @@ test_rl4_waiting_notes_block_once_naming_both
 test_rl5_unread_captain_md_blocks_once
 test_rl5_reach_digest_and_shell_read_count
 test_rl5_real_reemit_digest_is_not_a_spill
+test_session_keyed_block_record
 test_inert_in_a_task_worktree_and_fails_open
 test_claude_settings_register_the_lint
 test_replay_lists_flagged_turns
