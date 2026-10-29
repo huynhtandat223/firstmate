@@ -3,7 +3,7 @@
 //
 // AGENTS.md hard rule 1: firstmate reads the clones under <home>/projects/ and
 // crewmates change them. This policy finds a git command aimed at such a clone
-// that changes it: checkout, switch, reset, commit, stash, rebase, cherry-pick,
+// that changes it: checkout, switch, reset, commit, stash, rebase, cherry-pick, update-ref, a symbolic-ref write,
 // revert, restore, add, rm, mv, am, apply, clean, push, pull, a branch or
 // worktree or remote change, a merge without --ff-only, and a fetch of a
 // refspec (pull/<n>/head, a:b, refs/..., +x). It allows fetch of a remote or
@@ -34,7 +34,7 @@ const SAFE_FORMS =
 // A state-changing verb with no allowed form.
 const ALWAYS_DENIED = new Set([
   "pull", "checkout", "switch", "reset", "commit", "stash", "rebase", "cherry-pick", "revert",
-  "restore", "add", "rm", "mv", "am", "apply", "clean", "push",
+  "restore", "add", "rm", "mv", "am", "apply", "clean", "push", "update-ref",
 ]);
 const BRANCH_MUTATING = new Set(["-d", "-D", "-m", "-M", "-c", "-C", "-f", "--delete", "--move", "--copy", "--force", "--set-upstream-to", "-u", "--unset-upstream", "--edit-description"]);
 const BRANCH_LISTING = new Set(["-l", "--list", "-a", "--all", "-r", "--remotes", "-v", "-vv", "--verbose", "--contains", "--no-contains", "--merged", "--no-merged", "--points-at", "--show-current"]);
@@ -91,7 +91,7 @@ function isCloneDir(path, home) {
   let rest;
   if (normalized.startsWith(prefix)) rest = normalized.slice(prefix.length);
   else if (normalized.startsWith("projects/")) rest = normalized.slice("projects/".length);
-  else if (normalized.startsWith("$") && normalized.includes("/projects/")) rest = normalized.slice(normalized.indexOf("/projects/") + "/projects/".length);
+  else if (/^\$(\{FM_HOME\}|FM_HOME)\/projects\//.test(normalized)) rest = normalized.slice(normalized.indexOf("/projects/") + "/projects/".length);
   else return false;
   return /^[^/\s]/.test(rest);
 }
@@ -112,6 +112,10 @@ function verdict(verb, args) {
   // stash list and stash show only read.
   if (verb === "stash" && ["list", "show"].includes(positionals(args)[0])) return null;
   if (ALWAYS_DENIED.has(verb)) return { code: `git-${verb}`, reason: reason(verb, "changes the clone") };
+  if (verb === "symbolic-ref") {
+    if (args.includes("-d") || args.includes("--delete") || positionals(args).length >= 2) return { code: "git-symbolic-ref", reason: reason("symbolic-ref", "writes a symbolic ref") };
+    return null;
+  }
   if (verb === "fetch") {
     if (args.includes("--stdin")) return { code: "git-fetch-refspec", reason: reason("fetch", "--stdin reads refspecs from input and writes refs into the clone") };
     const refs = positionals(args).slice(1);

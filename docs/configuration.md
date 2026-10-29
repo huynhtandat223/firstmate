@@ -436,6 +436,10 @@ It denies fetch of a refspec such as `pull/<n>/head` (or `--stdin`), pull, check
 It allows `fetch <remote> [<branch>]`, `merge --ff-only`, and every read.
 The refusal names `gh pr diff <n>` to read a PR and `git -C <worker worktree>` to change code.
 It reads `config/enforce-clone-git`, and `bin/fm-clone-git-command-policy.mjs --replay <transcript or directory>` lists the commands a past transcript would have denied with their session ids.
+The fourth check is `browser-kill`: `bin/fm-browser-kill-pretool-check.sh` denies `kill`, `pkill`, `killall`, `xargs kill` and `fuser -k` aimed at chrome, chromium, chrome-devtools, a pid that listens on a watched port or runs a browser, or a watched port named in the command or the pipe that feeds it.
+The watched ports are 9222, 9333 and every port in `config/browser-ports` (one per line; blank lines and `#` comments are ignored; put the Tester's port there).
+The refusal names the safe form: `CHROME_DEVTOOLS_AXI_SESSION=<name> chrome-devtools-axi stop`, and only for a session whose owner task is done.
+A heredoc, `echo` or `grep` that only mentions `pkill chrome` is never matched, and the check reads `config/enforce-browser-kill`.
 
 ## Backlog backend (.tasks.toml / config/backlog-backend)
 

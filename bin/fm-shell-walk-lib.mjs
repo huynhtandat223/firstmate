@@ -12,8 +12,9 @@
 // into, a variable it saw assigned). A brace group shares it unless it is a pipeline stage or backgrounded; each subshell,
 // substitution and payload gets its own copy, so a `cd` inside a subshell does
 // not leak out of it.
-// context is { next, separator }: the command position that follows in the
-// same list and the operator after this node, so a visitor can read a pipe.
+// context is { next, separator, pipeline }: the command position that follows
+// in the same list, the operator after this node, and the command positions
+// earlier in the same pipeline, so a visitor can read a pipe on either side.
 // A program the classifier cannot tokenize is skipped: these guards target
 // agent mistakes, which tokenize.
 
@@ -65,6 +66,7 @@ function walkCommands(program, visit, scope = {}) {
   if (lexed.error && /\bcase\b[\s\S]*\bin\b/.test(program)) lexed = new Lexer(flattenCase(program)).tokenize();
   if (lexed.error) return;
   const { nodes, separators } = splitProgram(lexed.tokens);
+  let pipeline = [];
   for (let index = 0; index < nodes.length; index += 1) {
     for (const token of nodes[index]) {
       // A brace group runs in the current shell, so what it sets persists; a
@@ -76,10 +78,11 @@ function walkCommands(program, visit, scope = {}) {
     const payload = shellPayload(position);
     if (payload !== null) {
       walkCommands(payload, visit, { ...scope });
-      continue;
+    } else {
+      const next = nodes[index + 1] ? commandPosition(withoutReserved(nodes[index + 1])) : null;
+      visit(position, { next, separator: separators[index], pipeline }, scope);
     }
-    const next = nodes[index + 1] ? commandPosition(withoutReserved(nodes[index + 1])) : null;
-    visit(position, { next, separator: separators[index] }, scope);
+    pipeline = separators[index] === "|" || separators[index] === "|&" ? [...pipeline, position] : [];
   }
 }
 
