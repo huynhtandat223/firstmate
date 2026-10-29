@@ -422,12 +422,103 @@ case_home_video() {
   [ "$missing" = 20 ] || { echo "$missing missing rows named, want 20"; return 1; }
 }
 
+# ---- tasks begun after T5: firstmate's record says 'record: rows', and the task record is read ----------------
+
+# A stand-in for bin/fm-task.sh: it records its arguments and the writer settings it was given, then prints
+# FAKE_OUT, writes FAKE_ERR to stderr and exits FAKE_RC.
+FAKE_TASK="$TMP_ROOT/fake-fm-task.sh"
+cat > "$FAKE_TASK" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" > "$FAKE_ARGS"
+printf 'url=%s\n' "${FM_TASK_BASE_URL:-}" >> "$FAKE_ARGS"
+[ -z "${FAKE_OUT:-}" ] || printf '%s\n' "$FAKE_OUT"
+[ -z "${FAKE_ERR:-}" ] || printf '%s\n' "$FAKE_ERR" >&2
+exit "${FAKE_RC:-0}"
+SH
+chmod +x "$FAKE_TASK"
+export FM_VERIFY_GATE_TASK="$FAKE_TASK"
+
+rows_home() {  # prints a home whose task was begun after T5: no Tester file and no approved: line
+  local home
+  home=$(new_home)
+  rm "$(tester "$home")"
+  drop "$(firstmate "$home")" 'approved: '
+  printf 'record: rows\n' >> "$(firstmate "$home")"
+  printf '%s\n' "$home"
+}
+
+# The task record is the word on a marked task: the gate asks it about the issue on the deployed head with the Tester
+# home as the evidence root, and passes on its clean answer without the Tester file or an approved: line.
+case_rows_read_the_record() {
+  local home
+  home=$(rows_home)
+  export FAKE_ARGS="$home/fake.args"
+  FAKE_RC=0 passes "$1" "$home" || return 1
+  [ "$(sed -n 1p "$FAKE_ARGS")" = "gate $TASK --issue $VG_ISSUE --head $VG_SHA --evidence-root $home/tester" ] \
+    || { echo "the record was asked: $(sed -n 1p "$FAKE_ARGS" 2>&1)"; return 1; }
+}
+
+# Each reason the record gives is one gate problem.
+case_rows_problems() {
+  local home
+  home=$(rows_home)
+  export FAKE_ARGS="$home/fake.args"
+  FAKE_RC=5 FAKE_OUT=$'A1@1440 is \'fail\', not pass\nno approved event for landed-ui' FAKE_ERR='fm-task: gate: landed-ui is not complete' \
+    refuses "$1" "$home" "A1@1440 is 'fail', not pass" || return 1
+  case "$OUT" in *'no approved event for landed-ui'*) ;; *) echo "the second reason is lost: $OUT"; return 1 ;; esac
+  case "$OUT" in *'is not complete'*) echo "the writer's summary line became a problem: $OUT"; return 1 ;; esac
+}
+
+# A record that cannot be read refuses, naming why.
+case_rows_record_unreadable() {
+  local home
+  home=$(rows_home)
+  export FAKE_ARGS="$home/fake.args"
+  FAKE_RC=3 FAKE_ERR='fm-task: GET /api/fm_task_event: no answer' refuses "$1" "$home" 'the task record cannot be read: fm-task: GET /api/fm_task_event: no answer'
+}
+
+# The deployed head is the newest deploy ask, as for the record files, and a missing ask refuses before the record is asked.
+case_rows_deployed_head() {
+  local home sha2=2222222222222222222222222222222222222222
+  home=$(rows_home)
+  export FAKE_ARGS="$home/fake.args"
+  printf '{"type":"ask","round":"deploy","key":"k2","task":"%s","sha":"%s"}\n' "$TASK" "$sha2" >> "$home/data/deploy-verify/ledger.jsonl"
+  FAKE_RC=0 passes "$1" "$home" || return 1
+  case "$(sed -n 1p "$FAKE_ARGS")" in *"--head $sha2 "*) ;; *) echo "the record was asked about another head: $(sed -n 1p "$FAKE_ARGS")"; return 1 ;; esac
+  rm -f "$FAKE_ARGS"; : > "$home/data/deploy-verify/ledger.jsonl"
+  refuses "$1" "$home" "no deploy ask for $TASK" || return 1
+  [ ! -e "$FAKE_ARGS" ] || { echo 'the record was asked with no deployed head'; return 1; }
+}
+
+# The writer runs with the home's record settings from config/task-shadow.
+case_rows_writer_settings() {
+  local home
+  home=$(rows_home)
+  export FAKE_ARGS="$home/fake.args"
+  mkdir -p "$home/config"
+  printf 'FM_TASK_BASE_URL=http://record.test:5001\nOTHER=x\n' > "$home/config/task-shadow"
+  FAKE_RC=0 passes "$1" "$home" || return 1
+  grep -qx 'url=http://record.test:5001' "$FAKE_ARGS" || { echo "the writer settings were not given: $(cat "$FAKE_ARGS")"; return 1; }
+}
+
+# A task begun before T5 has no marker: the record files decide, and the task record is never asked.
+case_rows_files_before_t5() {
+  local home
+  home=$(new_home)
+  export FAKE_ARGS="$home/fake.args"
+  FAKE_RC=5 FAKE_OUT='a reason the record would give' passes "$1" "$home" || return 1
+  [ ! -e "$FAKE_ARGS" ] || { echo 'the task record was asked about a task begun before T5'; return 1; }
+  drop "$(firstmate "$home")" 'approved: '
+  refuses "$1" "$home" "missing 'approved: firstmate"
+}
+
 CASES="pass_and_read_only firstmate_record_missing tester_record_missing no_tester_home tester_home_override
 firstmate_line_one firstmate_issue_line tester_surface tester_issue_line records_name_different_issues
 issue_cannot_be_parsed issue_cannot_be_read issue_without_user_visible_rows row_absent_from_tester_record
 row_not_pass row_without_evidence_field row_pass_without_evidence row_evidence_path row_id_not_in_issue retired_row
 retired_row_of_a_present_id_at_another_width internal_scenario_row row_text_differs_from_the_issue malformed_tester_row verified_line_closes_the_record acceptance_digest verified_line_missing verified_line_without_head
-deployed_head_is_the_newest_ask a_pr_in_the_watched_repo_needs_an_ask a_pr_in_another_repo_takes_the_deployed_line the_backlog_line_names_the_pr approval home_video"
+deployed_head_is_the_newest_ask a_pr_in_the_watched_repo_needs_an_ask a_pr_in_another_repo_takes_the_deployed_line the_backlog_line_names_the_pr approval home_video
+rows_read_the_record rows_problems rows_record_unreadable rows_deployed_head rows_writer_settings rows_files_before_t5"
 
 # ---- real gate ------------------------------------------------------------------------
 
@@ -508,4 +599,17 @@ unsay 'approval is a number' approval 'approved line needs a numeric epoch'
 unsay 'approval is newer than the Tester' approval 'approved: firstmate $approved is not newer'
 mutate 'an equal epoch is not newer' approval 's/"\$approved" -le "\$v_epoch"/"\$approved" -lt "\$v_epoch"/'
 unsay 'the home.video draft head is refused' home_video 'Tester head '
+# Replace one exact source text.
+swap() {  # <label> <case> <text> <replacement>
+  S=$3 R=$4 mutate "$1" "$2" 's/\Q$ENV{S}\E/$ENV{R}/'
+}
+swap 'a marked task reads the task record' rows_read_the_record '[ "$(fm_verify_gate_field "$file" record)" = rows ]' 'false'
+swap 'a task begun before T5 reads the record files' rows_files_before_t5 ' && [ "$(fm_verify_gate_field "$file" record)" = rows ]; then' '; then'
+swap 'the Tester home is the evidence root' rows_read_the_record '${tester_home:+--evidence-root "$tester_home"}' ''
+swap 'each reason the record gives is a problem' rows_problems "printf '%s\\n' \"\$out\"
+    bad=1" 'bad=1'
+unsay 'a record that cannot be read is a problem' rows_record_unreadable 'the task record cannot be read: $(sed'
+swap 'the record is asked about the deployed head' rows_deployed_head '--head "$want_sha"' '--head "$issue"'
+swap 'no deployed head, no read of the record' rows_deployed_head '[ -n "$issue" ] && [ -n "$want_sha" ] || return 0' '[ -n "$issue" ] || return 0'
+swap 'the writer runs with the record settings' rows_writer_settings '    fm_task_shadow_config "$config/task-shadow"' '    :'
 pass 'every rule of the gate has a red mutation proof'

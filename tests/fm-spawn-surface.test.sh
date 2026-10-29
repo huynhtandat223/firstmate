@@ -84,3 +84,14 @@ spawn --surface user-visible
 launched
 assert_grep 'approved: firstmate 5' "$home/data/surf/verify.md" "$label: the existing record was overwritten"
 pass 'a spawn keeps a verification record that already exists'
+
+# While the task record is on (config/task-shadow), a user-visible task begun now is verified on its check rows:
+# the record header carries 'record: rows' for bin/fm-verify-gate-lib.sh. The record writer is a no-op stand-in here.
+new_case record-on cfw-modules "$url"
+mkdir -p "$home/config"; : > "$home/config/task-shadow"
+printf '#!/bin/sh\nexit 0\n' > "$home/tools/no-writer"; chmod +x "$home/tools/no-writer"
+FM_TASK_SHADOW_WRITER="$home/tools/no-writer" spawn --surface user-visible
+launched
+[ "$(cat "$home/data/surf/verify.md")" = "$(printf 'surface: user-visible\nissue: %s\nrecord: rows' "$url")" ] \
+  || fail "$label: verify.md header is wrong: $(cat "$home/data/surf/verify.md" 2>&1)"
+pass 'a user-visible spawn while the task record is on marks the task for the check-row gate'
