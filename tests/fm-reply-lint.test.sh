@@ -285,6 +285,20 @@ test_captain_md_counts_only_as_a_file_operand() {
   pass "data/captain.md counts as read only when it is a file operand, not a search pattern"
 }
 
+test_payload_text_is_compared_in_full() {
+  local dir="$TMP_ROOT/full-text" tr base
+  make_primary "$dir" block
+  tr="$dir/t.jsonl"
+  t_session_start "$tr" in-reach
+  base="Captain, em đã xử lý xong việc này và mọi thứ đang chạy bình thường, không cần anh làm gì"
+  t_reply "$tr" r1 "$base."
+  STOP_LAST_TEXT="$base. Anh muốn em làm tiếp phần nào?" stop "$dir" "$tr"
+  [ "$RC" -eq 2 ] || fail "a payload reply that differs from the transcript after 60 characters must be linted, got exit $RC"
+  assert_contains "$ERR" "captain.md:20" "the payload question was not flagged"
+  STOP_LAST_TEXT="$base." stop "$dir" "$tr"
+  [ "$RC" -eq 0 ] || fail "an identical payload reply must pass, got exit $RC: $ERR"
+  pass "the payload reply is compared with the transcript reply in full, not by a 60-character prefix"
+}
 
 test_inert_in_a_task_worktree_and_fails_open() {
   local base="$TMP_ROOT/inert-base" wt="$TMP_ROOT/inert-wt" tr
@@ -346,6 +360,7 @@ test_rl5_real_reemit_digest_is_not_a_spill
 test_session_keyed_block_record
 test_agent_ask_counts_only_as_a_command
 test_captain_md_counts_only_as_a_file_operand
+test_payload_text_is_compared_in_full
 test_inert_in_a_task_worktree_and_fails_open
 test_claude_settings_register_the_lint
 test_replay_lists_flagged_turns

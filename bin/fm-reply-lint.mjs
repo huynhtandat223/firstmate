@@ -153,7 +153,7 @@ export function findStops(rows, options = {}) {
   // The transcript can lag the hook payload: a final reply it does not hold yet
   // is judged from the payload text, with the tools used since the last turn end.
   const extra = (options.extraText ?? "").trim();
-  if (extra && stops.at(-1)?.text.slice(0, 60) !== extra.slice(0, 60)) {
+  if (extra && stops.at(-1)?.text !== extra) {
     stops.push({ index: rows.length, uuid: `payload:${extra.length}`, timestamp: "", text: extra, codes: evaluate(extra) });
   }
   return stops;
