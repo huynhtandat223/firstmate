@@ -31,12 +31,17 @@
 //   reopen   <task> --reason WHY             done -> ready, next actor firstmate; archived stays final
 //   archive  <task>                          triage|todo|ready|blocked|review|done -> archived
 //   comment  <task> --note T [--image PATH --image-label L]...             any state
-//   event    <task> <kind> [--note N] [--pr-url U]   kinds: steer comment pr deploy protocol_violation divergence
+//   event    <task> <kind> [--note N] [--pr-url U] [--head H]   kinds: steer comment pr deploy protocol_violation
+//            divergence; --head only on deploy: the deployed head, which user-visible passes count on from then
 //   link     <parent> <child>                the child waits in todo while the parent is open
 //   rows     <task> <issue-url>              one check row per scenario x width from fm-acceptance.mjs
-//   check    <task> <id>@<width> --status pending|pass|fail [--evidence E] [--head H] [--next-actor A]
+//   check    <task> <id>@<width> pass|fail|pending [--evidence E] [--head H] [--next-actor A]
+//            (--status S is the same as the result word); next actor firstmate on a pass, worker on a fail
 //   owner-check <task> <id>@<width> --page-title --url --steps --data --expected   (sets next actor owner;
 //            a row that has an item needs --url and --steps again; a re-sent --key never writes the item twice)
+//   gate     <task> --issue URL --head SHA [--evidence-root DIR]   read only: prints each reason the task is not
+//            complete (exit 5): a user-visible row of the issue not pass on the deployed head with its current
+//            digest and evidence, or no approved event newer than the last row event (bin/fm-verify-gate-lib.sh)
 //   turn-end <task> --turn TOKEN             check a durable turn generation; heartbeat is not terminal
 //   deliver  <task> --consumer NAME           claim each event in fm_task_delivery, then append a wake
 //            FM_HOME is required; delivery is scoped to this task, never a whole foreign fleet.
@@ -277,10 +282,10 @@ const SPECS = {
   reassign: { pos: ['task'], flags: { to: 's', reason: 's' } },
   archive: { pos: ['task'], flags: {} },
   comment: { pos: ['task'], flags: { image: 'm', 'image-label': 'm' } },
-  event: { pos: ['task', 'kind'], flags: { 'pr-url': 's' } },
+  event: { pos: ['task', 'kind'], flags: { 'pr-url': 's', head: 's' } },
   link: { pos: ['parent', 'child'], flags: {} },
   rows: { pos: ['task', 'issue'], flags: {} },
-  check: { pos: ['task', 'target'], flags: { status: 's', evidence: 's', head: 's', 'next-actor': 's' } },
+  check: { pos: ['task', 'target', 'status'], flags: { status: 's', evidence: 's', head: 's', 'next-actor': 's' } },
   'owner-check': { pos: ['task', 'target'], flags: { 'page-title': 's', url: 's', steps: 's', data: 's', expected: 's' } },
   show: { pos: ['task'], flags: {} },
   list: { pos: [], flags: { state: 's', actor: 's' } },
@@ -288,6 +293,7 @@ const SPECS = {
   reproject: { pos: ['task'], flags: {} },
   'turn-end': { pos: ['task'], flags: { turn: 's' } },
   deliver: { pos: ['task'], flags: { consumer: 's' } },
+  gate: { pos: ['task'], flags: { issue: 's', head: 's', 'evidence-root': 's' } },
 };
 
 function parseArgs(command, argv) {
@@ -666,29 +672,33 @@ const cmdReopen = async (args) => {
   return simple('reopen', 'reopened', async () => ({state: 'ready', nextActor: 'firstmate', blockKind: null, blockReason: null, blockRepeats: 0, holdUntil: null}))(args);
 };
 const cmdArchive = simple('archive', 'archived', async () => ({ state: 'archived', nextActor: 'firstmate' }));
-// A user-visible pass counts for the head that was built last: the head of the newest done call.
-async function latestDoneHead(taskId) {
-  const lastDone = [...(await taskEvents(taskId))].reverse().find((e) => e.kind === 'done');
-  return lastDone ? ((await firstRow('fm_event_done', `fmTaskEventId eq ${lastDone.id}`))?.head ?? null) : null;
+// A user-visible pass counts for the head that was built or deployed last: the head of the newest done call, or of a
+// newer deploy event that names one (the Tester checks the deployed head, which a merge makes differ from the worker's).
+async function builtHead(taskId) {
+  const last = [...(await taskEvents(taskId))].reverse().find((e) => e.kind === 'done' || (e.kind === 'deploy' && bodyOf(e).head));
+  if (last?.kind === 'deploy') return bodyOf(last).head;
+  return last ? ((await firstRow('fm_event_done', `fmTaskEventId eq ${last.id}`))?.head ?? null) : null;
 }
 const passedOnOtherHead = (row, head) => row.surface === 'user-visible' && row.status === 'pass' && (row.head ?? null) !== head;
 
-const cmdApprove = simple('approve', 'approved', async (task, args, taskId) => {
-  // a row holds its newest check event, also while that event's patch is still on its way
-  const events = await taskEvents(taskId);
-  const rows = (await checkRows(taskId)).filter((r) => r.status !== 'retired').map((r) => {
+// The task's open rows, each holding its newest check event, also while that event's patch is still on its way.
+const newestRows = (rows, events) =>
+  rows.filter((r) => r.status !== 'retired').map((r) => {
     const newest = rowEvent(events, r);
     const v = newest && bodyOf(newest).values;
     return v ? { ...r, status: v.status, nextActor: v.nextActor, evidence: v.evidence ?? null, head: v.head ?? null } : r;
   });
+
+const cmdApprove = simple('approve', 'approved', async (task, args, taskId) => {
+  const rows = newestRows(await checkRows(taskId), await taskEvents(taskId));
   const open = openRows(rows);
   if (open.length) throw rule(`approve is refused while check rows are open: ${open.map((r) => `${rowKey(r)} (${r.status})`).join(', ')}`);
   const visible = rows.filter((r) => r.surface === 'user-visible');
   if (task.surface === 'user-visible' && !visible.length) throw rule(`approve is refused: ${taskId} is user-visible and has no check rows; run rows first`);
   if (visible.length) {
-    const head = await latestDoneHead(taskId);
+    const head = await builtHead(taskId);
     const stale = visible.filter((r) => (r.head ?? null) !== head);
-    if (stale.length) throw rule(`approve is refused: these user-visible rows passed on another head than the latest done (${head ?? 'none'}): ${stale.map((r) => `${rowKey(r)} (${r.head ?? 'none'})`).join(', ')}`);
+    if (stale.length) throw rule(`approve is refused: these user-visible rows passed on another head than the latest built or deployed head (${head ?? 'none'}): ${stale.map((r) => `${rowKey(r)} (${r.head ?? 'none'})`).join(', ')}`);
   }
   return { state: 'done', nextActor: 'firstmate', blockKind: null, blockReason: null, blockRepeats: 0, holdUntil: null };
 });
@@ -709,10 +719,12 @@ async function cmdEvent(args) {
   const who = identity(args, 'worker');
   const kind = oneOf(FREE_KINDS, args.pos.kind, 'event kind');
   const prUrl = args.flags['pr-url'];
+  const head = args.flags.head;
+  if (head !== undefined && kind !== 'deploy') throw usage('--head names a deployed head: give it only on a deploy event');
   return write(taskId, who, async ({ task }) => {
     if (!task) throw rule('no such task');
-    return { kind, note: noteOf(args), set: kind === 'pr' && prUrl ? { prUrl } : {} };
-  });
+    return { kind, note: noteOf(args), set: kind === 'pr' && prUrl ? { prUrl } : {}, ...(head ? { extra: { head } } : {}) };
+  }, head ? () => routeReview(taskId, who) : undefined);
 }
 
 function documentOf(f) {
@@ -839,14 +851,8 @@ async function cmdLink(args) {
   });
 }
 
-async function cmdRows(args) {
-  const taskId = taskIdOf(args);
-  const issue = args.pos.issue;
-  if (!issue) throw usage('rows needs <task> <issue-url>');
-  const who = identity(args, 'firstmate');
-  const task = fold(await taskEvents(taskId));
-  if (!task) throw rule(`no such task ${taskId}`);
-  if (CLOSED.includes(task.state)) throw rule(`rows is refused: ${taskId} is ${task.state}, and new rows or resets would sit under a closed task`);
+// The check rows an issue asks for now, keyed <id>@<width>, each with the digest of its scenario as the issue reads it.
+async function wantedRows(issue) {
   const parser = process.env.FM_TASK_ACCEPTANCE || path.join(HERE, 'fm-acceptance.mjs');
   const run = spawnSync('node', [parser, 'parse', issue, '--strict'], { encoding: 'utf8', timeout: 60000, maxBuffer: 16 * 1024 * 1024 });
   if (run.error || !run.stdout) throw new Fail(3, `could not read ${issue}: ${run.error?.message || run.stderr.trim() || `parser exited ${run.status}`}`);
@@ -873,6 +879,18 @@ async function cmdRows(args) {
       acceptanceDigest: crypto.createHash('sha256').update(JSON.stringify(rest)).digest('hex'),
     });
   }
+  return wanted;
+}
+
+async function cmdRows(args) {
+  const taskId = taskIdOf(args);
+  const issue = args.pos.issue;
+  if (!issue) throw usage('rows needs <task> <issue-url>');
+  const who = identity(args, 'firstmate');
+  const task = fold(await taskEvents(taskId));
+  if (!task) throw rule(`no such task ${taskId}`);
+  if (CLOSED.includes(task.state)) throw rule(`rows is refused: ${taskId} is ${task.state}, and new rows or resets would sit under a closed task`);
+  const wanted = await wantedRows(issue);
   const have = new Map((await checkRows(taskId)).map((row) => [rowKey(row), row]));
   const counts = { added: 0, reset: 0, retired: 0, updated: 0, unchanged: 0 };
   const fresh = { status: 'pending', evidence: null, head: null, checkedAt: null };
@@ -941,7 +959,8 @@ async function cmdCheck(args) {
   const who = identity(args, 'tester');
   const f = args.flags;
   const target = targetOf(args.pos.target);
-  const status = oneOf(CHECK_STATUSES, f.status, 'status');
+  if (args.pos.status !== undefined && f.status !== undefined && args.pos.status !== f.status) throw usage(`give the result once: ${args.pos.status} or --status ${f.status}`);
+  const status = oneOf(CHECK_STATUSES, args.pos.status ?? f.status, 'status');
   await requireOpenTask(taskId, 'check');
   const row = await checkRow(taskId, target);
   const nextActor = oneOf(ACTORS, f['next-actor'] ?? (status === 'pass' ? 'firstmate' : status === 'fail' ? 'worker' : row.nextActor === 'firstmate' ? surfaceActor(row.surface) : row.nextActor), 'next actor');
@@ -984,7 +1003,7 @@ async function applyNewestCheck(taskId, row) {
 
 // A task in review waits on the actor of its open check rows (worker first, then tester, then owner), and on
 // firstmate when none is open. Called after every change of a row.
-// A user-visible pass on another head than the latest done is open for the tester.
+// A user-visible pass on another head than the built head is open for the tester.
 const reviewActor = (rows, head) => {
   const waiting = rows.filter((r) => openRows([r]).length || passedOnOtherHead(r, head)).map((r) => (passedOnOtherHead(r, head) ? 'tester' : r.nextActor));
   return ['worker', 'tester', 'owner'].find((a) => waiting.includes(a)) ?? 'firstmate';
@@ -992,17 +1011,60 @@ const reviewActor = (rows, head) => {
 async function routeReview(taskId, who) {
   const needed = async () => {
     const task = fold(await taskEvents(taskId));
-    const actor = reviewActor(await checkRows(taskId), await latestDoneHead(taskId));
+    const actor = reviewActor(await checkRows(taskId), await builtHead(taskId));
     return task?.state === 'review' && task.nextActor !== actor ? actor : null;
   };
   if (!(await needed())) return;
   await append(taskId, { ...who, key: `${who.key}:route:${crypto.randomBytes(3).toString('hex')}` }, async ({ task }) => {
-    const actor = reviewActor(await checkRows(taskId), await latestDoneHead(taskId));
+    const actor = reviewActor(await checkRows(taskId), await builtHead(taskId));
     if (task?.state !== 'review' || task.nextActor === actor) throw rule('already routed');
     return { kind: 'routed', note: `check rows are open for ${actor}`, set: { nextActor: actor } };
   }).catch((error) => {
     if (!(error instanceof Fail && error.code === 5)) throw error;
   });
+}
+
+// The verify gate's read of the record (bin/fm-verify-gate-lib.sh calls it for a task begun after T5). It writes nothing,
+// prints one problem per line and exits 5 when there is any. The task passes when every user-visible row the issue asks
+// for now is `pass` with evidence on the deployed --head and with its scenario's current digest, and an approved event is
+// newer than the last row event. A relative evidence path resolves against --evidence-root (the Tester home).
+async function cmdGate(args) {
+  const taskId = taskIdOf(args);
+  const f = args.flags;
+  if (!f.issue || !f.head) throw usage('gate needs --issue URL and --head SHA');
+  const events = await taskEvents(taskId);
+  if (!fold(events)) {
+    out(`the task record has no task ${taskId}`);
+    throw new Fail(5, `gate: ${taskId} is not complete`);
+  }
+  const problems = [];
+  const wanted = [...(await wantedRows(f.issue))].filter(([, want]) => want.surface === 'user-visible');
+  if (!wanted.length) problems.push(`issue ${f.issue} has no user-visible scenario row`);
+  const have = new Map(newestRows(await checkRows(taskId), events).map((r) => [rowKey(r), r]));
+  for (const [key, want] of wanted) {
+    const row = have.get(key);
+    if (!row) {
+      problems.push(`${key} has no check row in the record; run rows`);
+      continue;
+    }
+    if (row.line !== want.line || row.acceptanceDigest !== want.acceptanceDigest) problems.push(`${key} was checked against another version of the scenario; run rows, then check it again`);
+    if (row.status !== 'pass') {
+      problems.push(`${key} is '${row.status}', not pass`);
+      continue;
+    }
+    const ev = row.evidence ?? '';
+    if (!ev || ev === '-') problems.push(`${key} is pass without evidence`);
+    else if (!/^https?:\/\/./.test(ev) && !fs.existsSync(path.resolve(f['evidence-root'] || '.', ev))) problems.push(`${key} evidence path does not exist: ${ev}`);
+    if ((row.head ?? null) !== f.head) problems.push(`${key} passed on head ${row.head ?? 'none'}, not the deployed head ${f.head}`);
+  }
+  const wantedKeys = new Set(wanted.map(([key]) => key));
+  for (const [key, row] of have) if (row.surface === 'user-visible' && !wantedKeys.has(key)) problems.push(`${key} is not a row of ${f.issue}; run rows`);
+  const lastRow = [...events].reverse().find((e) => (e.kind === 'check' || e.kind === 'owner-check') && bodyOf(e).row);
+  const approved = [...events].reverse().find((e) => e.kind === 'approved');
+  if (!approved) problems.push(`no approved event for ${taskId}: firstmate approves with bin/fm-task.sh approve after the rows pass`);
+  else if (lastRow && approved.seq < lastRow.seq) problems.push(`the approved event (seq ${approved.seq}) is not newer than the last row event (seq ${lastRow.seq})`);
+  for (const problem of problems) out(problem);
+  if (problems.length) throw new Fail(5, `gate: ${taskId} is not complete`);
 }
 
 async function cmdOwnerCheck(args) {
@@ -1212,7 +1274,7 @@ const COMMANDS = {
   'turn-end': cmdTurnEnd, deliver: cmdDeliver,
   create: cmdCreate, import: cmdImport, assign: cmdAssign, start: cmdStart, heartbeat: cmdHeartbeat, done: cmdDone, ask: cmdAsk, block: cmdBlock,
   unblock: cmdUnblock, approve: cmdApprove, changes: cmdChanges, reopen: cmdReopen, reassign: cmdReassign, archive: cmdArchive, comment: cmdComment, event: cmdEvent,
-  link: cmdLink, rows: cmdRows, check: cmdCheck, 'owner-check': cmdOwnerCheck, show: cmdShow, list: cmdList, resume: cmdResume, reproject: cmdReproject,
+  link: cmdLink, rows: cmdRows, check: cmdCheck, 'owner-check': cmdOwnerCheck, gate: cmdGate, show: cmdShow, list: cmdList, resume: cmdResume, reproject: cmdReproject,
 };
 
 async function main(argv) {
