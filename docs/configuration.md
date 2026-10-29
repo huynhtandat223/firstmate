@@ -440,6 +440,11 @@ The fourth check is `browser-kill`: `bin/fm-browser-kill-pretool-check.sh` denie
 The watched ports are 9222, 9333 and every port in `config/browser-ports` (one per line; blank lines and `#` comments are ignored; put the Tester's port there).
 The refusal names the safe form: `CHROME_DEVTOOLS_AXI_SESSION=<name> chrome-devtools-axi stop`, and only for a session whose owner task is done.
 A heredoc, `echo` or `grep` that only mentions `pkill chrome` is never matched, and the check reads `config/enforce-browser-kill`.
+The fifth check is `merge-selftest`: `bin/fm-selftest-gate-lib.sh` reads the PR body once before a GitHub merge in `bin/fm-pr-merge.sh`.
+Code `phrase` hits a body line outside fenced code and `>` quotes that says "do not merge", "don't merge" or "not ready to merge".
+For a task with `surface=user-visible` on `huynhtandat223/cfw-modules`, the body also needs a `Self-test: verify-cfw run <features> --target storybook:<branch> head=<sha> PASS` line whose sha is a prefix of the live head, and `data/<task>/selftest-<head>.json` must read PASS at that head.
+Codes `no-selftest-line`, `stale-head`, `no-receipt` and `receipt-fail` name what is missing, and each prints the `verify-cfw run` command that writes a fresh receipt.
+A hit also prints one `would refuse:` line on stderr, and `config/enforce-merge-selftest` set to `block` makes it refuse the merge.
 
 ## Backlog backend (.tasks.toml / config/backlog-backend)
 
