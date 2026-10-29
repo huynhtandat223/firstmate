@@ -2564,6 +2564,14 @@ run_one_serial() {
   record_script_result "$script" "$rc" "$duration" "$out" "$end_iso"
 }
 
+# No suite may reach the caller's own home: a worker runs this from a session whose FM_HOME is the live firstmate
+# home, and a test that writes a status file there wakes its supervision. Every suite starts with FM_HOME and each
+# FM_*_OVERRIDE unset, serial and concurrent alike; a suite that needs a home makes its own.
+unset FM_HOME
+while IFS= read -r name; do
+  case "$name" in FM_*_OVERRIDE) unset "$name" ;; esac
+done < <(compgen -e)
+
 if [ "$JOBS" -eq 1 ]; then
   for script in "${SCRIPTS[@]}"; do
     run_one_serial "$script"

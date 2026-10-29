@@ -240,6 +240,43 @@ test_task_marker_refuses_the_primary_checkout() {
   pass "a task marker refuses execution in the primary checkout and leaves worktrees and inspection alone"
 }
 
+# A worker runs the suites from a session whose FM_HOME is the live firstmate home. A suite that writes a status file
+# there wakes that home's supervision, so the runner starts every suite with FM_HOME and each FM_*_OVERRIDE unset.
+test_suites_never_reach_the_callers_home() {
+  local tmp repo live seen before after
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-home.XXXXXX")
+  repo="$tmp/repo"
+  live="$tmp/live-home"
+  fm_git_init_commit "$repo"
+  mkdir -p "$repo/bin" "$repo/tests" "$live/state" "$live/data"
+  cp "$RUNNER" "$repo/bin/fm-test-run.sh"
+  cp "$ROOT/tests/git-config-helpers.sh" "$repo/tests/"
+  chmod +x "$repo/bin/fm-test-run.sh"
+  : >"$live/state/existing.status"
+  # The probe writes a status file wherever FM_HOME and the overrides point, and records what it saw.
+  cat >"$repo/tests/home-probe.test.sh" <<'PROBE'
+#!/usr/bin/env bash
+[ -z "${FM_HOME:-}" ] || : >"$FM_HOME/state/probe.status"
+[ -z "${FM_STATE_OVERRIDE:-}" ] || : >"$FM_STATE_OVERRIDE/probe.status"
+[ -z "${FM_DATA_OVERRIDE:-}" ] || : >"$FM_DATA_OVERRIDE/probe.status"
+printf 'FM_HOME=%s FM_STATE_OVERRIDE=%s FM_DATA_OVERRIDE=%s\n' "${FM_HOME:-}" "${FM_STATE_OVERRIDE:-}" "${FM_DATA_OVERRIDE:-}" >"$PROBE_SEEN"
+echo "ok - home probe"
+PROBE
+  chmod +x "$repo/tests/home-probe.test.sh"
+  before=$(ls -A "$live/state" "$live/data")
+  # The serial path; a concurrent worker unsets the same variables in its own subshell. FM_TASK_ID is cleared so a
+  # worker running this test is not refused in the probe repository's primary checkout.
+  (cd "$repo" && env -u FM_TASK_ID FM_HOME="$live" FM_STATE_OVERRIDE="$live/state" FM_DATA_OVERRIDE="$live/data" \
+    PROBE_SEEN="$tmp/seen" bin/fm-test-run.sh tests/home-probe.test.sh) >/dev/null 2>&1 \
+    || { rm -rf "$tmp"; fail "the home probe suite failed"; }
+  seen=$(cat "$tmp/seen")
+  [ "$seen" = 'FM_HOME= FM_STATE_OVERRIDE= FM_DATA_OVERRIDE=' ] || { rm -rf "$tmp"; fail "a suite still saw the caller's home: $seen"; }
+  after=$(ls -A "$live/state" "$live/data")
+  [ "$after" = "$before" ] || { rm -rf "$tmp"; fail "a suite wrote into the caller's home: $after"; }
+  rm -rf "$tmp"
+  pass "every suite runs with the caller's FM_HOME and FM_*_OVERRIDE unset, so the caller's home stays unchanged"
+}
+
 test_changed_runner_surfaces_select_their_family() {
   local tmp repo listed
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-owner-scope.XXXXXX")
@@ -1831,6 +1868,7 @@ test_family_selection
 test_single_script_selection
 test_changed_file_selection_is_conservative
 test_task_marker_refuses_the_primary_checkout
+test_suites_never_reach_the_callers_home
 test_changed_runner_surfaces_select_their_family
 test_shell_line_ending_policy_selects_runner_contract
 test_changed_dependency_selection_and_unmapped_failure
