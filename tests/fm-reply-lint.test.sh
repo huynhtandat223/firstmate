@@ -261,6 +261,29 @@ test_agent_ask_counts_only_as_a_command() {
   pass "agent-ask counts only as an invoked command, never as a word in a search pattern"
 }
 
+test_captain_md_counts_only_as_a_file_operand() {
+  local dir="$TMP_ROOT/captain-operand" tr cmd
+  make_primary "$dir" block
+  for cmd in 'grep -n captain.md bin/fm-session-start.sh' 'rg data/captain.md docs' 'echo data/captain.md' 'grep -rn "data/captain.md" .'; do
+    tr="$dir/t.jsonl"
+    : > "$tr"
+    t_session_start "$tr" late
+    t_tool "$tr" Bash "$(jq -cn --arg c "$cmd" '{command:$c}')"
+    t_reply "$tr" r1 "$VI_REPLY"
+    stop "$dir" "$tr"
+    [ "$RC" -eq 2 ] || fail "'$cmd' is not a read of data/captain.md, got exit $RC"
+  done
+  for cmd in 'cat data/captain.md' 'sed -n 1,40p /h/data/captain.md' 'head -n 50 data/captain.md | cat' 'grep -n Vietnamese data/captain.md'; do
+    tr="$dir/t.jsonl"
+    : > "$tr"
+    t_session_start "$tr" late
+    t_tool "$tr" Bash "$(jq -cn --arg c "$cmd" '{command:$c}')"
+    t_reply "$tr" r1 "$VI_REPLY"
+    stop "$dir" "$tr"
+    [ "$RC" -eq 0 ] && [ -z "$ERR" ] || fail "'$cmd' reads data/captain.md, got exit $RC: $ERR"
+  done
+  pass "data/captain.md counts as read only when it is a file operand, not a search pattern"
+}
 
 
 test_inert_in_a_task_worktree_and_fails_open() {
@@ -322,6 +345,7 @@ test_rl5_reach_digest_and_shell_read_count
 test_rl5_real_reemit_digest_is_not_a_spill
 test_session_keyed_block_record
 test_agent_ask_counts_only_as_a_command
+test_captain_md_counts_only_as_a_file_operand
 test_inert_in_a_task_worktree_and_fails_open
 test_claude_settings_register_the_lint
 test_replay_lists_flagged_turns

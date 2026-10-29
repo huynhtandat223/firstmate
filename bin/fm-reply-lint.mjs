@@ -104,7 +104,15 @@ function readsCaptain(use) {
   const target = commandOf(use);
   if (use.name === "Read") return /(^|\/)data\/captain\.md$/.test(target);
   if (use.name !== "Bash") return false;
-  return /\b(cat|head|tail|sed|less|more|bat|awk|grep|rg)\b[^|;&]*\bdata\/captain\.md\b/.test(target);
+  const SEARCH = new Set(["grep", "rg", "sed", "awk"]);
+  const READERS = new Set(["cat", "head", "tail", "less", "more", "bat", "nl", "view", ...SEARCH]);
+  return shellCommands(target).some((c) => {
+    if (!READERS.has(c.name)) return false;
+    const operands = c.operands.filter((o) => !o.startsWith("-"));
+    // The first operand of a search or edit command is its pattern or script.
+    const files = SEARCH.has(c.name) ? operands.slice(1) : operands;
+    return files.some((f) => /(^|\/)data\/captain\.md$/.test(f));
+  });
 }
 
 function callsAgentAsk(use) {
