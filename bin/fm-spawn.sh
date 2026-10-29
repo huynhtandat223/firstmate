@@ -441,8 +441,8 @@
 #   before provisioning; __PIEXCLUDE__ below owns the Pi launch substitution.
 # Model deny list (config/model-deny):
 #   Opt-in. One glob and its reason per line; a --model (or a secondmate model
-#   pin) matching a glob refuses before any endpoint, worktree, or record exists
-#   and prints the reason. Log-only until config/enforce-model-deny holds block.
+#   pin, local or remote) matching a glob refuses before any endpoint, worktree,
+#   or record exists and prints the reason. Log-only until config/enforce-model-deny holds block.
 #   bin/fm-model-deny-lib.sh owns the format and the check.
 # Worker account pin (config/claude-account, config/pi-account):
 #   Opt-in. With no file, a Claude or Pi launch is unchanged: Claude still
@@ -1316,6 +1316,14 @@ spawn_remote_secondmate() {
       effort=$("$SCRIPT_DIR/fm-harness.sh" secondmate-effort)
       [ -n "$effort" ] || effort=-
     fi
+  fi
+  # The parent's model deny list (config/model-deny) also covers a remote second
+  # mate, whose launch and relaunch both end here: the model resolved above is
+  # checked on this host before anything is dispatched.
+  if [ "$model" != - ] && ! fm_model_deny_guard "$CONFIG" "$STATE" "$model"; then
+    fm_lock_release "$registry_lock" || true
+    fm_lock_release "$SPAWN_TASK_LOCK" || true
+    return 1
   fi
   # A remote second mate always runs on Herdr: its server belongs to the host's
   # own GUI login session, so the endpoint outlives every SSH connection that
