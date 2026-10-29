@@ -1926,7 +1926,51 @@ case_wait() {
   must 'clears-on on another kind' 2 || return 1
 }
 
-CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed row backlog status_view verify_view wait"}
+# HG2: a pass on an earlier deployed head carries while no later deploy names its id; a deploy that names it, or that
+# records nothing, brings the row back to the Tester; gate prints each carried pass with its head; checks reads it.
+case_carry() {
+  BIN=$1; reset_db
+  unset FM_HOME
+  local t=tk-carry na due
+  na() { task_row $t | jq -r .nextActor; }
+  due() { ft checks $t "$@" >/dev/null || return 1; jq -r '[.rows[] | select(.surface == "user-visible") | "\(.key)=\(.due)/\(.carried)"] | join(" ")' <<<"$OUT"; }
+  use_issue v1
+  mk_running $t >/dev/null || { echo "setup: $ERR"; return 1; }
+  ft rows $t "$ISSUE" >/dev/null && ft "done" $t "${DONE_FLAGS[@]}" --head b0 >/dev/null && ft event $t deploy --head D0 >/dev/null || { echo "setup: $ERR"; return 1; }
+  ft check $t A1@1440 pass --evidence https://e/1 --head D0 >/dev/null && ft check $t A1@390 pass --evidence https://e/2 --head D0 >/dev/null || { echo "check: $ERR"; return 1; }
+  for r in A2@- A3@-; do ft check $t $r pass --evidence https://e/3 >/dev/null || { echo "check $r: $ERR"; return 1; }; done
+  ft event $t deploy --head D1 --touched none
+  must 'deploy touched none' 0 || return 1
+  [ "$(due)" = 'A1@1440=false/true A1@390=false/true' ] || { echo "after a deploy that touched none: $(due)"; return 1; }
+  [ "$(na)" = firstmate ] || { echo "a carried pass sent the task to $(na)"; return 1; }
+  [ "$(due --as-deployed D9 --touched A1)" = 'A1@1440=true/false A1@390=true/false' ] || { echo "as deployed with A1 touched: $(due --as-deployed D9 --touched A1)"; return 1; }
+  [ "$(due)" = 'A1@1440=false/true A1@390=false/true' ] || { echo "checks --as-deployed wrote to the record"; return 1; }
+  ft approve $t --key carry-approve-probe
+  must 'approve on carried passes' 0 || return 1
+  ft gate $t --issue "$ISSUE" --head D1
+  must 'gate on carried passes' 0 || return 1
+  grep -qx 'A1@1440 carried: pass on head D0, and no later deployed PR names A1' <<<"$OUT" || { echo "gate does not print the carried pass: $OUT"; return 1; }
+  # a second task: a deploy that names the id, or records nothing, brings the row back
+  t=tk-carry2
+  mk_running $t >/dev/null || return 1
+  ft rows $t "$ISSUE" >/dev/null && ft "done" $t "${DONE_FLAGS[@]}" --head b0 >/dev/null && ft event $t deploy --head D0 >/dev/null || { echo "setup: $ERR"; return 1; }
+  ft check $t A1@1440 pass --evidence https://e/1 --head D0 >/dev/null && ft check $t A1@390 pass --evidence https://e/2 --head D0 >/dev/null || return 1
+  for r in A2@- A3@-; do ft check $t $r pass --evidence https://e/3 >/dev/null || return 1; done
+  ft event $t deploy --head D1 --touched A1 >/dev/null || return 1
+  [ "$(due)" = 'A1@1440=true/false A1@390=true/false' ] || { echo "after a deploy that named A1: $(due)"; return 1; }
+  [ "$(na)" = tester ] || { echo "a touched row did not send the task to the Tester: $(na)"; return 1; }
+  ft gate $t --issue "$ISSUE" --head D1
+  grep -q 'A1@1440 passed on head D0, not the deployed head D1' <<<"$OUT" || { echo "gate let a touched row pass: $OUT"; return 1; }
+  ft check $t A1@1440 pass --evidence https://e/1 --head D1 >/dev/null && ft check $t A1@390 pass --evidence https://e/2 --head D1 >/dev/null || return 1
+  ft event $t deploy --head D2 >/dev/null || return 1
+  [ "$(due)" = 'A1@1440=true/false A1@390=true/false' ] || { echo "a deploy that recorded nothing carried a pass: $(due)"; return 1; }
+  ft event $t comment --touched none --note x
+  must 'touched on another kind' 2 || return 1
+  ft event $t deploy --head D3 --touched 'A1,bad id'
+  must 'touched with a bad id' 2 || return 1
+}
+
+CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed row backlog status_view verify_view wait carry"}
 
 # ---- real command -------------------------------------------------------------------
 
@@ -2002,7 +2046,7 @@ mutate 'a row set to pending reopens its item' owner_repeat "if (v.status === 'p
 mutate 'a row reset by rows supersedes its older check events' reset_supersedes "await resetEvent(key, actorFor(want.surface));
       ok(await http('PATCH', \`/api/fm_task_check/\${row.id}\`, { ...text, ...fresh, nextActor: actorFor(want.surface) }), \`reset the check row" "ok(await http('PATCH', \`/api/fm_task_check/\${row.id}\`, { ...text, ...fresh, nextActor: actorFor(want.surface) }), \`reset the check row"
 mutate 'an owner-check supersedes the older check events of its row' reset_supersedes "extra: { row: rowKey(row), values: { status: 'pending', nextActor: 'owner'" "extra: { row: 'none', values: { status: 'pending', nextActor: 'owner'"
-mutate 'a pass on another head than the latest done is still open for routing' route_stale "(passedOnOtherHead(r, head) ? 'tester' : r.nextActor)" "(r.nextActor)"
+mutate 'a pass on another head than the latest done is still open for routing' route_stale "(passedOnOtherHead(r, head, events) ? 'tester' : r.nextActor)" "(r.nextActor)"
 mutate 'rows routes a task in review again' rows_route "set: sets }), () => routeReview(taskId, who));" "set: sets }));"
 mutate 'a re-sent owner-check does not write its item again' owner_replay "const existing = prior ? null : await ownerItem(taskId, target);" "const existing = await ownerItem(taskId, target);"
 mutate 'a re-sent owner-check key with another call is refused' owner_replay "if (prior && (prior.taskId !== taskId ||" "if (false && (prior.taskId !== taskId ||"
@@ -2070,4 +2114,9 @@ mutate 'a question to the owner waits on the answer' wait "nextActor === 'owner'
 mutate 'a PR-ready done waits after its own line' wait "  if (wait) await wait(result);
   await waitView(taskId);" "  await waitView(taskId);"
 mutate 'only a merged pr event clears a merge wait' wait "e.kind === 'pr' && /\\bmerged\\b/i.test(" "e.kind === 'pr' && /./.test("
+mutate 'a pass carries while no later deploy names its id' carry "  return later.every((e) => Array.isArray(bodyOf(e).touched) && !bodyOf(e).touched.includes(row.scenarioId));" "  return false;"
+mutate 'a deploy that names an id brings its row back' carry "Array.isArray(bodyOf(e).touched) && !bodyOf(e).touched.includes(row.scenarioId)" "Array.isArray(bodyOf(e).touched)"
+mutate 'a deploy that records nothing touches every row' carry "Array.isArray(bodyOf(e).touched) && !bodyOf(e).touched.includes(row.scenarioId)" "!(bodyOf(e).touched || []).includes(row.scenarioId)"
+mutate 'the gate prints each carried pass with its head' carry "&& carried(row, events)) out(" "&& false) out("
+mutate 'checks --as-deployed reads a next deploy' carry "const view = as ? [" "const view = false ? ["
 pass 'every guarded behavior has a red mutation proof'

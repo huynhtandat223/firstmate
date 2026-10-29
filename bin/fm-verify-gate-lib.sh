@@ -24,7 +24,8 @@
 # (bin/fm-spawn.sh writes it while config/task-shadow is on). For such a task the task record replaces the Tester's
 # file and the approved: line: `bin/fm-task.sh gate <task> --issue <url> --head <deployed sha>` must answer clean,
 # that is every user-visible row of the issue `pass` with evidence on the deployed head and the scenario's current
-# digest, and an approved event newer than the last row (bin/fm-task-lib.mjs owns that read). Line 1, the issue line
+# digest, or carried from an earlier deployed head that no later PR names (printed on stderr with that head), and an
+# approved event newer than the last row (bin/fm-task-lib.mjs owns that read). Line 1, the issue line
 # and the deployed head below are checked as for any task; the writer runs with the settings of config/task-shadow.
 # FM_VERIFY_GATE_TASK replaces bin/fm-task.sh (the tests use a stand-in).
 # The Tester home is home= in <state>/tester.meta, or FM_TESTER_HOME. A relative evidence
@@ -138,6 +139,9 @@ fm_verify_gate_rows() {
     fm_task_shadow_config "$config/task-shadow"
     "${FM_VERIFY_GATE_TASK:-$FM_VERIFY_GATE_DIR/fm-task.sh}" gate "$id" --issue "$issue" --head "$want_sha" ${tester_home:+--evidence-root "$tester_home"} 2>"$err" </dev/null
   ) || rc=$?
+  # a carried pass (a pass on an earlier deployed head that no later PR names) is no problem: it goes to stderr with its head
+  printf '%s\n' "$out" | grep ' carried: pass on head ' >&2 || :
+  out=$(printf '%s\n' "$out" | grep -v ' carried: pass on head ' || :)
   if [ "$rc" -eq 5 ] && [ -n "$out" ]; then
     printf '%s\n' "$out"
     bad=1
