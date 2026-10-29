@@ -69,6 +69,8 @@ test_cg2_the_sanctioned_forms_are_allowed() {
     'git -C projects/cfw-modules branch --list "fm/*"' \
     'git -C projects/cfw-modules worktree list' \
     'git -C projects/cfw-modules remote -v' \
+    'git -C projects/cfw-modules stash list' \
+    'git -C projects/cfw-modules stash show -p stash@{0}' \
     'git -C projects/cfw-modules cat-file -p origin/main:README.md'; do
     [ "$(policy "$cmd")" = allow ] || fail "must allow: $cmd => $(policy "$cmd")"
   done
@@ -89,6 +91,8 @@ test_state_changing_verbs_are_denied() {
     'git -C projects/x reset --hard origin/main' \
     'git -C projects/x commit -m x' \
     'git -C projects/x stash' \
+    'git -C projects/x stash push -m wip' \
+    'git -C projects/x stash pop' \
     'git -C projects/x rebase origin/main' \
     'git -C projects/x cherry-pick abc123' \
     'git -C projects/x push origin main' \

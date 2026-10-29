@@ -88,6 +88,8 @@ function positionals(args) {
 
 // The verdict for one git invocation's verb and arguments, or null when allowed.
 function verdict(verb, args) {
+  // stash list and stash show only read.
+  if (verb === "stash" && ["list", "show"].includes(positionals(args)[0])) return null;
   if (ALWAYS_DENIED.has(verb)) return { code: `git-${verb}`, reason: reason(verb, "changes the clone") };
   if (verb === "fetch") {
     const refs = positionals(args).slice(1);
