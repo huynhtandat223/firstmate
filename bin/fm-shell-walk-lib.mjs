@@ -9,7 +9,7 @@
 // any byte of the submitted command; only lexical command positions are read.
 //
 // scope is a plain object the visitor may write to (a directory it saw `cd`
-// into, a variable it saw assigned). A brace group shares it; each subshell,
+// into, a variable it saw assigned). A brace group shares it unless it is a pipeline stage or backgrounded; each subshell,
 // substitution and payload gets its own copy, so a `cd` inside a subshell does
 // not leak out of it.
 // context is { next, separator }: the command position that follows in the
@@ -53,6 +53,13 @@ function flattenCase(program) {
     .replace(/;;/g, ";");
 }
 
+// A pipeline stage or a backgrounded node runs in a subshell, so a brace group
+// there does not change the calling shell.
+function subshellNode(separators, index) {
+  const pipe = (separator) => separator === "|" || separator === "|&";
+  return separators[index] === "&" || pipe(separators[index]) || pipe(separators[index - 1]);
+}
+
 function walkCommands(program, visit, scope = {}) {
   let lexed = new Lexer(program).tokenize();
   if (lexed.error && /\bcase\b[\s\S]*\bin\b/.test(program)) lexed = new Lexer(flattenCase(program)).tokenize();
@@ -62,7 +69,7 @@ function walkCommands(program, visit, scope = {}) {
     for (const token of nodes[index]) {
       // A brace group runs in the current shell, so what it sets persists; a
       // subshell and a substitution get their own copy.
-      if (token.type === "group") walkCommands(token.content, visit, token.kind === "brace" ? scope : { ...scope });
+      if (token.type === "group") walkCommands(token.content, visit, token.kind === "brace" && !subshellNode(separators, index) ? scope : { ...scope });
       if (token.type === "word") for (const sub of token.subs) walkCommands(sub.content, visit, { ...scope });
     }
     const position = commandPosition(withoutReserved(nodes[index]));

@@ -43,7 +43,7 @@ const TAG_LISTING = new Set(["-l", "--list", "-n", "--contains", "--no-contains"
 const CONFIG_MUTATING = new Set(["--add", "--unset", "--unset-all", "--replace-all", "--rename-section", "--remove-section", "-e", "--edit"]);
 const CONFIG_READING = new Set(["--get", "--get-all", "--get-regexp", "--get-urlmatch", "-l", "--list", "--show-origin", "--show-scope", "--name-only"]);
 const WORKTREE_MUTATING = new Set(["add", "remove", "move", "prune", "lock", "unlock", "repair"]);
-const REMOTE_MUTATING = new Set(["add", "remove", "rm", "rename", "set-url", "set-head", "set-branches"]);
+const REMOTE_MUTATING = new Set(["add", "remove", "rm", "rename", "set-url", "set-head", "set-branches", "prune"]);
 // Global options that take the next word as their value.
 const GLOBAL_WITH_VALUE = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix", "--config-env"]);
 
@@ -100,8 +100,11 @@ function plainRef(ref) {
   return !(ref.startsWith("+") || ref.startsWith("refs/") || ref.startsWith("pull/") || ref.startsWith("-") || /[:*]/.test(ref));
 }
 
+// Options whose next word is their value, not a positional (tag --format <fmt>).
+const VALUE_OPTIONS = new Set(["--format", "--sort", "--column"]);
+
 function positionals(args) {
-  return args.filter((word) => !word.startsWith("-"));
+  return args.filter((word, i) => !word.startsWith("-") && !VALUE_OPTIONS.has(args[i - 1]));
 }
 
 // The verdict for one git invocation's verb and arguments, or null when allowed.
@@ -132,6 +135,7 @@ function verdict(verb, args) {
   }
   if (verb === "config") {
     if (args.some((word) => CONFIG_MUTATING.has(word))) return { code: "git-config", reason: reason("config", "changes the clone's config") };
+    if (["get", "list"].includes(positionals(args)[0])) return null;
     if (!args.some((word) => CONFIG_READING.has(word)) && positionals(args).length >= 2) return { code: "git-config", reason: reason("config", "writes a key in the clone's config") };
     return null;
   }

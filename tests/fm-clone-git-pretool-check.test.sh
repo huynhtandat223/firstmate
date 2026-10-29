@@ -73,6 +73,11 @@ test_cg2_the_sanctioned_forms_are_allowed() {
     'git -C projects/cfw-modules stash list' \
     'git -C projects/cfw-modules tag' \
     'git -C projects/cfw-modules tag -l' \
+    "git -C projects/cfw-modules tag --format '%(refname)'" \
+    "git -C projects/cfw-modules branch --format '%(refname:short)'" \
+    'git -C projects/cfw-modules branch --list --sort committerdate' \
+    'git -C projects/cfw-modules config get user.name' \
+    'git -C projects/cfw-modules config list' \
     "git -C projects/cfw-modules tag --list 'v*'" \
     'git -C projects/cfw-modules config --get remote.origin.url' \
     'git -C projects/cfw-modules config --list' \
@@ -102,6 +107,9 @@ test_state_changing_verbs_are_denied() {
     'git -C projects/x stash push -m wip' \
     'git -C projects/x fetch --stdin origin' \
     'git -C projects/x tag v1' \
+    'git -C projects/x remote prune origin' \
+    'git -C projects/x config set user.name someone' \
+    "git -C projects/x tag --format '%(refname)' v2" \
     'git -C projects/x tag -a v1 -m release' \
     'git -C projects/x tag -d v1' \
     'git -C projects/x config --local user.name someone' \
@@ -176,6 +184,9 @@ test_other_targets_and_mentions_are_allowed() {
     'git -C projects/x/../../wt reset --hard' \
     '(cd projects/x && cd ..; git reset --hard)' \
     '(cd projects/x; true); { true; }; git reset --hard' \
+    '{ cd projects/x; } | cat; git reset --hard' \
+    '{ cd projects/x; } & git reset --hard' \
+    'true | { cd projects/x; }; git reset --hard' \
     '(cd projects/x && true); git commit -m x' \
     'echo "git -C projects/x reset --hard"' \
     'grep -n "git -C projects/x push" docs/notes.md' \
