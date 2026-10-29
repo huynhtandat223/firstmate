@@ -15,6 +15,7 @@
 # Receipt rule, only for a task with surface=user-visible in state/<task>.meta
 # on huynhtandat223/cfw-modules. The body needs
 #   Self-test: verify-cfw run <features> --target storybook:<branch> head=<sha> PASS
+# (a body may keep older lines; the line whose sha prefixes the live head is read)
 # and data/<task>/selftest-<head>.json, written by the cfw-modules verify-cfw
 # tool, must read PASS at the live head:
 #   no-selftest-line  the body has no such line
@@ -103,18 +104,25 @@ fm_selftest_phrase_hits() {
   done < <(fm_selftest_plain_lines "$1")
 }
 
-# The first plain Self-test line, or nothing. Prints
+# The plain Self-test line for the live head, or nothing. A body may keep older
+# lines, so the line whose sha is a prefix of the live head wins; with none, the
+# first line is returned, for the stale-head message. Prints
 # "<features><TAB><branch><TAB><sha>".
-# fm_selftest_line <body-file>
+# fm_selftest_line <body-file> <live-head>
 fm_selftest_line() {
-  local n text
+  local n text first='' live=${2,,}
   local re='^Self-test:[[:space:]]+verify-cfw[[:space:]]+run[[:space:]]+([^[:space:]]+)[[:space:]]+--target[[:space:]]+storybook:([^[:space:]]+)[[:space:]]+head=([0-9a-fA-F]{9,})[[:space:]]+PASS[[:space:]]*$'
   while IFS=$'\t' read -r n text; do
     if [[ "$text" =~ $re ]]; then
-      printf '%s\t%s\t%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
-      return 0
+      local found
+      found=$(printf '%s\t%s\t%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}")
+      case "$live" in
+        "${BASH_REMATCH[3],,}"*) printf '%s\n' "$found"; return 0 ;;
+      esac
+      [ -n "$first" ] || first=$found
     fi
   done < <(fm_selftest_plain_lines "$1")
+  [ -z "$first" ] || printf '%s\n' "$first"
   return 0
 }
 
@@ -123,7 +131,7 @@ fm_selftest_line() {
 fm_selftest_receipt_rule() {
   local body=$1 task=$2 head=$3 found features branch sha receipt result_head out
   local out_dir="$FM_HOME/data/$task" cmd
-  found=$(fm_selftest_line "$body")
+  found=$(fm_selftest_line "$body" "$head")
   features='<features>'
   branch='<branch>'
   if [ -n "$found" ]; then

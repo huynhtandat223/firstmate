@@ -186,6 +186,24 @@ test_sg2_each_missing_piece_hits_its_own_code() {
   assert_receipt_hit "$dir" stale-head
   assert_contains "$ERR" 'head=fedcba987' "sg2 stale-head: the stale sha is named"
 
+  # A body that keeps an older PASS line and adds one for the live head passes, in either order.
+  dir=$(make_case sg2-two-lines user-visible)
+  body_file "$dir" "$(printf '%s\n%s' "$(selftest_line fedcba987654)" "$(selftest_line "${HEAD:0:12}")")"
+  write_receipt "$dir" "$HEAD" tester PASS
+  run_gate "$dir" "$CFW_URL"
+  assert_equals '' "$ERR" "sg2: the line for the live head is used when an older line comes first"
+  body_file "$dir" "$(printf '%s\n%s' "$(selftest_line "${HEAD:0:12}")" "$(selftest_line fedcba987654)")"
+  run_gate "$dir" "$CFW_URL"
+  assert_equals '' "$ERR" "sg2: and when it comes last"
+
+  # With no line for the live head, the first line gives the stale-head message.
+  dir=$(make_case sg2-two-stale user-visible)
+  body_file "$dir" "$(printf '%s\n%s' "$(selftest_line fedcba987654)" "$(selftest_line 123456789abc)")"
+  write_receipt "$dir" "$HEAD" tester PASS
+  run_gate "$dir" "$CFW_URL"
+  assert_receipt_hit "$dir" stale-head
+  assert_contains "$ERR" 'head=fedcba987654' "sg2: stale-head names the first line"
+
   dir=$(make_case sg2-short user-visible)
   body_file "$dir" "$(selftest_line 0123456)"
   run_gate "$dir" "$CFW_URL"
