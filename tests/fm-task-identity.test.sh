@@ -149,6 +149,22 @@ test_ti3_a_pr_closing_another_issue_is_refused() {
   pass "TI3: a PR whose closing references omit the task's linked issue is refused naming both issues; matching, empty and unlinked cases pass"
 }
 
+test_the_merge_path_runs_the_pr_identity_check_too() {
+  local pr=https://github.com/huynhtandat223/cfw-modules/pull/1725 id=titan-start-profile-maint out rc
+  new_home merge
+  printf -- '- [ ] %s - Profile Maintenance https://github.com/huynhtandat223/cfw-modules/issues/1707 (repo: cfw-modules) (kind: ship)\n' "$id" > "$HOME_DIR/data/backlog.md"
+  printf 'kind=ship\nproject=%s\n' "$HOME_DIR/projects/cfw-modules" > "$HOME_DIR/state/$id.meta"
+  make_fake_gh https://github.com/huynhtandat223/cfw-modules/issues/1708
+  for merge in 0 1; do
+    out=$(FM_HOME="$HOME_DIR" FM_ROOT_OVERRIDE='' FM_PR_CHECK_MERGE=$([ "$merge" = 1 ] && echo 1 || echo '') PATH="$FAKEBIN:$PATH" "$ROOT/bin/fm-pr-check.sh" "$id" "$pr" 2>&1); rc=$?
+    expect_code 1 "$rc" "fm-pr-check.sh (merge path: $merge) must refuse a PR that closes another issue: $out"
+    assert_contains "$out" "issues/1708" "the closed issue should be named (merge path: $merge)"
+  done
+  grep -q '^pr=' "$HOME_DIR/state/$id.meta" && fail "a refused PR must not be recorded"
+  FAKEBIN=''
+  pass "fm-pr-check.sh runs the PR identity check on the merge path as well"
+}
+
 test_the_callers_run_the_check() {
   new_home callers
   printf -- '- [x] reused-id - old\n' > "$HOME_DIR/data/backlog.md"
@@ -174,6 +190,7 @@ test_the_fm_branch_blocks_reuse
 test_ti2_a_second_task_for_one_ticket_key_is_refused
 test_log_only_until_the_switch_is_set
 test_ti3_a_pr_closing_another_issue_is_refused
+test_the_merge_path_runs_the_pr_identity_check_too
 test_the_callers_run_the_check
 
 echo "# fm-task-identity.test.sh: all assertions passed"
