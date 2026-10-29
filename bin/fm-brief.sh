@@ -131,6 +131,10 @@
 # issue's scenarios (the issue its `# Acceptance` section names; an unreadable list refuses too), name a pane or assistance lifecycle action (bin/fm-herdr-lab-phrase-lib.sh
 # owns the phrase rule), saying to re-scaffold with --herdr-lab. Log-only until
 # config/enforce-herdr-lab-brief holds block.
+# --check then runs the brief-verify check (bin/fm-brief-verify-lib.sh, log-only until
+# config/enforce-brief-verify holds `block`): a brief whose `# Acceptance` names a
+# cfw-modules issue must name `verify-cfw run <feature>` for each feature that
+# covers a user-visible scenario's page.
 # There is no --yolo flag here. The worker never owns merge decisions, so yolo is
 # a spawn-time and firstmate-side input only (AGENTS.md section 7).
 # Every scaffold's status protocol distinguishes the configured
@@ -351,6 +355,9 @@ if [ "$CHECK" -eq 1 ]; then
       fm_enforce_log "$CHECK_STATE" herdr-lab-brief would-refuse brief "${POS[0]}: $CHECK_PHRASE"
     fi
   fi
+  # shellcheck source=bin/fm-brief-verify-lib.sh
+  . "$SCRIPT_DIR/fm-brief-verify-lib.sh"
+  fm_brief_verify_check "${POS[0]}" "$CHECK_BRIEF" || exit 1
   exit 0
 fi
 
