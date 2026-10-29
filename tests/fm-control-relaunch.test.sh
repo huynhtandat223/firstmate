@@ -978,6 +978,25 @@ test_dms_account_guard_refuses_a_relaunch_before_stop() {
   pass "fm-control relaunch: the DMS account guard refuses a wrong account before the old agent stops, and passes the declared root and unlisted projects"
 }
 
+test_model_deny_refuses_a_relaunch_before_stop() {
+  local dir out rc id=rl-deny
+  dir=$(new_case deny "$id")
+  add_ship_task "$dir" "$id" claude
+  mkdir -p "$dir/home/config"
+  printf '*deepseek-v4-pro*  captain.md:9 DeepSeek is always Flash\n' > "$dir/home/config/model-deny"
+  printf 'block\n' > "$dir/home/config/enforce-model-deny"
+  cp "$dir/home/state/$id.meta" "$dir/meta-before"
+  out=$(run_control "$dir" "$id" relaunch --model 9route/ds/deepseek-v4-pro --note "pro model"); rc=$?
+  expect_code 1 "$rc" "a relaunch onto a denied model must refuse"
+  assert_contains "$out" "captain.md:9 DeepSeek is always Flash" "the refusal should print the reason"
+  [ "$(cat "$dir/fake/command")" = claude ] || fail "the model deny list must refuse before the running agent stops"
+  [ ! -s "$dir/fake/literal" ] || fail "the model deny list must refuse before any lifecycle input is sent"
+  cmp -s "$dir/meta-before" "$dir/home/state/$id.meta" || fail "a refused relaunch must leave the task record untouched"
+  out=$(run_control "$dir" "$id" relaunch --model 9route/ds/deepseek-v4-flash --note "flash model"); rc=$?
+  expect_code 0 "$rc" "a relaunch onto Flash should pass"$'\n'"$out"
+  pass "fm-control relaunch: the model deny list refuses the Pro model before the old agent stops and passes Flash"
+}
+
 test_secondmate_account_pin_follows_relaunch_and_refuses_before_stop() {
   local dir out rc id=rl-sm-acct harness file variable pin
   for harness in claude pi; do
@@ -2823,6 +2842,7 @@ test_native_ultra_relaunch_preserves_profile_and_rejects_before_stop
 test_signed_out_worker_account_pin_refuses_before_stop
 test_worker_account_pin_follows_the_relaunch
 test_dms_account_guard_refuses_a_relaunch_before_stop
+test_model_deny_refuses_a_relaunch_before_stop
 test_secondmate_account_pin_follows_relaunch_and_refuses_before_stop
 test_pi_exclude_tools_follow_the_relaunch
 test_exclude_tools_refusals_happen_before_the_agent_stops

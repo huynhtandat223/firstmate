@@ -431,6 +431,30 @@ A drain piped into `grep`, `head`, `cut` or `sed` is only ever logged.
 The second check is `reply-lint`: the Claude Stop hook `bin/fm-reply-lint.sh` reads the turn that just ended and flags a reply with no Vietnamese letter, a question with no `agent-ask` call in the turn, a waiting captain note, and a session that has not read `data/captain.md` since its last SessionStart.
 It reads `config/enforce-reply-lint`, and it does nothing until `config/reply-language` holds a language word (`vi` today); with the file absent the lint is off.
 A hit blocks at most once per turn, and `bin/fm-reply-lint.sh --replay <transcript>` lists the turn ends a past transcript would have flagged.
+The third check is `clone-git`: `bin/fm-clone-git-pretool-check.sh` denies a state-changing git command aimed at a clone under `projects/` (AGENTS.md hard rule 1).
+It denies fetch of a refspec such as `pull/<n>/head` (or `--stdin`), pull, checkout, switch, reset, commit, stash, rebase, cherry-pick, push, clean, add, branch, tag, config, worktree and remote writes, and merge without `--ff-only`.
+It allows `fetch <remote> [<branch>]`, `merge --ff-only`, and every read.
+The refusal names `gh pr diff <n>` to read a PR and `git -C <worker worktree>` to change code.
+It reads `config/enforce-clone-git`, and `bin/fm-clone-git-command-policy.mjs --replay <transcript or directory>` lists the commands a past transcript would have denied with their session ids.
+The fourth check is `browser-kill`: `bin/fm-browser-kill-pretool-check.sh` denies `kill`, `pkill`, `killall`, `xargs kill` and `fuser -k` aimed at chrome, chromium, chrome-devtools, a pid that listens on a watched port or runs a browser, or a watched port named in the command or the pipe that feeds it.
+The watched ports are 9222, 9333 and every port in `config/browser-ports` (one per line; blank lines and `#` comments are ignored; put the Tester's port there).
+The refusal names the safe form: `CHROME_DEVTOOLS_AXI_SESSION=<name> chrome-devtools-axi stop`, and only for a session whose owner task is done.
+A heredoc, `echo` or `grep` that only mentions `pkill chrome` is never matched, and the check reads `config/enforce-browser-kill`.
+
+## Model deny list (config/model-deny)
+
+`config/model-deny` is captain-private and holds one glob and its reason per line, the glob first; blank lines and `#` comment lines are ignored.
+`bin/fm-spawn.sh` (`--model` and a secondmate model pin, local or remote), `bin/fm-control.sh relaunch` and `bin/fm-remote-secondmate-relaunch.sh` (a remote mate, on the parent's config before the relaunch crosses the hop, for a direct run and for `bin/fm-secondmate-restart.sh`) refuse a model that matches a glob before any endpoint, worktree or record exists, and print that line's reason.
+A line with a glob and no reason refuses, so a hit always says why; with the file absent nothing changes.
+`bin/fm-model-deny-lib.sh` owns the format and the check.
+The check is log-only until `config/enforce-model-deny` holds `block`: each hit is written to `state/enforce-model-deny.log` and the launch goes ahead.
+
+## Project rules in briefs (data/project-rules/<repo>.md)
+
+`bin/fm-brief.sh` copies every line of `data/project-rules/<repo-name>.md` that starts with `brief:` into the brief's `## Firstmate spec`.
+The copy is verbatim, tag included, in file order, and sits below the `{FIRSTMATE_SPEC}` fill under its own `### Project rules` subheading, so a spec filled with `###` subsections does not swallow it.
+A line without the tag is never copied, a project with no rules file adds nothing, and a repo name with a slash is refused.
+Firstmate tags the lines in its private rules file; the file is not tracked.
 
 ## DMS account guard (config/dms-account)
 

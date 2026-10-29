@@ -62,7 +62,8 @@
 //            line outside a row other than a blank one refuses the sync (exit 5) after the import, file unchanged.
 //            The record is shared by every home: a view holds and changes only the rows its own file wrote. A sync and
 //            a row call of one file each hold an exclusive lock on <file>.view-lock (perl's flock) while they run.
-//   show     <task> [--json]   list [--state S] [--actor A] [--json]   resume <task>   reproject <task>
+//   show     <task> [--json]   list [--state S] [--actor A] [--json]   resume <task>   reproject <task> | --all
+//            reproject --all folds every task row again (the board card's step fields too) and prints each repair.
 // Every write takes --key K (the idempotency key; a re-send returns the first event), --actor NAME
 // (default FM_TASK_ACTOR, FM_TASK_ID, then the login name) and --role (default FM_TASK_ROLE, then the
 // command's own: worker for start/heartbeat/done/ask/block, tester for check, firstmate for the rest).
@@ -134,7 +135,12 @@ const TRANSITIONS = {
 
 // the fm_task columns the projection holds, with the lengths the API enforces on them
 const LIMITS = { title: 300, repo: 200, kind: 32, state: 32, assignee: 64, nextActor: 32, blockKind: 32, blockReason: 2000, issueUrl: 2048, prUrl: 2048, surface: 32, section: 32 };
-const PROJECTED = ['title', 'repo', 'kind', 'state', 'assignee', 'nextActor', 'blockKind', 'blockReason', 'blockRepeats', 'issueUrl', 'prUrl', 'surface', 'holdUntil', 'row', 'notes', 'section', 'lastSeq'];
+const PROJECTED = ['title', 'repo', 'kind', 'state', 'assignee', 'nextActor', 'blockKind', 'blockReason', 'blockRepeats', 'issueUrl', 'prUrl', 'surface', 'holdUntil', 'row', 'notes', 'section', 'lastSeq',
+  'stage', 'stageSince', 'lastEventAt', 'lastNote', 'reviewer'];
+// The board card's step (cfw-modules#1678 change 199): the writer owns the rule and the page only reads it.
+const STEP_OF_STATE = { triage: 'queued', todo: 'queued', ready: 'queued', done: 'passed' };
+const REVIEWER_KINDS = ['check', 'owner-check', 'approved', 'changes'];
+const DATE_FIELDS = ['holdUntil', 'stageSince', 'lastEventAt'];
 // the backlog row's text: kept in the record verbatim, too long and multi-line for `show`'s field=value lines
 const ROW_TEXT = ['row', 'notes'];
 const TASK_ID = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
@@ -242,13 +248,28 @@ function bodyOf(event) {
 }
 
 // The fold of every event's `set`; null while the task has no `created` event.
+// The step follows the state: done is passed; review is dev once a deploy follows the newest done, else pr; running is
+// pr once a pr event follows the newest started or changes, else working; triage, todo and ready are queued; blocked
+// (and archived) keep the step they had. stageSince is the time of the event that set the step. lastEventAt and
+// lastNote come from the newest real event: a backlog view `row` event is not one.
 function fold(events) {
   let task = null;
+  let deployed = false;
+  let pullRequest = false;
   for (const event of [...events].sort((a, b) => a.seq - b.seq)) {
     const set = { ...(bodyOf(event).set || {}), ...(event.rowText || {}) };
     if (event.kind === 'created' && !task) task = { taskId: event.taskId };
     if (!task) continue;
+    if (event.kind === 'done') deployed = false;
+    if (event.kind === 'deploy') deployed = true;
+    if (event.kind === 'started' || event.kind === 'changes') pullRequest = false;
+    if (event.kind === 'pr') pullRequest = true;
     task = { ...task, ...set, lastSeq: event.seq };
+    const stage = STEP_OF_STATE[task.state] ?? (task.state === 'review' ? (deployed ? 'dev' : 'pr')
+      : task.state === 'running' ? (pullRequest ? 'pr' : 'working') : task.stage ?? 'queued');
+    if (stage !== task.stage) Object.assign(task, { stage, stageSince: event.createdAt ?? null });
+    if (event.kind !== 'row') Object.assign(task, { lastEventAt: event.createdAt ?? null, lastNote: String(bodyOf(event).note ?? '').slice(0, 300) || null });
+    if (REVIEWER_KINDS.includes(event.kind)) task.reviewer = event.actor ?? null;
   }
   if (!task) return null;
   const full = { taskId: task.taskId };
@@ -269,7 +290,7 @@ async function withRowText(events) {
   return events.map((e) => (e === carrier ? { ...e, rowText } : e));
 }
 
-const sameValue = (field, a, b) => (field === 'holdUntil' ? (a ? Date.parse(a) : null) === (b ? Date.parse(b) : null) : a === b);
+const sameValue = (field, a, b) => (DATE_FIELDS.includes(field) ? (a ? Date.parse(a) : null) === (b ? Date.parse(b) : null) : a === b);
 
 // Make fm_task equal the fold of the task's events; returns the fields it changed.
 async function project(taskId) {
@@ -323,7 +344,7 @@ const SPECS = {
   show: { pos: ['task'], flags: {} },
   list: { pos: [], flags: { state: 's', actor: 's' } },
   resume: { pos: ['task'], flags: {} },
-  reproject: { pos: ['task'], flags: {} },
+  reproject: { pos: ['task'], flags: { all: 'b' } },
   'turn-end': { pos: ['task'], flags: { turn: 's' } },
   deliver: { pos: ['task'], flags: { consumer: 's' } },
   gate: { pos: ['task'], flags: { issue: 's', head: 's', 'evidence-root': 's' } },
@@ -1494,6 +1515,18 @@ async function cmdList(args) {
 }
 
 async function cmdReproject(args) {
+  if (args.flags.all) {
+    const tasks = await listAll('fm_task', { orderby: 'taskId' });
+    let repaired = 0;
+    for (const { taskId } of tasks) {
+      const result = await project(taskId);
+      if (!result?.changed.length) continue;
+      repaired++;
+      out(`reprojected ${taskId}: repaired ${result.changed.join(', ')} (last seq ${result.task.lastSeq})`);
+    }
+    out(`reproject --all: ${tasks.length} tasks, ${repaired} repaired`);
+    return;
+  }
   const taskId = taskIdOf(args);
   const result = await project(taskId);
   if (!result) throw rule(`no events for ${taskId}`);

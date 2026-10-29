@@ -439,6 +439,11 @@
 #   docs/configuration.md "Worker tool exclusions" owns config/crew-exclude-tools
 #   and its operator contract. Resolve it with bin/fm-exclude-tools-lib.sh
 #   before provisioning; __PIEXCLUDE__ below owns the Pi launch substitution.
+# Model deny list (config/model-deny):
+#   Opt-in. One glob and its reason per line; a --model (or a secondmate model
+#   pin, local or remote) matching a glob refuses before any endpoint, worktree,
+#   or record exists and prints the reason. Log-only until config/enforce-model-deny holds block.
+#   bin/fm-model-deny-lib.sh owns the format and the check.
 # Worker account pin (config/claude-account, config/pi-account):
 #   Opt-in. With no file, a Claude or Pi launch is unchanged: Claude still
 #   receives this process's own CLAUDE_CONFIG_DIR when it is set, and Pi the
@@ -833,6 +838,8 @@ fm_backlog_directory_present "$STATE" "state directory" || {
 . "$SCRIPT_DIR/fm-worker-account-lib.sh"
 # shellcheck source=bin/fm-dms-account-lib.sh
 . "$SCRIPT_DIR/fm-dms-account-lib.sh"
+# shellcheck source=bin/fm-model-deny-lib.sh
+. "$SCRIPT_DIR/fm-model-deny-lib.sh"
 # Fail closed before any fleet mutation: a no-mistakes gate agent must never spawn
 # a direct report (see bin/fm-gate-refuse-lib.sh).
 fm_refuse_if_gate_agent
@@ -1321,6 +1328,14 @@ spawn_remote_secondmate() {
       effort=$("$SCRIPT_DIR/fm-harness.sh" secondmate-effort)
       [ -n "$effort" ] || effort=-
     fi
+  fi
+  # The parent's model deny list (config/model-deny) also covers a remote second
+  # mate, whose launch and relaunch both end here: the model resolved above is
+  # checked on this host before anything is dispatched.
+  if [ "$model" != - ] && ! fm_model_deny_guard "$CONFIG" "$STATE" "$model"; then
+    fm_lock_release "$registry_lock" || true
+    fm_lock_release "$SPAWN_TASK_LOCK" || true
+    return 1
   fi
   # A remote second mate always runs on Herdr: its server belongs to the host's
   # own GUI login session, so the endpoint outlives every SSH connection that
@@ -3061,6 +3076,9 @@ if [ "$HARNESS" = polytoken ] && [ "$RAW_LAUNCH" -eq 0 ]; then
 elif [ "$HARNESS" = polytoken ]; then
   POLYTOKEN_MODEL_REF=$(fm_polytoken_model_ref "$POLYTOKEN_BIN" "$MODEL" "$EFFORT") || exit 1
 fi
+# Model deny list (config/model-deny, bin/fm-model-deny-lib.sh): a model that
+# matches a listed glob refuses here, before any endpoint, worktree, or record.
+fm_model_deny_guard "$CONFIG" "$STATE" "$MODEL" || exit 1
 # Worker account pin (header above): resolved before any endpoint, worktree, or
 # record exists. An absent pin selects nothing and leaves every later launch
 # step exactly as it was. A pinned Claude root is exported here as well, so the
