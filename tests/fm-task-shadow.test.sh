@@ -262,6 +262,8 @@ Exercise the task record shadow for $TASK.
 Nothing to build.
 EOF
   FAKEBIN=$(make_fakebin "$CASE_DIR")
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s/view.log"\n' "$CASE_DIR" > "$CASE_DIR/view-writer"
+  chmod +x "$CASE_DIR/view-writer"
 }
 
 add_row() {  # <task> <title> <kind>: a real backlog row in the case home, so the spawn gate finds its item
@@ -275,7 +277,7 @@ in_home() {  # <command...>: run one real script against the case home, from ins
     FM_STATE_OVERRIDE="$HOME_DIR/state" FM_DATA_OVERRIDE="$HOME_DIR/data" \
     FM_PROJECTS_OVERRIDE="$HOME_DIR/projects" FM_CONFIG_OVERRIDE="$HOME_DIR/config" \
     FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$WT_DIR" TMUX="fake,1,0" \
-    FM_TASK_SHADOW_WRITER="$WRITER" FAKE_CALLS="$CALLS" \
+    FM_TASK_SHADOW_WRITER="$WRITER" FAKE_CALLS="$CALLS" FM_TASK_VIEW_WRITER="$CASE_DIR/view-writer" \
     PATH="$FAKEBIN:$PATH" "$@"
 }
 SBIN=${SBIN:-$ROOT/bin}  # a mutation proof points this at a copy of bin/
@@ -325,8 +327,9 @@ test_teardown_writes_the_record() {
   git -C "$WT_DIR" add landed.txt
   git -C "$WT_DIR" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm 'landed'
   out=$(in_home "$SBIN/fm-merge-local.sh" "$TASK" 2>&1) || fail "local merge failed: $out"
-  : > "$CALLS"
+  : > "$CALLS"; : > "$CASE_DIR/view.log"
   out=$(in_home "$SBIN/fm-teardown.sh" "$TASK" 2>&1) || fail "teardown failed: $out"
+  assert_contains "$(cat "$CASE_DIR/view.log")" "backlog sync --file $HOME_DIR/data/backlog.md" "the backlog close syncs the backlog view (fm_backlog_mutate)"
   assert_contains "$(calls)" "event $TASK comment --note cleaned up by bin/fm-teardown.sh" "teardown writes its cleanup to the record"
   assert_contains "$(calls)" "approve $TASK" "the backlog close reaches the record (fm_backlog_done)"
   pass "teardown: the cleanup and the backlog close reach the record"
@@ -438,6 +441,7 @@ mutate_script 'the worker status command writes the record' test_worker_status_c
 mutate_script 'fm-spawn.sh writes the dispatched task' test_spawn_writes_the_record fm-spawn.sh 'fm-task-shadow.sh" dispatched'
 mutate_script 'fm-teardown.sh writes the cleanup' test_teardown_writes_the_record fm-teardown.sh 'fm-task-shadow.sh" cleaned-up'
 mutate_script 'the backlog transition lib writes a landed close' test_teardown_writes_the_record fm-backlog-transition-lib.sh 'fm_backlog_shadow "$verb"'
+mutate_script 'the backlog transition lib syncs the backlog view' test_teardown_writes_the_record fm-backlog-transition-lib.sh 'fm_backlog_view_sync "$FM_BACKLOG_AXI_FILE"'
 mutate_script 'fm-verify-close.sh writes the verified close' test_verify_close_writes_the_record fm-verify-close.sh 'fm-task-shadow.sh" verified'
 mutate_script 'fm-captain-hold.sh writes the hold' test_captain_hold_writes_the_record fm-captain-hold.sh 'shadow_record held'
 mutate_script 'fm-captain-hold.sh writes the closing answer' test_captain_hold_writes_the_record fm-captain-hold.sh 'shadow_record answered "$1" closed'

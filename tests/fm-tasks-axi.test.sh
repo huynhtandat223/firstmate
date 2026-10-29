@@ -239,6 +239,39 @@ test_wrapper_single_home() {
   pass "fm-tasks-axi.sh keeps the single-home layout addressing its own code-root backlog"
 }
 
+# T7 task record backlog view: with config/task-shadow on, every mutating call ends with one
+# `fm-task.sh backlog sync` of this home's file; a read, --help, or the flag off runs none, and a failing
+# sync never changes the wrapper's result.
+test_wrapper_view_sync() {
+  local dir log
+  dir=$(make_split wrapper-view)
+  log="$dir/writer.log"
+  cat > "$dir/fake-writer" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$log"
+exit "\${FAKE_WRITER_RC:-0}"
+SH
+  chmod +x "$dir/fake-writer"
+  : > "$dir/home/config/task-shadow"
+  export FM_TASK_VIEW_WRITER="$dir/fake-writer" FM_TASK_SHADOW_WRITER="$dir/fake-writer"
+  wrapper_from_code "$dir" add view-1 "view one" >/dev/null || fail "add view-1 failed"
+  assert_equals "backlog sync --file $dir/home/data/backlog.md --actor backlog-view" "$(cat "$log")" "a mutation did not sync the backlog view once"
+  : > "$log"
+  wrapper_from_code "$dir" list >/dev/null || fail "list failed"
+  wrapper_from_code "$dir" add --help >/dev/null 2>&1
+  assert_equals "" "$(cat "$log")" "a read or --help synced the backlog view"
+  FAKE_WRITER_RC=3 wrapper_from_code "$dir" hold view-1 --reason "waits" --kind external >/dev/null \
+    || fail "a failing sync changed the wrapper's result"
+  assert_grep "backlog sync" "$log" "hold did not sync the backlog view"
+  assert_grep "backlog-view sync rc=3" "$dir/home/state/task-shadow.log" "a failing sync left no log line"
+  assert_grep "view-1" "$dir/home/data/backlog.md" "a failing sync lost the tasks-axi write"
+  rm "$dir/home/config/task-shadow"; : > "$log"
+  wrapper_from_code "$dir" add view-2 "view two" >/dev/null || fail "add view-2 failed"
+  assert_equals "" "$(cat "$log")" "the backlog view synced with config/task-shadow off"
+  unset FM_TASK_VIEW_WRITER FM_TASK_SHADOW_WRITER
+  pass "fm-tasks-axi.sh syncs the task record backlog view after each mutation while config/task-shadow is on"
+}
+
 test_guard_reports_regular_code_root_backlog
 test_guard_reports_foreign_link_and_archive
 test_guard_silent_for_single_home
@@ -249,6 +282,7 @@ if [ "$HAVE_TASKS_AXI" = 1 ]; then
   test_wrapper_refusals
   test_wrapper_refuses_add_start
   test_wrapper_single_home
+  test_wrapper_view_sync
 else
   echo "skip: tasks-axi not found; home-addressing cases not run"
 fi

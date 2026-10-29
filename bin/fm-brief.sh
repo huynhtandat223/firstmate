@@ -791,7 +791,7 @@ Attach the report to your terminal call with \`$FM_ROOT/bin/fm-task.sh done $ID 
 Terminal call: end each worker turn with exactly one \`$FM_ROOT/bin/fm-task.sh done|ask|block $ID\` and its template fields from \`--help\`.
 Read \`$FM_ROOT/bin/fm-task.sh resume $ID\` first when starting or resuming this task; name its state in the terminal call's note.
 Use \`heartbeat $ID --note <activity>\` for activity and \`block transient $ID --reason <wait> --next-actor worker --until <ISO>\` for a wait.
-The terminal call also writes the legacy status line until T7.
+The terminal call also writes your status line.
 1. Never push to any remote and never open a PR.
 2. Stay inside this worktree; the only files you may write outside it are the report and the status file below.
 3. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
@@ -820,7 +820,7 @@ Write your findings to \`$DATA/$ID/report.md\`.
 The report must stand alone: what you did, what you found, the evidence (commands run, output, file:line references), and what you recommend.
 $LAVISH_LINE
 Before reporting done, read and follow \`$FM_ROOT/.agents/skills/captain-hold-lifecycle/SKILL.md\` and pass its shared completion gate for the report and any visual review.
-When the report is complete, make the terminal call \`$FM_ROOT/bin/fm-task.sh done $ID\` with its template fields and \`--document <report.md>\`, then stop; the call writes the legacy done line.
+When the report is complete, make the terminal call \`$FM_ROOT/bin/fm-task.sh done $ID\` with its template fields and \`--document <report.md>\`, then stop; the call writes the done line.
 If your findings reveal work that should ship (e.g. you reproduced a bug and the fix is clear), say so in the report; firstmate may promote this task in place, and you would then receive mode-specific ship instructions as a follow-up message.
 EOF
 append_brief_include
@@ -881,7 +881,7 @@ Terminal call: end each worker turn with exactly one \`$FM_ROOT/bin/fm-task.sh d
 When the task asks for an HTML explanation, attach that file to done with \`--document <explanation.html>\` and optional \`--document-title <title>\`.
 Read \`$FM_ROOT/bin/fm-task.sh resume $ID\` first when starting or resuming this task; name its state in the terminal call's note.
 Use \`$FM_ROOT/bin/fm-task.sh heartbeat $ID --note <activity>\` for activity, not a turn end.
-The terminal call also writes the legacy status line until T7.
+The terminal call also writes your status line.
 $RULE1
 2. Keep project edits inside this worktree; keep proof and scratch output outside it, under \`$DATA/$ID/\` or a temporary directory.
    Outside the worktree, write only that task material and the status and steering-inbox records authorized below.

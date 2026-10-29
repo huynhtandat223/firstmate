@@ -36,6 +36,7 @@ node - "$TMP_ROOT/schema.json" <<'JS'
 const fs = require('fs');
 const file = process.argv[2]; const s = JSON.parse(fs.readFileSync(file));
 s.fm_event_document = {ops:['list','get','create'],f:{title:{t:'s',m:200},mediaType:{t:'s',m:100},content:{t:'s'}},u:[['fmTaskEventId']],parent:['fmTaskEvent','documents']};
+Object.assign(s.fm_task.f, {row:{t:'s',n:1},notes:{t:'s',n:1},section:{t:'s',n:1,m:32}});
 fs.writeFileSync(file, JSON.stringify(s));
 JS
 
@@ -1635,7 +1636,239 @@ case_link_triage() {
   [ "$(task_state tk-lt-c2)" = ready ] || { echo "the parent closing left the child in $(task_state tk-lt-c2)"; return 1; }
 }
 
-CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed"}
+# T7: a backlog row in the record (row, notes, section), verbatim; a long one travels in a document child.
+case_row() {
+  BIN=$1; reset_db
+  local d="$TMP_ROOT/row" id docs
+  mkdir -p "$d"
+  ft create tk-row1 --title 'Row task' --kind ship >/dev/null || { echo "setup: $ERR"; return 1; }
+  printf '%s' 'tk-row1 - Row task (repo: x) (hold: wait, ünï) (kind: ship)' > "$d/row"
+  printf '  first note\n\n    deeper: ü\n' > "$d/notes"
+  ft row tk-row1 --section Queued --row-file "$d/row" --notes-file "$d/notes"
+  must 'row' 0 || return 1
+  task_row tk-row1 | jq -e --rawfile r "$d/row" --rawfile n "$d/notes" '.row == $r and .notes == $n and .section == "Queued"' >/dev/null \
+    || { echo "the row is not verbatim: $(task_row tk-row1)"; return 1; }
+  # a row and notes longer than one event body
+  { printf 'tk-row1 - '; head -c 6000 /dev/zero | tr '\0' x; } > "$d/big-row"
+  for _ in $(seq 1 60); do printf '  %s\n' "$(head -c 60 /dev/zero | tr '\0' y)"; done > "$d/big-notes"
+  docs=$(count fm_event_document)
+  ft row tk-row1 --section 'In flight' --row-file "$d/big-row" --notes-file "$d/big-notes"
+  must 'a long row' 0 || return 1
+  [ "$(count fm_event_document)" = $((docs + 1)) ] || { echo "a long row did not travel in a document child"; return 1; }
+  task_row tk-row1 | jq -e --rawfile r "$d/big-row" --rawfile n "$d/big-notes" '.row == $r and .notes == $n and .section == "In flight"' >/dev/null \
+    || { echo "the long row is not verbatim"; return 1; }
+  id=$(task_row tk-row1 | jq -r .id)
+  api -X PATCH "$BASE/api/fm_task/$id" -d '{"row":"broken","notes":null}' >/dev/null
+  ft reproject tk-row1 >/dev/null
+  task_row tk-row1 | jq -e --rawfile r "$d/big-row" --rawfile n "$d/big-notes" '.row == $r and .notes == $n' >/dev/null \
+    || { echo "reproject did not rebuild the long row from its document"; return 1; }
+  ft row tk-row1 --gone
+  must 'gone' 0 || return 1
+  task_row tk-row1 | jq -e --rawfile r "$d/big-row" '.section == null and .row == $r' >/dev/null || { echo "gone: $(task_row tk-row1 | jq -c '{section}')"; return 1; }
+  ft row tk-row1 --section $'In\nflight' --row-file "$d/row" --notes-file "$d/notes"
+  must 'a section of two lines' 5 || return 1
+  printf 'tk-row1 - two\nlines' > "$d/bad-row"
+  ft row tk-row1 --section Queued --row-file "$d/bad-row" --notes-file "$d/notes"
+  must 'a row of two lines' 5 || return 1
+  printf 'other-task - not this one' > "$d/bad-row"
+  ft row tk-row1 --section Queued --row-file "$d/bad-row" --notes-file "$d/notes"
+  must 'a row of another task' 5 || return 1
+  printf -- '- [ ] tk-x - a row inside notes\n' > "$d/bad-notes"
+  ft row tk-row1 --section Queued --row-file "$d/row" --notes-file "$d/bad-notes"
+  must 'notes that hold a row' 5 || return 1
+  ft row tk-row1 --row-file "$d/row" --notes-file "$d/notes"
+  must 'no section and no --gone' 2 || return 1
+  ft row tk-nobody --section Queued --row-file "$d/row" --notes-file "$d/notes"
+  must 'a task the record does not hold' 5 || return 1
+}
+
+backlog_fixture() {  # <file>
+  {
+    printf '# Backlog\n\n## In flight\n'
+    printf -- '- [ ] bl-f1 - First flight https://example.com/i/1 (repo: example/repo) (kind: ship) (since 2026-10-28)\n'
+    printf '  Note one: ünïcode\n\n'
+    printf -- '- [ ] bl-f2 - Second flight (kind: scout)\n'
+    printf '## Queued\n'
+    printf -- '- [ ] bl-q1 - Queued one (hold: owner picks a colour) (hold-kind: captain) (kind: ship)\n'
+    printf '  multi\n    indented\n\n'
+    printf -- '- [ ] bl-q2 - Queued two %s (kind: other)\n' "$(head -c 400 /dev/zero | tr '\0' q)"
+    printf '\n## Done\n'
+    printf -- '- [x] bl-d1 - Done one (kind: ship) (done 2026-10-20)\n'
+  } > "$1"
+}
+
+# T7 TR60: data/backlog.md is generated from the record; a change in the file is absorbed first, then the file is
+# rendered from the record (line 1 names the record), so tasks-axi keeps working on it.
+case_backlog() {
+  BIN=$1; reset_db
+  local d="$TMP_ROOT/backlog" f events
+  mkdir -p "$d"; f="$d/backlog.md"
+  backlog_fixture "$d/fixture.md"; cp "$d/fixture.md" "$f"
+  ft backlog sync --file "$f"
+  must 'first sync' 0 || return 1
+  cmp -s <(tail -n +2 "$f") <(tail -n +2 "$d/fixture.md") || { echo "the generated file is not the fixture: $(diff <(tail -n +2 "$d/fixture.md") <(tail -n +2 "$f"))"; return 1; }
+  case $(head -n 1 "$f") in '# Backlog'*'task record'*) ;; *) echo "line 1 does not name the record: $(head -n 1 "$f")"; return 1 ;; esac
+  task_row bl-q1 | jq -e '.section == "Queued" and .state == "blocked" and .nextActor == "owner"' >/dev/null || { echo "bl-q1: $(task_row bl-q1 | jq -c '{section,state,nextActor}')"; return 1; }
+  task_row bl-f1 | jq -e '.section == "In flight" and .state == "running"' >/dev/null || { echo "bl-f1: $(task_row bl-f1 | jq -c '{section,state}')"; return 1; }
+  task_row bl-d1 | jq -e '.section == "Done" and .state == "done"' >/dev/null || { echo "bl-d1: $(task_row bl-d1 | jq -c '{section,state}')"; return 1; }
+  # --absorb-only fills the record and leaves the file: a second file absorbed so renders like the first
+  cp "$d/fixture.md" "$d/absorb.md"
+  ft backlog sync --file "$d/absorb.md" --absorb-only
+  must 'absorb only' 0 || return 1
+  cmp -s "$d/absorb.md" "$d/fixture.md" || { echo "--absorb-only changed the file"; return 1; }
+  ft backlog render --file "$d/absorb.md" --out "$d/absorb-render.md"
+  cmp -s <(tail -n +2 "$d/absorb-render.md") <(tail -n +2 "$d/fixture.md") || { echo "an absorbed file does not render back"; return 1; }
+  ft backlog sync --file "$f" >/dev/null || return 1
+  # a second sync writes nothing
+  events=$(count fm_task_event); cp "$f" "$d/after1.md"
+  ft backlog sync --file "$f"
+  must 'second sync' 0 || return 1
+  [ "$(count fm_task_event)" = "$events" ] || { echo "an unchanged file wrote events"; return 1; }
+  cmp -s "$f" "$d/after1.md" || { echo "an unchanged file was rewritten"; return 1; }
+  # a row call without --file belongs to the home's own backlog view, and renders it at once, so the next sync keeps it
+  printf '  Note one: by row\n\n' > "$d/f1-notes"; printf '%s' "$(sed -n 's/^- \[ \] \(bl-f1 - .*\)$/\1/p' "$f")" > "$d/f1-row"
+  FM_DATA_OVERRIDE=$d ft row bl-f1 --section 'In flight' --row-file "$d/f1-row" --notes-file "$d/f1-notes"
+  must 'row without --file' 0 || return 1
+  grep -qx '  Note one: by row' "$f" || { echo "a row call did not render the home's view"; return 1; }
+  FM_DATA_OVERRIDE=$d ft row bl-d1 --gone
+  must 'row --gone' 0 || return 1
+  ft backlog sync --file "$f"
+  must 'sync after row calls' 0 || return 1
+  if ! grep -qx '  Note one: by row' "$f" || grep -q 'bl-d1' "$f"; then echo "the next sync undid the row calls"; return 1; fi
+  cp "$d/after1.md" "$f"; ft backlog sync --file "$f" >/dev/null || return 1
+  cmp -s "$f" "$d/after1.md" || { echo "setup: the fixture did not come back"; return 1; }
+  events=$(count fm_task_event)
+  # every sync and row call of one backlog file holds its lock: each waits for another holder
+  local held=$((SECONDS))
+  # shellcheck disable=SC2016 # perl source
+  perl -e 'use Fcntl qw(:flock); open(my $f, ">>", shift) or die; flock($f, LOCK_EX) or die; sleep 3' "$f.view-lock" &
+  sleep 0.5; held=$SECONDS
+  ft backlog sync --file "$f"
+  [ $((SECONDS - held)) -ge 2 ] || { echo "a sync did not wait for the backlog lock"; return 1; }
+  perl -e 'use Fcntl qw(:flock); open(my $f, ">>", shift) or die; flock($f, LOCK_EX) or die; sleep 3' "$f.view-lock" &
+  sleep 0.5; held=$SECONDS
+  FM_DATA_OVERRIDE=$d ft row bl-f1 --section 'In flight' --row-file "$d/f1-row" --notes-file "$d/f1-notes"
+  [ $((SECONDS - held)) -ge 2 ] || { echo "a row call did not wait for the backlog lock"; return 1; }
+  wait
+  cp "$d/after1.md" "$f"; ft backlog sync --file "$f" >/dev/null || return 1
+  events=$(count fm_task_event)
+  # a link to the file names the same view: nothing is written and the link stays a link
+  ln -s "$f" "$d/link.md"
+  ft backlog sync --file "$d/link.md"
+  must 'sync through a link' 0 || return 1
+  [ "$(count fm_task_event)" = "$events" ] && [ -L "$d/link.md" ] || { echo "a sync through a link rewrote the view"; return 1; }
+  ft backlog render --file "$f" --out "$d/render.md"
+  must 'render' 0 || return 1
+  cmp -s "$f" "$d/render.md" || { echo "render differs from the synced file"; return 1; }
+  # the record is shared by every home: another backlog file's sync leaves these rows, and its view holds only its own
+  printf '# Backlog\n\n## In flight\n## Queued\n- [ ] bl-o1 - Other home row (kind: ship)\n## Done\n' > "$d/other.md"
+  ft backlog sync --file "$d/other.md"
+  must 'sync of another file' 0 || return 1
+  [ "$(grep -c '^- \[' "$d/other.md")" = 1 ] || { echo "another file's view holds rows of this one: $(cat "$d/other.md")"; return 1; }
+  task_row bl-f1 | jq -e '.section == "In flight"' >/dev/null || { echo "another file's sync moved bl-f1: $(task_row bl-f1 | jq -c '{section}')"; return 1; }
+  events=$(count fm_task_event)
+  ft backlog sync --file "$f"
+  if ! { [ "$(count fm_task_event)" = "$events" ] && cmp -s "$f" "$d/after1.md"; }; then echo "another file's sync changed this view"; return 1; fi
+  # tasks-axi moves: start bl-q2 (top of In flight), done bl-f2 (top of Done), add bl-q3 (bottom of Queued),
+  # the archive takes bl-d1, a note of bl-q1 changes
+  {
+    head -n 1 "$d/after1.md"; printf '\n## In flight\n'
+    printf -- '- [ ] bl-q2 - Queued two %s (kind: other) (since 2026-10-29)\n\n' "$(head -c 400 /dev/zero | tr '\0' q)"
+    printf -- '- [ ] bl-f1 - First flight https://example.com/i/1 (repo: example/repo) (kind: ship) (since 2026-10-28)\n'
+    printf '  Note one: ünïcode\n\n'
+    printf '## Queued\n'
+    printf -- '- [ ] bl-q1 - Queued one (hold: owner picks a colour) (hold-kind: captain) (kind: ship)\n'
+    printf '  multi\n    changed\n\n'
+    printf -- '- [ ] bl-q3 - New queued (kind: ship) (since 2026-10-29)\n'
+    printf '## Done\n'
+    printf -- '- [x] bl-f2 - Second flight (kind: scout) (done 2026-10-29)\n'
+  } > "$d/moved.md"
+  cp "$d/moved.md" "$f"
+  ft backlog sync --file "$f"
+  must 'sync after moves' 0 || return 1
+  cmp -s "$f" "$d/moved.md" || { echo "the moves did not render back as tasks-axi wrote them: $(diff "$d/moved.md" "$f")"; return 1; }
+  task_row bl-d1 | jq -e '.section == null' >/dev/null || { echo "an archived row kept its section"; return 1; }
+  task_row bl-q3 | jq -e '.section == "Queued" and .state == "ready"' >/dev/null || { echo "bl-q3: $(task_row bl-q3 | jq -c '{section,state}')"; return 1; }
+  # order follows section entry: a hand swap inside Queued renders back in record order
+  awk '/^- \[ \] bl-q1/{hold=1} hold&&/^- \[ \] bl-q3/{print; print buf; hold=0; next} hold{buf=buf (buf?"\n":"") $0; next} {print}' "$d/moved.md" > "$f"
+  cmp -s "$f" "$d/moved.md" && { echo "setup: the swap changed nothing"; return 1; }
+  ft backlog sync --file "$f"
+  must 'sync after a hand swap' 0 || return 1
+  cmp -s "$f" "$d/moved.md" || { echo "a hand swap was kept: $(diff "$d/moved.md" "$f")"; return 1; }
+  # a note edit keeps the row's place: bl-f1 stays below bl-q2
+  sed 's/^  Note one: ünïcode$/  Note one: edited/' "$d/moved.md" > "$d/edited.md"; cp "$d/edited.md" "$f"
+  ft backlog sync --file "$f"
+  must 'sync after a note edit' 0 || return 1
+  cmp -s "$f" "$d/edited.md" || { echo "a note edit moved the row: $(diff "$d/edited.md" "$f")"; return 1; }
+  cp "$d/moved.md" "$f"; ft backlog sync --file "$f" >/dev/null || return 1
+  # a line the record cannot hold refuses the sync and changes nothing
+  events=$(count fm_task_event)
+  sed 's/^## Queued$/## Queued\nfree prose under a section/' "$d/moved.md" > "$f"; cp "$f" "$d/prose.md"
+  ft backlog sync --file "$f"
+  must 'a free line under a section' 5 || return 1
+  cmp -s "$f" "$d/prose.md" && [ "$(count fm_task_event)" = "$events" ] || { echo "a refused sync changed the file or the record"; return 1; }
+  # a refused file still has a new task imported, so the task's other record writes land
+  sed 's/^free prose under a section$/&\n- [ ] bl-q9 - Added beside the prose (kind: ship)/' "$d/prose.md" > "$f"
+  ft backlog sync --file "$f"
+  must 'a free line beside a new row' 5 || return 1
+  task_row bl-q9 | jq -e '.state == "ready" and .section == null' >/dev/null || { echo "a refused sync did not import the new task: $(task_row bl-q9)"; return 1; }
+  # a file with no title line and a blank line in an empty section, as tasks-axi writes one, is held
+  printf '## In flight\n\n## Queued\n- [ ] bl-q1 - Queued one (kind: ship)\n## Done\n' > "$f"
+  ft backlog sync --file "$f"
+  must 'an untitled file' 0 || return 1
+  [ "$(cat "$f")" = "$(printf '%s\n\n## In flight\n## Queued\n- [ ] bl-q1 - Queued one (kind: ship)\n## Done' "$(head -n 1 "$d/after1.md")")" ] || { echo "the untitled file rendered as: $(cat "$f")"; return 1; }
+}
+
+# T7: a status file the writer creates names the record on line 1; the status readers skip that line.
+case_status_view() {
+  BIN=$1; reset_db
+  export FM_HOME="$TMP_ROOT/status-view-home"
+  mkdir -p "$FM_HOME/state"; rm -f "$FM_HOME/state/tk-sv1.status" "$FM_HOME/state/tk-sv2.status"
+  local first
+  mk_running tk-sv1 >/dev/null || { echo "setup: $ERR"; return 1; }
+  ft heartbeat tk-sv1 --note 'building'
+  must 'heartbeat' 0 || return 1
+  first=$(head -n 1 "$FM_HOME/state/tk-sv1.status")
+  case $first in *'task record'*tk-sv1*) ;; *) echo "line 1 does not name the record: $first"; return 1 ;; esac
+  sed -n '2p' "$FM_HOME/state/tk-sv1.status" | grep -q '^working \[at=[0-9]*\]: building' || { echo "line 2: $(sed -n '2p' "$FM_HOME/state/tk-sv1.status")"; return 1; }
+  # shellcheck disable=SC2016 # the inner script reads its own arguments
+  if bash -c 'source "$1/fm-classify-lib.sh"; status_prefix_unrecognized "$2"' _ "$ROOT/bin" "$first"; then echo "the readers take line 1 for a status prefix"; return 1; fi
+  printf 'working [at=1]: older line\n' > "$FM_HOME/state/tk-sv2.status"
+  mk_running tk-sv2 >/dev/null || return 1
+  ft heartbeat tk-sv2 --note 'more'
+  [ "$(head -n 1 "$FM_HOME/state/tk-sv2.status")" = 'working [at=1]: older line' ] || { echo "an existing status file got a new line 1"; return 1; }
+}
+
+# T7: a marked task's verify.md gets its deployed: and approved: lines from the record events, once each.
+case_verify_view() {
+  BIN=$1; reset_db
+  export FM_HOME="$TMP_ROOT/verify-view-home"
+  local v1 v2 v3
+  rm -rf "$FM_HOME"; mkdir -p "$FM_HOME/state" "$FM_HOME/data/tk-vv1" "$FM_HOME/data/tk-vv2" "$FM_HOME/data/tk-vv3"
+  v1="$FM_HOME/data/tk-vv1/verify.md" v2="$FM_HOME/data/tk-vv2/verify.md" v3="$FM_HOME/data/tk-vv3/verify.md"
+  printf 'surface: user-visible\nissue: %s\nrecord: rows\n' "$ISSUE" > "$v1"
+  printf 'surface: user-visible\nissue: %s\n' "$ISSUE" > "$v2"
+  printf 'surface: internal\nrecord: rows\n' > "$v3"
+  ft create tk-vv1 --title 'Marked' --kind ship >/dev/null || { echo "setup: $ERR"; return 1; }
+  ft create tk-vv2 --title 'Unmarked' --kind ship >/dev/null || { echo "setup: $ERR"; return 1; }
+  ft event tk-vv1 deploy --head abc123 --key vv-deploy-1
+  must 'deploy' 0 || return 1
+  ft event tk-vv1 deploy --head abc123 --key vv-deploy-1
+  [ "$(grep -c '^deployed: abc123$' "$v1")" = 1 ] || { echo "deployed lines: $(grep -c '^deployed:' "$v1")"; return 1; }
+  ft event tk-vv1 deploy --head def456
+  [ "$(sed -n 's/^deployed: //p' "$v1" | tail -n 1)" = def456 ] || { echo "the newest deployed head is not last"; return 1; }
+  ft event tk-vv1 deploy --head abc123 --key vv-deploy-1
+  [ "$(sed -n 's/^deployed: //p' "$v1" | tail -n 1)" = def456 ] || { echo "a replayed older deploy wrote its head again: $(sed -n 's/^deployed: //p' "$v1" | tr '\n' ' ')"; return 1; }
+  ft event tk-vv2 deploy --head abc123
+  [ "$(cat "$v2")" = "$(printf 'surface: user-visible\nissue: %s' "$ISSUE")" ] || { echo "an unmarked verify file changed"; return 1; }
+  mk_running tk-vv3 >/dev/null || { echo "setup: $ERR"; return 1; }
+  ft "done" tk-vv3 "${DONE_FLAGS[@]}" >/dev/null || { echo "setup: $ERR"; return 1; }
+  ft approve tk-vv3
+  must 'approve' 0 || return 1
+  grep -q '^approved: firstmate [0-9][0-9]*$' "$v3" || { echo "no approved line: $(cat "$v3")"; return 1; }
+}
+
+CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed row backlog status_view verify_view"}
 
 # ---- real command -------------------------------------------------------------------
 
@@ -1744,4 +1977,31 @@ mutate 'the gate refuses a task the record does not hold' gate '  if (!fold(even
 mutate 'rows --surface user-visible writes only the Tester rows' rows_visible "surface === 'all' || want.surface === surface" 'true'
 mutate 'rows of another surface are left as they are' rows_visible "|| (surface !== 'all' && row.surface !== surface)) continue;" ') continue;'
 mutate 'a deployed task needs a deployed head to approve' approve_deployed "&& lastHeadEvent(events)?.kind !== 'deploy') {" '&& false) {'
+mutate 'a row longer than one event body travels in a document child' row 'if (set.row === undefined || JSON.stringify({ v: 1, note, set, ...extra }).length <= 8000) return' 'if (true) return'
+mutate 'the projection reads a long row from its document' row 'return events.map((e) => (e === carrier ? { ...e, rowText } : e));' 'return events;'
+mutate 'a row must be the header of its own task' row "if (ROW_LINE.exec(\`- [ ] \${row}\`)?.[1] !== taskId) throw rule" 'if (false) throw rule'
+mutate 'notes cannot hold a row or a section' row 'if (ROW_LINE.test(line) || SECTION_LINE.test(line)) throw rule' 'if (false) throw rule'
+mutate 'sync writes a changed row to the record' backlog 'await rowWrite(r.id, { section: r.section, row: r.row, notes: r.notes }, who, record.last.get(r.id) ?? 0, file);' ';'
+mutate 'an unchanged row writes no event' backlog "if (record.mine(r.id) && t.section === r.section && t.row === r.row && (t.notes ?? '') === r.notes) continue;" 'if (false) continue;'
+mutate 'a row the file no longer has leaves its section' backlog 'await rowWrite(t.taskId, { section: null }, who, record.last.get(t.taskId) ?? 0, file);' ';'
+mutate 'a sync leaves the rows of another backlog file' backlog '|| !record.mine(t.taskId) || t.taskId === skip) continue;' '|| t.taskId === skip) continue;'
+mutate 'a view renders only the rows of its own file' backlog '.filter((t) => t.section && t.row && record.mine(t.taskId))' '.filter((t) => t.section && t.row)'
+mutate 'In flight and Done list the newest entry first' backlog 'NEWEST_FIRST.includes(name) ? b.entry - a.entry : a.entry - b.entry' 'a.entry - b.entry'
+mutate 'a row keeps its place until it changes section' backlog 'if (place.get(e.taskId) !== where) entry.set(e.taskId, e.seq);' 'entry.set(e.taskId, e.seq);'
+mutate 'a row call without --file names the home backlog' backlog '  const file = backlogFile(f.file);
+  const store' "  const file = f.file ? backlogPath(f.file) : '-';
+  const store"
+mutate 'a replayed older deploy adds no deployed line' verify_view 'if (newer.some((e) => bodyOf(e).head)) return;' ';'
+mutate 'a sync holds the backlog lock' backlog "out(await withBacklogLock(file, () => syncBacklog(file, who, { absorbOnly: args.flags['absorb-only'] })));" "out(await syncBacklog(file, who, { absorbOnly: args.flags['absorb-only'] }));"
+mutate 'a row call holds the backlog lock' backlog '  return withBacklogLock(file, async () => {' '  return (async (f) => f())(async () => {'
+mutate 'a link to the backlog names the same view' backlog '    return fs.realpathSync(file);' '    return path.resolve(file);'
+mutate '--absorb-only leaves the file' backlog 'if (absorbOnly) return' 'if (false) return'
+mutate 'a row call renders its view without taking the file copy back' backlog '    if (r.id === skip) continue;' ''
+mutate 'a row call renders its home view' backlog '  if (!fs.existsSync(file)) return store();' '  if (true) return store();'
+mutate 'a line the record cannot hold refuses the sync' backlog 'if (problem) throw rule(problem);' ';'
+mutate 'a refused file still imports its new tasks' backlog $'  let written = 0;\n  for (const r of rows) {' $'  let written = 0;\n  if (problem) throw rule(problem);\n  for (const r of rows) {'
+mutate 'a status file the writer creates names the record on line 1' status_view 'const head = prior === null ?' 'const head = false ?'
+mutate 'only a marked verify file is written' verify_view "if (!/^record: rows\$/m.test(text)) return;" ';'
+mutate 'a replayed deploy adds no second deployed line' verify_view "if (lines.filter((l) => l.startsWith('deployed: ')).at(-1) === line) return;" ';'
+mutate 'an approved event adds the approved line' verify_view "line = \`approved: firstmate" "return; line = \`approved: firstmate"
 pass 'every guarded behavior has a red mutation proof'
