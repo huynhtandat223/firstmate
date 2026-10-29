@@ -449,6 +449,13 @@ A line with a glob and no reason refuses, so a hit always says why; with the fil
 `bin/fm-model-deny-lib.sh` owns the format and the check.
 The check is log-only until `config/enforce-model-deny` holds `block`: each hit is written to `state/enforce-model-deny.log` and the launch goes ahead.
 
+## Project rules in briefs (data/project-rules/<repo>.md)
+
+`bin/fm-brief.sh` copies every line of `data/project-rules/<repo-name>.md` that starts with `brief:` into the brief's `## Firstmate spec`.
+The copy is verbatim, tag included, in file order, and sits below the `{FIRSTMATE_SPEC}` fill under its own `### Project rules` subheading, so a spec filled with `###` subsections does not swallow it.
+A line without the tag is never copied, a project with no rules file adds nothing, and a repo name with a slash is refused.
+Firstmate tags the lines in its private rules file; the file is not tracked.
+
 ## Backlog backend (.tasks.toml / config/backlog-backend)
 
 The tracked `.tasks.toml` pins the default `tasks-axi` markdown backend to `data/backlog.md`, with `done_keep = 10` and an archive at `data/done-archive.md`.

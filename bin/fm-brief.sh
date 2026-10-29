@@ -120,6 +120,9 @@
 # names the issue and the command `bin/fm-acceptance.mjs rows <issue-url> --surface all` (every scenario, internal ones too), so the
 # worker reads the scenario list from the one parser and the brief carries no list
 # of its own. Acceptance wording appears in the brief only through this section.
+# A ship or scout brief also copies every line of data/project-rules/<repo-name>.md that starts with
+# `brief:` into `## Firstmate spec`, under a `### Project rules` subheading below the {FIRSTMATE_SPEC}
+# fill, verbatim (tag included) and in file order; untagged lines are never copied, and a missing file adds nothing.
 # --check <task-id> reads data/<task-id>/brief.md after Firstmate filled it and
 # refuses a `# Task` body that names an acceptance id range (ids of capital letters
 # then digits, as the parser reads them, two of them joined by a dash, `..` or `to`):
@@ -647,6 +650,9 @@ exit 0
 fi
 
 REPO=${POS[1]}
+case "$REPO" in
+  */*) echo "error: the repo name '$REPO' contains a slash; pass the project's registered name" >&2; exit 1 ;;
+esac
 
 if [ "$HERDR_LAB" -eq 1 ]; then
 HERDR_LAB_HELPER=$(shell_quote "$FM_ROOT/bin/fm-herdr-lab.sh")
@@ -693,6 +699,16 @@ IFS= read -r -d '' TASK_SECTION <<'EOF' || true
 {FIRSTMATE_SPEC}
 EOF
 TASK_SECTION=${TASK_SECTION%$'\n'}
+# Project rules (spec huynhtandat223/firstmate#200, E8c): every line of data/project-rules/<repo>.md
+# that starts with `brief:` goes under `## Firstmate spec`, verbatim and in file order, below the
+# {FIRSTMATE_SPEC} fill under their own `### Project rules` subheading (only when a line is tagged),
+# so a spec filled with its own ### subsections cannot swallow them; an untagged line is never copied. A missing file adds nothing, and a repo
+# name with a slash is refused above.
+PROJECT_RULES_FILE="$DATA/project-rules/$REPO.md"
+if [ -r "$PROJECT_RULES_FILE" ]; then
+  PROJECT_RULES=$(grep '^brief:' "$PROJECT_RULES_FILE" || true)
+  [ -z "$PROJECT_RULES" ] || TASK_SECTION="$TASK_SECTION"$'\n\n### Project rules\n'"$PROJECT_RULES"
+fi
 
 REQUIRED_SKILLS_SECTION=$(printf '%s\n' \
   '# Required skills and instructions' \
