@@ -1080,10 +1080,11 @@ fi
 stage read-once
 section "READ-ONCE CONTRACT"
 cat <<'EOF'
-Everything below is printed in full for this session start: every state/*.meta,
-a compact data/backlog.md listing, a bounded tail of every state/*.status,
-data/projects.md, data/secondmates.md, data/captain.md, data/captain-shared.md,
-and data/learnings.md.
+This digest prints in full: data/captain.md, the handoff its Start here line
+names, and data/captain-shared.md (all three at the top, right after the head),
+then every state/*.meta, a compact data/backlog.md listing,
+a bounded tail of every state/*.status,
+data/projects.md, data/secondmates.md, and data/learnings.md.
 Do NOT re-read any of them after reading this digest, and do NOT bulk-read
 data/backlog.md or state/*.status: re-reading everything defeats the entire
 point of this command.
