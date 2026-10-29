@@ -58,6 +58,11 @@ test_the_placeholder_stays_so_the_spec_is_still_filled() {
   spec=$(spec_of pb1-ship)
   assert_contains "$spec" '{FIRSTMATE_SPEC}' "the spec placeholder must stay for firstmate to fill"
   [ "$(printf '%s\n' "$spec" | head -1)" = '{FIRSTMATE_SPEC}' ] || fail "the rules must follow the placeholder"
+  [ "$(printf '%s\n' "$spec" | grep -c '^### Project rules$')" -eq 1 ] || fail "the tagged lines must sit under one ### Project rules subheading: $spec"
+  [ "$(printf '%s\n' "$spec" | sed -n '2,4p' | tr '\n' '|')" = '|### Project rules|brief: CI timeout stays 5 min.|' ] || fail "the subheading must come right after the placeholder, then the first tagged line: $spec"
+  # Once firstmate fills the spec with its own ### subsections, the rules are not part of the last one.
+  awk -v spec="### Build\nBuild it.\n### Out of scope\nNothing else." '/^\{FIRSTMATE_SPEC\}$/ {print spec; next} {print}' "$LAB/data/pb1-ship/brief.md" > "$TMP_ROOT/filled.md"
+  [ "$(awk '/^### /{h=$0} /^brief: CI timeout/{print h; exit}' "$TMP_ROOT/filled.md")" = '### Project rules' ] || fail "after the fill the tagged lines must not read as part of '### Out of scope'"
   pass "the {FIRSTMATE_SPEC} placeholder stays first, so a spec left unfilled is still refused at spawn"
 }
 
@@ -75,7 +80,7 @@ test_other_projects_and_missing_or_untagged_files_add_nothing() {
   [ "$(spec_of pb1-other)" = '{FIRSTMATE_SPEC}' ] || fail "a project with no rules file must add nothing: $(spec_of pb1-other)"
   printf '# dms\nNo tag here.\n' > "$LAB/data/project-rules/dms.md"
   scaffold pb1-untagged dms
-  [ "$(spec_of pb1-untagged)" = '{FIRSTMATE_SPEC}' ] || fail "a rules file with no tagged line must add nothing"
+  [ "$(spec_of pb1-untagged)" = '{FIRSTMATE_SPEC}' ] || fail "a rules file with no tagged line must add nothing, not even the subheading"
   if FM_HOME="$LAB" "$ROOT/bin/fm-brief.sh" pb1-slash ../project-rules/cfw-modules --mode direct-PR > "$TMP_ROOT/slash.out" 2>&1; then fail "a repo name with a slash must be refused"; fi
   assert_contains "$(cat "$TMP_ROOT/slash.out")" "contains a slash" "the refusal should say why"
   assert_absent "$LAB/data/pb1-slash/brief.md" "a refused scaffold must not write a brief"
