@@ -639,6 +639,9 @@ async function cmdCreate(args) {
   const kind = oneOf(TASK_KINDS, f.kind, 'kind');
   const surface = f.surface === undefined ? null : oneOf(SURFACES, f.surface, 'surface');
   const parents = f.after || [];
+  // Task identity check (config/enforce-task-identity): a reused done id or a second live task for one ticket key.
+  const identity_check = spawnSync('bash', [path.join(HERE, 'fm-task-identity-check.sh'), 'add', taskId, f.title, f.repo ?? ''], { encoding: 'utf8', env: process.env });
+  if (identity_check.status === 1) throw rule(String(identity_check.stderr).replace(/^error: /, '').trim());
   const { task } = await write(
     taskId,
     who,

@@ -59,6 +59,13 @@ if [ ! -f "$META" ] || [ -L "$META" ] || [ "$(fm_pr_file_link_count "$META")" !=
   exit 1
 fi
 
+# Task identity check (config/enforce-task-identity, bin/fm-task-identity-check.sh):
+# a PR whose closing references omit the task's linked issue. The merge path
+# records through this script and has its own checks.
+if [ "${FM_PR_CHECK_MERGE:-}" != 1 ]; then
+  "$SCRIPT_DIR/fm-task-identity-check.sh" pr "$ID" "$URL" || exit 1
+fi
+
 # A secondmate is a persistent worker, not a delivery lane: it never owns a
 # pull request of its own. A URL reported on its routed status channel belongs
 # to a task inside the mate's own home, which records and watches it there;

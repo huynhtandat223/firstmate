@@ -432,6 +432,14 @@ The second check is `reply-lint`: the Claude Stop hook `bin/fm-reply-lint.sh` re
 It reads `config/enforce-reply-lint`, and it does nothing until `config/reply-language` holds a language word (`vi` today); with the file absent the lint is off.
 A hit blocks at most once per turn, and `bin/fm-reply-lint.sh --replay <transcript>` lists the turn ends a past transcript would have flagged.
 
+## Task identity checks (config/enforce-task-identity)
+
+`bin/fm-task-identity-check.sh` owns three checks on task identity.
+`add` runs before `bin/fm-tasks-axi.sh add|create` and `bin/fm-task.sh create`: it refuses an id that is already a done row in `data/done-archive.md` or `data/backlog.md` (citing file and line), an id with a local `fm/<id>` branch in the `--repo` clone, and a title whose ticket key (`DEV-n`, `PS-n`) a live task already carries (naming that task).
+`pr` runs in `bin/fm-pr-check.sh`: it refuses a GitHub PR whose closing references name other issues and omit the task's linked issue, the first `.../issues/<n>` URL in its backlog item, naming both.
+A PR with no closing reference, a task with no linked issue, or an unreadable forge passes.
+The checks are log-only until `config/enforce-task-identity` holds `block`: each hit is written to `state/enforce-task-identity.log` and the command goes on.
+
 ## Backlog backend (.tasks.toml / config/backlog-backend)
 
 The tracked `.tasks.toml` pins the default `tasks-axi` markdown backend to `data/backlog.md`, with `done_keep = 10` and an archive at `data/done-archive.md`.
