@@ -288,6 +288,18 @@ MD
   run_gate "$dir" "$CFW_URL"
   assert_contains "$ERR" 'would refuse: phrase body line 4:' "sg3: the phrase after a closed fence hits, case-insensitive"
 
+  dir=$(make_case sg3-fence-trailing internal)
+  printf '```sh\necho x\n```  \n~~~\nquoted\n~~~\t\nDo not merge this yet.\n' > "$dir/body.md"
+  set_body "$dir" "$dir/body.md"
+  run_gate "$dir" "$CFW_URL"
+  assert_contains "$ERR" 'would refuse: phrase body line 7:' "sg3: a closing fence with trailing whitespace still closes, so the next real line hits"
+  dir=$(make_case sg3-fence-trailing-line user-visible)
+  printf '```\ncode\n``` \n%s\n' "$(selftest_line "${HEAD:0:12}")" > "$dir/body.md"
+  set_body "$dir" "$dir/body.md"
+  write_receipt "$dir" "$HEAD" tester PASS
+  run_gate "$dir" "$CFW_URL"
+  assert_equals '' "$ERR" "sg3: the Self-test line after a fence closed with trailing whitespace is read"
+
   dir=$(make_case sg3-curly internal)
   body_file "$dir" "We don${APOSTROPHE}t merge this one."
   run_gate "$dir" "$CFW_URL"

@@ -56,11 +56,12 @@ fm_selftest_hit() {
   fi
 }
 
-# Prints "<line number><TAB><line>" for each body line, outside fenced code and
-# `>` quotes, that says the change must not merge yet.
-# fm_selftest_phrase_hits <body-file>
-fm_selftest_phrase_hits() {
-  local body=$1 line trimmed lower n=0 fence='' marker
+# Prints "<line number><TAB><line>" for each body line outside fenced code and
+# `>` quotes. A fence opens on 3 or more backticks or tildes and closes on the
+# same character, at least as long, with nothing but whitespace after it.
+# fm_selftest_plain_lines <body-file>
+fm_selftest_plain_lines() {
+  local body=$1 line trimmed rest n=0 fence='' marker
   while IFS= read -r line || [ -n "$line" ]; do
     n=$((n + 1))
     line=${line%$'\r'}
@@ -68,10 +69,11 @@ fm_selftest_phrase_hits() {
     case "$trimmed" in
       '```'*|'~~~'*)
         marker=${trimmed%%[!\`~]*}
+        rest=${trimmed#"$marker"}
         if [ -z "$fence" ]; then
           fence=$marker
         elif [ "${marker:0:1}" = "${fence:0:1}" ] && [ "${#marker}" -ge "${#fence}" ] \
-          && [ -z "${trimmed#"$marker"}" ]; then
+          && [ -z "${rest//[[:space:]]/}" ]; then
           fence=''
         fi
         continue
@@ -79,44 +81,38 @@ fm_selftest_phrase_hits() {
     esac
     [ -z "$fence" ] || continue
     case "$trimmed" in '>'*) continue ;; esac
-    lower=${line,,}
-    lower=${lower//’/\'}
-    case "$lower" in
-      *"do not merge"*|*"don't merge"*|*"not ready to merge"*)
-        printf '%s\t%s\n' "$n" "$trimmed"
-        ;;
-    esac
+    printf '%s\t%s\n' "$n" "$trimmed"
   done < "$body"
 }
 
-# The first Self-test line outside fences and quotes, or nothing. Prints
+# Prints "<line number><TAB><line>" for each plain body line that says the
+# change must not merge yet.
+# fm_selftest_phrase_hits <body-file>
+fm_selftest_phrase_hits() {
+  local n text lower
+  while IFS=$'\t' read -r n text; do
+    lower=${text,,}
+    lower=${lower//’/\'}
+    case "$lower" in
+      *"do not merge"*|*"don't merge"*|*"not ready to merge"*)
+        printf '%s\t%s\n' "$n" "$text"
+        ;;
+    esac
+  done < <(fm_selftest_plain_lines "$1")
+}
+
+# The first plain Self-test line, or nothing. Prints
 # "<features><TAB><branch><TAB><sha>".
 # fm_selftest_line <body-file>
 fm_selftest_line() {
-  local body=$1 line trimmed fence='' marker
+  local n text
   local re='^Self-test:[[:space:]]+verify-cfw[[:space:]]+run[[:space:]]+([^[:space:]]+)[[:space:]]+--target[[:space:]]+storybook:([^[:space:]]+)[[:space:]]+head=([0-9a-fA-F]{9,})[[:space:]]+PASS[[:space:]]*$'
-  while IFS= read -r line || [ -n "$line" ]; do
-    line=${line%$'\r'}
-    trimmed=${line#"${line%%[![:space:]]*}"}
-    case "$trimmed" in
-      '```'*|'~~~'*)
-        marker=${trimmed%%[!\`~]*}
-        if [ -z "$fence" ]; then
-          fence=$marker
-        elif [ "${marker:0:1}" = "${fence:0:1}" ] && [ "${#marker}" -ge "${#fence}" ] \
-          && [ -z "${trimmed#"$marker"}" ]; then
-          fence=''
-        fi
-        continue
-        ;;
-    esac
-    [ -z "$fence" ] || continue
-    case "$trimmed" in '>'*) continue ;; esac
-    if [[ "$trimmed" =~ $re ]]; then
+  while IFS=$'\t' read -r n text; do
+    if [[ "$text" =~ $re ]]; then
       printf '%s\t%s\t%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
       return 0
     fi
-  done < "$body"
+  done < <(fm_selftest_plain_lines "$1")
   return 0
 }
 
