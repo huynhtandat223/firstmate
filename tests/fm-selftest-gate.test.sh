@@ -14,6 +14,9 @@
 #        the verify-cfw command to run.
 #   SG3  an internal task, or another repository, gets only the phrase rule; a
 #        phrase inside a fence or a `>` quote does not hit.
+#   SG4  a receipt whose actor is the task hits `author-receipt` on its own
+#        check, merge-verifier: only logged without its config file, refused
+#        under `block`; an actor such as `tester` logs nothing.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -292,7 +295,57 @@ MD
   pass "sg3: the receipt rules stay inside user-visible cfw-modules tasks and the phrase rule skips fences and quotes"
 }
 
+test_sg4_a_receipt_written_by_the_author_hits_author_receipt() {
+  local dir
+
+  dir=$(make_case sg4-log user-visible)
+  body_file "$dir" "$(selftest_line "${HEAD:0:12}")"
+  write_receipt "$dir" "$HEAD" "$TASK" PASS
+  run_gate "$dir" "$CFW_URL"
+  expect_code 0 "$RC" "sg4: without enforce-merge-verifier the merge continues"
+  assert_contains "$ERR" "would refuse: author-receipt" "sg4: the hit is a would-refuse line"
+  assert_contains "$ERR" "actor $TASK" "sg4: the actor is named"
+  assert_contains "$ERR" "the verifier is not the author: the Tester or a fresh verifier session runs it" "sg4: the rule is stated"
+  assert_equals 1 "$(log_of "$dir" merge-verifier | awk -F'\t' '$2 == "would-refuse" && $3 == "author-receipt"' | wc -l | tr -d ' ')" \
+    "sg4: one author-receipt line in the merge-verifier log"
+  assert_equals 0 "$(log_of "$dir" merge-selftest | wc -l | tr -d ' ')" "sg4: the receipt itself is fine for merge-selftest"
+
+  # Each check has its own switch.
+  printf 'block\n' > "$dir/home/config/enforce-merge-selftest"
+  run_gate "$dir" "$CFW_URL"
+  expect_code 0 "$RC" "sg4: block on merge-selftest does not turn the verifier check on"
+  rm "$dir/home/config/enforce-merge-selftest"
+  printf 'block\n' > "$dir/home/config/enforce-merge-verifier"
+  run_gate "$dir" "$CFW_URL"
+  expect_code 1 "$RC" "sg4: block on merge-verifier refuses the merge"
+  assert_contains "$ERR" "refused: author-receipt" "sg4: block names the code"
+
+  dir=$(make_case sg4-tester user-visible)
+  body_file "$dir" "$(selftest_line "${HEAD:0:12}")"
+  write_receipt "$dir" "$HEAD" tester PASS
+  printf 'block\n' > "$dir/home/config/enforce-merge-verifier"
+  run_gate "$dir" "$CFW_URL"
+  expect_code 0 "$RC" "sg4: a receipt from the Tester passes under block"
+  assert_equals '' "$ERR" "sg4: and prints nothing"
+  assert_equals 0 "$(count_logs "$dir")" "sg4: and logs nothing"
+
+  dir=$(make_case sg4-no-actor user-visible)
+  body_file "$dir" "$(selftest_line "${HEAD:0:12}")"
+  write_receipt "$dir" "$HEAD" "" PASS
+  run_gate "$dir" "$CFW_URL"
+  assert_contains "$ERR" "would refuse: no-actor" "sg4: a receipt with no actor cannot show a non-author verifier"
+  assert_equals 1 "$(log_of "$dir" merge-verifier | wc -l | tr -d ' ')" "sg4: logged once"
+
+  dir=$(make_case sg4-internal internal)
+  body_file "$dir" "$(selftest_line "${HEAD:0:12}")"
+  write_receipt "$dir" "$HEAD" "$TASK" PASS
+  run_gate "$dir" "$CFW_URL"
+  assert_equals '' "$ERR" "sg4: an internal task has no verifier rule"
+  pass "sg4: a receipt the author wrote hits author-receipt on the merge-verifier switch alone"
+}
+
 test_sg1_pr_1730_body_hits_phrase_on_lines_4_and_16
 test_sg2_receipt_at_the_live_head_logs_nothing
 test_sg2_each_missing_piece_hits_its_own_code
 test_sg3_receipt_rules_stay_inside_user_visible_cfw_modules
+test_sg4_a_receipt_written_by_the_author_hits_author_receipt

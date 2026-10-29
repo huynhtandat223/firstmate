@@ -445,6 +445,9 @@ Code `phrase` hits a body line outside fenced code and `>` quotes that says "do 
 For a task with `surface=user-visible` on `huynhtandat223/cfw-modules`, the body also needs a `Self-test: verify-cfw run <features> --target storybook:<branch> head=<sha> PASS` line whose sha is a prefix of the live head, and `data/<task>/selftest-<head>.json` must read PASS at that head.
 Codes `no-selftest-line`, `stale-head`, `no-receipt` and `receipt-fail` name what is missing, and each prints the `verify-cfw run` command that writes a fresh receipt.
 A hit also prints one `would refuse:` line on stderr, and `config/enforce-merge-selftest` set to `block` makes it refuse the merge.
+The sixth check is `merge-verifier`, in the same library: the receipt's `actor` must not be the task id.
+Code `author-receipt` names the actor and says the Tester or a fresh verifier session runs it, and code `no-actor` hits a receipt with no actor.
+It reads `config/enforce-merge-verifier`, a switch apart from the fifth check's.
 
 ## Backlog backend (.tasks.toml / config/backlog-backend)
 

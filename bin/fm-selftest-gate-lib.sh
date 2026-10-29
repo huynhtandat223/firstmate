@@ -24,6 +24,11 @@
 #                     another head
 # Every receipt hit prints the verify-cfw command that produces a fresh receipt.
 #
+# G2, check merge-verifier: the receipt G1 reads must carry an `actor` other
+# than the task id.
+#   author-receipt    the receipt's actor is the task itself
+#   no-actor          the receipt names no actor
+#
 # Inputs from the caller (bin/fm-pr-merge.sh sets them): FM_HOME, STATE.
 # FM_CONFIG_OVERRIDE moves the config directory, as in the other checks.
 
@@ -153,13 +158,22 @@ fm_selftest_receipt_rule() {
   if ! result_head=$(jq -r '
         if type != "object" then error("not an object") else
           (if ((.result // "") == "PASS") and ([.results[]? | select(.result == "fail")] | length == 0)
-           then "pass" else "fail" end) + "\t" + ((.head // "") | tostring)
+           then "pass" else "fail" end) + "\u001f" + ((.head // "") | tostring) + "\u001f" + ((.actor // "") | tostring)
         end' "$receipt" 2>/dev/null); then
     fm_selftest_hit merge-selftest receipt-fail \
       "the receipt $receipt is not readable JSON; run: $cmd"
     return 0
   fi
-  local verdict=${result_head%%$'\t'*} receipt_head=${result_head#*$'\t'}
+  local verdict receipt_head actor
+  IFS=$'\x1f' read -r verdict receipt_head actor <<< "$result_head"
+  # G2: the receipt must come from a verifier that is not the task's author.
+  if [ -z "$actor" ]; then
+    fm_selftest_hit merge-verifier no-actor \
+      "the receipt $receipt names no actor, so the verifier is unknown; run: $cmd"
+  elif [ "$actor" = "$task" ]; then
+    fm_selftest_hit merge-verifier author-receipt \
+      "the receipt $receipt names actor $actor, the author of this change: the verifier is not the author: the Tester or a fresh verifier session runs it; run: $cmd"
+  fi
   if [ "$verdict" != pass ]; then
     fm_selftest_hit merge-selftest receipt-fail \
       "the receipt $receipt does not read PASS; run: $cmd"
