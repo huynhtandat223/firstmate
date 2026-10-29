@@ -443,7 +443,8 @@ A task that starts, stops, rotates or otherwise drives a pane, an assistance or 
 `bin/fm-brief.sh --check <task-id>` flags a brief without that block when its `# Task` text, or the scenarios of the issue its `# Acceptance` section names, hold a lifecycle verb within 60 characters of the word pane, assistance or agent.
 The block is the `# Herdr isolation - HARD SAFETY CONTRACT` section; no other text counts.
 An unreadable scenario list is logged in log mode and refuses in block mode, and is never read as empty.
-`bin/fm-send.sh` applies the same rule to a steer sent to a task whose brief has no lab block.
+`bin/fm-send.sh` applies the same rule to a steer sent to a task whose brief has no lab block, on the inbox plane and on the typed plane alike.
+A period inside a file name such as `fm-assistance.sh` does not break the link between verb and noun.
 Both say to re-scaffold with `--herdr-lab`.
 `bin/fm-herdr-lab-phrase-lib.sh` owns the phrase rule.
 The check is log-only until `config/enforce-herdr-lab-brief` holds `block`: each hit is written to `state/enforce-herdr-lab-brief.log` and the brief or steer still passes.

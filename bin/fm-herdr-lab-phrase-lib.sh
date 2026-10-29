@@ -17,7 +17,9 @@
 
 fm_herdr_lab_phrase() {  # <text>
   local text=$1 verbs='(start(s|ed|ing)?|stop(s|ped|ping)?|restart(s|ed|ing)?|rotat[a-z]*|relaunch(es|ed|ing)?|clos[a-z]*|creat[a-z]*|remov[a-z]*|delet[a-z]*|kill(s|ed|ing)?|spawn(s|ed|ing)?)' nouns='(pane|assistance|agent)s?'
-  printf '%s' "$text" | tr '\n' ' ' | grep -oiE "\\b${verbs}\\b[^.]{0,60}\\b${nouns}\\b|\\b${nouns}\\b[^.]{0,60}\\b${verbs}\\b" | head -1
+  # A period inside a file name (fm-assistance.sh stop) is not a sentence end: drop the
+  # extension dot before the 60-character window so the verb and noun stay linked.
+  printf '%s' "$text" | tr '\n' ' ' | sed -E 's/\.(sh|mjs|js|md|json|py)\b/ /g' | grep -oiE "\\b${verbs}\\b[^.]{0,60}\\b${nouns}\\b|\\b${nouns}\\b[^.]{0,60}\\b${verbs}\\b" | head -1
 }
 
 fm_herdr_lab_brief_has() {  # <brief-file>

@@ -38,7 +38,7 @@ test_the_phrase_rule() {
   local text
   [ -n "$(fm_herdr_lab_phrase "$TR33")" ] || fail "TR33 must match"
   [ -n "$(fm_herdr_lab_phrase "$HV1")" ] || fail "HV1 must match"
-  for text in "the agent was stopped" "spawned an agent" "they killed the pane" "starting the assistance" "restarting a pane" "relaunched your agent" "restart the assistance" "stop a pane" "rotate the assistance now" "the pane must be closed" "relaunch your assistance"; do
+  for text in "run fm-assistance.sh stop dms now" "bin/fm-assistance.sh start planner" "the agent was stopped" "spawned an agent" "they killed the pane" "starting the assistance" "restarting a pane" "relaunched your agent" "restart the assistance" "stop a pane" "rotate the assistance now" "the pane must be closed" "relaunch your assistance"; do
     [ -n "$(fm_herdr_lab_phrase "$text")" ] || fail "must match: $text"
   done
   for text in "Fix the summary toggle and add a test." "The panel layout changes at 390." "Read the assistance charter and report." "Close the issue after the merge." "The agent reads the report and fixes the bug."; do
@@ -154,6 +154,27 @@ send() {  # <dir> <id> <text>: sets RC and ERR
   RC=$?
 }
 
+test_hl2_the_typed_plane_steer() {
+  local dir="$TMP_ROOT/typed"
+  write_brief "$dir" t1 "Verify the draft." "$NO_LAB"
+  write_brief "$dir" t2 "Verify the draft." "$WITH_LAB"
+  make_stubs "$dir"
+  fm_write_meta "$dir/home/state/t1.meta" "window=sess:fm-t1" "kind=ship" "harness=claude"
+  fm_write_meta "$dir/home/state/t2.meta" "window=sess:fm-t2" "kind=ship" "harness=claude"
+  printf 'block\n' > "$dir/home/config/enforce-herdr-lab-brief"
+  # A leading slash keeps the steer on the typed plane (a harness-native command).
+  send "$dir" t1 "/loop restart the probe pane every minute"
+  [ "$RC" -ne 0 ] || fail "a typed-plane steer naming a pane lifecycle action must be refused for a task without the lab block"
+  assert_contains "$ERR" "re-scaffold with --herdr-lab" "the typed-plane refusal should say how to fix it"
+  send "$dir" t2 "/loop restart the probe pane every minute"
+  assert_not_contains "$ERR" "re-scaffold with --herdr-lab" "the same typed text to a task with the lab block must not be refused: $ERR"
+  rm -f "$dir/home/config/enforce-herdr-lab-brief"
+  send "$dir" t1 "/loop restart the probe pane every minute"
+  assert_not_contains "$ERR" "re-scaffold with --herdr-lab" "log-only must not refuse a typed steer"
+  grep -q 'would-refuse	steer	t1:' "$dir/home/state/enforce-herdr-lab-brief.log" || fail "log-only wrote no typed-plane line"
+  pass "the Herdr-lab check also covers a typed-plane steer to a recorded task"
+}
+
 test_hl2_the_probe_pane_steer() {
   local dir="$TMP_ROOT/hl2"
   write_brief "$dir" t1 "Verify the draft." "$NO_LAB"
@@ -175,6 +196,7 @@ test_hl2_the_probe_pane_steer() {
 }
 
 test_the_phrase_rule
+test_hl2_the_typed_plane_steer
 test_hl1_the_t4_brief_is_refused
 test_the_linked_issue_scenarios_count
 test_an_unreadable_scenario_list_is_not_empty
