@@ -66,11 +66,12 @@ function literalStatus(position, node) {
   return null;
 }
 
-// The files a node reads through `< file`.
+// The files a node reads through its stdin: `< file` and `0< file`. A redirect
+// on another descriptor (`3< file`) does not feed the command.
 function inputRedirects(node) {
   const files = [];
   node.forEach((token, i) => {
-    if (token.type === "redir" && token.value === "<" && node[i + 1]?.type === "word") files.push(node[i + 1].value);
+    if (token.type === "redir" && token.value === "<" && token.fd === 0 && node[i + 1]?.type === "word") files.push(node[i + 1].value);
   });
   return files;
 }

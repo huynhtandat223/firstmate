@@ -277,6 +277,22 @@ test_no_exec_shell_payloads_credit_nothing() {
 }
 
 # Reader round 2 on PR 220: a node with a redirection can fail before it runs.
+# Reader round 2 on PR 220: only a stdin redirect (< or 0<) is a read of the file.
+test_only_a_stdin_redirect_is_a_read() {
+  local dir="$TMP_ROOT/stdin-only"
+  make_primary "$dir" block
+  run_shell_cases "$dir" 2 late \
+    'cat 3<data/captain.md' \
+    'cat 3< data/captain.md' \
+    'cat 10<data/captain.md' \
+    'cat 2< data/captain.md'
+  run_shell_cases "$dir" 0 late \
+    'cat 0<data/captain.md' \
+    'cat 0< data/captain.md' \
+    'cat < data/captain.md'
+  pass "#208 round 2: only < and 0< credit a read of data/captain.md; 3< and other descriptors do not"
+}
+
 test_a_redirected_literal_has_an_unknown_status() {
   local dir="$TMP_ROOT/redirected-literal"
   make_primary "$dir" block
@@ -555,6 +571,7 @@ test_skipped_and_branches_credit_nothing
 test_bash_c_payloads_are_inspected
 test_input_redirect_read_counts
 test_a_redirected_literal_has_an_unknown_status
+test_only_a_stdin_redirect_is_a_read
 test_no_exec_shell_payloads_credit_nothing
 test_session_keyed_block_record
 test_agent_ask_counts_only_as_a_command
