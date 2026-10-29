@@ -47,6 +47,7 @@ _fm_dms_account_norm() {  # <path>
 
 # Split a launch command into words the way the shell does for quotes and
 # backslashes (no expansion), into the array FM_DMS_WORDS.
+# shellcheck disable=SC1003  # the '\\' case pattern is a literal backslash, not an escaped quote
 _fm_dms_account_words() {  # <command>
   local text=$1 i ch word='' inword=0 quote=''
   FM_DMS_WORDS=()
@@ -81,6 +82,7 @@ _fm_dms_account_words() {  # <command>
 #                        it overrides the caller's environment and a pinned account
 #   FM_DMS_RAW_CREDENTIALS  the names of leading assignments on the Claude
 #                        credential shed list (FM_WORKER_ACCOUNT_CLAUDE_SHED)
+# shellcheck disable=SC2034  # FM_DMS_RAW_ROOT and FM_DMS_RAW_ROOT_SET are the documented outputs bin/fm-spawn.sh reads
 fm_dms_account_raw_parse() {  # <launch-command>
   local word name shed
   FM_DMS_RAW_HARNESS='' FM_DMS_RAW_ROOT='' FM_DMS_RAW_ROOT_SET=0 FM_DMS_RAW_CREDENTIALS=''
