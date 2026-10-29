@@ -251,7 +251,16 @@ function bodyOf(event) {
 // The step follows the state: done is passed; review is dev once a deploy follows the newest done, else pr; running is
 // pr once a pr event follows the newest started or changes, else working; triage, todo and ready are queued; blocked
 // (and archived) keep the step they had. stageSince is the time of the event that set the step. lastEventAt and
-// lastNote come from the newest real event: a backlog view `row` event is not one.
+// lastNote come from the newest real event: a backlog view `row` event is not one. An import's source stamp
+// (`{"source","sha256"}`, fm-task-sources-lib.mjs) points at a note and is not one, so it leaves lastNote as it was.
+const isSourceStamp = (note) => {
+  try {
+    const value = JSON.parse(note);
+    return value !== null && typeof value === 'object' && Object.keys(value).sort().join() === 'sha256,source';
+  } catch {
+    return false;
+  }
+};
 function fold(events) {
   let task = null;
   let deployed = false;
@@ -268,7 +277,11 @@ function fold(events) {
     const stage = STEP_OF_STATE[task.state] ?? (task.state === 'review' ? (deployed ? 'dev' : 'pr')
       : task.state === 'running' ? (pullRequest ? 'pr' : 'working') : task.stage ?? 'queued');
     if (stage !== task.stage) Object.assign(task, { stage, stageSince: event.createdAt ?? null });
-    if (event.kind !== 'row') Object.assign(task, { lastEventAt: event.createdAt ?? null, lastNote: String(bodyOf(event).note ?? '').slice(0, 300) || null });
+    if (event.kind !== 'row') {
+      const note = String(bodyOf(event).note ?? '');
+      task.lastEventAt = event.createdAt ?? null;
+      if (!isSourceStamp(note)) task.lastNote = note.slice(0, 300) || null;
+    }
     if (REVIEWER_KINDS.includes(event.kind)) task.reviewer = event.actor ?? null;
   }
   if (!task) return null;

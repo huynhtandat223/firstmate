@@ -1981,6 +1981,10 @@ case_stage() {
   ft row $t --section 'In flight' --row-file "$TMP_ROOT/sg-row" --notes-file "$TMP_ROOT/sg-notes"; must 'row event' 0 || return 1
   task_row $t | jq -e --arg at "$real_at" '.lastNote == "real note" and .lastEventAt == $at and .section == "In flight"' >/dev/null \
     || { echo "a row event moved lastNote or lastEventAt: $(task_row $t)"; return 1; }
+  # an import's source stamp ({"source","sha256"}, fm-task-sources-lib.mjs) points at a note and is not one: lastNote stays
+  ft comment $t --note '{"source":"backlog","sha256":"0123abcd"}'; must 'source stamp' 0 || return 1
+  task_row $t | jq -e --arg at "$(at_of $t "$(seq_of)")" '.lastNote == "real note" and .lastEventAt == $at' >/dev/null \
+    || { echo "a source stamp became lastNote: $(task_row $t)"; return 1; }
   # SG2: reproject --all fills the step fields of every row, and a second run repairs nothing
   api -X PATCH "$BASE/api/fm_task/$(task_row tk-sg | jq -r .id)" -d '{"stage":null,"stageSince":null}' >/dev/null
   api -X PATCH "$BASE/api/fm_task/$(task_row tk-sg2 | jq -r .id)" -d '{"lastNote":null}' >/dev/null
