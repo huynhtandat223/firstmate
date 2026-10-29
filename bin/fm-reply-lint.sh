@@ -18,9 +18,13 @@
 #                           the message on stderr). Anything else, or no file,
 #                           only appends the hit to state/enforce-reply-lint.log.
 #
-# Once per turn: a block is remembered in state/.reply-lint-blocked.<session_id>
-# by the uuid of the reply it blocked. The next Stop that follows that reply (stop_hook_active)
-# is allowed, so a turn is never blocked twice and never wedged.
+# Once per user turn: a block is remembered in state/.reply-lint-blocked.<session_id>
+# by the uuid of the user prompt that started the turn (line 2) and the uuid of
+# the reply it blocked (line 1). A later Stop of the same user turn
+# (stop_hook_active) is allowed, however many continuations another Stop hook
+# forces and whatever uuid the blocked reply carried, so a turn is never blocked
+# twice and never wedged. A transcript with no user prompt row falls back to the
+# reply uuid: the Stop that directly follows the blocked reply is allowed.
 #
 # Usage:
 #   <Stop JSON on stdin> | bin/fm-reply-lint.sh --claude
@@ -101,17 +105,23 @@ HEADER=$(printf '%s\n' "$RESULT" | sed -n '1p')
 case "$HEADER" in "stop${TAB}"*) ;; *) exit 0 ;; esac
 rest=${HEADER#stop"$TAB"}
 STOP_UUID=${rest%%"$TAB"*}
-PREV_UUID=${rest#*"$TAB"}
+rest=${rest#*"$TAB"}
+PREV_UUID=${rest%%"$TAB"*}
+TURN=
+case "$rest" in *"$TAB"*) TURN=${rest#*"$TAB"} ;; esac
 FINDINGS=$(printf '%s\n' "$RESULT" | sed '1d')
 [ -n "$FINDINGS" ] || exit 0
 
-# Second stop of one turn: this Stop follows the reply the lint already blocked.
+# A later stop of the user turn the lint already blocked in this session.
 SESSION_KEY=$(printf '%s' "$PAYLOAD" | jq -r '.session_id // "unknown"' 2>/dev/null | tr -c 'A-Za-z0-9._-' '_')
 BLOCKED_FILE="$STATE/.reply-lint-blocked.${SESSION_KEY:-unknown}"
-if [ "$STOP_ACTIVE" = true ] && [ -n "$PREV_UUID" ] && [ -f "$BLOCKED_FILE" ] \
-  && [ "$(head -n 1 "$BLOCKED_FILE" 2>/dev/null)" = "$PREV_UUID" ]; then
-  fm_enforce_log "$STATE" reply-lint second-stop - "$STOP_UUID"
-  exit 0
+if [ "$STOP_ACTIVE" = true ] && [ -f "$BLOCKED_FILE" ]; then
+  BLOCKED_UUID=$(sed -n '1p' "$BLOCKED_FILE" 2>/dev/null)
+  BLOCKED_TURN=$(sed -n '2p' "$BLOCKED_FILE" 2>/dev/null)
+  if { [ -n "$TURN" ] && [ "$BLOCKED_TURN" = "$TURN" ]; } || { [ -n "$PREV_UUID" ] && [ "$BLOCKED_UUID" = "$PREV_UUID" ]; }; then
+    fm_enforce_log "$STATE" reply-lint second-stop - "$STOP_UUID"
+    exit 0
+  fi
 fi
 
 MODE=$(fm_enforce_mode "$CONFIG" reply-lint)
@@ -125,7 +135,7 @@ done <<< "$FINDINGS"
 [ "$MODE" = block ] || exit 0
 [ -n "$MESSAGE" ] || exit 0
 # Write the record whole or not at all: a torn file would read as another reply's uuid.
-if mkdir -p "$STATE" 2>/dev/null && printf '%s\n' "$STOP_UUID" > "$BLOCKED_FILE.tmp.$$" 2>/dev/null \
+if mkdir -p "$STATE" 2>/dev/null && printf '%s\n%s\n' "$STOP_UUID" "$TURN" > "$BLOCKED_FILE.tmp.$$" 2>/dev/null \
   && mv -f "$BLOCKED_FILE.tmp.$$" "$BLOCKED_FILE" 2>/dev/null; then
   :
 else

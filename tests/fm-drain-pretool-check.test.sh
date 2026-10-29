@@ -96,6 +96,108 @@ test_da3_alone_and_source_reads_are_allowed() {
   pass "DA3: a drain alone, an ack alone and a read of the script source are allowed"
 }
 
+# Issue #205: a drain in each then/else branch or case arm runs once, so it is no chain.
+test_exclusive_if_branches_are_not_a_chain() {
+  local cmd ack='bin/fm-wake-drain.sh --ack-through 1 --recovery-generation g'
+  for cmd in \
+    "if true; then bin/fm-wake-drain.sh; else $ack; fi" \
+    "if true; then $ack; else bin/fm-wake-drain.sh; fi" \
+    "if true; then bin/fm-wake-drain.sh; elif false; then $ack; else bin/fm-wake-drain.sh; fi" \
+    $'if true\nthen\n  bin/fm-wake-drain.sh\nelse\n  '"$ack"$'\nfi' \
+    "if true; then if false; then bin/fm-wake-drain.sh; else $ack; fi; fi" \
+    "bash -c 'if true; then bin/fm-wake-drain.sh; else $ack; fi'"; do
+    [ "$(policy "$cmd")" = allow ] || fail "#205 exclusive if branches must allow: $cmd => $(policy "$cmd")"
+  done
+  for cmd in \
+    "if bin/fm-wake-drain.sh; then $ack; fi" \
+    "if true; then bin/fm-wake-drain.sh; else bin/fm-wake-drain.sh; fi; $ack" \
+    "if true; then bin/fm-wake-drain.sh; $ack; else true; fi" \
+    "if true; then bin/fm-wake-drain.sh; elif bin/fm-wake-drain.sh; then $ack; fi" \
+    "if true; then true; else bin/fm-wake-drain.sh; $ack; fi" \
+    "if true; then true; fi; bin/fm-wake-drain.sh; if true; then $ack; else true; fi"; do
+    [ "$(policy "$cmd")" = "$(printf 'deny\tchained-ack')" ] || fail "#205 a real chain must still be denied: $cmd => $(policy "$cmd")"
+  done
+  pass "#205: a drain and an ack in exclusive then/else branches are allowed; a chain on one path is still denied"
+}
+
+# Reader round 1 on PR 220: an elif condition runs before every later branch.
+test_elif_condition_shares_the_later_branches() {
+  local cmd ack='bin/fm-wake-drain.sh --ack-through 1 --recovery-generation g'
+  for cmd in \
+    "if true; then $ack; elif bin/fm-wake-drain.sh; then true; fi" \
+    "if true; then bin/fm-wake-drain.sh; elif true; then $ack; fi" \
+    "if true; then $ack; elif ! bin/fm-wake-drain.sh; then true; fi"; do
+    [ "$(policy "$cmd")" = allow ] || fail "an elif condition is exclusive with the earlier bodies, must allow: $cmd => $(policy "$cmd")"
+  done
+  for cmd in \
+    "if false; then true; elif ! bin/fm-wake-drain.sh; then true; else $ack; fi" \
+    "if false; then true; elif bin/fm-wake-drain.sh; then true; elif true; then $ack; fi" \
+    "if false; then true; elif bin/fm-wake-drain.sh; then $ack; fi" \
+    "if false; then true; elif $ack; then true; else bin/fm-wake-drain.sh; fi" \
+    "if bin/fm-wake-drain.sh; then true; elif true; then $ack; fi"; do
+    [ "$(policy "$cmd")" = "$(printf 'deny\tchained-ack')" ] || fail "an elif condition runs before every later branch, must deny: $cmd => $(policy "$cmd")"
+  done
+  pass "an elif condition shares the path of every later branch and is exclusive only with the earlier bodies"
+}
+
+test_exclusive_case_arms_are_not_a_chain() {
+  local cmd ack='bin/fm-wake-drain.sh --ack-through 1 --recovery-generation g'
+  for cmd in \
+    "case x in x) bin/fm-wake-drain.sh;; y) $ack;; esac" \
+    "case x in x|z) $ack;; *) bin/fm-wake-drain.sh;; esac" \
+    $'case x in\n x)\n  bin/fm-wake-drain.sh\n  ;;\n y)\n  '"$ack"$'\n  ;;\nesac' \
+    "case x in x) if true; then bin/fm-wake-drain.sh; fi;; y) $ack;; esac"; do
+    [ "$(policy "$cmd")" = allow ] || fail "#205 exclusive case arms must allow: $cmd => $(policy "$cmd")"
+  done
+  for cmd in \
+    "case x in x) bin/fm-wake-drain.sh; $ack;; y) true;; esac" \
+    "case x in x) true;; esac; bin/fm-wake-drain.sh; case y in y) $ack;; esac" \
+    "case x in x) bin/fm-wake-drain.sh;; y) true;; esac && $ack" \
+    "bin/fm-wake-drain.sh; case x in x) true;; y) $ack;; esac" \
+    "bash -c 'if true; then true; else bin/fm-wake-drain.sh; fi'; bash -c 'if true; then true; else $ack; fi'"; do
+    [ "$(policy "$cmd")" = "$(printf 'deny\tchained-ack')" ] || fail "#205 a real chain around a case must still be denied: $cmd => $(policy "$cmd")"
+  done
+  pass "#205: a drain and an ack in different case arms are allowed; a chain on one path is still denied"
+}
+
+test_no_exec_shells_classify_nothing() {
+  local cmd ack='bin/fm-wake-drain.sh --ack-through 1 --recovery-generation g'
+  for cmd in \
+    "bash -nc 'bin/fm-wake-drain.sh; $ack'" \
+    "bash -n -c 'bin/fm-wake-drain.sh; $ack'" \
+    "sh -nc \"bin/fm-wake-drain.sh && $ack\"" \
+    "bash -ncx 'bin/fm-wake-drain.sh; $ack'" \
+    "bash -o noexec -c 'bin/fm-wake-drain.sh; $ack'"; do
+    [ "$(policy "$cmd")" = allow ] || fail "#205 a no-exec shell must classify nothing: $cmd => $(policy "$cmd")"
+  done
+  for cmd in \
+    "bash -c 'bin/fm-wake-drain.sh; $ack'" \
+    "bash -xc 'bin/fm-wake-drain.sh; $ack'" \
+    "bash -nc 'true'; bin/fm-wake-drain.sh; $ack"; do
+    [ "$(policy "$cmd")" = "$(printf 'deny\tchained-ack')" ] || fail "#205 an executing shell must still be classified: $cmd => $(policy "$cmd")"
+  done
+  pass "#205: bash -n and bash -nc execute nothing and classify nothing; bash -c still does"
+}
+
+# Reader round 1 on PR 220: the shell options apply in order, so +n or +o noexec turns execution back on.
+test_shell_options_apply_in_order() {
+  local cmd ack='bin/fm-wake-drain.sh --ack-through 1 --recovery-generation g'
+  for cmd in \
+    "bash -n +n -c 'bin/fm-wake-drain.sh; $ack'" \
+    "bash -o noexec +o noexec -c 'bin/fm-wake-drain.sh; $ack'" \
+    "bash -nc +n 'bin/fm-wake-drain.sh; $ack'" \
+    "bash +o noexec -c 'bin/fm-wake-drain.sh; $ack'"; do
+    [ "$(policy "$cmd")" = "$(printf 'deny\tchained-ack')" ] || fail "+n or +o noexec turns execution back on, must deny: $cmd => $(policy "$cmd")"
+  done
+  for cmd in \
+    "bash +n -n -c 'bin/fm-wake-drain.sh; $ack'" \
+    "bash +o noexec -o noexec -c 'bin/fm-wake-drain.sh; $ack'" \
+    "bash -n -x -c 'bin/fm-wake-drain.sh; $ack'"; do
+    [ "$(policy "$cmd")" = allow ] || fail "the last option wins and leaves noexec on, must allow: $cmd => $(policy "$cmd")"
+  done
+  pass "shell options are read in order: +n and +o noexec after -n turn execution back on"
+}
+
 test_da3_a_filtered_drain_is_logged_not_denied() {
   local cmd
   for cmd in \
@@ -233,6 +335,11 @@ test_claude_settings_register_the_drain_guard() {
 test_da1_da2_the_past_chains_are_denied
 test_chain_shapes_are_denied
 test_da3_alone_and_source_reads_are_allowed
+test_exclusive_if_branches_are_not_a_chain
+test_exclusive_case_arms_are_not_a_chain
+test_elif_condition_shares_the_later_branches
+test_no_exec_shells_classify_nothing
+test_shell_options_apply_in_order
 test_da3_a_filtered_drain_is_logged_not_denied
 test_hook_logs_only_until_the_switch_is_set
 test_hook_denies_in_block_mode

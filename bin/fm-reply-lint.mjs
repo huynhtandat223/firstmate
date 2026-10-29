@@ -11,12 +11,14 @@
 //   fm-reply-lint.mjs --transcript F [--replay] [--last] [--language vi]
 //                     [--inbox-dir D] [--home H] [--last-text T] [--json]
 // --replay lists every turn end that would be flagged. --last prints
-// "stop<TAB><last turn end uuid><TAB><previous turn end uuid>" and then the
-// findings of the final turn end, one "<uuid><TAB><code><TAB><message>" per line.
+// "stop<TAB><last turn end uuid><TAB><previous turn end uuid><TAB><user turn uuid>"
+// and then the findings of the final turn end, one "<uuid><TAB><code><TAB><message>"
+// per line. The user turn is the last real user prompt (not a tool result and not
+// the meta row a blocking Stop hook leaves): the transport blocks once per user turn.
 
-import { readFileSync, existsSync, readdirSync } from "node:fs";
-import { basename, join } from "node:path";
-import { Lexer, splitProgram, commandPosition } from "./fm-arm-command-policy.mjs";
+import { readFileSync, existsSync, readdirSync, realpathSync } from "node:fs";
+import { basename, join, resolve } from "node:path";
+import { Lexer, splitProgram, commandPosition, noExecShell, shellPayload } from "./fm-arm-command-policy.mjs";
 
 const VIETNAMESE = /[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]/i;
 const REACH_LINES = 470;
@@ -51,27 +53,81 @@ function toolUses(row) {
   return row.message.content.filter((b) => b.type === "tool_use");
 }
 
-// The executed commands of a shell line: [{ name, operands }] for every node,
-// including groups and $(...) substitutions. A word inside a pattern, an echo or
-// a quoted string is an operand, never a command. An unparsable line yields none.
+const SHELLS = new Set(["sh", "bash", "zsh"]);
+
+// The exit status a node is known to have before it runs: `false` is 1, `true`
+// and `:` are 0, anything else is not known. A node with a redirection is not
+// known either: `true < /missing` fails before `true` runs.
+function literalStatus(position, node) {
+  if (node.some((token) => token.type === "redir")) return null;
+  const name = position.command ? basename(position.command.value) : "";
+  if (name === "false") return 1;
+  if (name === "true" || name === ":") return 0;
+  return null;
+}
+
+// The files a node reads through its stdin: `< file` and `0< file`. A redirect
+// on another descriptor (`3< file`) does not feed the command.
+function inputRedirects(node) {
+  const files = [];
+  node.forEach((token, i) => {
+    if (token.type === "redir" && token.value === "<" && token.fd === 0 && node[i + 1]?.type === "word") files.push(node[i + 1].value);
+  });
+  return files;
+}
+
+// The executed commands of a shell line: [{ name, operands, inputs }] for every
+// node, including groups, $(...) substitutions and the payload of `bash -c`.
+// A word inside a pattern, an echo or a quoted string is an operand, never a
+// command. A node that a literal `false &&` or `true ||` skips is not executed
+// and yields nothing. An unparsable line yields none.
 export function shellCommands(line) {
   const found = [];
   const walk = (program) => {
     const lexed = new Lexer(program).tokenize();
     if (lexed.error) return;
-    for (const node of splitProgram(lexed.tokens).nodes) {
+    const { nodes, separators } = splitProgram(lexed.tokens);
+    let known = null; // the exit status the and-or list is known to have so far
+    let skipped = false;
+    nodes.forEach((node, index) => {
+      const before = index === 0 ? ";" : separators[index - 1];
+      const piped = before === "|" || before === "|&";
+      if (!piped && before !== "&&" && before !== "||") known = null;
+      if (!piped) skipped = (before === "&&" && known === 1) || (before === "||" && known === 0);
+      if (skipped) return;
       for (const token of node) {
         if (token.type === "group") walk(token.content);
         if (token.type === "word") for (const sub of token.subs) walk(sub.content);
       }
       const position = commandPosition(node);
       if (position.command) {
-        found.push({ name: basename(position.command.value), operands: position.words.slice(position.index + 1).map((w) => w.value) });
+        const name = basename(position.command.value);
+        found.push({ name, operands: position.words.slice(position.index + 1).map((w) => w.value), inputs: inputRedirects(node) });
+        const payload = SHELLS.has(name) && !noExecShell(position) ? shellPayload(position) : null;
+        if (payload !== null) walk(payload);
       }
-    }
+      // A node that an unknown status may have skipped leaves the status unknown.
+      const conditional = (before === "&&" || before === "||") && known === null;
+      const next = separators[index];
+      known = conditional || next === "|" || next === "|&" ? null : literalStatus(position, node);
+    });
   };
   walk(line);
   return found;
+}
+
+function toolResults(row) {
+  if (row.type !== "user" || !Array.isArray(row.message?.content)) return [];
+  return row.message.content.filter((b) => b.type === "tool_result");
+}
+
+// A real user prompt: not a tool result, not a meta row such as a blocking
+// Stop hook's feedback, not a compaction summary.
+function startsUserTurn(row) {
+  if (row.type !== "user" || row.isMeta || row.isSidechain || row.isCompactSummary) return false;
+  const content = row.message?.content;
+  if (typeof content === "string") return content.trim() !== "";
+  return Array.isArray(content) && content.some((b) => b.type !== "tool_result");
 }
 
 function commandOf(use) {
@@ -100,18 +156,37 @@ function isSpillNotice(text) {
   return text.trimStart().startsWith("<persisted-output>");
 }
 
-function readsCaptain(use) {
-  const target = commandOf(use);
-  if (use.name === "Read") return /(^|\/)data\/captain\.md$/.test(target);
+const CAPTAIN_FILE = /(^|\/)data\/captain\.md$/;
+
+// Is a Read target this home's data/captain.md? Without a known home (replay)
+// any data/captain.md path counts.
+function isHomeCaptain(file, home) {
+  if (!CAPTAIN_FILE.test(file)) return false;
+  if (!home) return true;
+  const same = (a, b) => {
+    try {
+      return realpathSync(a) === realpathSync(b);
+    } catch {
+      return resolve(a) === resolve(b);
+    }
+  };
+  return same(resolve(file), join(home, "data", "captain.md"));
+}
+
+// A shell command that reads data/captain.md: a reader with the file as an
+// operand or as its `<` input. A Read tool call is credited when its result
+// arrives (see findStops), because a failed Read reads nothing.
+function shellReadsCaptain(use) {
   if (use.name !== "Bash") return false;
   const SEARCH = new Set(["grep", "rg", "sed", "awk"]);
   const READERS = new Set(["cat", "head", "tail", "less", "more", "bat", "nl", "view", ...SEARCH]);
-  return shellCommands(target).some((c) => {
+  return shellCommands(commandOf(use)).some((c) => {
     if (!READERS.has(c.name)) return false;
+    if (c.inputs.some((f) => CAPTAIN_FILE.test(f))) return true;
     const operands = c.operands.filter((o) => !o.startsWith("-"));
     // The first operand of a search or edit command is its pattern or script.
     const files = SEARCH.has(c.name) ? operands.slice(1) : operands;
-    return files.some((f) => /(^|\/)data\/captain\.md$/.test(f));
+    return files.some((f) => CAPTAIN_FILE.test(f));
   });
 }
 
@@ -126,6 +201,8 @@ export function findStops(rows, options = {}) {
   let sessionStartIdx = -1;
   let sessionStartInReach = false;
   let readSince = false;
+  let userTurn = "";
+  const pendingReads = new Set();
   const evaluate = (text) => {
     const codes = [];
     const latin = (text.match(/[A-Za-z]/g) ?? []).length;
@@ -141,20 +218,25 @@ export function findStops(rows, options = {}) {
       sessionStartInReach = digestHoldsCaptain(digest) && !isSpillNotice(digest);
       readSince = false;
     }
+    if (startsUserTurn(row)) userTurn = row.uuid ?? "";
+    for (const result of toolResults(row)) {
+      if (pendingReads.delete(result.tool_use_id) && !result.is_error) readSince = true;
+    }
     for (const use of toolUses(row)) {
       turnTools.push(use);
-      if (readsCaptain(use)) readSince = true;
+      if (use.name === "Read" && isHomeCaptain(commandOf(use), options.home)) pendingReads.add(use.id);
+      if (shellReadsCaptain(use)) readSince = true;
     }
     if (!isTurnEnd(row)) return;
     const text = textOf(row.message).trim();
-    stops.push({ index, uuid: row.uuid, timestamp: row.timestamp, text, codes: evaluate(text) });
+    stops.push({ index, uuid: row.uuid, timestamp: row.timestamp, text, turn: userTurn, codes: evaluate(text) });
     turnTools = [];
   });
   // The transcript can lag the hook payload: a final reply it does not hold yet
   // is judged from the payload text, with the tools used since the last turn end.
   const extra = (options.extraText ?? "").trim();
   if (extra && stops.at(-1)?.text !== extra) {
-    stops.push({ index: rows.length, uuid: `payload:${extra.length}`, timestamp: "", text: extra, codes: evaluate(extra) });
+    stops.push({ index: rows.length, uuid: `payload:${extra.length}`, timestamp: "", text: extra, turn: userTurn, codes: evaluate(extra) });
   }
   return stops;
 }
@@ -217,11 +299,11 @@ process.stdout.on("error", () => process.exit(0));
 
 function main() {
   const args = parseArguments(process.argv.slice(2));
-  const stops = findStops(parseTranscript(args.transcript), { language: args.language, extraText: args.lastText });
+  const stops = findStops(parseTranscript(args.transcript), { language: args.language, extraText: args.lastText, home: args.home });
   if (args.last) {
     const stop = stops.at(-1);
     if (!stop) return;
-    process.stdout.write(`stop\t${stop.uuid}\t${stops.at(-2)?.uuid ?? ""}\n`);
+    process.stdout.write(`stop\t${stop.uuid}\t${stops.at(-2)?.uuid ?? ""}\t${stop.turn}\n`);
     for (const [code, message] of messagesFor(stop, { notes: noteIds(args.inboxDir), home: args.home })) {
       process.stdout.write(`${stop.uuid}\t${code}\t${message}\n`);
     }
