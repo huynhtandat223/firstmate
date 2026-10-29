@@ -17,8 +17,7 @@
 #   fm-task-shadow.sh verified <task>                                a comment event               (bin/fm-verify-close.sh)
 #   fm-task-shadow.sh held <task> <hold-kind> <reason>               ask (captain) or block        (bin/fm-captain-hold.sh hold)
 #   fm-task-shadow.sh answered <task> <released|closed>              unblock or approve            (bin/fm-captain-hold.sh answer)
-#   fm-task-shadow.sh deploy-verify <task> <sha> <round> <issue> [<issue-url>]
-#                                                                    a deploy event                (bin/fm-procevent-deploy-verify.sh)
+#   fm-task-shadow.sh deploy-verify <task> <sha> <round> <issue>     a deploy event                (bin/fm-procevent-deploy-verify.sh)
 #   fm-task-shadow.sh backlog <verb> <task> [<hold-kind> <reason>]   done | reopen | hold | unhold (bin/fm-backlog-transition-lib.sh;
 #                                                                    a captain hold is left to bin/fm-captain-hold.sh)
 #
@@ -27,10 +26,9 @@
 # "Decide now" and "Decide later"; blocked and paused -> block transient (paused keeps its "until"); failed -> block failure;
 # resolved -> unblock. A writer rule refusal (a transition the record does not allow) is logged and left to the reconciler.
 #
-# A task begun after T5 ('record: rows' in data/<task>/verify.md, bin/fm-verify-gate-lib.sh) is verified on check rows:
-# its deploy-verify ask first writes the Tester's rows of <issue-url> (the user-visible ones), then a deploy event that
-# names <sha> as the deployed head on a deploy round (a draft round's head is not deployed, so it names none), and a
-# verification-pending hold leaves the task as it is while the record holds it in review.
+# A task begun after T5 ('record: rows' in data/<task>/verify.md, bin/fm-verify-gate-lib.sh) is verified on check rows,
+# which bin/fm-procevent-deploy-verify.sh writes itself before its ask: a verification-pending hold leaves such a task
+# as it is while the record holds it in review.
 #
 # Every writer call carries an idempotency key built from the task, the hook event and the change, so a repeated hook
 # call, or two hooks that report one change, store one event.
@@ -255,16 +253,7 @@ case "$EVENT" in
     esac
     ;;
   deploy-verify)
-    if rows_task && [ -n "${5:-}" ]; then
-      w "rows-$(short "${2:-}|${5}")" rows "$TASK" "$5" --surface user-visible
-      if [ "${3:-}" = deploy ]; then
-        w "deploy-$(short "${2:-}|${3:-}")" event "$TASK" deploy --note "deploy ${3:-} at ${2:-}: verify ask sent (${4:-})" --head "${2:-}"
-      else
-        w "deploy-$(short "${2:-}|${3:-}")" event "$TASK" deploy --note "deploy ${3:-} at ${2:-}: verify ask sent (${4:-})"
-      fi
-    else
-      w "deploy-$(short "${2:-}|${3:-}")" event "$TASK" deploy --note "deploy ${3:-} at ${2:-}: verify ask sent (${4:-})"
-    fi
+    w "deploy-$(short "${2:-}|${3:-}")" event "$TASK" deploy --note "deploy ${3:-} at ${2:-}: verify ask sent (${4:-})"
     ;;
   backlog)
     case "${1:-}" in
