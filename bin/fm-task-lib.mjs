@@ -62,7 +62,8 @@
 //            line outside a row other than a blank one refuses the sync (exit 5) after the import, file unchanged.
 //            The record is shared by every home: a view holds and changes only the rows its own file wrote. A sync and
 //            a row call of one file each hold an exclusive lock on <file>.view-lock (perl's flock) while they run.
-//   show     <task> [--json]   list [--state S] [--actor A] [--json]   resume <task>   reproject <task>
+//   show     <task> [--json]   list [--state S] [--actor A] [--json]   resume <task>   reproject <task> | --all
+//            reproject --all folds every task row again (the board card's step fields too) and prints each repair.
 // Every write takes --key K (the idempotency key; a re-send returns the first event), --actor NAME
 // (default FM_TASK_ACTOR, FM_TASK_ID, then the login name) and --role (default FM_TASK_ROLE, then the
 // command's own: worker for start/heartbeat/done/ask/block, tester for check, firstmate for the rest).
@@ -342,7 +343,7 @@ const SPECS = {
   show: { pos: ['task'], flags: {} },
   list: { pos: [], flags: { state: 's', actor: 's' } },
   resume: { pos: ['task'], flags: {} },
-  reproject: { pos: ['task'], flags: {} },
+  reproject: { pos: ['task'], flags: { all: 'b' } },
   'turn-end': { pos: ['task'], flags: { turn: 's' } },
   deliver: { pos: ['task'], flags: { consumer: 's' } },
   gate: { pos: ['task'], flags: { issue: 's', head: 's', 'evidence-root': 's' } },
@@ -1513,6 +1514,18 @@ async function cmdList(args) {
 }
 
 async function cmdReproject(args) {
+  if (args.flags.all) {
+    const tasks = await listAll('fm_task', { orderby: 'taskId' });
+    let repaired = 0;
+    for (const { taskId } of tasks) {
+      const result = await project(taskId);
+      if (!result?.changed.length) continue;
+      repaired++;
+      out(`reprojected ${taskId}: repaired ${result.changed.join(', ')} (last seq ${result.task.lastSeq})`);
+    }
+    out(`reproject --all: ${tasks.length} tasks, ${repaired} repaired`);
+    return;
+  }
   const taskId = taskIdOf(args);
   const result = await project(taskId);
   if (!result) throw rule(`no events for ${taskId}`);

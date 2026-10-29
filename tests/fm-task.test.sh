@@ -1960,6 +1960,14 @@ case_stage() {
   ft comment $t --note "$long"; must 'long note' 0 || return 1
   [ "$(task_row $t | jq -r '.lastNote | length')" = 300 ] || { echo "lastNote is not cut to 300: $(task_row $t | jq -r '.lastNote | length')"; return 1; }
   [ "$(task_row $t | jq -r .reviewer)" = null ] || { echo "a task with no review event has a reviewer: $(task_row $t)"; return 1; }
+  # SG2: reproject --all fills the step fields of every row, and a second run repairs nothing
+  api -X PATCH "$BASE/api/fm_task/$(task_row tk-sg | jq -r .id)" -d '{"stage":null,"stageSince":null}' >/dev/null
+  api -X PATCH "$BASE/api/fm_task/$(task_row tk-sg2 | jq -r .id)" -d '{"lastNote":null}' >/dev/null
+  ft reproject --all; must 'reproject --all' 0 || return 1
+  grep -q '^reproject --all: 2 tasks, 2 repaired$' <<<"$OUT" || { echo "reproject --all did not repair both rows: $OUT"; return 1; }
+  [ "$(task_row tk-sg | jq -r .stage)" = passed ] && [ "$(task_row tk-sg2 | jq -r '.lastNote | length')" = 300 ] || { echo "reproject --all left a row unfilled: $(task_row tk-sg) $(task_row tk-sg2)"; return 1; }
+  ft reproject --all; must 'reproject --all again' 0 || return 1
+  [ "$OUT" = 'reproject --all: 2 tasks, 0 repaired' ] || { echo "a second reproject --all repaired again: $OUT"; return 1; }
   return 0
 }
 
@@ -2052,6 +2060,8 @@ mutate 'a pr event after the newest started is pr' stage "if (event.kind === 'pr
 mutate 'stageSince moves only when the step changes' stage "if (stage !== task.stage) Object.assign(task, { stage, stageSince: event.createdAt ?? null });" "Object.assign(task, { stage, stageSince: event.createdAt ?? null });"
 mutate 'the reviewer is the actor of the newest review event' stage "if (REVIEWER_KINDS.includes(event.kind)) task.reviewer = event.actor ?? null;" ";"
 mutate 'lastNote is cut to 300' stage "String(bodyOf(event).note ?? '').slice(0, 300)" "String(bodyOf(event).note ?? '')"
+mutate 'reproject --all repairs every row' stage "      const result = await project(taskId);
+      if (!result?.changed.length) continue;" "      continue;"
 mutate 'approve judges a row by its newest check event' approve_newest "return v ? { ...r, status: v.status," "return false ? { ...r, status: v.status,"
 mutate 'an owner-check update needs --url and --steps' owner_update "if (missing.length) throw rule(" "if (false) throw rule("
 mutate 'an owner-check on a task that closed meanwhile is refused' owner_close "if (CLOSED.includes(task.state)) throw rule(\`owner-check is refused:" "if (false) throw rule(\`owner-check is refused:"
