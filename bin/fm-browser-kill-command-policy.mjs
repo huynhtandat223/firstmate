@@ -7,7 +7,7 @@
 // a browser: a pattern naming chrome, chromium or chrome-devtools, a pid in the
 // list the transport resolved as a browser, or a watched debugging port named in
 // the command, its substitutions, the pipeline feeding it, or a variable a
-// bare assignment set from such a lookup. A bare number is a pid, so `kill 9222`
+// bare assignment, export, declare, local, readonly or for loop set from such a lookup. A bare number is a pid, so `kill 9222`
 // and signal 0 (`kill -0 <pid>`) are not matched. A browser session
 // closes by its name instead: CHROME_DEVTOOLS_AXI_SESSION=<name>
 // chrome-devtools-axi stop. A heredoc, echo or grep that only mentions
@@ -75,6 +75,24 @@ function killVerdict(args, fed, ports, pids, tainted = {}) {
   return null;
 }
 
+const DECLARERS = new Set(["export", "declare", "local", "readonly", "typeset"]);
+
+// Taint NAME when the words it is set from are a watched-port or browser lookup,
+// or carry the taint of a variable they read; any other value clears it.
+function setTaint(scope, name, valueWords, ports) {
+  scope.tainted = { ...(scope.tainted || {}) };
+  const inherited = Object.entries(scope.tainted).find(([other]) => valueWords.some((word) => referencesVariable(word, other)));
+  if (mentionsPort(portLookupText(valueWords), ports)) scope.tainted[name] = "kill-browser-port";
+  else if (BROWSER_NAME.test(valueWords.map(wordText).join(" "))) scope.tainted[name] = "kill-browser-name";
+  else if (inherited) scope.tainted[name] = inherited[1];
+  else delete scope.tainted[name];
+}
+
+function assignTaint(scope, word, ports) {
+  const equals = word.value.indexOf("=");
+  setTaint(scope, word.value.slice(0, equals), [{ value: word.value.slice(equals + 1), subs: word.subs }], ports);
+}
+
 function decision(command, options = {}) {
   const ports = [...new Set([...DEFAULT_PORTS, ...(options.ports || [])])];
   const pids = new Set(options.pids || []);
@@ -85,21 +103,23 @@ function decision(command, options = {}) {
       // A bare `NAME=value` line: a value that came from a watched-port or browser
       // lookup taints NAME, so a later `kill "$NAME"` is judged as that lookup.
       if (position.prefixAssignments > 0 && position.prefixAssignments === position.words.length) {
-        scope.tainted = { ...(scope.tainted || {}) };
-        for (const word of position.words) {
-          const equals = word.value.indexOf("=");
-          const name = word.value.slice(0, equals);
-          const value = { value: word.value.slice(equals + 1), subs: word.subs };
-          const inherited = Object.entries(scope.tainted).find(([other]) => referencesVariable(value, other));
-          if (mentionsPort(portLookupText([value]), ports)) scope.tainted[name] = "kill-browser-port";
-          else if (BROWSER_NAME.test(wordText(value))) scope.tainted[name] = "kill-browser-name";
-          else if (inherited) scope.tainted[name] = inherited[1];
-          else delete scope.tainted[name];
-        }
+        for (const word of position.words) assignTaint(scope, word, ports);
       }
       return;
     }
-    const name = basename(position.command.value);
+    const head = basename(position.command.value);
+    const tail = position.words.slice(position.index + 1);
+    if (DECLARERS.has(head)) {
+      // export, declare, local, readonly and typeset assign like a bare line.
+      for (const word of tail) if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(word.value)) assignTaint(scope, word, ports);
+      return;
+    }
+    if (head === "for" && tail[1]?.value === "in") {
+      // The loop variable takes each word of the list, so it carries the list's taint.
+      setTaint(scope, tail[0].value, tail.slice(2), ports);
+      return;
+    }
+    const name = head;
     const rest = position.words.slice(position.index + 1);
     const fed = (context.pipeline || []).flatMap((stage) => stage.words.map(wordText)).join(" ");
     if (KILLERS.has(name)) {

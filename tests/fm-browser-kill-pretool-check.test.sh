@@ -89,7 +89,14 @@ test_bk1_browser_kills_are_denied() {
     'PID=$(lsof -ti:9222); kill "$PID"' \
     'PID=$(lsof -ti:9333) && kill -9 ${PID}' \
     'P=$(pgrep -f chrome); Q=$P; kill $Q' \
-    '{ PID=$(ss -ltnp | grep 9222); }; kill $PID'; do
+    '{ PID=$(ss -ltnp | grep 9222); }; kill $PID' \
+    'export PID=$(lsof -ti:9222); kill $PID' \
+    'declare -x PID=$(lsof -ti:9333); kill "$PID"' \
+    'local PID=$(pgrep chrome); kill $PID' \
+    'readonly PID=$(lsof -ti:9222) && kill -9 $PID' \
+    'for p in $(lsof -ti:9333); do kill $p; done' \
+    'for p in $(pgrep -f chrome); do kill -9 "$p"; done' \
+    'for p in $(lsof -ti:9222) 4243; do kill $p; done'; do
     [ "$(policy "$cmd" | cut -f1)" = deny ] || fail "must deny: $cmd => $(policy "$cmd")"
   done
   [ "$(policy 'kill $(lsof -ti:7777)' --ports 7777 | cut -f1)" = deny ] || fail "a port from config/browser-ports must be watched"
@@ -113,6 +120,10 @@ test_bk2_other_commands_are_allowed() {
     'PID=9222; kill $PID' \
     'PID=$(lsof -ti:9222); PID=4243; kill $PID' \
     '(PID=$(lsof -ti:9222)); kill $PID' \
+    'export PID=$(lsof -ti:7777); kill $PID' \
+    'export PID=$(lsof -ti:9222); export PID=4243; kill $PID' \
+    'for p in $(lsof -ti:7777); do kill $p; done' \
+    'for p in 4243 9222; do kill $p; done' \
     'kill $PID' \
     'pkill -f playwright-server' \
     'killall node-fixture' \
