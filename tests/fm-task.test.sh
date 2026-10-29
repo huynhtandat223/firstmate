@@ -36,7 +36,8 @@ node - "$TMP_ROOT/schema.json" <<'JS'
 const fs = require('fs');
 const file = process.argv[2]; const s = JSON.parse(fs.readFileSync(file));
 s.fm_event_document = {ops:['list','get','create'],f:{title:{t:'s',m:200},mediaType:{t:'s',m:100},content:{t:'s'}},u:[['fmTaskEventId']],parent:['fmTaskEvent','documents']};
-Object.assign(s.fm_task.f, {row:{t:'s',n:1},notes:{t:'s',n:1},section:{t:'s',n:1,m:32}});
+Object.assign(s.fm_task.f, {row:{t:'s',n:1},notes:{t:'s',n:1},section:{t:'s',n:1,m:32},
+  stage:{t:'s',n:1,m:16},stageSince:{t:'d',n:1},lastEventAt:{t:'d',n:1},lastNote:{t:'s',n:1,m:300},reviewer:{t:'s',n:1,m:64}});
 fs.writeFileSync(file, JSON.stringify(s));
 JS
 
@@ -1915,7 +1916,54 @@ case_owner_writer() {
   [ "$(db fm_task_check | jq -r '.[] | select(.taskId == "tk-ow2" and .scenarioId == "A1" and .width == "1440") | .status')" = fail ] || { echo "the check row did not take the fail"; return 1; }
 }
 
-CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed row backlog status_view verify_view owner_writer"}
+# SG1 (#176 Step 5): every write folds the board card's step onto the row: stage by the step rule, stageSince only
+# when the step changes, lastEventAt and lastNote from the newest event, reviewer from the newest check, owner-check,
+# approved or changes event.
+case_stage() {
+  BIN=$1; reset_db
+  local t=tk-sg row since prev long
+  at_of() { db fm_task_event | jq -r --arg t "$1" --argjson s "$2" '.[] | select(.taskId == $t and .seq == $s) | .createdAt'; }
+  step() {  # <label> <want stage> <stageSince: same|new>: the row after the last ft call
+    must "$1" 0 || return 1
+    row=$(task_row $t); local seq; seq=$(seq_of)
+    [ "$(jq -r .stage <<<"$row")" = "$2" ] || { echo "$1: stage $(jq -r .stage <<<"$row"), want $2: $row"; return 1; }
+    [ "$(jq -r .lastEventAt <<<"$row")" = "$(at_of $t "$seq")" ] || { echo "$1: lastEventAt is not the newest event's time: $row"; return 1; }
+    since=$(jq -r .stageSince <<<"$row")
+    if [ "$3" = new ]; then [ "$since" = "$(at_of $t "$seq")" ] || { echo "$1: stageSince did not move to this event: $row"; return 1; }
+    else [ "$since" = "$prev" ] || { echo "$1: stageSince moved inside the step ($prev -> $since)"; return 1; }; fi
+    prev=$since
+  }
+  ft create $t --title t --kind ship --repo example/repo; step 'created: triage is queued' queued new || return 1
+  ft assign $t --to worker-1; step 'assigned: ready stays queued' queued same || return 1
+  ft start $t; step 'started: running is working' working new || return 1
+  ft heartbeat $t --note 'still building'; step 'a heartbeat stays working' working same || return 1
+  [ "$(task_row $t | jq -r .lastNote)" = 'still building' ] || { echo "lastNote is not the newest note: $(task_row $t)"; return 1; }
+  ft event $t pr --note 'opened' --pr-url https://github.com/example/repo/pull/1; step 'a pr event after started is pr' pr new || return 1
+  ft block transient $t --reason 'waiting on CI' --next-actor firstmate; step 'blocked keeps its step' pr same || return 1
+  [ "$(task_state $t)" = blocked ] || { echo "the block did not block: $(task_row $t)"; return 1; }
+  ft unblock $t; step 'unblocked: ready is queued' queued new || return 1
+  ft start $t; step 'started again: no pr since the newest started is working' working new || return 1
+  ft "done" $t "${DONE_FLAGS[@]}"; step 'done with no deploy is pr' pr new || return 1
+  ft changes $t --note 'fix the label' --actor reviewer-1; step 'changes: ready is queued' queued new || return 1
+  [ "$(task_row $t | jq -r .reviewer)" = reviewer-1 ] || { echo "reviewer is not the actor of the newest changes: $(task_row $t)"; return 1; }
+  ft start $t; step 'started after changes' working new || return 1
+  ft "done" $t "${DONE_FLAGS[@]}"; step 'done again is pr' pr new || return 1
+  ft event $t deploy --note 'deployed' --head abc123; step 'a deploy after the newest done is dev' dev new || return 1
+  ft comment $t --note 'looks fine'; step 'a comment stays dev' dev same || return 1
+  ft approve $t --actor firstmate-1; step 'approved: done is passed' passed new || return 1
+  [ "$(task_row $t | jq -r .reviewer)" = firstmate-1 ] || { echo "reviewer is not the actor of the newest approved: $(task_row $t)"; return 1; }
+  ft archive $t; step 'archived keeps its step' passed same || return 1
+  # lastNote is cut to 300; an event with no note clears it
+  t=tk-sg2; prev=''
+  mk_running $t >/dev/null || { echo "setup: $ERR"; return 1; }
+  long=$(printf 'x%.0s' $(seq 1 400))
+  ft comment $t --note "$long"; must 'long note' 0 || return 1
+  [ "$(task_row $t | jq -r '.lastNote | length')" = 300 ] || { echo "lastNote is not cut to 300: $(task_row $t | jq -r '.lastNote | length')"; return 1; }
+  [ "$(task_row $t | jq -r .reviewer)" = null ] || { echo "a task with no review event has a reviewer: $(task_row $t)"; return 1; }
+  return 0
+}
+
+CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed row backlog status_view verify_view owner_writer stage"}
 
 # ---- real command -------------------------------------------------------------------
 
@@ -1998,6 +2046,12 @@ mutate 'a re-sent owner-check does not write its item again' owner_replay "const
 mutate 'a re-sent owner-check key with another call is refused' owner_replay "if (prior && (prior.taskId !== taskId ||" "if (false && (prior.taskId !== taskId ||"
 mutate 'a new result clears the head and evidence of an older one' check_nulls "evidence: v.evidence ?? null, head: v.head ?? null };" "...(v.evidence ? { evidence: v.evidence } : {}), ...(v.head ? { head: v.head } : {}) };"
 mutate 'a check on a task that closed meanwhile is refused' check_close "if (CLOSED.includes(task.state)) throw rule(\`check is refused:" "if (false) throw rule(\`check is refused:"
+mutate 'blocked keeps the step it had' stage "task.stage ?? 'queued'" "'queued'"
+mutate 'a deploy after the newest done is dev' stage "if (event.kind === 'deploy') deployed = true;" ";"
+mutate 'a pr event after the newest started is pr' stage "if (event.kind === 'pr') pullRequest = true;" ";"
+mutate 'stageSince moves only when the step changes' stage "if (stage !== task.stage) Object.assign(task, { stage, stageSince: event.createdAt ?? null });" "Object.assign(task, { stage, stageSince: event.createdAt ?? null });"
+mutate 'the reviewer is the actor of the newest review event' stage "if (REVIEWER_KINDS.includes(event.kind)) task.reviewer = event.actor ?? null;" ";"
+mutate 'lastNote is cut to 300' stage "String(bodyOf(event).note ?? '').slice(0, 300)" "String(bodyOf(event).note ?? '')"
 mutate 'approve judges a row by its newest check event' approve_newest "return v ? { ...r, status: v.status," "return false ? { ...r, status: v.status,"
 mutate 'an owner-check update needs --url and --steps' owner_update "if (missing.length) throw rule(" "if (false) throw rule("
 mutate 'an owner-check on a task that closed meanwhile is refused' owner_close "if (CLOSED.includes(task.state)) throw rule(\`owner-check is refused:" "if (false) throw rule(\`owner-check is refused:"

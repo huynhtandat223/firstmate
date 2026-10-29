@@ -134,7 +134,12 @@ const TRANSITIONS = {
 
 // the fm_task columns the projection holds, with the lengths the API enforces on them
 const LIMITS = { title: 300, repo: 200, kind: 32, state: 32, assignee: 64, nextActor: 32, blockKind: 32, blockReason: 2000, issueUrl: 2048, prUrl: 2048, surface: 32, section: 32 };
-const PROJECTED = ['title', 'repo', 'kind', 'state', 'assignee', 'nextActor', 'blockKind', 'blockReason', 'blockRepeats', 'issueUrl', 'prUrl', 'surface', 'holdUntil', 'row', 'notes', 'section', 'lastSeq'];
+const PROJECTED = ['title', 'repo', 'kind', 'state', 'assignee', 'nextActor', 'blockKind', 'blockReason', 'blockRepeats', 'issueUrl', 'prUrl', 'surface', 'holdUntil', 'row', 'notes', 'section', 'lastSeq',
+  'stage', 'stageSince', 'lastEventAt', 'lastNote', 'reviewer'];
+// The board card's step (cfw-modules#1678 change 199): the writer owns the rule and the page only reads it.
+const STEP_OF_STATE = { triage: 'queued', todo: 'queued', ready: 'queued', done: 'passed' };
+const REVIEWER_KINDS = ['check', 'owner-check', 'approved', 'changes'];
+const DATE_FIELDS = ['holdUntil', 'stageSince', 'lastEventAt'];
 // the backlog row's text: kept in the record verbatim, too long and multi-line for `show`'s field=value lines
 const ROW_TEXT = ['row', 'notes'];
 const TASK_ID = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
@@ -242,13 +247,27 @@ function bodyOf(event) {
 }
 
 // The fold of every event's `set`; null while the task has no `created` event.
+// The step follows the state: done is passed; review is dev once a deploy follows the newest done, else pr; running is
+// pr once a pr event follows the newest started or changes, else working; triage, todo and ready are queued; blocked
+// (and archived) keep the step they had. stageSince is the time of the event that set the step.
 function fold(events) {
   let task = null;
+  let deployed = false;
+  let pullRequest = false;
   for (const event of [...events].sort((a, b) => a.seq - b.seq)) {
     const set = { ...(bodyOf(event).set || {}), ...(event.rowText || {}) };
     if (event.kind === 'created' && !task) task = { taskId: event.taskId };
     if (!task) continue;
+    if (event.kind === 'done') deployed = false;
+    if (event.kind === 'deploy') deployed = true;
+    if (event.kind === 'started' || event.kind === 'changes') pullRequest = false;
+    if (event.kind === 'pr') pullRequest = true;
     task = { ...task, ...set, lastSeq: event.seq };
+    const stage = STEP_OF_STATE[task.state] ?? (task.state === 'review' ? (deployed ? 'dev' : 'pr')
+      : task.state === 'running' ? (pullRequest ? 'pr' : 'working') : task.stage ?? 'queued');
+    if (stage !== task.stage) Object.assign(task, { stage, stageSince: event.createdAt ?? null });
+    Object.assign(task, { lastEventAt: event.createdAt ?? null, lastNote: String(bodyOf(event).note ?? '').slice(0, 300) || null });
+    if (REVIEWER_KINDS.includes(event.kind)) task.reviewer = event.actor ?? null;
   }
   if (!task) return null;
   const full = { taskId: task.taskId };
@@ -269,7 +288,7 @@ async function withRowText(events) {
   return events.map((e) => (e === carrier ? { ...e, rowText } : e));
 }
 
-const sameValue = (field, a, b) => (field === 'holdUntil' ? (a ? Date.parse(a) : null) === (b ? Date.parse(b) : null) : a === b);
+const sameValue = (field, a, b) => (DATE_FIELDS.includes(field) ? (a ? Date.parse(a) : null) === (b ? Date.parse(b) : null) : a === b);
 
 // Make fm_task equal the fold of the task's events; returns the fields it changed.
 async function project(taskId) {
