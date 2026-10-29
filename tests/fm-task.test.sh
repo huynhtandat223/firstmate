@@ -1868,7 +1868,54 @@ case_verify_view() {
   grep -q '^approved: firstmate [0-9][0-9]*$' "$v3" || { echo "no approved line: $(cat "$v3")"; return 1; }
 }
 
-CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed row backlog status_view verify_view"}
+# cfw-modules#1678 TR52 (change 194): the board's writer operation runs the one writer as the signed-in owner. An
+# answer comments and unblocks, a pass or fail by the owner also sets the row's owner item, and a call without the
+# owner the script row appends writes nothing.
+case_owner_writer() {
+  BIN=$1; reset_db
+  export FM_HOME="$TMP_ROOT/owner-writer-home"
+  rm -rf "$FM_HOME"; mkdir -p "$FM_HOME/state"
+  local t=tk-ow1 before ow
+  ow() { OUT=$("$BIN/fm-task-owner.sh" "$@" 2>"$TMP_ROOT/err"); RC=$?; ERR=$(cat "$TMP_ROOT/err"); }
+  mk_running $t >/dev/null || { echo "setup: $ERR"; return 1; }
+  ft ask $t "${ASK_FLAGS[@]}" --next-actor owner >/dev/null || { echo "setup ask: $ERR"; return 1; }
+  before=$(count fm_task_event)
+  ow --action answer --task $t --option 'Option A'
+  must 'no owner' 2 || return 1
+  jq -e '.ok == false and (.error | test("owner"))' <<<"$OUT" >/dev/null || { echo "no-owner answer: $OUT"; return 1; }
+  ow --action approve --task $t --owner u-1
+  must 'an action outside the list' 2 || return 1
+  ow --action answer --task $t --owner u-1
+  must 'answer without an option' 2 || return 1
+  [ "$(count fm_task_event)" = "$before" ] || { echo "a refused call wrote an event"; return 1; }
+  ow --action answer --task $t --option 'Option A' --note 'go' --owner u-1
+  must 'answer' 0 || return 1
+  jq -e '.ok and .action == "answer" and (.writes | length) == 2' <<<"$OUT" >/dev/null || { echo "answer reply: $OUT"; return 1; }
+  [ "$(task_state $t)" = ready ] || { echo "the answer did not unblock: $(task_state $t)"; return 1; }
+  db fm_task_event | jq -e --arg t $t '[.[] | select(.taskId == $t and (.kind == "comment" or .kind == "unblocked"))] | length == 2 and all(.actor == "owner:u-1" and .actorRole == "owner") and (map(select(.kind == "comment"))[0].body | fromjson | .note == "answer: Option A - go")' >/dev/null \
+    || { echo "the answer events: $(db fm_task_event | jq -c --arg t $t '[.[] | select(.taskId == $t) | {kind, actor, actorRole}]')"; return 1; }
+  tail -n 1 "$FM_HOME/state/$t.status" | grep -q '^resolved ' || { echo "the answer wrote no resolved line: $(tail -n 2 "$FM_HOME/state/$t.status")"; return 1; }
+  ow --action answer --task $t --option 'Option A' --owner u-1
+  must 'answer on a task that is not blocked' 5 || return 1
+  jq -e '.ok == false and (.error | test("unblock is not allowed"))' <<<"$OUT" >/dev/null || { echo "a refused unblock: $OUT"; return 1; }
+  # an owner row: the owner's pass sets the item, a Tester's check does not
+  t=tk-ow2
+  ft create $t --title t --kind ship >/dev/null; use_issue v1; ft rows $t "$ISSUE" >/dev/null
+  ft owner-check $t A1@1440 --page-title 'Home page' --url 'http://100.88.10.58:5001/#home' --steps '1. open it' --data d --expected e >/dev/null || { echo "setup: $ERR"; return 1; }
+  ft check $t A1@1440 pass --evidence tester-shot >/dev/null || return 1
+  [ "$(db fm_owner_check | jq -r '.[] | select(.taskId == "tk-ow2") | .status')" = pending ] || { echo "a Tester check set the owner item"; return 1; }
+  ow --action fail --task $t --row A1@1440 --owner u-1
+  must 'fail without a note' 2 || return 1
+  ow --action pass --task $t --row A1@1440 --note 'looks right' --owner u-1
+  must 'pass' 0 || return 1
+  db fm_owner_check | jq -e '.[] | select(.taskId == "tk-ow2") | .status == "pass" and .note == "looks right" and (.decidedAt | type == "string")' >/dev/null || { echo "owner item after pass: $(db fm_owner_check | jq -c '.[] | select(.taskId == "tk-ow2")')"; return 1; }
+  ow --action fail --task $t --row A1@1440 --note 'the title is cut' --owner u-1
+  must 'fail' 0 || return 1
+  db fm_owner_check | jq -e '.[] | select(.taskId == "tk-ow2") | .status == "fail" and .note == "the title is cut"' >/dev/null || { echo "owner item after fail: $(db fm_owner_check | jq -c '.[] | select(.taskId == "tk-ow2")')"; return 1; }
+  [ "$(db fm_task_check | jq -r '.[] | select(.taskId == "tk-ow2" and .scenarioId == "A1" and .width == "1440") | .status')" = fail ] || { echo "the check row did not take the fail"; return 1; }
+}
+
+CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed row backlog status_view verify_view owner_writer"}
 
 # ---- real command -------------------------------------------------------------------
 
@@ -1884,7 +1931,8 @@ done
 
 MBIN="$TMP_ROOT/mbin"
 mkdir -p "$MBIN"
-for f in fm-task.sh fm-task-lib.mjs fm-acceptance.mjs; do cp "$ROOT/bin/$f" "$TMP_ROOT/$f.orig"; done
+for f in fm-task.sh fm-task-lib.mjs fm-acceptance.mjs fm-task-owner.sh; do cp "$ROOT/bin/$f" "$TMP_ROOT/$f.orig"; done
+cp "$TMP_ROOT/fm-task-owner.sh.orig" "$MBIN/fm-task-owner.sh"; chmod +x "$MBIN/fm-task-owner.sh"
 cp "$TMP_ROOT/fm-acceptance.mjs.orig" "$MBIN/fm-acceptance.mjs"
 cp "$TMP_ROOT/fm-task.sh.orig" "$MBIN/fm-task.sh"
 chmod +x "$MBIN/fm-task.sh"
@@ -2004,4 +2052,17 @@ mutate 'a status file the writer creates names the record on line 1' status_view
 mutate 'only a marked verify file is written' verify_view "if (!/^record: rows\$/m.test(text)) return;" ';'
 mutate 'a replayed deploy adds no second deployed line' verify_view "if (lines.filter((l) => l.startsWith('deployed: ')).at(-1) === line) return;" ';'
 mutate 'an approved event adds the approved line' verify_view "line = \`approved: firstmate" "return; line = \`approved: firstmate"
+mutate 'an owner pass or fail sets the owner item' owner_writer "if (who.role === 'owner' && status !== 'pending') await ownerVerdict(" "if (false) await ownerVerdict("
+mutate_owner() {  # <label> <exact wrapper text> <replacement>: the owner_writer case goes red
+  cp "$TMP_ROOT/fm-task-lib.mjs.orig" "$LIB"
+  cp "$TMP_ROOT/fm-task-owner.sh.orig" "$MBIN/fm-task-owner.sh"
+  S="$2" R="$3" perl -0pi -e 's/\Q$ENV{S}\E/$ENV{R}/' "$MBIN/fm-task-owner.sh"
+  cmp -s "$TMP_ROOT/fm-task-owner.sh.orig" "$MBIN/fm-task-owner.sh" && fail "mutation '$1' changed nothing"
+  if out=$(case_owner_writer "$MBIN" 2>&1); then fail "removing the guard '$1' left case owner_writer green"; fi
+  cp "$TMP_ROOT/fm-task-owner.sh.orig" "$MBIN/fm-task-owner.sh"
+  pass "guard '$1' is needed: case owner_writer goes red without it"
+}
+mutate_owner 'the writer operation needs the owner the row appends' "case \"\$OWNER\" in ''|" "case \"\$OWNER\" in x|"
+mutate_owner 'the writer runs as the owner' 'FM_TASK_ROLE=owner' 'FM_TASK_ROLE=worker'
+mutate_owner 'an answer unblocks after its comment' 'run comment "$TASK" --note "$text" && run unblock "$TASK" || RC=$?' 'run comment "$TASK" --note "$text" || RC=$?'
 pass 'every guarded behavior has a red mutation proof'

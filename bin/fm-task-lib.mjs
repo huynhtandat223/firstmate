@@ -38,7 +38,8 @@
 //   rows     <task> <issue-url> [--surface all|user-visible]   one check row per scenario x width from
 //            fm-acceptance.mjs; user-visible adds, resets and retires the Tester's rows only
 //   check    <task> <id>@<width> pass|fail|pending [--evidence E] [--head H] [--next-actor A]
-//            (--status S is the same as the result word); next actor firstmate on a pass, worker on a fail
+//            (--status S is the same as the result word); next actor firstmate on a pass, worker on a fail;
+//            with --role owner a pass or fail also sets the row's owner item (status, decidedAt, note = --evidence)
 //   owner-check <task> <id>@<width> --page-title --url --steps --data --expected   (sets next actor owner;
 //            a row that has an item needs --url and --steps again; a re-sent --key never writes the item twice)
 //   gate     <task> --issue URL --head SHA [--evidence-root DIR]   read only: prints each reason the task is not
@@ -1339,8 +1340,17 @@ async function cmdCheck(args) {
     return { kind: 'check', note: `${rowKey(row)} ${status}${f.evidence ? `: ${f.evidence}` : ''}`, extra: { row: rowKey(row), values } };
   }, async () => {
     await applyNewestCheck(taskId, row);
+    if (who.role === 'owner' && status !== 'pending') await ownerVerdict(taskId, target, status, f.evidence);
     await routeReview(taskId, who);
   });
+}
+
+// The owner's own pass or fail of a row that has an owner item is that item's verdict too: its status, decidedAt and
+// note follow the check (the board's writer operation, bin/fm-task-owner.sh). A re-sent verdict changes nothing.
+async function ownerVerdict(taskId, target, status, note) {
+  const item = await ownerItem(taskId, target);
+  if (!item || (item.status === status && (item.note ?? null) === (note ?? null))) return;
+  ok(await http('PATCH', `/api/fm_owner_check/${item.id}`, { status, decidedAt: new Date().toISOString(), note: note ?? null }), 'the owner verdict');
 }
 
 // The row holds the values stored in the newest check event for it, whichever call patches last: after each
