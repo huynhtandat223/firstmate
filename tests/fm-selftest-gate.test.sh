@@ -71,7 +71,7 @@ run_gate() {
   RC=0
   FM_HOME="$dir/home" STATE="$dir/home/state" \
   FM_TEST_GH_LOG="$dir/gh.log" FM_TEST_PR_JSON="$dir/pr.json" \
-  PATH="$dir/fakebin:$PATH" \
+  TMPDIR="${GATE_TMPDIR:-${TMPDIR:-/tmp}}" PATH="$dir/fakebin:$PATH" \
     bash -c '. "$1"; fm_selftest_gate "$2" "$3" "$4"' _ "$LIB" "$url" "$TASK" "$head" \
     > /dev/null 2> "$dir/err" || RC=$?
   ERR=$(cat "$dir/err")
@@ -318,6 +318,14 @@ MD
   printf 'block\n' > "$dir/home/config/enforce-merge-selftest"
   run_gate "$dir" "$CFW_URL"
   expect_code 1 "$RC" "sg3: an unreadable body is refused under block"
+  dir=$(make_case sg3-no-tmp internal)
+  body_file "$dir" 'Do not merge yet.'
+  GATE_TMPDIR="$dir/no-such-dir" run_gate "$dir" "$CFW_URL"
+  expect_code 0 "$RC" "sg3: a body that cannot be staged passes while the check is log-only"
+  assert_contains "$ERR" 'would refuse: body-unread' "sg3: a failed temp file is a body-unread hit, not a skipped check"
+  printf 'block\n' > "$dir/home/config/enforce-merge-selftest"
+  GATE_TMPDIR="$dir/no-such-dir" run_gate "$dir" "$CFW_URL"
+  expect_code 1 "$RC" "sg3: block refuses when the body cannot be staged"
   pass "sg3: the receipt rules stay inside user-visible cfw-modules tasks and the phrase rule skips fences and quotes"
 }
 

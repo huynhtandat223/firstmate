@@ -221,7 +221,11 @@ fm_selftest_gate() {  # <pr-url> <task-id> <live-head>
   FM_SELFTEST_STATE=${STATE:-$FM_HOME/state}
   FM_SELFTEST_REFUSED=0
   repo=$( fm_pr_url_parse "$url" && printf '%s/%s' "$FM_PR_OWNER" "$FM_PR_REPO" ) || repo=
-  body=$(mktemp "${TMPDIR:-/tmp}/fm-selftest-body.XXXXXX") || return 0
+  if ! body=$(mktemp "${TMPDIR:-/tmp}/fm-selftest-body.XXXXXX"); then
+    fm_selftest_hit merge-selftest body-unread "could not stage the PR body of $url for the checks (no temp file)"
+    [ "$FM_SELFTEST_REFUSED" -eq 0 ] || return 1
+    return 0
+  fi
   if ! json=$(gh pr view "$url" --json body 2>/dev/null) || [ -z "$json" ] \
     || ! printf '%s' "$json" | jq -r '.body // ""' > "$body" 2>/dev/null; then
     fm_selftest_hit merge-selftest body-unread "could not read the PR body of $url"
