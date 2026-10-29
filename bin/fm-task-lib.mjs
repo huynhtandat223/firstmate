@@ -51,7 +51,7 @@
 //            a row that has an item needs all five template fields again; a re-sent --key never writes the item twice)
 //   row      <task> --section S --row-file F --notes-file F [--file BACKLOG] | --gone   one backlog row, verbatim: the
 //            header after the checkbox (one line, starting "<task> - "), the lines under it (each ending in a newline)
-//            and its section; --gone takes it out of its view. Text over one event body goes in a documents child.
+//            and its section, in the view of BACKLOG (default as for backlog below); --gone takes it out of that view. Text over one event body goes in a documents child.
 //   backlog  sync|render [--file BACKLOG] [--out F] [--absorb-only]   the backlog view (T7): sync writes every row the
 //            file holds differently to the record (a task the record lacks is imported first), then renders the file
 //            from the record (--absorb-only leaves the file); render prints or writes (--out) the view only. BACKLOG defaults to FM_DATA_OVERRIDE, else
@@ -569,7 +569,7 @@ async function write(taskId, who, build, after) {
     throw error;
   }
   await statusView(result.event);
-  verifyView(result.event);
+  await verifyView(result.event);
   reportWrite(result, projected?.task);
   return { result, task: projected?.task };
 }
@@ -598,7 +598,7 @@ async function statusView(event) {
 
 // The verify view of a task begun after T5 (its data/<task>/verify.md holds `record: rows`): a deploy event with a head
 // adds `deployed: <head>` and an approved event adds `approved: firstmate <epoch>`, each once. The prose stays as written.
-function verifyView(event) {
+async function verifyView(event) {
   if (!process.env.FM_HOME) return;
   const head = event.kind === 'deploy' ? bodyOf(event).head : null;
   if (!head && event.kind !== 'approved') return;
@@ -615,6 +615,9 @@ function verifyView(event) {
   if (head) {
     line = `deployed: ${head}`;
     if (lines.filter((l) => l.startsWith('deployed: ')).at(-1) === line) return;
+    // a replay of an older deploy writes nothing once a newer deploy named its head
+    const newer = await listAll('fm_task_event', { filter: `taskId eq ${lit(event.taskId)} and kind eq 'deploy' and seq gt ${event.seq}`, orderby: 'seq' });
+    if (newer.some((e) => bodyOf(e).head)) return;
   } else {
     line = `approved: firstmate ${Math.floor((Date.parse(event.createdAt) || Date.now()) / 1000)}`;
     if (lines.includes(line)) return;
@@ -817,6 +820,8 @@ function rowSpec(taskId, set, note, file) {
   return { kind: 'row', note, set: { section: set.section, rowDocument: true }, extra, children: { documents: [doc] } };
 }
 // A backlog file's identity: its real path, so a link to the file names the same view (and a write lands in the file).
+// The backlog a command names: --file, else FM_DATA_OVERRIDE, else $FM_HOME/data, then backlog.md.
+const backlogFile = (file) => backlogPath(file || path.join(process.env.FM_DATA_OVERRIDE || path.join(process.env.FM_HOME || '.', 'data'), 'backlog.md'));
 const backlogPath = (file) => {
   try {
     return fs.realpathSync(file);
@@ -839,7 +844,7 @@ async function cmdRow(args) {
   }
   return write(taskId, who, async ({ task }) => {
     if (!task) throw rule('no such task');
-    return rowSpec(taskId, set, noteOf(args), f.file === undefined ? null : backlogPath(f.file));
+    return rowSpec(taskId, set, noteOf(args), backlogFile(f.file));
   });
 }
 
@@ -955,7 +960,7 @@ async function rowWrite(taskId, set, who, last, file) {
 async function cmdBacklog(args) {
   const action = args.pos.action;
   if (!['sync', 'render'].includes(action)) throw usage('backlog needs sync or render');
-  const file = backlogPath(args.flags.file || path.join(process.env.FM_DATA_OVERRIDE || path.join(process.env.FM_HOME || '.', 'data'), 'backlog.md'));
+  const file = backlogFile(args.flags.file);
   if (action === 'render') {
     const text = renderBacklog(recordRows(await backlogRecord(file)));
     if (!args.flags.out || args.flags.out === '-') return process.stdout.write(text);

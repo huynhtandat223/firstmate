@@ -1725,6 +1725,14 @@ case_backlog() {
   must 'second sync' 0 || return 1
   [ "$(count fm_task_event)" = "$events" ] || { echo "an unchanged file wrote events"; return 1; }
   cmp -s "$f" "$d/after1.md" || { echo "an unchanged file was rewritten"; return 1; }
+  # a row call without --file belongs to the home's own backlog view
+  printf '  Note one: by row\n\n' > "$d/f1-notes"; printf '%s' "$(sed -n 's/^- \[ \] \(bl-f1 - .*\)$/\1/p' "$f")" > "$d/f1-row"
+  FM_DATA_OVERRIDE=$d ft row bl-f1 --section 'In flight' --row-file "$d/f1-row" --notes-file "$d/f1-notes"
+  must 'row without --file' 0 || return 1
+  ft backlog render --file "$f" --out "$d/row-render.md"
+  grep -qx '  Note one: by row' "$d/row-render.md" || { echo "a row call without --file left the home's view: $(grep -c '^- \[' "$d/row-render.md") rows"; return 1; }
+  ft backlog sync --file "$f" >/dev/null || return 1
+  events=$(count fm_task_event)
   # a link to the file names the same view: nothing is written and the link stays a link
   ln -s "$f" "$d/link.md"
   ft backlog sync --file "$d/link.md"
@@ -1830,6 +1838,8 @@ case_verify_view() {
   [ "$(grep -c '^deployed: abc123$' "$v1")" = 1 ] || { echo "deployed lines: $(grep -c '^deployed:' "$v1")"; return 1; }
   ft event tk-vv1 deploy --head def456
   [ "$(sed -n 's/^deployed: //p' "$v1" | tail -n 1)" = def456 ] || { echo "the newest deployed head is not last"; return 1; }
+  ft event tk-vv1 deploy --head abc123 --key vv-deploy-1
+  [ "$(sed -n 's/^deployed: //p' "$v1" | tail -n 1)" = def456 ] || { echo "a replayed older deploy wrote its head again: $(sed -n 's/^deployed: //p' "$v1" | tr '\n' ' ')"; return 1; }
   ft event tk-vv2 deploy --head abc123
   [ "$(cat "$v2")" = "$(printf 'surface: user-visible\nissue: %s' "$ISSUE")" ] || { echo "an unmarked verify file changed"; return 1; }
   mk_running tk-vv3 >/dev/null || { echo "setup: $ERR"; return 1; }
@@ -1959,6 +1969,8 @@ mutate 'a sync leaves the rows of another backlog file' backlog '|| !record.mine
 mutate 'a view renders only the rows of its own file' backlog '.filter((t) => t.section && t.row && record.mine(t.taskId))' '.filter((t) => t.section && t.row)'
 mutate 'In flight and Done list the newest entry first' backlog 'NEWEST_FIRST.includes(name) ? b.entry - a.entry : a.entry - b.entry' 'a.entry - b.entry'
 mutate 'a row keeps its place until it changes section' backlog 'if (place.get(e.taskId) !== where) entry.set(e.taskId, e.seq);' 'entry.set(e.taskId, e.seq);'
+mutate 'a row call without --file names the home backlog' backlog 'return rowSpec(taskId, set, noteOf(args), backlogFile(f.file));' 'return rowSpec(taskId, set, noteOf(args), f.file ? backlogPath(f.file) : null);'
+mutate 'a replayed older deploy adds no deployed line' verify_view 'if (newer.some((e) => bodyOf(e).head)) return;' ';'
 mutate 'a link to the backlog names the same view' backlog '    return fs.realpathSync(file);' '    return path.resolve(file);'
 mutate '--absorb-only leaves the file' backlog "if (args.flags['absorb-only']) return out(" 'if (false) return out('
 mutate 'a line the record cannot hold refuses the sync' backlog 'if (problem) throw rule(problem);' ';'
