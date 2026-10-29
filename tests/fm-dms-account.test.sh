@@ -143,7 +143,48 @@ test_a_raw_command_with_its_own_account_is_checked() {
   out=$(FM_FAKE_LAUNCH_LOG="$CASE/launch.log" FM_TEST_CLAUDE_CONFIG_DIR="$CASE/account3" \
     fm_test_run_spawn "$HOME_DIR" "$WT" "$FAKEBIN" "$id" "$PROJ" "CLAUDE_CONFIG_DIR='$HOME_DIR/user-home/.claude-account2' claude --flag" --scout); rc=$?
   expect_code 0 "$rc" "a raw claude command that sets the declared root must pass though the caller env is wrong: $out"
-  pass "a raw claude launch command's own CLAUDE_CONFIG_DIR= is the account that is checked, not the caller's"
+  # Through a leading env, which classifies the raw command as the harness `env`.
+  fm_test_spawn_brief "$HOME_DIR" env-task
+  fm_test_spawn_brief "$HOME_DIR" env-ok
+  out=$(FM_FAKE_LAUNCH_LOG="$CASE/launch.log" FM_TEST_CLAUDE_CONFIG_DIR="$HOME_DIR/user-home/.claude-account2" \
+    fm_test_run_spawn "$HOME_DIR" "$WT" "$FAKEBIN" env-task "$PROJ" "env CLAUDE_CONFIG_DIR=$CASE/account3 claude --flag" --scout); rc=$?
+  expect_code 1 "$rc" "a raw env claude command with another CLAUDE_CONFIG_DIR must refuse: $out"
+  assert_absent "$HOME_DIR/state/env-task.meta" "a refused raw env spawn must not publish a task record"
+  out=$(FM_FAKE_LAUNCH_LOG="$CASE/launch.log" FM_TEST_CLAUDE_CONFIG_DIR="$CASE/account3" \
+    fm_test_run_spawn "$HOME_DIR" "$WT" "$FAKEBIN" env-ok "$PROJ" "env -u FOO CLAUDE_CONFIG_DIR=$HOME_DIR/user-home/.claude-account2 claude --flag" --scout); rc=$?
+  expect_code 0 "$rc" "a raw env claude command that sets the declared root must pass: $out"
+  pass "a raw claude launch command's own CLAUDE_CONFIG_DIR= is the account that is checked, not the caller's, also through a leading env"
+}
+
+test_a_quoted_root_with_a_space_is_read_whole() {
+  local out rc root
+  new_case space dms-workspaces
+  root="$HOME_DIR/user-home/with space/.claude-account2"
+  write_dms_account "$root" block
+  mkdir -p "$root"
+  fm_test_spawn_brief "$HOME_DIR" space-task
+  out=$(FM_FAKE_LAUNCH_LOG="$CASE/launch.log" FM_TEST_CLAUDE_CONFIG_DIR="$CASE" \
+    fm_test_run_spawn "$HOME_DIR" "$WT" "$FAKEBIN" space-task "$PROJ" "CLAUDE_CONFIG_DIR='$root' claude --flag" --scout); rc=$?
+  expect_code 0 "$rc" "a quoted declared root with a space must not be split: $out"
+  fm_dms_account_raw_parse "CLAUDE_CONFIG_DIR=\"/a b/c\" X=1 claude"
+  [ "$FM_DMS_RAW_ROOT" = "/a b/c" ] || fail "a double-quoted root was split: $FM_DMS_RAW_ROOT"
+  pass "a quoted CLAUDE_CONFIG_DIR with a space in a raw launch command is read as one path"
+}
+
+test_a_guarded_launch_sheds_the_other_credentials() {
+  local out rc
+  new_case shed dms-workspaces
+  write_dms_account "$TILDE/.claude-account2" block
+  out=$(spawn_scout shed-task "$HOME_DIR/user-home/.claude-account2"); rc=$?
+  expect_code 0 "$rc" "a DMS spawn on the declared root should succeed: $out"
+  assert_grep '-u ANTHROPIC_API_KEY' "$CASE/launch.log" "a guarded DMS launch must shed ANTHROPIC_API_KEY"
+  assert_grep '-u CLAUDE_CODE_OAUTH_TOKEN' "$CASE/launch.log" "a guarded DMS launch must shed CLAUDE_CODE_OAUTH_TOKEN"
+  new_case shed-other other-project
+  write_dms_account "$TILDE/.claude-account2" block
+  out=$(spawn_scout shed-other "$CASE/account3"); rc=$?
+  expect_code 0 "$rc" "a project outside the file should launch: $out"
+  assert_no_grep '-u ANTHROPIC_API_KEY' "$CASE/launch.log" "a launch outside config/dms-account must not shed credentials"
+  pass "a guarded DMS launch sheds ANTHROPIC_API_KEY and CLAUDE_CODE_OAUTH_TOKEN, and an unlisted project is left alone"
 }
 
 test_a_dotted_project_dir_names_the_clone() {
@@ -177,6 +218,8 @@ test_an_unreadable_file_refuses() {
 
 test_ca1_a_dms_spawn_on_the_wrong_account_is_refused
 test_a_raw_command_with_its_own_account_is_checked
+test_a_quoted_root_with_a_space_is_read_whole
+test_a_guarded_launch_sheds_the_other_credentials
 test_a_dotted_project_dir_names_the_clone
 test_an_unreadable_file_refuses
 test_ca2_the_right_account_and_other_projects_pass
