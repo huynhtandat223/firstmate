@@ -257,6 +257,11 @@ test_sg2_each_missing_piece_hits_its_own_code() {
 test_sg3_receipt_rules_stay_inside_user_visible_cfw_modules() {
   local dir
 
+  dir=$(make_case sg3-repo-case user-visible)
+  body_file "$dir" 'Moves the sheet.'
+  run_gate "$dir" https://github.com/HuynhTanDat223/CFW-Modules/pull/1800
+  assert_contains "$ERR" 'would refuse: no-selftest-line' "sg3: the repository name is matched without regard to case"
+
   dir=$(make_case sg3-internal)
   body_file "$dir" 'Moves the sheet.'
   run_gate "$dir" "$CFW_URL"

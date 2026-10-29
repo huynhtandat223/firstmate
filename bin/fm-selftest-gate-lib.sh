@@ -13,7 +13,7 @@
 #                     "do not merge", "don't merge" or "not ready to merge"
 #                     (every repository).
 # Receipt rule, only for a task with surface=user-visible in state/<task>.meta
-# on huynhtandat223/cfw-modules. The body needs
+# on huynhtandat223/cfw-modules (the name is matched without regard to case). The body needs
 #   Self-test: verify-cfw run <features> --target storybook:<branch> head=<sha> PASS
 # (a body may keep older lines; the line whose sha prefixes the live head is read)
 # and data/<task>/selftest-<head>.json, written by the cfw-modules verify-cfw
@@ -229,6 +229,7 @@ fm_selftest_gate() {  # <pr-url> <task-id> <live-head>
   FM_SELFTEST_STATE=${STATE:-$FM_HOME/state}
   FM_SELFTEST_REFUSED=0
   repo=$( fm_pr_url_parse "$url" && printf '%s/%s' "$FM_PR_OWNER" "$FM_PR_REPO" ) || repo=
+  repo=${repo,,}
   if ! body=$(mktemp "${TMPDIR:-/tmp}/fm-selftest-body.XXXXXX"); then
     fm_selftest_hit merge-selftest body-unread "could not stage the PR body of $url for the checks (no temp file)"
     [ "$FM_SELFTEST_REFUSED" -eq 0 ] || return 1
