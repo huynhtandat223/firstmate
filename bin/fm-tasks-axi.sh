@@ -57,6 +57,9 @@
 #   - a markdown `<data>/backlog.md` that is itself a symlink, because the
 #     first write would replace the link with a private copy, exactly the fork
 #     this command exists to prevent. Lifecycle transitions refuse the same file.
+#   - `add` (or `create`) of an id that is already a done task, or of a title whose
+#     ticket key a live task already carries (bin/fm-task-identity-check.sh; log-only
+#     until config/enforce-task-identity holds block);
 # Otherwise the exit status is tasks-axi's own, unless decoding a read fails;
 # in that case the decoder's nonzero status is returned.
 set -u
@@ -133,6 +136,22 @@ for arg in "$@"; do
       ;;
   esac
 done
+
+# Task identity check (config/enforce-task-identity, bin/fm-task-identity-check.sh):
+# a reused done id, a live second task for one ticket key. Before tasks-axi runs.
+case "${1:-}" in
+  add|create)
+    ti_id=${2:-} ti_title=${3:-} ti_repo='' ti_prev=''
+    for arg in "$@"; do
+      [ "$ti_prev" != --repo ] || ti_repo=$arg
+      case "$arg" in --repo=*) ti_repo=${arg#--repo=} ;; esac
+      ti_prev=$arg
+    done
+    case "$ti_id" in ''|-*) ;; *)
+      "$SCRIPT_DIR/fm-task-identity-check.sh" add "$ti_id" "$ti_title" "$ti_repo" || exit 2
+    ;; esac
+    ;;
+esac
 
 command -v tasks-axi >/dev/null 2>&1 || fail "tasks-axi is not on PATH; run bin/fm-bootstrap.sh for the install command"
 

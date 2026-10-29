@@ -660,6 +660,13 @@ async function cmdCreate(args) {
   const kind = oneOf(TASK_KINDS, f.kind, 'kind');
   const surface = f.surface === undefined ? null : oneOf(SURFACES, f.surface, 'surface');
   const parents = f.after || [];
+  // Task identity check (config/enforce-task-identity): a reused done id, an fm/<id> branch in the clone, or a second live task
+  // for one ticket key. The post-dispatch shadow create (bin/fm-task-shadow.sh sets FM_TASK_IDENTITY_SKIP) skips it: the spawn has
+  // already made the pool worktree, so the branch is visible in the clone and the intake check has already run.
+  const identity_check = process.env.FM_TASK_IDENTITY_SKIP === '1'
+    ? { status: 0 }
+    : spawnSync('bash', [path.join(HERE, 'fm-task-identity-check.sh'), 'add', taskId, f.title, f.repo ?? ''], { encoding: 'utf8', env: process.env });
+  if (identity_check.status === 1) throw rule(String(identity_check.stderr).replace(/^error: /, '').trim());
   const { task } = await write(
     taskId,
     who,
