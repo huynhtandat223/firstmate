@@ -522,6 +522,17 @@ test_sg5_an_unreadable_issue_is_logged_and_refuses_under_block() {
   expect_code 1 "$RC" "sg5: block refuses a brief whose issue cannot be read"
   assert_contains "$ERR" "refused: issue-unread" "sg5: block names the code"
 
+  # An issue the parser reports problems for is unreadable too: it exits 1 with JSON.
+  dir=$(make_brief_home sg5-problems board-task-detail)
+  write_brief "$dir" "$CFW_ISSUE" "Build the board record."
+  check_brief "$dir" "$FIXTURE/user-visible-no-page.body"
+  expect_code 0 "$RC" "sg5: an issue with parser problems passes while the check is log-only"
+  assert_contains "$ERR" "would refuse: issue-unread" "sg5: parser problems are an unreadable issue"
+  assert_contains "$ERR" "needs a page and widths" "sg5: and the problem is quoted"
+  printf 'block\n' > "$dir/home/config/enforce-brief-verify"
+  check_brief "$dir" "$FIXTURE/user-visible-no-page.body"
+  expect_code 1 "$RC" "sg5: block refuses a brief whose issue has parser problems"
+
   # An answer that is not an issue body is unreadable too.
   dir=$(make_brief_home sg5-garbage board-task-detail)
   write_brief "$dir" "$CFW_ISSUE" "Build the board record."

@@ -10,8 +10,8 @@
 # clone (git show, read only), and requires `verify-cfw run <feature>` in the
 # brief for each mapped feature:
 #   missing-verify  a hit: the brief does not name the run for a mapped feature.
-#   issue-unread    a hit: the issue's scenarios could not be read (parse failed
-#                   or printed nothing), so nothing was checked.
+#   issue-unread    a hit: the issue's scenarios could not be read (parse failed,
+#                   printed nothing or reported problems), so nothing was checked.
 #   unmapped        logged, never a hit: no feature file lists the page, which is
 #                   every page until the feature files reach origin/main.
 # An issue with only internal scenarios, or a brief with no cfw-modules issue,
@@ -85,18 +85,24 @@ fm_brief_verify_check() {  # <task-id> <brief-file>
   local task=$1 brief=$2 home=${FM_HOME:?} root=${FM_ROOT:?}
   local config=${CONFIG:-${FM_CONFIG_OVERRIDE:-$home/config}} state=${STATE:-${FM_STATE_OVERRIDE:-$home/state}}
   local clone=${FM_BRIEF_CFW_CLONE:-$home/projects/cfw-modules}
-  local section issue json pages page id features map feature missing='' unread
+  local section issue json pages page id features map feature missing='' unread parse_rc problems
   section=$(fm_brief_heading_body "$brief" "# Acceptance" 2>/dev/null) || return 0
   issue=$(printf '%s\n' "$section" | grep -oE "$FM_BRIEF_VERIFY_CFW_ISSUE" | head -1) || true
   [ -n "$issue" ] || return 0
-  unread="the brief for $task names $issue, whose scenarios could not be read (fm-acceptance.mjs parse failed or printed nothing), so the verify-cfw run cannot be checked; retry"
+  unread="the brief for $task names $issue, whose scenarios could not be read (fm-acceptance.mjs parse failed, printed nothing or reported problems), so the verify-cfw run cannot be checked; retry"
   if ! command -v node >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
     fm_brief_verify_hit "$config" "$state" issue-unread "$unread"
     return
   fi
-  json=$(node "$root/bin/fm-acceptance.mjs" parse "$issue" 2>/dev/null) || true
-  if [ -z "$json" ] || ! printf '%s' "$json" | jq -e '.scenarios | type == "array"' >/dev/null 2>&1; then
-    fm_brief_verify_hit "$config" "$state" issue-unread "$unread"
+  parse_rc=0
+  json=$(node "$root/bin/fm-acceptance.mjs" parse "$issue" 2>/dev/null) || parse_rc=$?
+  # parse prints its JSON and exits 1 on invalid acceptance data, so the status
+  # and .problems both count: a scenario it could not read must not pass.
+  problems=
+  [ -z "$json" ] || problems=$(printf '%s' "$json" | jq -r '(.problems // []) | join("; ")' 2>/dev/null) || problems='unparsable output'
+  if [ "$parse_rc" -ne 0 ] || [ -n "$problems" ] || [ -z "$json" ] \
+    || ! printf '%s' "$json" | jq -e '.scenarios | type == "array"' >/dev/null 2>&1; then
+    fm_brief_verify_hit "$config" "$state" issue-unread "$unread${problems:+; the parser reports: $problems}"
     return
   fi
   pages=$(printf '%s' "$json" | jq -r '[.scenarios[] | select(.surface == "user-visible") | .page // ""] | unique | .[]')

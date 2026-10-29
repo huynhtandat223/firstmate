@@ -1,0 +1,35 @@
+## Context
+
+A user-visible scenario with no page.
+
+## Requirements
+
+x
+
+## Definition of done
+
+x
+
+## Scenarios
+
+- [ ] V1 WHEN a, THE b SHALL c.
+  - page: -
+  - widths: 1440
+  - controls: -
+  - env: lab
+  - proof: test
+  - data: fixture
+  - mock: none
+  - surface: user-visible
+
+## Mockup
+
+none
+
+## Links
+
+none
+
+## Decisions
+
+none
