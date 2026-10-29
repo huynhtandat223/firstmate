@@ -120,6 +120,26 @@ test_exclusive_if_branches_are_not_a_chain() {
   pass "#205: a drain and an ack in exclusive then/else branches are allowed; a chain on one path is still denied"
 }
 
+# Reader round 1 on PR 220: an elif condition runs before every later branch.
+test_elif_condition_shares_the_later_branches() {
+  local cmd ack='bin/fm-wake-drain.sh --ack-through 1 --recovery-generation g'
+  for cmd in \
+    "if true; then $ack; elif bin/fm-wake-drain.sh; then true; fi" \
+    "if true; then bin/fm-wake-drain.sh; elif true; then $ack; fi" \
+    "if true; then $ack; elif ! bin/fm-wake-drain.sh; then true; fi"; do
+    [ "$(policy "$cmd")" = allow ] || fail "an elif condition is exclusive with the earlier bodies, must allow: $cmd => $(policy "$cmd")"
+  done
+  for cmd in \
+    "if false; then true; elif ! bin/fm-wake-drain.sh; then true; else $ack; fi" \
+    "if false; then true; elif bin/fm-wake-drain.sh; then true; elif true; then $ack; fi" \
+    "if false; then true; elif bin/fm-wake-drain.sh; then $ack; fi" \
+    "if false; then true; elif $ack; then true; else bin/fm-wake-drain.sh; fi" \
+    "if bin/fm-wake-drain.sh; then true; elif true; then $ack; fi"; do
+    [ "$(policy "$cmd")" = "$(printf 'deny\tchained-ack')" ] || fail "an elif condition runs before every later branch, must deny: $cmd => $(policy "$cmd")"
+  done
+  pass "an elif condition shares the path of every later branch and is exclusive only with the earlier bodies"
+}
+
 test_exclusive_case_arms_are_not_a_chain() {
   local cmd ack='bin/fm-wake-drain.sh --ack-through 1 --recovery-generation g'
   for cmd in \
@@ -298,6 +318,7 @@ test_chain_shapes_are_denied
 test_da3_alone_and_source_reads_are_allowed
 test_exclusive_if_branches_are_not_a_chain
 test_exclusive_case_arms_are_not_a_chain
+test_elif_condition_shares_the_later_branches
 test_no_exec_shells_classify_nothing
 test_da3_a_filtered_drain_is_logged_not_denied
 test_hook_logs_only_until_the_switch_is_set

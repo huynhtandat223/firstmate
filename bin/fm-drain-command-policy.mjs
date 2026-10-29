@@ -56,19 +56,36 @@ function withoutReserved(node) {
 
 // The exclusive-path bookkeeping: an `if` or `case` group is on the stack with
 // the branch the walk is in. A branch is null while the walk is in the first
-// condition, so commands there share every path.
+// condition, so commands there share every path. An elif condition is `cond`:
+// it runs whenever the earlier bodies did not, so it shares the path of every
+// later branch.
 function enterControl(stack, word) {
   const top = stack[stack.length - 1];
-  if (word === "if" || word === "case") stack.push({ id: (groupCount += 1), kind: word, branch: null });
+  if (word === "if" || word === "case") stack.push({ id: (groupCount += 1), kind: word, branch: null, cond: false });
   else if (word === "then" && top?.kind === "if" && top.branch === null) top.branch = 0;
-  else if ((word === "elif" || word === "else") && top?.kind === "if") top.branch += 1;
+  else if (word === "then" && top?.kind === "if") top.cond = false;
+  else if (word === "elif" && top?.kind === "if") {
+    top.branch += 1;
+    top.cond = true;
+  } else if (word === "else" && top?.kind === "if") {
+    top.branch += 1;
+    top.cond = false;
+  }
   else if (word === ARM && top?.kind === "case") top.branch = top.branch === null ? 0 : top.branch + 1;
   else if ((word === "fi" && top?.kind === "if") || (word === "esac" && top?.kind === "case")) stack.pop();
 }
 
-// Two executions are exclusive when some group puts them in different branches.
+// Two executions are exclusive when some group puts them in different bodies,
+// or puts a body before an elif condition: that condition runs only after the
+// earlier bodies were skipped. Two elif conditions of one group share a path.
 function exclusive(a, b) {
-  return a.path.some(([id, branch]) => b.path.some(([otherId, otherBranch]) => id === otherId && branch !== otherBranch));
+  const apart = ([x, xCond], [y, yCond]) => {
+    if (xCond && yCond) return false;
+    if (xCond) return y < x;
+    if (yCond) return x < y;
+    return x !== y;
+  };
+  return a.path.some(([id, ...x]) => b.path.some(([otherId, ...y]) => id === otherId && apart(x, y)));
 }
 
 // The literal payload of `bash -c '<payload>'` (also -lc, -ec), or null.
@@ -155,7 +172,7 @@ function collect(program, found, parentPath = []) {
   const stack = [];
   for (let index = 0; index < nodes.length; index += 1) {
     for (const word of leadingWords(nodes[index])) enterControl(stack, word);
-    const path = [...parentPath, ...stack.filter((group) => group.branch !== null).map((group) => [group.id, group.branch])];
+    const path = [...parentPath, ...stack.filter((group) => group.branch !== null).map((group) => [group.id, group.branch, group.cond])];
     for (const token of nodes[index]) {
       if (token.type === "group") collect(token.content, found, path);
       if (token.type === "word") for (const sub of token.subs) collect(sub.content, found, path);
