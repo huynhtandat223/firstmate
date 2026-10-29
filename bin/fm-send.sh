@@ -537,6 +537,36 @@ fm_send_steer_problem() { # <"kind<TAB>record<TAB>age">
   fi
   exit 1
 }
+# Herdr-lab check (config/enforce-herdr-lab-brief, bin/fm-herdr-lab-phrase-lib.sh): a steer that
+# names a pane or assistance lifecycle action, to a crewmate task whose brief has no Herdr lab block
+# (a secondmate target is skipped).
+# Called on the inbox plane (INBOX_TASK_ID, meta lock held) and on the typed plane for a recorded
+# task (TARGET_META); both refuse before anything is written or typed.
+fm_send_lab_check() {  # <task-id>
+  local task=$1 brief phrase mode meta
+  # A secondmate is not a crewmate with a task brief: its charter is not a lab-block brief.
+  meta="$STATE/$task.meta"
+  if [ -f "$meta" ] && [ "$(fm_meta_get "$meta" kind)" = secondmate ]; then return 0; fi
+  brief="${FM_DATA_OVERRIDE:-$FM_HOME/data}/$task/brief.md"
+  [ -f "$brief" ] || return 0
+  # shellcheck source=bin/fm-herdr-lab-phrase-lib.sh
+  . "$SCRIPT_DIR/fm-herdr-lab-phrase-lib.sh"
+  ! fm_herdr_lab_brief_has "$brief" || return 0
+  phrase=$(fm_herdr_lab_phrase "$MESSAGE")
+  [ -n "$phrase" ] || return 0
+  mode=$(fm_enforce_mode "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}" herdr-lab-brief)
+  if [ "$mode" != block ]; then
+    fm_enforce_log "$STATE" herdr-lab-brief would-refuse steer "$task: $phrase"
+    return 0
+  fi
+  fm_enforce_log "$STATE" herdr-lab-brief refuse steer "$task: $phrase"
+  [ -z "${INBOX_META_LOCK:-}" ] || fm_lock_release "$INBOX_META_LOCK"
+  if [ "$PENDING_REPLY_CREATED" = 1 ] && [ -n "$PENDING_REPLY_CORR" ]; then
+    fm_pending_reply_discard_undelivered "$STATE" "$PENDING_REPLY_CORR" || true
+  fi
+  echo "error: steer not sent to $task: it names a pane or assistance lifecycle action ('$phrase') but the task's brief has no Herdr lab block; re-scaffold with --herdr-lab and tell the worker to re-read it" >&2
+  exit 1
+}
 while :; do
   case "${1:-}" in
   --assistance-captain-words)
@@ -1125,6 +1155,7 @@ else
       steer_problem=$(fm_task_inbox_steer_problem "$STATE" "$INBOX_TASK_ID" "$RESOLVE_ANSWER_TEXT" "$MESSAGE" "$SEND_AGAIN"); then
       fm_send_steer_problem "$steer_problem"
     fi
+    fm_send_lab_check "$INBOX_TASK_ID"
     if [ "${FM_SEND_IDEMPOTENT:-0}" = 1 ]; then
       INBOX_RECORD=$(fm_task_inbox_write_idempotent "$STATE" "$INBOX_TASK_ID" "$MESSAGE" \
         "${FIRE_AND_FORGET_ID:+fire-and-forget}") || inbox_write_rc=$?
@@ -1233,6 +1264,7 @@ else
   # verdict preserves the loud refusal boundary. Only LOCAL targets reach this
   # block: remote text rides the inbox leg above, and remote --key exits
   # earlier.
+  if [ -n "$TARGET_META" ] && [ -f "$TARGET_META" ]; then fm_send_lab_check "$(fm_send_id_from_meta "$TARGET_META")"; fi
   send_rc=0
   if verdict=$(fm_backend_send_text_submit "$TARGET_BACKEND" "$T" "$MESSAGE" "$retries" "$sleep_s" "$settle" "$EXPECTED_LABEL"); then
     :

@@ -480,6 +480,19 @@ The linked and closing issue URLs are compared as host, owner, repo and number, 
 A PR with no closing reference, a task with no linked issue, or an unreadable forge passes.
 The checks are log-only until `config/enforce-task-identity` holds `block`: each hit is written to `state/enforce-task-identity.log` and the command goes on.
 
+## Herdr-lab brief check (config/enforce-herdr-lab-brief)
+
+A task that starts, stops, rotates or otherwise drives a pane, an assistance or an agent needs the Herdr lab block that `bin/fm-brief.sh --herdr-lab` adds.
+`bin/fm-brief.sh --check <task-id>` flags a brief without that block when its `# Task` text, or the scenarios of the issue its `# Acceptance` section names, hold a lifecycle verb within 60 characters of the word pane, assistance or agent.
+The block is the `# Herdr isolation - HARD SAFETY CONTRACT` section; no other text counts.
+An unreadable scenario list is logged in log mode and refuses in block mode, and is never read as empty.
+`bin/fm-send.sh` applies the same rule to a steer sent to a crewmate task whose brief has no lab block, on the inbox plane and on the typed plane alike; a secondmate target is skipped.
+A period inside a file name such as `fm-assistance.sh` does not break the link between verb and noun.
+Both say to re-scaffold with `--herdr-lab`.
+`bin/fm-herdr-lab-phrase-lib.sh` owns the phrase rule.
+The check is log-only until `config/enforce-herdr-lab-brief` holds `block`: each hit is written to `state/enforce-herdr-lab-brief.log` and the brief or steer still passes.
+`bin/fm-enforce-lib.sh` owns that switch.
+
 ## Backlog backend (.tasks.toml / config/backlog-backend)
 
 The tracked `.tasks.toml` pins the default `tasks-axi` markdown backend to `data/backlog.md`, with `done_keep = 10` and an archive at `data/done-archive.md`.

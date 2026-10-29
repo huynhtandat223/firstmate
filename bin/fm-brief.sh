@@ -127,6 +127,10 @@
 # refuses a `# Task` body that names an acceptance id range (ids of capital letters
 # then digits, as the parser reads them, two of them joined by a dash, `..` or `to`):
 # such a copy drifts from the issue, so name the issue instead. Exit 1 prints the range it found.
+# --check also refuses a brief without the Herdr lab block whose task text, or whose linked
+# issue's scenarios (the issue its `# Acceptance` section names; an unreadable list refuses too), name a pane or assistance lifecycle action (bin/fm-herdr-lab-phrase-lib.sh
+# owns the phrase rule), saying to re-scaffold with --herdr-lab. Log-only until
+# config/enforce-herdr-lab-brief holds block.
 # There is no --yolo flag here. The worker never owns merge decisions, so yolo is
 # a spawn-time and firstmate-side input only (AGENTS.md section 7).
 # Every scaffold's status protocol distinguishes the configured
@@ -313,6 +317,39 @@ if [ "$CHECK" -eq 1 ]; then
   if [ -n "$CHECK_RANGE" ]; then
     echo "error: $CHECK_BRIEF names an acceptance id range ($CHECK_RANGE); name the issue instead and let the worker list its scenarios with $FM_ROOT/bin/fm-acceptance.mjs rows <issue-url> (fm-brief.sh --issue renders that)" >&2
     exit 1
+  fi
+  # Herdr-lab check (config/enforce-herdr-lab-brief): a brief without the lab block whose
+  # task text, or whose linked issue's scenarios, name a pane or assistance lifecycle action.
+  # shellcheck source=bin/fm-herdr-lab-phrase-lib.sh
+  . "$SCRIPT_DIR/fm-herdr-lab-phrase-lib.sh"
+  # shellcheck source=bin/fm-enforce-lib.sh
+  . "$SCRIPT_DIR/fm-enforce-lib.sh"
+  if ! fm_herdr_lab_brief_has "$CHECK_BRIEF"; then
+    CHECK_TEXT=$(fm_brief_heading_body "$CHECK_BRIEF" "# Task" || true)
+    CHECK_CONFIG="${FM_CONFIG_OVERRIDE:-${FM_HOME:-$FM_ROOT}/config}"
+    CHECK_STATE="${FM_STATE_OVERRIDE:-${FM_HOME:-$FM_ROOT}/state}"
+    # The linked issue is the one the `# Acceptance` section names, not the first URL anywhere.
+    CHECK_ISSUE=$(fm_brief_heading_body "$CHECK_BRIEF" "# Acceptance" | grep -oE 'https://[A-Za-z0-9.-]+/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/issues/[0-9]+' | head -1 || true)
+    if [ -n "$CHECK_ISSUE" ]; then
+      if CHECK_ROWS=$("${FM_ACCEPTANCE_BIN:-$SCRIPT_DIR/fm-acceptance.mjs}" rows "$CHECK_ISSUE" --surface all 2>&1); then
+        CHECK_TEXT="$CHECK_TEXT $CHECK_ROWS"
+      elif [ "$(fm_enforce_mode "$CHECK_CONFIG" herdr-lab-brief)" = block ]; then
+        fm_enforce_log "$CHECK_STATE" herdr-lab-brief refuse brief "${POS[0]}: scenarios of $CHECK_ISSUE unreadable"
+        echo "error: $CHECK_BRIEF has no Herdr lab block and the scenarios of $CHECK_ISSUE could not be read, so the lifecycle check cannot finish; retry, or re-scaffold with --herdr-lab if the task drives a pane or assistance" >&2
+        exit 1
+      else
+        fm_enforce_log "$CHECK_STATE" herdr-lab-brief would-refuse brief "${POS[0]}: scenarios of $CHECK_ISSUE unreadable"
+      fi
+    fi
+    CHECK_PHRASE=$(fm_herdr_lab_phrase "$CHECK_TEXT")
+    if [ -n "$CHECK_PHRASE" ]; then
+      if [ "$(fm_enforce_mode "$CHECK_CONFIG" herdr-lab-brief)" = block ]; then
+        fm_enforce_log "$CHECK_STATE" herdr-lab-brief refuse brief "${POS[0]}: $CHECK_PHRASE"
+        echo "error: $CHECK_BRIEF names a pane or assistance lifecycle action ('$CHECK_PHRASE') but has no Herdr lab block; re-scaffold with --herdr-lab so the worker runs it in an isolated lab session" >&2
+        exit 1
+      fi
+      fm_enforce_log "$CHECK_STATE" herdr-lab-brief would-refuse brief "${POS[0]}: $CHECK_PHRASE"
+    fi
   fi
   exit 0
 fi
