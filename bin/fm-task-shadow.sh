@@ -26,6 +26,10 @@
 # "Decide now" and "Decide later"; blocked and paused -> block transient (paused keeps its "until"); failed -> block failure;
 # resolved -> unblock. A writer rule refusal (a transition the record does not allow) is logged and left to the reconciler.
 #
+# A task begun after T5 ('record: rows' in data/<task>/verify.md, bin/fm-verify-gate-lib.sh) is verified on check rows,
+# which bin/fm-procevent-deploy-verify.sh writes itself before its ask: a verification-pending hold leaves such a task
+# as it is while the record holds it in review.
+#
 # Every writer call carries an idempotency key built from the task, the hook event and the change, so a repeated hook
 # call, or two hooks that report one change, store one event.
 #
@@ -92,6 +96,8 @@ title_of() {
   row=$(printf '%s' "$row" | sed -E 's# https?://.*##; s# \((repo|kind|since|hold|hold-kind|hold-until|merged|done)\b.*##')
   printf '%s' "$(cut_to "$row" 300)"
 }
+
+rows_task() { grep -qx 'record: rows' "$DATA/$TASK/verify.md" 2>/dev/null; }
 
 record_kind() {
   case "$1" in ship|scout|assistance|secondmate|plan) printf '%s' "$1" ;; *) printf other ;; esac
@@ -199,6 +205,9 @@ hold_event() {  # <hold-kind> <reason>: make the record capable of taking this o
       && [ "$(printf '%s' "$prior" | jq -r '.nextActor')" = "$mapped_actor" ]; then
       return 0
     fi
+  fi
+  if [ "$current" = review ] && rows_task && printf '%s' "$reason" | grep -qi 'verification pending'; then
+    return 0
   fi
   case "$current" in
     review) w "hold-$key-changes" changes "$TASK" --note 'old source holds the task' || return 0 ;;

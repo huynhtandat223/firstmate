@@ -606,9 +606,51 @@ scenario_shadow() {
   [ "$(wc -l < "$LAB/writer.calls" | tr -d ' ')" = 1 ] || { echo "more than the one delivered ask reached the record: $(cat "$LAB/writer.calls")"; return 1; }
 }
 
+# A task begun after T5 ('record: rows' in firstmate's record): before its ask goes out, the task record gets the issue's
+# user-visible check rows and a deploy event that names the deployed head; a failed record write fails the delivery, so
+# the next poll retries it, and the ask tells the Tester the check call that records each result.
+scenario_rows_record() {
+  new_lab "$1"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s/writer.calls"\ncase "$*" in *"${FAKE_WRITER_FAIL:-none}"*) exit 3 ;; esac\n' "$LAB" > "$LAB/writer"
+  chmod +x "$LAB/writer"
+  : > "$H/config/task-shadow"
+  backlog_task alpha 11 500
+  backlog_task beta 12 600
+  mkdir -p "$H/data/alpha" "$H/data/beta"
+  printf 'surface: user-visible\nissue: https://github.com/%s/issues/500\nrecord: rows\n' "$REPO" > "$H/data/alpha/verify.md"
+  printf 'surface: user-visible\nissue: https://github.com/%s/issues/600\n' "$REPO" > "$H/data/beta/verify.md"
+  fx_issue 500 V1:user-visible
+  fx_issue 600 V1:user-visible
+  fx_runs "1:completed:success:s0" "2:completed:success:s2"
+  fx_jobs 2 success
+  fx_compare s0 s2 c1
+  fx_commit_prs c1 11:500 12:600
+  set_cursor 1 s0
+  export FM_TASK_SHADOW_WRITER="$LAB/writer"
+  FAKE_WRITER_FAIL='rows alpha' cycle
+  [ "$CYCLE_AUTO" != 0 ] || { unset FM_TASK_SHADOW_WRITER; echo 'a failed record write was handled as delivered'; return 1; }
+  if asked | jq -e 'select(.task == "alpha")' >/dev/null || ledger | grep -q '"task":"alpha"'; then
+    unset FM_TASK_SHADOW_WRITER; echo "the ask went out before its rows were written: $(ledger)"; return 1
+  fi
+  asked | jq -e 'select(.task == "beta")' >/dev/null || { unset FM_TASK_SHADOW_WRITER; echo 'the other task lost its ask'; return 1; }
+  : > "$LAB/writer.calls"
+  cycle
+  unset FM_TASK_SHADOW_WRITER
+  [ "$CYCLE_AUTO" = 0 ] || { echo "the retry: autohandle=$CYCLE_AUTO"; return 1; }
+  [ "$(sed -n 1p "$LAB/writer.calls")" = "rows alpha https://github.com/$REPO/issues/500 --surface user-visible --key deploy-verify:$(ledger | jq -r 'select(.task == "alpha") | .key'):rows --actor deploy-verify --role system" ] \
+    || { echo "the rows were not written first: $(cat "$LAB/writer.calls" 2>&1)"; return 1; }
+  grep -q "^event alpha deploy --note deploy deploy at $(sha s2): verify ask sent (cfw-modules#500) --head $(sha s2) --key deploy-verify:[^ ]*:deploy --actor deploy-verify --role system$" "$LAB/writer.calls" \
+    || { echo "the rows task deploy event names no head: $(cat "$LAB/writer.calls")"; return 1; }
+  [ "$(grep -c '^event alpha deploy' "$LAB/writer.calls")" = 1 ] || { echo "the deploy event was written twice: $(cat "$LAB/writer.calls")"; return 1; }
+  ! grep -q '^rows beta' "$LAB/writer.calls" || { echo "a task begun before T5 got check rows: $(cat "$LAB/writer.calls")"; return 1; }
+  asked | jq -e --arg sha "$(sha s2)" 'select(.task == "alpha") | .check == "bin/fm-task.sh check alpha <id>@<width> pass|fail --evidence <path|url> --head \($sha)"' >/dev/null \
+    || { echo "the rows task ask names no check call: $(asked | jq -c 'select(.task == "alpha")')"; return 1; }
+  asked | jq -e 'select(.task == "beta") | has("check") | not' >/dev/null || { echo "a task begun before T5 was told to check rows: $(asked | jq -c 'select(.task == "beta")')"; return 1; }
+}
+
 run_scenarios() {  # <bin-dir>
   local s rc=0
-  for s in ledger skips not_deployed draft record failures runner skip_catchup rows refused replay replay_refused shadow; do
+  for s in ledger skips not_deployed draft record failures runner skip_catchup rows refused replay replay_refused shadow rows_record; do
     out=$(scenario_"$s" "$1" 2>&1) || { printf 'scenario %s: %s\n' "$s" "$out"; rc=1; }
   done
   return $rc
@@ -616,7 +658,7 @@ run_scenarios() {  # <bin-dir>
 
 # ---- real adapter -----------------------------------------------------------
 
-for s in ledger skips not_deployed draft record failures runner skip_catchup rows refused replay replay_refused shadow; do
+for s in ledger skips not_deployed draft record failures runner skip_catchup rows refused replay replay_refused shadow rows_record; do
   out=$(scenario_"$s" "$ROOT/bin" 2>&1) || fail "scenario $s failed on the real adapter: $out"
   pass "deploy-verify $s"
 done
@@ -672,7 +714,7 @@ mutate_parser 'non-A acceptance ids' ledger \
 mutate_parser 'non-A draft ids' draft \
   's/\[A-Z\]\+\[0-9\]\+\)\(\?=/A[0-9]+)(?=/'
 mutate 'the ask carries the rows' rows \
-  's/head, pushed, lines, rows\}/head, pushed, lines}/'
+  's/head, pushed, lines, rows, check\}/head, pushed, lines, check}/'
 mutate 'draft rows are the draft scenarios' rows \
   's/\[ "\$mode" != draft \] \|\| flag=--draft/:/'
 mutate 'a refused issue wakes firstmate' refused \
@@ -713,4 +755,12 @@ mutate 'an unread GitHub is left for the wake' failures \
   's/jq -e .\.error == null. "\$result" >\/dev\/null 2>&1 \|\| return 1/:/'
 mutate 'a delivered ask reaches the task record' shadow \
   's/^[^\n]*fm-task-shadow\.sh" deploy-verify[^\n]*\n//m'
+mutate 'a rows task ask names the check call' rows_record \
+  's/if grep -qx .record: rows. "\$FM_HOME/if false \&\& grep -qx "x" "\$FM_HOME/'
+mutate 'a refused record write fails the delivery' rows_record \
+  's/record_rows "\$ask" \|\| return 1/record_rows "\$ask" || true/'
+mutate 'the deploy round names the deployed head' rows_record \
+  's/head=\(--head "\$\(jq -r \.sha <<<"\$ask"\)"\)/head=()/'
+mutate 'the deploy event is written once, by the rows path' rows_record \
+  's/ \|\| \[ "\$rows_task" = 1 \]//'
 pass 'every guarded behavior has a red mutation proof'

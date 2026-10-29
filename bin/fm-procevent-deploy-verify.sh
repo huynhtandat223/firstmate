@@ -49,6 +49,12 @@
 # user-visible scenarios, draft mode for the scenarios on a draft page. Each ask
 # carries `lines` (the scenario ids) and `rows` (the parser's `rows` output: one
 # pending row per scenario and width), so the Tester starts its record from them.
+# For a task begun after T5 ('record: rows' in data/<task>/verify.md) the task
+# record first gets the issue's user-visible check rows and a deploy event naming
+# the deployed head (a deploy round only), then the ask also carries `check`, the
+# bin/fm-task.sh call that records each row's result; a refused record write
+# fails the delivery, so the next poll retries it. FM_TASK_SHADOW_WRITER replaces
+# bin/fm-task.sh, and config/task-shadow holds its settings.
 # An issue the parser refuses is a `template-refused` skip naming its problems; it
 # wakes firstmate once like a visible skip below, and a refused draft round is only
 # a draft-skip, because the deploy round of the same issue refuses and wakes.
@@ -492,16 +498,48 @@ cmd_wait() {
 
 # ---- delivery --------------------------------------------------------------
 
+# The task record of a task begun after T5, written before its ask: the issue's user-visible check rows, then a deploy
+# event that names the deployed head on a deploy round (a draft round's PR head is not deployed, so it names none).
+# Both are keyed by the ask, so a retry stores nothing twice. Returns 1 with DELIVER_ERROR set when either is refused.
+record_rows() {  # <ask-json>
+  local ask=$1 task key note err
+  local -a head=() writer=("${FM_TASK_SHADOW_WRITER:-$SCRIPT_DIR/fm-task.sh}")
+  task=$(jq -r .task <<<"$ask")
+  key="deploy-verify:$(jq -r .key <<<"$ask")"
+  note="deploy $(jq -r .round <<<"$ask") at $(jq -r .sha <<<"$ask"): verify ask sent ($(jq -r .issue <<<"$ask"))"
+  [ "$(jq -r .round <<<"$ask")" != deploy ] || head=(--head "$(jq -r .sha <<<"$ask")")
+  ! command -v timeout >/dev/null 2>&1 || writer=(timeout 120 "${writer[@]}")
+  if ! err=$(
+    # shellcheck source=bin/fm-task-shadow-config-lib.sh
+    . "$SCRIPT_DIR/fm-task-shadow-config-lib.sh"
+    fm_task_shadow_config "$CONFIG/task-shadow"
+    "${writer[@]}" rows "$task" "$(jq -r .issue_url <<<"$ask")" --surface user-visible --key "$key:rows" --actor deploy-verify --role system 2>&1 >/dev/null </dev/null &&
+      "${writer[@]}" event "$task" deploy --note "$note" ${head[@]+"${head[@]}"} --key "$key:deploy" --actor deploy-verify --role system 2>&1 >/dev/null </dev/null
+  ); then
+    DELIVER_ERROR="Tester ask not delivered: the task record of $task refused its check rows: $(printf '%s' "$err" | sed -n '1p')"
+    return 1
+  fi
+}
+
 deliver_ask() {  # <ask-json>
-  local ask=$1 content record
-  content=$(jq -c 'del(.arrival, .key) + {schema: "fm-tester-verify.v1"} | {schema, round, task, issue, issue_url, prs, sha, run, head, pushed, lines, rows}
+  local ask=$1 content record check='' rows_task=0
+  # A task begun after T5 is verified on its check rows in the task record: they are written first, and the ask names
+  # the call for each result.
+  if grep -qx 'record: rows' "$FM_HOME/data/$(jq -r .task <<<"$ask")/verify.md" 2>/dev/null; then
+    rows_task=1
+    record_rows "$ask" || return 1
+    check=$(jq -r '"bin/fm-task.sh check \(.task) <id>@<width> pass|fail --evidence <path|url> --head \(.sha)"' <<<"$ask")
+  fi
+  content=$(jq -c --arg check "$check" 'del(.arrival, .key) + {schema: "fm-tester-verify.v1", check: (if $check == "" then null else $check end)}
+    | {schema, round, task, issue, issue_url, prs, sha, run, head, pushed, lines, rows, check}
     | with_entries(select(.value != null))' <<<"$ask")
   record=$(jq -cn --arg id "$(jq -r .key <<<"$ask")" --argjson at "$(jq -r .arrival <<<"$ask")" --arg c "$content" \
     '{schema: "fm-assistance-mentions.v1", messages: [{id: $id, arrival: $at, content: $c}]}')
   deliver_record Tester "$ASSISTANCE" "$record" || return 1
   ledger_append "$(jq -c --arg r "$DELIVER_BASE" --argjson at "$(date +%s)" 'del(.arrival) + {type: "ask", record: $r, at: $at}' <<<"$ask")"
   # Opt-in task record shadow (bin/fm-task-shadow.sh): the delivered ask is a deploy event of its task; off costs one file test.
-  [ ! -e "$CONFIG/task-shadow" ] || FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_CONFIG_OVERRIDE=$CONFIG "$SCRIPT_DIR/fm-task-shadow.sh" deploy-verify \
+  # A task begun after T5 has its deploy event already.
+  [ ! -e "$CONFIG/task-shadow" ] || [ "$rows_task" = 1 ] || FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_CONFIG_OVERRIDE=$CONFIG "$SCRIPT_DIR/fm-task-shadow.sh" deploy-verify \
     "$(jq -r .task <<<"$ask")" "$(jq -r .sha <<<"$ask")" "$(jq -r .round <<<"$ask")" "$(jq -r .issue <<<"$ask")" >/dev/null 2>&1 || true
 }
 

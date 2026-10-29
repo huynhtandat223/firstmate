@@ -1189,6 +1189,152 @@ case_route_stale() {
   [ "$(na)" = firstmate ] || { echo "passes on the latest head left the task with $(na)"; return 1; }
 }
 
+# TR40: the Tester's call names its result as a word, and the row shows status, evidence, head and next actor:
+# worker on a fail, firstmate on a pass, and the task waits on firstmate once every row passes.
+case_check_word() {
+  BIN=$1; reset_db
+  local t=tk-cw r row
+  mk_running $t >/dev/null; use_issue v1; ft rows $t "$ISSUE" >/dev/null
+  ft "done" $t "${DONE_FLAGS[@]}" --head h1 >/dev/null
+  ft check $t A1@1440 fail --evidence /tmp/shot-fail.png --head h1
+  must 'check with the result as a word' 0 || return 1
+  row=$(db fm_task_check | jq -c '.[] | select(.scenarioId == "A1" and .width == "1440")')
+  jq -e '.status == "fail" and .evidence == "/tmp/shot-fail.png" and .head == "h1" and .nextActor == "worker"' <<<"$row" >/dev/null || { echo "a fail row reads: $row"; return 1; }
+  [ "$(task_row $t | jq -r .nextActor)" = worker ] || { echo "a fail did not send the task to the worker: $(task_row $t | jq -c .)"; return 1; }
+  for r in A1@1440 A1@390 A2@- A3@-; do ft check $t $r pass --evidence https://example.test/proof --head h1 >/dev/null || { echo "check $r pass: $ERR"; return 1; }; done
+  row=$(db fm_task_check | jq -c '.[] | select(.scenarioId == "A1" and .width == "1440")')
+  jq -e '.status == "pass" and .evidence == "https://example.test/proof" and .head == "h1" and .nextActor == "firstmate"' <<<"$row" >/dev/null || { echo "a pass row reads: $row"; return 1; }
+  [ "$(task_row $t | jq -r .nextActor)" = firstmate ] || { echo "every row passed but the task waits on $(task_row $t | jq -r .nextActor)"; return 1; }
+  ft check $t A1@390 maybe --head h1
+  must 'an unknown result word' 5 || return 1
+  ft check $t A1@390 pass --status fail --head h1
+  must 'a result word and another --status' 2 || return 1
+}
+
+# A deploy event names the deployed head, and a user-visible pass counts on the newest head the task was built or
+# deployed at: passes on the worker's head wait on the tester again until they pass on the deployed head.
+case_deploy_head() {
+  BIN=$1; reset_db
+  local t=tk-dph r
+  mk_running $t >/dev/null; use_issue v1; ft rows $t "$ISSUE" >/dev/null
+  na() { task_row $t | jq -r .nextActor; }
+  ft "done" $t "${DONE_FLAGS[@]}" --head h1 >/dev/null
+  for r in A1@1440 A1@390 A2@- A3@-; do ft check $t $r pass --head h1 >/dev/null; done
+  [ "$(na)" = firstmate ] || { echo "setup: not routed to firstmate: $(na)"; return 1; }
+  ft event $t deploy --note 'deployed main' --head d1
+  must 'a deploy event with its head' 0 || return 1
+  [ "$(na)" = tester ] || { echo "a new deployed head left the task with $(na); the passes sit on h1"; return 1; }
+  ft approve $t
+  must 'approve with passes on the worker head only' 5 || return 1
+  for r in A1@1440 A1@390; do ft check $t $r pass --head d1 >/dev/null; done
+  [ "$(na)" = firstmate ] || { echo "passes on the deployed head left the task with $(na)"; return 1; }
+  ft event $t deploy --note 'a deploy event with no head changes nothing' >/dev/null
+  [ "$(na)" = firstmate ] || { echo "a deploy event with no head moved the task to $(na)"; return 1; }
+  ft approve $t
+  must 'approve on the deployed head' 0 || return 1
+  ft event tk-dph comment --head d2
+  must 'a head on another event kind' 2 || return 1
+}
+
+# The Tester's rows: `rows --surface user-visible` writes only the user-visible rows (and retires the others), so a task
+# the deploy-verify ask gives rows waits on the Tester alone and goes to firstmate once those rows pass.
+case_rows_visible() {
+  BIN=$1; reset_db
+  local t=tk-rv r
+  mk_running $t >/dev/null; use_issue v1
+  ft "done" $t "${DONE_FLAGS[@]}" --head h1 >/dev/null
+  ft rows $t "$ISSUE" --surface user-visible
+  must 'rows of the user-visible scenarios' 0 || return 1
+  [ "$(db fm_task_check | jq -r '[.[] | select(.taskId == "tk-rv" and .status != "retired") | .scenarioId + "@" + .width] | sort | join(",")')" = 'A1@1440,A1@390' ] \
+    || { echo "rows written: $(db fm_task_check | jq -c '[.[] | [.scenarioId, .width, .status]]')"; return 1; }
+  ft event $t deploy --head d1 >/dev/null
+  for r in A1@1440 A1@390; do ft check $t $r pass --evidence https://example.test/$r --head d1 >/dev/null; done
+  [ "$(task_row $t | jq -r .nextActor)" = firstmate ] || { echo "the Tester's rows passed but the task waits on $(task_row $t | jq -r .nextActor)"; return 1; }
+  ft approve $t
+  must 'approve after the Tester rows pass' 0 || return 1
+  # rows of another surface are left as they are; a user-visible row the issue dropped is retired
+  mk_running tk-rv2 >/dev/null; ft rows tk-rv2 "$ISSUE" >/dev/null
+  ft check tk-rv2 A2@- pass --evidence unit >/dev/null
+  use_issue v3
+  ft rows tk-rv2 "$ISSUE" --surface user-visible >/dev/null
+  [ "$(db fm_task_check | jq -r '[.[] | select(.taskId == "tk-rv2") | .scenarioId + "@" + .width + ":" + .status] | sort | join(",")')" = 'A1@1440:pending,A1@390:retired,A2@-:pass,A3@-:pending' ] \
+    || { echo "rows after a user-visible run: $(db fm_task_check | jq -c '[.[] | select(.taskId == "tk-rv2") | [.scenarioId, .width, .status]]')"; return 1; }
+  use_issue v1
+  ft rows tk-rv2 "$ISSUE" --surface some
+  must 'an unknown surface' 5 || return 1
+}
+
+# Once a task has a deploy event, a user-visible pass counts only on a deployed head: passes on the worker's head from a
+# draft round (whose deploy event names no head) cannot close the task before the deploy.
+case_approve_deployed() {
+  BIN=$1; reset_db
+  local t=tk-ad r
+  mk_running $t >/dev/null; use_issue v1; ft rows $t "$ISSUE" --surface user-visible >/dev/null
+  ft "done" $t "${DONE_FLAGS[@]}" --head h1 >/dev/null
+  ft event $t deploy --note 'draft round' >/dev/null
+  for r in A1@1440 A1@390; do ft check $t $r pass --evidence https://example.test/$r --head h1 >/dev/null; done
+  ft approve $t
+  must 'approve on draft passes before a deploy' 5 || return 1
+  case $ERR in *'no deployed head'*) ;; *) echo "the refusal does not name the missing deployed head: $ERR"; return 1 ;; esac
+  ft event $t deploy --note 'deploy round' --head d1 >/dev/null
+  for r in A1@1440 A1@390; do ft check $t $r pass --evidence https://example.test/$r --head d1 >/dev/null; done
+  ft approve $t
+  must 'approve on passes on the deployed head' 0 || return 1
+  # new work after the deploy needs a new deployed head
+  mk_running tk-ad2 >/dev/null; ft rows tk-ad2 "$ISSUE" --surface user-visible >/dev/null
+  ft event tk-ad2 deploy --head d1 >/dev/null
+  ft "done" tk-ad2 "${DONE_FLAGS[@]}" --head h2 >/dev/null
+  for r in A1@1440 A1@390; do ft check tk-ad2 $r pass --evidence https://example.test/$r --head h2 >/dev/null; done
+  ft approve tk-ad2
+  must 'approve on a worker head newer than the deploy' 5 || return 1
+}
+
+# The gate's read: every user-visible row of the issue passes on the deployed head with its current digest and
+# evidence, and an approved event is newer than the last row. It writes nothing.
+case_gate() {
+  BIN=$1; reset_db
+  local t=tk-gt r events
+  mkdir -p "$TMP_ROOT/tester/shots"; : > "$TMP_ROOT/tester/shots/a1.png"
+  gate() { ft gate $t --issue "$ISSUE" --head d1 --evidence-root "$TMP_ROOT/tester"; }
+  mk_running $t >/dev/null; use_issue v1; ft rows $t "$ISSUE" >/dev/null
+  ft "done" $t "${DONE_FLAGS[@]}" --head h1 >/dev/null
+  ft event $t deploy --head d1 >/dev/null
+  gate; must 'gate on pending rows' 5 || return 1
+  case $OUT in *'A1@1440 is '"'"'pending'"'"', not pass'*) ;; *) echo "the gate does not name the pending row: $OUT"; return 1 ;; esac
+  for r in A2@- A3@-; do ft check $t $r pass >/dev/null; done
+  ft check $t A1@1440 pass --evidence shots/a1.png --head d1 >/dev/null
+  ft check $t A1@390 pass --evidence shots/missing.png --head d1 >/dev/null
+  gate; must 'gate with a missing evidence file' 5 || return 1
+  case $OUT in *'A1@390 evidence path does not exist: shots/missing.png'*) ;; *) echo "the gate missed the evidence: $OUT"; return 1 ;; esac
+  case $OUT in *A1@1440*) echo "the gate names a row that passes: $OUT"; return 1 ;; esac
+  case $OUT in *A2@-*) echo "the gate judged an internal row: $OUT"; return 1 ;; esac
+  ft check $t A1@390 pass --evidence https://example.test/a1-390 --head h1 >/dev/null
+  gate; must 'gate with a pass on another head' 5 || return 1
+  case $OUT in *'A1@390 passed on head h1, not the deployed head d1'*) ;; *) echo "the gate missed the head: $OUT"; return 1 ;; esac
+  ft check $t A1@390 pass --evidence https://example.test/a1-390 --head d1 >/dev/null
+  gate; must 'gate before the approval' 5 || return 1
+  case $OUT in *'no approved event'*) ;; *) echo "the gate missed the approval: $OUT"; return 1 ;; esac
+  ft approve $t >/dev/null || { echo "approve: $ERR"; return 1; }
+  events=$(count fm_task_event)
+  gate; must 'gate on a complete record' 0 || { echo "problems: $OUT"; return 1; }
+  [ "$(count fm_task_event)" = "$events" ] || { echo "the gate wrote an event"; return 1; }
+  ft gate $t --issue "$ISSUE" --head d2 --evidence-root "$TMP_ROOT/tester"
+  must 'gate on another deployed head' 5 || return 1
+  # a scenario edited after the Tester checked it is checked again
+  use_issue v5
+  gate; must 'gate after the scenario changed' 5 || return 1
+  case $OUT in *'A1@1440'*'another version of the scenario'*) ;; *) echo "the gate missed the changed scenario: $OUT"; return 1 ;; esac
+  # an approval older than the last row does not cover it
+  use_issue v1
+  ft reopen $t --reason again >/dev/null; ft start $t >/dev/null; ft "done" $t "${DONE_FLAGS[@]}" --head d1 >/dev/null
+  ft check $t A1@1440 pass --evidence shots/a1.png --head d1 >/dev/null
+  gate; must 'gate with an approval older than the last row' 5 || return 1
+  case $OUT in *'not newer than the last row event'*) ;; *) echo "the gate missed the stale approval: $OUT"; return 1 ;; esac
+  ft gate tk-none --issue "$ISSUE" --head d1
+  must 'gate on a task the record does not hold' 5 || return 1
+  case $OUT in *'the task record has no task tk-none'*) ;; *) echo "the gate does not say the task is missing: $OUT"; return 1 ;; esac
+}
+
 # rows routes a task in review again after it adds, resets or retires rows.
 case_rows_route() {
   BIN=$1; reset_db
@@ -1489,7 +1635,7 @@ case_link_triage() {
   [ "$(task_state tk-lt-c2)" = ready ] || { echo "the parent closing left the child in $(task_state tk-lt-c2)"; return 1; }
 }
 
-CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import"}
+CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed"}
 
 # ---- real command -------------------------------------------------------------------
 
@@ -1538,7 +1684,7 @@ mutate 'a link cannot make a cycle' parents 'if (!existing && (await wouldCycle(
 mutate 'a value outside its list is refused' value_lists 'if (!list.includes(value))' 'if (false)'
 mutate 'a changed digest resets a passed row' rows 'row.line !== want.line || row.acceptanceDigest !== want.acceptanceDigest' 'row.line !== want.line'
 mutate 'a changed line resets a passed row' rows "changed && row.status === 'pass'" 'false'
-mutate 'a removed id is retired' rows "if (wanted.has(key) || row.status === 'retired') continue;" 'continue;'
+mutate 'a removed id is retired' rows "if (wanted.has(key) || row.status === 'retired' ||" "if (true ||"
 mutate 'an issue with no template is refused' rows ", 'parse', issue, '--strict']" ", 'parse', issue]"
 mutate 'open rows block the approval' rows 'if (open.length) throw rule(`approve is refused' 'if (false) throw rule(`approve is refused'
 mutate 'a check row cannot read owner without its item' owner 'if (nextActor === '"'"'owner'"'"' && !(await ownerItem(taskId, target)))' 'if (false)'
@@ -1581,4 +1727,21 @@ mutate 'document title requires a document' terminal "if (f['document-title'] !=
 mutate 'capability block is emitted once' terminal 'if (count === 3) {' 'if (count >= 3) {'
 mutate 'an import leaves a task that is already there as it is' import "if (existing) throw rule(\`task \${taskId} already present\`);" "if (false) throw rule(\`task \${taskId} already present\`);"
 mutate 'an import checks the state list' import "const state = oneOf(STATES, f.state, 'state');" "const state = f.state;"
+mutate 'the result word is the check status' check_word 'oneOf(CHECK_STATUSES, args.pos.status ?? f.status,' 'oneOf(CHECK_STATUSES, f.status,'
+mutate 'a result word and another --status are refused' check_word 'if (args.pos.status !== undefined && f.status !== undefined && args.pos.status !== f.status)' 'if (false)'
+mutate 'a deploy event head is the head passes count on' deploy_head " || (e.kind === 'deploy' && bodyOf(e).head));" ');'
+mutate 'a deploy event head routes a review task again' deploy_head 'head ? () => routeReview(taskId, who) : undefined);' 'undefined);'
+mutate 'only a deploy event takes a head' deploy_head "if (head !== undefined && kind !== 'deploy')" 'if (false)'
+mutate 'the gate needs every user-visible row to pass' gate "problems.push(\`\${key} is '\${row.status}', not pass\`);" ';'
+mutate 'the gate checks the evidence path' gate '!fs.existsSync(path.resolve(f['"'"'evidence-root'"'"'] || '"'"'.'"'"', ev))' 'false'
+mutate 'the gate needs the deployed head' gate 'if ((row.head ?? null) !== f.head) problems.push' 'if (false) problems.push'
+mutate 'the gate needs the current digest' gate 'if (row.line !== want.line || row.acceptanceDigest !== want.acceptanceDigest) problems.push' 'if (false) problems.push'
+mutate 'the gate needs an approved event' gate 'if (!approved) problems.push' 'if (false) problems.push'
+mutate 'the gate needs the approval newer than the last row' gate 'else if (lastRow && approved.seq < lastRow.seq) problems.push' 'else if (false) problems.push'
+mutate 'the gate refuses a task the record does not hold' gate '  if (!fold(events)) {
+    out(' '  if (false) {
+    out('
+mutate 'rows --surface user-visible writes only the Tester rows' rows_visible "surface === 'all' || want.surface === surface" 'true'
+mutate 'rows of another surface are left as they are' rows_visible "|| (surface !== 'all' && row.surface !== surface)) continue;" ') continue;'
+mutate 'a deployed task needs a deployed head to approve' approve_deployed "&& lastHeadEvent(events)?.kind !== 'deploy') {" '&& false) {'
 pass 'every guarded behavior has a red mutation proof'

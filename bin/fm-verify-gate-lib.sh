@@ -20,6 +20,13 @@
 #     - <id>@<width> | <line> | pass | evidence: <existing file path or http(s) URL>
 #     verified: tester <epoch> head=<sha> acceptance=<digest>
 #                                     (after the last row; it covers the rows above it)
+# A task begun after T5 (spec huynhtandat223/cfw-modules#1675) carries 'record: rows' in firstmate's record
+# (bin/fm-spawn.sh writes it while config/task-shadow is on). For such a task the task record replaces the Tester's
+# file and the approved: line: `bin/fm-task.sh gate <task> --issue <url> --head <deployed sha>` must answer clean,
+# that is every user-visible row of the issue `pass` with evidence on the deployed head and the scenario's current
+# digest, and an approved event newer than the last row (bin/fm-task-lib.mjs owns that read). Line 1, the issue line
+# and the deployed head below are checked as for any task; the writer runs with the settings of config/task-shadow.
+# FM_VERIFY_GATE_TASK replaces bin/fm-task.sh (the tests use a stand-in).
 # The Tester home is home= in <state>/tester.meta, or FM_TESTER_HOME. A relative evidence
 # path resolves against that home. A row in state `retired` is allowed only for a scenario id
 # the issue no longer has (not for one width of an id it still has); a row for an issue scenario that is not user-visible is ignored.
@@ -96,6 +103,50 @@ fm_verify_gate_row_text() {  # <row>
   printf '%s' "$t"
 }
 
+# The deployed head, into the running fm_verify_gate_problems' $want_sha (a problem when there is none). deploy-verify
+# maps a task by its PR, so a task whose PR is in the repo it watches (FM_DEPLOY_VERIFY_REPO) has the newest ask of the
+# task in the ledger as its head, and a missing ask is a refusal; a task with a PR elsewhere has no ask, so it is
+# firstmate's own deployed: line. The issue's repo plays no part.
+fm_verify_gate_deployed_head() {
+  local repo
+  repo=${FM_DEPLOY_VERIFY_REPO:-huynhtandat223/cfw-modules}
+  if fm_verify_gate_task_in_repo "$state" "$data" "$id" "$repo"; then
+    want_sha=$(fm_verify_gate_ledger_sha "$ledger" "$id")
+    [ -n "$want_sha" ] || fm_verify_gate_say "no deploy ask for $id in $ledger; its PR is in $repo, which deploy-verify watches, so a deployed: line does not stand in for it"
+  else
+    want_sha=$(fm_verify_gate_field "$file" deployed)
+    [ -n "$want_sha" ] || fm_verify_gate_say "no deployed head for $id: its PR is not in $repo, the repo deploy-verify watches, so $file needs a 'deployed: <sha>' line"
+  fi
+}
+
+# The rows path for a task begun after T5: firstmate's line 1 and issue line, the deployed head, then the task record's
+# own read. Each reason the record gives is one problem; a record that cannot be read is one problem naming why.
+fm_verify_gate_rows() {
+  local first issue want_sha out err rc config
+  first=$(sed -n '1p' "$file")
+  [ "$first" = 'surface: user-visible' ] || fm_verify_gate_say "line 1 of $file must be 'surface: user-visible' (found '$first')"
+  issue=$(fm_verify_gate_field "$file" issue)
+  [ -n "$issue" ] || fm_verify_gate_say "firstmate record has no 'issue: <url>' line"
+  fm_verify_gate_deployed_head
+  [ -n "$issue" ] && [ -n "$want_sha" ] || return 0
+  config=${FM_CONFIG_OVERRIDE:-$base/config}
+  err=$(mktemp "${TMPDIR:-/tmp}/fm-verify-gate.XXXXXX") || { fm_verify_gate_say "the task record cannot be read: no temporary file"; return 0; }
+  rc=0
+  out=$(
+    # shellcheck source=bin/fm-task-shadow-config-lib.sh
+    . "$FM_VERIFY_GATE_DIR/fm-task-shadow-config-lib.sh"
+    fm_task_shadow_config "$config/task-shadow"
+    "${FM_VERIFY_GATE_TASK:-$FM_VERIFY_GATE_DIR/fm-task.sh}" gate "$id" --issue "$issue" --head "$want_sha" ${tester_home:+--evidence-root "$tester_home"} 2>"$err" </dev/null
+  ) || rc=$?
+  if [ "$rc" -eq 5 ] && [ -n "$out" ]; then
+    printf '%s\n' "$out"
+    bad=1
+  elif [ "$rc" -ne 0 ]; then
+    fm_verify_gate_say "the task record cannot be read: $(sed -n '1p' "$err")"
+  fi
+  rm -f "$err"
+}
+
 fm_verify_gate_problems() {  # <data-dir> <task-id> <base-dir>
   local data=$1 id=$2 base=$3 file state tester_home tfile ledger first
   local issue t_issue t_surface approved verified v_epoch v_head want_sha repo
@@ -111,6 +162,10 @@ fm_verify_gate_problems() {  # <data-dir> <task-id> <base-dir>
   tfile="$tester_home/data/verify/$id.md"
 
   [ -f "$file" ] || fm_verify_gate_say "firstmate verification record missing: $file"
+  if [ "$bad" -eq 0 ] && [ "$(fm_verify_gate_field "$file" record)" = rows ]; then
+    fm_verify_gate_rows
+    return "$bad"
+  fi
   if [ -z "$tester_home" ]; then
     fm_verify_gate_say "Tester record missing: no Tester home (no home= in $state/tester.meta and FM_TESTER_HOME is unset)"
   elif [ ! -f "$tfile" ]; then
@@ -153,18 +208,7 @@ fm_verify_gate_problems() {  # <data-dir> <task-id> <base-dir>
     fm_verify_gate_say "Tester verified line has no acceptance=<digest>: verified: tester $verified"
   fi
 
-  # The deployed head. deploy-verify maps a task by its PR, so a task whose PR is in the repo it
-  # watches (FM_DEPLOY_VERIFY_REPO) has the newest ask of the task in the ledger as its head, and a
-  # missing ask is a refusal; a task with a PR elsewhere has no ask, so it is firstmate's own
-  # deployed: line. The issue's repo plays no part.
-  repo=${FM_DEPLOY_VERIFY_REPO:-huynhtandat223/cfw-modules}
-  if fm_verify_gate_task_in_repo "$state" "$data" "$id" "$repo"; then
-    want_sha=$(fm_verify_gate_ledger_sha "$ledger" "$id")
-    [ -n "$want_sha" ] || fm_verify_gate_say "no deploy ask for $id in $ledger; its PR is in $repo, which deploy-verify watches, so a deployed: line does not stand in for it"
-  else
-    want_sha=$(fm_verify_gate_field "$file" deployed)
-    [ -n "$want_sha" ] || fm_verify_gate_say "no deployed head for $id: its PR is not in $repo, the repo deploy-verify watches, so $file needs a 'deployed: <sha>' line"
-  fi
+  fm_verify_gate_deployed_head
   if [ -n "$want_sha" ] && [ -n "$v_head" ] && [ "$v_head" != "$want_sha" ]; then
     fm_verify_gate_say "Tester head $v_head is not the deployed head $want_sha"
   fi
