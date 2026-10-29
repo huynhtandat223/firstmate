@@ -33,13 +33,42 @@ const SHELLS = new Set(["sh", "bash", "zsh"]);
 const FILTERS = new Set(["grep", "head", "cut", "sed"]);
 // Shell reserved words that can lead a command node (`then cmd`, `do cmd`, `! cmd`).
 const RESERVED = new Set(["if", "then", "else", "elif", "fi", "while", "until", "do", "done", "!", "time"]);
+// flattenCase() turns each case pattern into this word, so a case arm still starts a new path.
+const ARM = "__fm_case_arm__";
+// Each if or case group gets a number no other group shares, across nested payloads too.
+let groupCount = 0;
 
-// A node with its leading reserved words removed, so commandPosition sees the
-// executed command word rather than `if` or `then`.
+// The leading control words of a node (`then`, `else if`, `case`), so
+// commandPosition sees the executed command word rather than `if` or `then`.
+function leadingWords(node) {
+  const words = [];
+  while (words.length < node.length && node[words.length].type === "word" && !node[words.length].quoted) {
+    const value = node[words.length].value;
+    if (!RESERVED.has(value) && value !== "case" && value !== "esac" && value !== ARM) break;
+    words.push(value);
+  }
+  return words;
+}
+
 function withoutReserved(node) {
-  let start = 0;
-  while (start < node.length && node[start].type === "word" && !node[start].quoted && RESERVED.has(node[start].value)) start += 1;
-  return node.slice(start);
+  return node.slice(leadingWords(node).length);
+}
+
+// The exclusive-path bookkeeping: an `if` or `case` group is on the stack with
+// the branch the walk is in. A branch is null while the walk is in the first
+// condition, so commands there share every path.
+function enterControl(stack, word) {
+  const top = stack[stack.length - 1];
+  if (word === "if" || word === "case") stack.push({ id: (groupCount += 1), kind: word, branch: null });
+  else if (word === "then" && top?.kind === "if" && top.branch === null) top.branch = 0;
+  else if ((word === "elif" || word === "else") && top?.kind === "if") top.branch += 1;
+  else if (word === ARM && top?.kind === "case") top.branch = top.branch === null ? 0 : top.branch + 1;
+  else if ((word === "fi" && top?.kind === "if") || (word === "esac" && top?.kind === "case")) stack.pop();
+}
+
+// Two executions are exclusive when some group puts them in different branches.
+function exclusive(a, b) {
+  return a.path.some(([id, branch]) => b.path.some(([otherId, otherBranch]) => id === otherId && branch !== otherBranch));
 }
 
 // The literal payload of `bash -c '<payload>'` (also -lc, -ec), or null.
@@ -70,7 +99,23 @@ function shellScript(position) {
   return null;
 }
 
-function drainExecution(position, found) {
+// True for `bash -n`, `bash -nc` and `bash -o noexec`: the shell only parses.
+function noExecShell(position) {
+  const words = position.words;
+  for (let i = position.index + 1; i < words.length; i += 1) {
+    const value = words[i].value;
+    if (value === "--" || !value.startsWith("-")) return false;
+    if (value === "-o" || value === "-O") {
+      if (value === "-o" && words[i + 1]?.value === "noexec") return true;
+      i += 1;
+    } else if (/^-[A-Za-z]*n[A-Za-z]*$/.test(value)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function drainExecution(position, found, path) {
   if (!position.command) return null;
   const name = basename(position.command.value);
   let script = null;
@@ -78,9 +123,10 @@ function drainExecution(position, found) {
   if (name === DRAIN) {
     script = position.command.value;
   } else if (SHELLS.has(name)) {
+    if (noExecShell(position)) return null;
     const payload = shellPayload(position);
     if (payload !== null) {
-      collect(payload, found);
+      collect(payload, found, path);
       return null;
     }
     script = shellScript(position);
@@ -95,37 +141,41 @@ function drainExecution(position, found) {
 // and `;;` into a plain `;` so the commands in the case bodies still classify.
 function flattenCase(program) {
   return program
-    .replace(/(^|\bin\s|;;\s*|\n)\s*\(?[^\s()|;'"]+(?:\|[^\s()|;'"]+)*\)(?=\s)/g, "$1 ; ")
+    .replace(/(^|\bin\s|;;\s*|\n)\s*\(?[^\s()|;'"]+(?:\|[^\s()|;'"]+)*\)(?=\s)/g, `$1 ; ${ARM} ;`)
     .replace(/;;/g, ";");
 }
 
-function collect(program, found) {
+function collect(program, found, parentPath = []) {
   let lexed = new Lexer(program).tokenize();
   if (lexed.error && /\bcase\b[\s\S]*\bin\b/.test(program)) lexed = new Lexer(flattenCase(program)).tokenize();
   // Fail open on syntax this classifier cannot tokenize: the guard's threat
   // model is agent mistakes, which tokenize.
   if (lexed.error) return;
   const { nodes, separators } = splitProgram(lexed.tokens);
+  const stack = [];
   for (let index = 0; index < nodes.length; index += 1) {
+    for (const word of leadingWords(nodes[index])) enterControl(stack, word);
+    const path = [...parentPath, ...stack.filter((group) => group.branch !== null).map((group) => [group.id, group.branch])];
     for (const token of nodes[index]) {
-      if (token.type === "group") collect(token.content, found);
-      if (token.type === "word") for (const sub of token.subs) collect(sub.content, found);
+      if (token.type === "group") collect(token.content, found, path);
+      if (token.type === "word") for (const sub of token.subs) collect(sub.content, found, path);
     }
-    const execution = drainExecution(commandPosition(withoutReserved(nodes[index])), found);
+    const execution = drainExecution(commandPosition(withoutReserved(nodes[index])), found, path);
     if (!execution) continue;
     let filter = "";
     if (isPipe(separators[index]) && nodes[index + 1]) {
       const next = commandPosition(withoutReserved(nodes[index + 1])).command;
       if (next && FILTERS.has(basename(next.value))) filter = basename(next.value);
     }
-    found.push({ ...execution, filter });
+    found.push({ ...execution, filter, path });
   }
 }
 
 function decision(command) {
   const found = [];
   collect(command, found);
-  if (found.some((execution) => execution.ack) && found.length >= 2) {
+  const chained = found.some((execution, i) => execution.ack && found.some((other, j) => i !== j && !exclusive(execution, other)));
+  if (chained) {
     return { decision: "deny", code: "chained-ack", reason: REASONS["chained-ack"] };
   }
   if (found.some((execution) => !execution.ack && execution.filter)) {
