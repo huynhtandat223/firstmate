@@ -648,9 +648,77 @@ scenario_rows_record() {
   asked | jq -e 'select(.task == "beta") | has("check") | not' >/dev/null || { echo "a task begun before T5 was told to check rows: $(asked | jq -c 'select(.task == "beta")')"; return 1; }
 }
 
+# HG2 (firstmate#176 Step 4): a deploy ask lists only the rows the Tester checks on its head. A pass on an earlier
+# deployed head carries while no PR of the deploy names its id (`Scenarios touched:`; a PR without the line names
+# none): the ask lists it under carried with that head, a task begun after T5 gets the ids on its deploy event, a task
+# with nothing due gets no ask (a carry entry in the ledger instead), a later PR that names the id brings the row back,
+# and `deploy --dry-run` prints the same ask and writes nothing.
+fx_commit_pr_body() {  # <commit-seed> <pr-number> <body>
+  gh_put "repos/$REPO/commits/$(sha "$1")/pulls" "$(jq -cn --arg u "$RURL/pull/$2" --arg b "$3" \
+    '[{html_url: $u, merged_at: "2026-10-20T14:00:00Z", base: {ref: "main"}, body: $b}]')"
+}
+scenario_carry() {
+  new_lab "$1"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s/writer.calls"\ncase "$1" in checks) cat "%s/checks.json" ;; esac\n' "$LAB" "$LAB" > "$LAB/writer"
+  chmod +x "$LAB/writer"
+  : > "$H/config/task-shadow"
+  backlog_task alpha 11 500
+  backlog_task beta 12 600
+  backlog_task gamma 14 700
+  mkdir -p "$H/data/alpha" "$H/data/beta" "$H/data/gamma" "$TH/data/verify"
+  printf 'surface: user-visible\nissue: https://github.com/%s/issues/500\nrecord: rows\n' "$REPO" > "$H/data/alpha/verify.md"
+  printf 'surface: user-visible\nissue: https://github.com/%s/issues/600\n' "$REPO" > "$H/data/beta/verify.md"
+  printf 'surface: user-visible\nissue: https://github.com/%s/issues/700\n' "$REPO" > "$H/data/gamma/verify.md"
+  fx_issue_raw 500 "$(tpl_issue_body "$(tpl_scenario A1 user-visible p 1440; tpl_scenario A2 user-visible p 1440)")"
+  fx_issue_raw 600 "$(tpl_issue_body "$(tpl_scenario B1 user-visible p 1440; tpl_scenario B2 user-visible p 1440)")"
+  fx_issue_raw 700 "$(tpl_issue_body "$(tpl_scenario C1 user-visible p 1440)")"
+  # the Tester's file record of beta and gamma: B1 and C1 passed on head s1, B2 failed
+  printf 'surface: user-visible\nissue: https://github.com/%s/issues/600\n## Scenarios\n- B1@1440 | x | pass | evidence: e\n- B2@1440 | x | fail | evidence: e\nverified: tester 1 head=%s acceptance=d\n' "$REPO" "$(sha s1)" > "$TH/data/verify/beta.md"
+  printf 'surface: user-visible\nissue: https://github.com/%s/issues/700\n## Scenarios\n- C1@1440 | x | pass | evidence: e\nverified: tester 1 head=%s acceptance=d\n' "$REPO" "$(sha s1)" > "$TH/data/verify/gamma.md"
+  # alpha's record: A1 passed on s1 and carries, A2 is pending for the Tester
+  printf '{"task":"alpha","head":"%s","rows":[{"key":"A1@1440","scenarioId":"A1","width":"1440","surface":"user-visible","status":"pass","head":"%s","carried":true,"due":false},{"key":"A2@1440","scenarioId":"A2","width":"1440","surface":"user-visible","status":"pending","head":null,"carried":false,"due":true}]}\n' "$(sha s2)" "$(sha s1)" > "$LAB/checks.json"
+  fx_runs "1:completed:success:s0" "2:completed:success:s2"
+  fx_jobs 2 success
+  fx_compare s0 s2 c1 c2 c4
+  fx_commit_pr_body c1 11 "$(printf 'Closes #500\n\nScenarios touched: none')"
+  fx_commit_pr_body c2 12 'Closes #600'
+  fx_commit_pr_body c4 14 "$(printf 'Closes #700\nScenarios touched: none')"
+  set_cursor 1 s0
+  export FM_TASK_SHADOW_WRITER="$LAB/writer"
+  local dry
+  dry=$("$BIN/fm-procevent-deploy-verify.sh" deploy --dry-run --sha "$(sha s2)" --base "$(sha s0)") || { unset FM_TASK_SHADOW_WRITER; echo "deploy --dry-run failed"; return 1; }
+  [ -z "$(ledger)" ] && ! grep -q '^\(rows\|event\) ' "$LAB/writer.calls" 2>/dev/null \
+    || { unset FM_TASK_SHADOW_WRITER; echo "the dry run wrote: $(ledger) $(cat "$LAB/writer.calls" 2>&1)"; return 1; }
+  grep -qx "checks alpha --as-deployed $(sha s2) --touched none" "$LAB/writer.calls" \
+    || { unset FM_TASK_SHADOW_WRITER; echo "the dry run did not read alpha as deployed: $(cat "$LAB/writer.calls" 2>&1)"; return 1; }
+  jq -e '[.asks[] | {task, rows: [.rows[] | split(" | ")[0]], carried: [.carried[].key]}] == [{task: "alpha", rows: ["- A2@1440"], carried: ["A1@1440"]}, {task: "beta", rows: ["- B2@1440"], carried: ["B1@1440"]}, {task: "gamma", rows: [], carried: ["C1@1440"]}]' <<<"$dry" >/dev/null \
+    || { unset FM_TASK_SHADOW_WRITER; echo "dry run asks: $(jq -c '[.asks[] | {task, rows, carried}]' <<<"$dry")"; return 1; }
+  : > "$LAB/writer.calls"
+  cycle
+  [ "$CYCLE_AUTO" = 0 ] || { unset FM_TASK_SHADOW_WRITER; echo "autohandle=$CYCLE_AUTO"; return 1; }
+  grep -q "^event alpha deploy .*--head $(sha s2) --touched none --key " "$LAB/writer.calls" \
+    || { unset FM_TASK_SHADOW_WRITER; echo "alpha's deploy event names no touched ids: $(cat "$LAB/writer.calls")"; return 1; }
+  asked | jq -e --arg h "$(sha s1)" 'select(.task == "alpha") | (.rows | map(split(" | ")[0])) == ["- A2@1440"] and .lines == ["A2"] and .carried == [{key: "A1@1440", head: $h}]' >/dev/null \
+    || { unset FM_TASK_SHADOW_WRITER; echo "alpha ask: $(asked | jq -c 'select(.task == "alpha")')"; return 1; }
+  asked | jq -e --arg h "$(sha s1)" 'select(.task == "beta") | (.rows | map(split(" | ")[0])) == ["- B2@1440"] and .lines == ["B2"] and .carried == [{key: "B1@1440", head: $h}]' >/dev/null \
+    || { unset FM_TASK_SHADOW_WRITER; echo "beta ask: $(asked | jq -c 'select(.task == "beta")')"; return 1; }
+  ! asked | jq -e 'select(.task == "gamma")' >/dev/null || { unset FM_TASK_SHADOW_WRITER; echo 'gamma had nothing due and still got an ask'; return 1; }
+  [ "$(ledger_count 'select(.type == "carry" and .task == "gamma")')" = 1 ] || { unset FM_TASK_SHADOW_WRITER; echo "no carry entry for gamma: $(ledger)"; return 1; }
+  # a later PR that names B1 brings it back into beta's ask
+  fx_runs "1:completed:success:s0" "2:completed:success:s2" "3:completed:success:s3"
+  fx_jobs 3 success
+  fx_compare s2 s3 c3
+  fx_commit_pr_body c3 13 "$(printf 'Closes #600\nScenarios touched: B1')"
+  backlog_task beta 13 600
+  cycle
+  unset FM_TASK_SHADOW_WRITER
+  asked | jq -e --arg s "$(sha s3)" 'select(.task == "beta" and .sha == $s) | (.rows | map(split(" | ")[0])) == ["- B1@1440", "- B2@1440"] and .carried == []' >/dev/null \
+    || { echo "a PR that names B1 did not bring it back: $(asked | jq -c 'select(.task == "beta")')"; return 1; }
+}
+
 run_scenarios() {  # <bin-dir>
   local s rc=0
-  for s in ledger skips not_deployed draft record failures runner skip_catchup rows refused replay replay_refused shadow rows_record; do
+  for s in ledger skips not_deployed draft record failures runner skip_catchup rows refused replay replay_refused shadow rows_record carry; do
     out=$(scenario_"$s" "$1" 2>&1) || { printf 'scenario %s: %s\n' "$s" "$out"; rc=1; }
   done
   return $rc
@@ -658,7 +726,7 @@ run_scenarios() {  # <bin-dir>
 
 # ---- real adapter -----------------------------------------------------------
 
-for s in ledger skips not_deployed draft record failures runner skip_catchup rows refused replay replay_refused shadow rows_record; do
+for s in ledger skips not_deployed draft record failures runner skip_catchup rows refused replay replay_refused shadow rows_record carry; do
   out=$(scenario_"$s" "$ROOT/bin" 2>&1) || fail "scenario $s failed on the real adapter: $out"
   pass "deploy-verify $s"
 done
