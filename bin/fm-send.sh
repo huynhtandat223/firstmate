@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Steer a task by durable record: write the message into the task's steering
 # inbox and ring a constant doorbell line into its terminal, best-effort.
-# Usage: fm-send.sh <target> [--resolve-key <key>]... [--fire-and-forget <delivery-id>] <text...>
+# Usage: fm-send.sh <target> [--resolve-key <key>]... [--fire-and-forget <delivery-id>] [--again] <text...>
 #   <target> may be an exact task id, a legacy fm-<id> task label resolved
 #   through this home's state/<id>.meta, or an explicit well-formed backend
 #   target. fm-send refuses unresolved guesses rather than falling back to a
@@ -11,6 +11,14 @@
 # before anything is marked, recorded, or typed, because an empty marked
 # secondmate request delivers only marker and correlation bytes and leaves the
 # parent waiting on a reply to nothing.
+# A LOCAL inbox steer is also checked before it is written (spec
+# huynhtandat223/firstmate#200, E5; bin/fm-task-inbox-lib.sh
+# fm_task_inbox_steer_problem owns the rule): a text under 8 characters, or a
+# body identical to an unhandled record or to one written in the last 30
+# minutes, is a mistake the worker would act on twice or not at all. Such a send
+# is refused naming the existing NNN.msg, and --again resends an identical body
+# on purpose. Like every new check it only logs to state/enforce-steer-dedupe.log
+# until config/enforce-steer-dedupe holds `block` (bin/fm-enforce-lib.sh).
 # Special keys instead of text: fm-send.sh <target> --key Enter
 # Key support is backend-specific: tmux/herdr support Escape, Enter, and C-c;
 # Orca currently supports Enter and C-c only, and rejects Escape.
@@ -257,6 +265,8 @@ fi
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 # shellcheck source=bin/fm-task-inbox-lib.sh
 . "$SCRIPT_DIR/fm-task-inbox-lib.sh"
+# shellcheck source=bin/fm-enforce-lib.sh
+. "$SCRIPT_DIR/fm-enforce-lib.sh"
 # shellcheck source=bin/fm-firstmate-wait-lib.sh
 . "$SCRIPT_DIR/fm-firstmate-wait-lib.sh"
 # shellcheck source=bin/fm-timeout-lib.sh
@@ -474,6 +484,7 @@ fi
 # message exactly as before, so ordinary sends are byte-identical.
 RESOLVE_KEYS=
 FIRE_AND_FORGET_ID=
+SEND_AGAIN=
 fm_send_add_resolve_key() { # <key>
   local k=$1
   case "$k" in
@@ -489,6 +500,42 @@ fm_send_add_resolve_key() { # <key>
     ;;
   esac
   RESOLVE_KEYS="${RESOLVE_KEYS}${RESOLVE_KEYS:+ }$k"
+}
+# A flagged local steer problem (fm_task_inbox_steer_problem): log it, and in
+# block mode release the meta lock, drop the undelivered pending-reply
+# expectation, and refuse before anything is written.
+fm_send_steer_problem() { # <"kind<TAB>record<TAB>age">
+  local kind rec age mode what reason
+  IFS=$'\t' read -r kind rec age <<<"$1"
+  case "$kind" in
+  short)
+    what="its text is under ${FM_STEER_MIN_CHARS:-8} characters, too little to act on"
+    reason="steer text is under ${FM_STEER_MIN_CHARS:-8} characters"
+    ;;
+  *)
+    case "$rec" in
+    */handled/*) what="the same text was sent as ${rec##*/} $((age / 60)) minutes ago and the worker has it" ;;
+    *) what="the same text is already in its inbox as ${rec##*/}, not yet handled; the worker has it" ;;
+    esac
+    reason="identical body ${rec##*/} (${age}s old)"
+    ;;
+  esac
+  mode=$(fm_enforce_mode "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}" steer-dedupe)
+  if [ "$mode" != block ]; then
+    fm_enforce_log "$STATE" steer-dedupe would-refuse "$kind" "$INBOX_TASK_ID: $reason"
+    return 0
+  fi
+  fm_enforce_log "$STATE" steer-dedupe refuse "$kind" "$INBOX_TASK_ID: $reason"
+  fm_lock_release "$INBOX_META_LOCK"
+  if [ "$PENDING_REPLY_CREATED" = 1 ] && [ -n "$PENDING_REPLY_CORR" ]; then
+    fm_pending_reply_discard_undelivered "$STATE" "$PENDING_REPLY_CORR" || true
+  fi
+  if [ "$kind" = short ]; then
+    echo "error: steer not sent to $INBOX_TASK_ID: $what" >&2
+  else
+    echo "error: steer not sent to $INBOX_TASK_ID: $what; pass --again to resend it on purpose" >&2
+  fi
+  exit 1
 }
 while :; do
   case "${1:-}" in
@@ -507,6 +554,10 @@ while :; do
     ;;
   --resolve-key=*)
     fm_send_add_resolve_key "${1#--resolve-key=}" || exit 1
+    shift
+    ;;
+  --again)
+    SEND_AGAIN=1
     shift
     ;;
   --fire-and-forget)
@@ -1069,6 +1120,10 @@ else
         [ ! -L "$authority" ] || { echo 'error: authority record must not be a symlink' >&2; exit 1; }
         printf '%s\n' "$receipt" >> "$authority"
       done
+    fi
+    if [ "${FM_SEND_IDEMPOTENT:-0}" != 1 ] &&
+      steer_problem=$(fm_task_inbox_steer_problem "$STATE" "$INBOX_TASK_ID" "$RESOLVE_ANSWER_TEXT" "$MESSAGE" "$SEND_AGAIN"); then
+      fm_send_steer_problem "$steer_problem"
     fi
     if [ "${FM_SEND_IDEMPOTENT:-0}" = 1 ]; then
       INBOX_RECORD=$(fm_task_inbox_write_idempotent "$STATE" "$INBOX_TASK_ID" "$MESSAGE" \
