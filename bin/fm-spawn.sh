@@ -17,7 +17,8 @@
 #   surface=<value> in state/<id>.meta; absent means internal, except that a ship
 #   spawn into cfw-modules refuses a missing --surface. A user-visible spawn also
 #   writes data/<id>/verify.md with "surface: user-visible" and "issue: <url>" (the
-#   issue the backlog item links), plus "record: rows" while config/task-shadow is on,
+#   issue the backlog item links), plus "record: rows" while config/task-shadow is on
+#   for a task in the repository deploy-verify watches (FM_DEPLOY_VERIFY_REPO),
 #   and refuses when it finds no issue; bin/fm-verify-gate-lib.sh
 #   owns what the task must prove before its backlog item moves to Done.
 #   --mode and --yolo are this task's delivery contract, REQUIRED for every ship
@@ -6214,9 +6215,11 @@ if [ "$RELAUNCH" -eq 0 ]; then
   fi
   SPAWN_META_TMP=
   if [ -n "$VERIFY_ISSUE" ] && [ ! -e "$DATA/$ID/verify.md" ]; then
-    # While the task record is on, a task begun now is verified on its check rows (bin/fm-verify-gate-lib.sh).
+    # While the task record is on, a task begun now in the repository deploy-verify watches is verified on its check
+    # rows (bin/fm-verify-gate-lib.sh); deploy-verify writes those rows, so a task elsewhere keeps the file gate.
     VERIFY_RECORD=
-    [ ! -e "$CONFIG/task-shadow" ] || VERIFY_RECORD=$'record: rows\n'
+    VERIFY_REPO=${FM_DEPLOY_VERIFY_REPO:-huynhtandat223/cfw-modules}
+    [ ! -e "$CONFIG/task-shadow" ] || [ "${PROJ_NAME:-}" != "${VERIFY_REPO##*/}" ] || VERIFY_RECORD=$'record: rows\n'
     mkdir -p "$DATA/$ID" && printf 'surface: user-visible\nissue: %s\n%s' "$VERIFY_ISSUE" "$VERIFY_RECORD" >"$DATA/$ID/verify.md" ||
       echo "warning: the verification record of $ID could not be written at $DATA/$ID/verify.md; write its 'surface: user-visible' and 'issue: $VERIFY_ISSUE' lines by hand" >&2
   fi

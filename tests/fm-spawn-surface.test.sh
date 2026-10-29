@@ -95,3 +95,14 @@ launched
 [ "$(cat "$home/data/surf/verify.md")" = "$(printf 'surface: user-visible\nissue: %s\nrecord: rows' "$url")" ] \
   || fail "$label: verify.md header is wrong: $(cat "$home/data/surf/verify.md" 2>&1)"
 pass 'a user-visible spawn while the task record is on marks the task for the check-row gate'
+
+# Rows come from deploy-verify, which watches one repository (FM_DEPLOY_VERIFY_REPO): a user-visible task in another
+# project keeps the file gate and gets no marker.
+new_case record-other demo "$url"
+mkdir -p "$home/config"; : > "$home/config/task-shadow"
+printf '#!/bin/sh\nexit 0\n' > "$home/tools/no-writer"; chmod +x "$home/tools/no-writer"
+FM_TASK_SHADOW_WRITER="$home/tools/no-writer" spawn --surface user-visible
+launched
+[ "$(cat "$home/data/surf/verify.md")" = "$(printf 'surface: user-visible\nissue: %s' "$url")" ] \
+  || fail "$label: verify.md header is wrong: $(cat "$home/data/surf/verify.md" 2>&1)"
+pass 'a user-visible spawn outside the deploy-verify repository keeps the file gate'
