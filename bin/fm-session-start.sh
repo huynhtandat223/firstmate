@@ -1080,8 +1080,9 @@ fi
 stage read-once
 section "READ-ONCE CONTRACT"
 cat <<'EOF'
-This digest prints in full: data/captain.md, the handoff its Start here line
-names, and data/captain-shared.md (all three at the top, right after the head),
+This digest prints in full: data/captain.md and data/captain-shared.md, plus the
+handoff its Start here line names (capped at 40000 bytes), all at the top, right
+after the head,
 then every state/*.meta, a compact data/backlog.md listing,
 a bounded tail of every state/*.status,
 data/projects.md, data/secondmates.md, and data/learnings.md.
@@ -1097,6 +1098,8 @@ Go to a source directly only when:
     printed with its tail),
   - a full task body is needed (bin/fm-tasks-axi.sh show <id> --full, or data/backlog.md),
   - the backlog listing disclosed omitted queued items and this turn needs them,
+  - the handoff printed a "handoff cut at 40000 bytes" marker (then read the
+    rest of that handoff file from the byte where it was cut),
   - the NETWORK CHECKS section reported its checks still IN PROGRESS and this
     turn needs their verdict (bin/fm-startup-network.sh report),
   - or a STARTUP TRUNCATED banner named the stage that would have printed it, in

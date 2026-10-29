@@ -2789,6 +2789,23 @@ FIXTURE
   pass "a Start here symlink that resolves outside the home is not printed"
 }
 
+test_captain_context_caps_a_long_handoff_and_the_contract_says_so() {
+  local rec root home fakebin out
+  rec=$(captain_order_world captain-order-longhandoff)
+  IFS='|' read -r root home fakebin <<FIXTURE
+$rec
+FIXTURE
+  awk 'BEGIN { for (i = 0; i < 2500; i++) printf "long handoff line %05d padding padding padding\n", i }' >> "$home/data/handoffs/fm-test-handoff.md"
+  out=$(FM_FAKE_HARNESS_PID=$$ run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_contains "$out" "(handoff cut at 40000 bytes; read data/handoffs/latest.md for the rest)" \
+    "an oversize handoff did not print its cut marker"
+  assert_not_contains "$out" "long handoff line 02499" "an oversize handoff printed past its cap"
+  assert_contains "$out" "capped at 40000 bytes" "the read-once contract does not disclose the handoff cap"
+  assert_contains "$out" 'the handoff printed a "handoff cut at 40000 bytes" marker' \
+    "the read-once contract does not allow reading the rest of a cut handoff"
+  pass "a handoff over 40000 bytes prints its prefix and cut marker, and the read-once contract allows reading the rest"
+}
+
 test_reemit_cue_survives_the_hook_output_preview() {
   local rec root home fakebin reemit normal head2k
   rec=$(new_world reemit-cue)
@@ -3509,6 +3526,7 @@ test_startup_digest_puts_captain_context_in_reach
 test_reemit_digest_puts_captain_context_in_reach_and_keeps_the_cue_first
 test_captain_context_skips_a_handoff_outside_the_home
 test_captain_context_skips_a_symlink_that_escapes_the_home
+test_captain_context_caps_a_long_handoff_and_the_contract_says_so
 test_agents_baseline_stays_at_true_start_and_reemits_on_every_drifted_pi_compact
 test_read_only_pi_compact_refreshes_against_its_own_session_identity
 test_codex_unreachable_reset_sources_do_not_claim_instruction_refresh
