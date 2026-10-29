@@ -251,14 +251,17 @@ function bodyOf(event) {
 // The step follows the state: done is passed; review is dev once a deploy follows the newest done, else pr; running is
 // pr once a pr event follows the newest started or changes, else working; triage, todo and ready are queued; blocked
 // (and archived) keep the step they had. stageSince is the time of the event that set the step. lastEventAt and
-// lastNote come from the newest real event: a backlog view `row` event is not one. An import's source stamp
-// (`{"source","sha256"}` under a `backfill:<task>:` key, fm-task-backfill-lib.mjs) points at a note and is not one, so it
-// leaves lastNote as it was; the same JSON in a real comment is a note.
-const isSourceStamp = (event, note) => {
-  if (!String(event.idempotencyKey ?? '').startsWith(`backfill:${event.taskId}:`)) return false;
+// lastNote come from the newest real event: a backlog view `row` event is not one. A machine record is not a note
+// either, so it leaves lastNote as it was: an import's source stamp (`{"source","sha256"}` under a `backfill:<task>:`
+// key, fm-task-backfill-lib.mjs) and a reconcile divergence (`{"field","oldSource","record"}` under a `reconcile:<task>:`
+// key, fm-task-reconcile-lib.mjs). The same JSON in a real comment is a note.
+const MACHINE_RECORDS = { backfill: 'sha256,source', reconcile: 'field,oldSource,record' };
+const isMachineRecord = (event, note) => {
+  const [prefix, taskId] = String(event.idempotencyKey ?? '').split(':');
+  if (!Object.hasOwn(MACHINE_RECORDS, prefix) || taskId !== event.taskId) return false;
   try {
     const value = JSON.parse(note);
-    return value !== null && typeof value === 'object' && Object.keys(value).sort().join() === 'sha256,source';
+    return value !== null && typeof value === 'object' && Object.keys(value).sort().join() === MACHINE_RECORDS[prefix];
   } catch {
     return false;
   }
@@ -282,7 +285,7 @@ function fold(events) {
     if (event.kind !== 'row') {
       const note = String(bodyOf(event).note ?? '');
       task.lastEventAt = event.createdAt ?? null;
-      if (!isSourceStamp(event, note)) task.lastNote = note.slice(0, 300) || null;
+      if (!isMachineRecord(event, note)) task.lastNote = note.slice(0, 300) || null;
     }
     if (REVIEWER_KINDS.includes(event.kind)) task.reviewer = event.actor ?? null;
   }
