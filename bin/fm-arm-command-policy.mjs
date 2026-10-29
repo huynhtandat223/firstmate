@@ -618,6 +618,24 @@ export function noExecShell(position) {
   return noExec;
 }
 
+// The literal payload of `bash -c '<payload>'` (also -lc, -ec), or null: the
+// first word after the options that follow the -c cluster.
+export function shellPayload(position) {
+  const words = position.words;
+  for (let i = position.index + 1; i < words.length; i += 1) {
+    if (!/^-[A-Za-z]*c[A-Za-z]*$/.test(words[i].value)) continue;
+    let at = i + 1;
+    while (at < words.length) {
+      const option = /^[-+]([A-Za-z]+)$/.exec(words[at].value);
+      if (!option) break;
+      at += 1 + [...option[1]].filter((flag) => flag === "o" || flag === "O").length;
+    }
+    if (words[at]?.value === "--") at += 1;
+    return words[at] ? words[at].value : null;
+  }
+  return null;
+}
+
 const PROTECTED_SCRIPTS = [
   { relative: "bin/fm-watch-arm.sh", kind: "arm" },
   { relative: "bin/fm-watch-checkpoint.sh", kind: "checkpoint" },

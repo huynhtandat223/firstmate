@@ -254,6 +254,28 @@ test_bash_c_payloads_are_inspected() {
   pass "#208: the payload of bash -c is inspected for agent-ask and for a read of data/captain.md"
 }
 
+# Reader round 1 on PR 220: the -c payload of a no-exec shell executes nothing.
+test_no_exec_shell_payloads_credit_nothing() {
+  local dir="$TMP_ROOT/no-exec"
+  make_primary "$dir" block
+  run_shell_cases "$dir" 2 question \
+    "bash -nc 'agent-ask post --board b'" \
+    "bash -n -c 'agent-ask post --board b'" \
+    "sh -o noexec -c 'agent-ask post --board b'" \
+    "bash -n +x -c 'agent-ask post --board b'"
+  run_shell_cases "$dir" 2 late \
+    "bash -nc 'cat data/captain.md'" \
+    "bash -o noexec -c 'cat data/captain.md'"
+  run_shell_cases "$dir" 0 question \
+    "bash -n +n -c 'agent-ask post --board b'" \
+    "bash +o noexec -c 'agent-ask post --board b'" \
+    "bash -xc 'agent-ask post --board b'"
+  run_shell_cases "$dir" 0 late \
+    "bash -nc +n 'cat data/captain.md'" \
+    "bash -lc 'cat data/captain.md'"
+  pass "#208 round 1: the payload of bash -n -c or bash -o noexec -c credits nothing; +n turns execution back on"
+}
+
 test_input_redirect_read_counts() {
   local dir="$TMP_ROOT/redirect"
   make_primary "$dir" block
@@ -515,6 +537,7 @@ test_rl5_only_a_successful_read_of_this_homes_file_counts
 test_skipped_and_branches_credit_nothing
 test_bash_c_payloads_are_inspected
 test_input_redirect_read_counts
+test_no_exec_shell_payloads_credit_nothing
 test_session_keyed_block_record
 test_agent_ask_counts_only_as_a_command
 test_captain_md_counts_only_as_a_file_operand

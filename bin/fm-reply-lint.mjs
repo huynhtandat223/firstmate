@@ -18,7 +18,7 @@
 
 import { readFileSync, existsSync, readdirSync, realpathSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
-import { Lexer, splitProgram, commandPosition } from "./fm-arm-command-policy.mjs";
+import { Lexer, splitProgram, commandPosition, noExecShell, shellPayload } from "./fm-arm-command-policy.mjs";
 
 const VIETNAMESE = /[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]/i;
 const REACH_LINES = 470;
@@ -54,18 +54,6 @@ function toolUses(row) {
 }
 
 const SHELLS = new Set(["sh", "bash", "zsh"]);
-
-// The literal payload of `bash -c '<payload>'` (also -lc, -ec), or null.
-function shellPayload(position) {
-  const words = position.words;
-  for (let i = position.index + 1; i < words.length; i += 1) {
-    if (/^-[A-Za-z]*c[A-Za-z]*$/.test(words[i].value)) {
-      const payload = words[i + 1]?.value === "--" ? words[i + 2] : words[i + 1];
-      return payload ? payload.value : null;
-    }
-  }
-  return null;
-}
 
 // The exit status a node is known to have before it runs: `false` is 1, `true`
 // and `:` are 0, anything else is not known.
@@ -112,7 +100,7 @@ export function shellCommands(line) {
       if (position.command) {
         const name = basename(position.command.value);
         found.push({ name, operands: position.words.slice(position.index + 1).map((w) => w.value), inputs: inputRedirects(node) });
-        const payload = SHELLS.has(name) ? shellPayload(position) : null;
+        const payload = SHELLS.has(name) && !noExecShell(position) ? shellPayload(position) : null;
         if (payload !== null) walk(payload);
       }
       const next = separators[index];
