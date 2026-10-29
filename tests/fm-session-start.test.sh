@@ -2622,6 +2622,107 @@ SH
 
 # --- context re-emit (--reemit) ----------------------------------------------
 
+# The captain's standing instructions and the handoff their "Start here" line
+# names must sit inside the first 470 lines a reset session reads, in both the
+# startup digest and a re-emit, even when the digest is far past 80 KB.
+captain_order_world() {  # <name>: prints "<root>|<home>|<fakebin>" with an oversized memory
+  local rec root home fakebin
+  rec=$(new_world "$1")
+  IFS='|' read -r root home fakebin <<FIXTURE
+$rec
+FIXTURE
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  mkdir -p "$home/data/handoffs"
+  {
+    printf '# Captain preferences\n\n'
+    # shellcheck disable=SC2016 # the backticks are literal captain.md text
+    printf '**Start here:** after the digest, follow the newest handoff, `data/handoffs/latest.md`.\n\n'
+    printf 'Respond in Vietnamese; technical terms stay English.\n'
+    awk 'BEGIN { for (i = 0; i < 60; i++) printf "captain preference line %03d\n", i }'
+    printf 'CAPTAIN LAST LINE\n'
+  } > "$home/data/captain.md"
+  {
+    awk 'BEGIN { for (i = 0; i < 40; i++) printf "handoff body line %03d\n", i }'
+    printf 'HANDOFF LAST LINE\n'
+  } > "$home/data/handoffs/fm-test-handoff.md"
+  ln -s fm-test-handoff.md "$home/data/handoffs/latest.md"
+  printf 'SHARED LAST LINE\n' > "$home/data/captain-shared.md"
+  awk 'BEGIN { for (i = 0; i < 2500; i++) printf "learning %05d padding padding padding padding padding\n", i }' > "$home/data/learnings.md"
+  printf '%s|%s|%s\n' "$root" "$home" "$fakebin"
+}
+
+line_of() {  # <digest> <fixed text>: first line number holding the text, or empty
+  printf '%s\n' "$1" | grep -n -F -m1 -- "$2" | cut -d: -f1
+}
+
+assert_captain_block_in_reach() {  # <digest> <mode>
+  local out=$1 mode=$2 text n
+  [ "$(printf '%s\n' "$out" | wc -c)" -gt 80000 ] || fail "$mode fixture digest did not pass 80 KB"
+  for text in 'Respond in Vietnamese' 'CAPTAIN LAST LINE' 'HANDOFF LAST LINE' 'SHARED LAST LINE'; do
+    n=$(line_of "$out" "$text")
+    [ -n "$n" ] || fail "$mode digest does not hold: $text"
+    [ "$n" -le 470 ] || fail "$mode digest holds '$text' only at line $n, past line 470"
+  done
+}
+
+digest_headings() {  # <digest>: sorted section and subsection headings
+  printf '%s\n' "$1" | awk -v r="$(printf '%080d' 0 | tr 0 '=')" -v sr="$(printf '%080d' 0 | tr 0 '-')" '
+    { line[NR] = $0 }
+    END {
+      for (i = 2; i < NR; i++) {
+        if (line[i + 1] == sr) print line[i]
+        else if (line[i - 1] == r && line[i + 1] == r) print line[i]
+      }
+    }' | sort
+}
+
+test_startup_digest_puts_captain_context_in_reach() {
+  local rec root home fakebin out first_head
+  rec=$(captain_order_world captain-order-startup)
+  IFS='|' read -r root home fakebin <<FIXTURE
+$rec
+FIXTURE
+  out=$(FM_FAKE_HARNESS_PID=$$ run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_captain_block_in_reach "$out" startup
+  assert_not_contains "$out" "RE-EMIT CUE" "a startup digest printed the re-emit cue"
+  [ "$(printf '%s\n' "$out" | grep -c -x 'data/captain.md')" -eq 1 ] || fail "data/captain.md printed more than once"
+  first_head=$(digest_headings "$out")
+  assert_contains "$first_head" "CONTEXT" "the heading set lost CONTEXT"
+  assert_contains "$first_head" "data/learnings.md" "the heading set lost data/learnings.md"
+  assert_not_contains "$first_head" "handoff" "the handoff added a heading"
+  pass "a startup digest holds captain.md, the Start here handoff and captain-shared.md inside line 470"
+}
+
+test_reemit_digest_puts_captain_context_in_reach_and_keeps_the_cue_first() {
+  local rec root home fakebin out
+  rec=$(captain_order_world captain-order-reemit)
+  IFS='|' read -r root home fakebin <<FIXTURE
+$rec
+FIXTURE
+  out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$root" FM_FAKE_HARNESS_PID=$$ PATH="$fakebin:$BASE_PATH" \
+    env -u CLAUDECODE -u PI_CODING_AGENT -u FM_PI_HARNESS -u GROK_AGENT \
+    "$SESSION_START" --reemit)
+  assert_captain_block_in_reach "$out" re-emit
+  [ "$(printf '%s\n' "$out" | sed -n 1p | cut -c1-12)" = "RE-EMIT CUE:" ] || fail "the re-emit cue is not the first line"
+  pass "a re-emit digest holds the same block inside line 470 with the cue still first"
+}
+
+test_captain_context_skips_a_handoff_outside_the_home() {
+  local rec root home fakebin out outside
+  rec=$(captain_order_world captain-order-outside)
+  IFS='|' read -r root home fakebin <<FIXTURE
+$rec
+FIXTURE
+  outside="$TMP_ROOT/captain-order-outside/elsewhere.md"
+  printf 'OUTSIDE HOME SECRET\n' > "$outside"
+  sed -i "s|data/handoffs/latest.md|$outside|" "$home/data/captain.md"
+  out=$(FM_FAKE_HARNESS_PID=$$ run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_not_contains "$out" "OUTSIDE HOME SECRET" "a Start here path outside the home was printed"
+  assert_contains "$out" "CAPTAIN LAST LINE" "captain.md itself must still print"
+  pass "a Start here path outside the home is not printed"
+}
+
 test_reemit_cue_survives_the_hook_output_preview() {
   local rec root home fakebin reemit normal head2k
   rec=$(new_world reemit-cue)
@@ -3338,6 +3439,9 @@ test_runtime_bound_leaves_a_healthy_digest_untouched
 test_runtime_bound_leaves_harness_ancestry_headroom
 test_reemit_skips_startup_sweeps_but_keeps_the_wake_drain
 test_reemit_cue_survives_the_hook_output_preview
+test_startup_digest_puts_captain_context_in_reach
+test_reemit_digest_puts_captain_context_in_reach_and_keeps_the_cue_first
+test_captain_context_skips_a_handoff_outside_the_home
 test_agents_baseline_stays_at_true_start_and_reemits_on_every_drifted_pi_compact
 test_read_only_pi_compact_refreshes_against_its_own_session_identity
 test_codex_unreachable_reset_sources_do_not_claim_instruction_refresh

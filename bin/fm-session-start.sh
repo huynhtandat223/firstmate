@@ -438,6 +438,44 @@ print_file_or_absent() {
   fi
 }
 
+# print_captain_context: the captain's standing instructions and the handoff
+# their "Start here" line names, printed right after the digest head. A harness
+# that shows only the first ~470 lines after a reset (Claude's Read tool) must
+# find them there, so they print before the bulk sections, not in CONTEXT. The
+# handoff text rides under the data/captain.md subsection with a plain marker
+# line, never a new heading, so the set of section headings is unchanged. The
+# named path must resolve to a regular file inside this home.
+HANDOFF_PRINT_MAX_BYTES=40000
+print_captain_context() {
+  local start_line rel resolved home_real size
+  print_file_or_absent "$DATA/captain.md" "data/captain.md"
+  if [ -f "$DATA/captain.md" ] && [ -s "$DATA/captain.md" ]; then
+    start_line=$(grep -m1 -F 'Start here' "$DATA/captain.md" 2>/dev/null || true)
+    # shellcheck disable=SC2016 # the backticks are literal sed text
+    rel=$(printf '%s\n' "$start_line" | sed -n 's/^[^`]*`\([^`]*\)`.*$/\1/p')
+    if [ -n "$rel" ]; then
+      case "$rel" in /*) resolved=$rel ;; *) resolved="$FM_HOME/$rel" ;; esac
+      home_real=$(cd "$FM_HOME" 2>/dev/null && pwd -P) || home_real=
+      resolved=$(cd "$(dirname "$resolved")" 2>/dev/null && printf '%s/%s' "$(pwd -P)" "$(basename "$resolved")") || resolved=
+      if [ -n "$home_real" ] && [ -n "$resolved" ] && [ -f "$resolved" ]; then
+        case "$resolved" in
+          "$home_real"/*)
+            printf '\n--- handoff named by the Start here line: %s ---\n' "$rel"
+            size=$(wc -c < "$resolved" | tr -d ' ')
+            if [ "$size" -le "$HANDOFF_PRINT_MAX_BYTES" ]; then
+              cat "$resolved"
+            else
+              head -c "$HANDOFF_PRINT_MAX_BYTES" "$resolved"
+              printf '\n(handoff cut at %s bytes; read %s for the rest)\n' "$HANDOFF_PRINT_MAX_BYTES" "$rel"
+            fi
+            ;;
+        esac
+      fi
+    fi
+  fi
+  print_file_or_absent "$DATA/captain-shared.md" "data/captain-shared.md (shared, main-authoritative, read-only in secondmate homes)"
+}
+
 print_backlog_pointer() {
   printf 'Full task bodies remain available on demand: bin/fm-tasks-axi.sh show <id> --full when compatible tasks-axi is available, or data/backlog.md.\n'
 }
@@ -843,6 +881,10 @@ if [ "$REEMIT" -eq 1 ]; then
 else
   section "SESSION START - $FM_HOME"
 fi
+# --- 0. captain context ------------------------------------------------
+# Directly after the head (and, on a re-emit, the RE-EMIT CUE that must stay
+# first): the lines a reset session most needs sit inside its first 470 lines.
+print_captain_context
 # --- 1. lock -----------------------------------------------------------
 stage lock
 subsection "LOCK"
@@ -1191,8 +1233,6 @@ stage context
 section "CONTEXT"
 print_file_or_absent "$DATA/projects.md" "data/projects.md"
 print_file_or_absent "$DATA/secondmates.md" "data/secondmates.md"
-print_file_or_absent "$DATA/captain.md" "data/captain.md"
-print_file_or_absent "$DATA/captain-shared.md" "data/captain-shared.md (shared, main-authoritative, read-only in secondmate homes)"
 print_file_or_absent "$DATA/learnings.md" "data/learnings.md"
 
 # --- 9. closing reminder -----------------------------------------------
