@@ -63,7 +63,9 @@ test_the_placeholder_stays_so_the_spec_is_still_filled() {
 
 test_a_scout_brief_gets_the_same_lines() {
   scaffold pb1-scout cfw-modules --scout
-  [ "$(spec_of pb1-scout | grep -c '^brief:')" -eq 3 ] || fail "a scout brief should hold the tagged lines: $(spec_of pb1-scout)"
+  [ "$(spec_of pb1-scout | grep '^brief:')" = "$(grep '^brief:' "$LAB/data/project-rules/cfw-modules.md")" ] \
+    || fail "a scout brief must hold the tagged lines verbatim and in order: $(spec_of pb1-scout)"
+  if spec_of pb1-scout | grep -qE 'right rail|indented tag|prose'; then fail "an untagged line reached the scout brief"; fi
   pass "a scout brief gets the same tagged lines"
 }
 
@@ -74,12 +76,16 @@ test_other_projects_and_missing_or_untagged_files_add_nothing() {
   printf '# dms\nNo tag here.\n' > "$LAB/data/project-rules/dms.md"
   scaffold pb1-untagged dms
   [ "$(spec_of pb1-untagged)" = '{FIRSTMATE_SPEC}' ] || fail "a rules file with no tagged line must add nothing"
-  scaffold pb1-slash ../project-rules/cfw-modules
-  spec=$(spec_of pb1-slash)
-  [ "$spec" = '{FIRSTMATE_SPEC}' ] || fail "a repo name with a slash must not reach another file: $spec"
+  if FM_HOME="$LAB" "$ROOT/bin/fm-brief.sh" pb1-slash ../project-rules/cfw-modules --mode direct-PR > "$TMP_ROOT/slash.out" 2>&1; then fail "a repo name with a slash must be refused"; fi
+  assert_contains "$(cat "$TMP_ROOT/slash.out")" "contains a slash" "the refusal should say why"
+  assert_absent "$LAB/data/pb1-slash/brief.md" "a refused scaffold must not write a brief"
+  printf 'brief: dot-prefixed project rule.\n' > "$LAB/data/project-rules/.github.md"
+  scaffold pb1-dot .github
+  assert_contains "$(spec_of pb1-dot)" "brief: dot-prefixed project rule." "a dot-prefixed repo name must still get its rules"
+  rm -f "$LAB/data/project-rules/.github.md"
   before=$(find "$LAB/data/project-rules" -type f | wc -l)
   [ "$before" -eq 2 ] || fail "the scaffold must not write into project-rules"
-  pass "a project with no rules file, a file with no tag and a repo name with a slash all add nothing"
+  pass "a project with no rules file or no tag adds nothing, a repo name with a slash is refused, and a dot-prefixed name works"
 }
 
 test_pb1_tagged_lines_are_copied_verbatim_and_untagged_are_not

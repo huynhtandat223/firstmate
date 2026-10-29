@@ -441,7 +441,7 @@ It reads `config/enforce-clone-git`, and `bin/fm-clone-git-command-policy.mjs --
 
 `bin/fm-brief.sh` copies every line of `data/project-rules/<repo-name>.md` that starts with `brief:` into the brief's `## Firstmate spec`.
 The copy is verbatim, tag included, in file order, and sits below the `{FIRSTMATE_SPEC}` fill.
-A line without the tag is never copied, and a project with no rules file adds nothing.
+A line without the tag is never copied, a project with no rules file adds nothing, and a repo name with a slash is refused.
 Firstmate tags the lines in its private rules file; the file is not tracked.
 
 ## Backlog backend (.tasks.toml / config/backlog-backend)

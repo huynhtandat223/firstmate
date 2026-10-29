@@ -650,6 +650,9 @@ exit 0
 fi
 
 REPO=${POS[1]}
+case "$REPO" in
+  */*) echo "error: the repo name '$REPO' contains a slash; pass the project's registered name" >&2; exit 1 ;;
+esac
 
 if [ "$HERDR_LAB" -eq 1 ]; then
 HERDR_LAB_HELPER=$(shell_quote "$FM_ROOT/bin/fm-herdr-lab.sh")
@@ -698,12 +701,10 @@ EOF
 TASK_SECTION=${TASK_SECTION%$'\n'}
 # Project rules (spec huynhtandat223/firstmate#200, E8c): every line of data/project-rules/<repo>.md
 # that starts with `brief:` goes under `## Firstmate spec`, verbatim and in file order, below the
-# {FIRSTMATE_SPEC} fill; an untagged line is never copied. A missing file adds nothing.
-case "$REPO" in
-  */* | .*) PROJECT_RULES_FILE='' ;;
-  *) PROJECT_RULES_FILE="$DATA/project-rules/$REPO.md" ;;
-esac
-if [ -n "$PROJECT_RULES_FILE" ] && [ -r "$PROJECT_RULES_FILE" ]; then
+# {FIRSTMATE_SPEC} fill; an untagged line is never copied. A missing file adds nothing, and a repo
+# name with a slash is refused above.
+PROJECT_RULES_FILE="$DATA/project-rules/$REPO.md"
+if [ -r "$PROJECT_RULES_FILE" ]; then
   PROJECT_RULES=$(grep '^brief:' "$PROJECT_RULES_FILE" || true)
   [ -z "$PROJECT_RULES" ] || TASK_SECTION="$TASK_SECTION"$'\n'"$PROJECT_RULES"
 fi
