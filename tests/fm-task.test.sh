@@ -1951,8 +1951,8 @@ case_carry() {
   due() { ft checks $t "$@" >/dev/null || return 1; jq -r '[.rows[] | select(.surface == "user-visible") | "\(.key)=\(.due)/\(.carried)"] | join(" ")' <<<"$OUT"; }
   use_issue v1
   mk_running $t >/dev/null || { echo "setup: $ERR"; return 1; }
-  ft rows $t "$ISSUE" >/dev/null && ft "done" $t "${DONE_FLAGS[@]}" --head b0 >/dev/null && ft event $t deploy --head D0 >/dev/null || { echo "setup: $ERR"; return 1; }
-  ft check $t A1@1440 pass --evidence https://e/1 --head D0 >/dev/null && ft check $t A1@390 pass --evidence https://e/2 --head D0 >/dev/null || { echo "check: $ERR"; return 1; }
+  { ft rows $t "$ISSUE" >/dev/null && ft "done" $t "${DONE_FLAGS[@]}" --head b0 >/dev/null && ft event $t deploy --head D0 >/dev/null; } || { echo "setup: $ERR"; return 1; }
+  { ft check $t A1@1440 pass --evidence https://e/1 --head D0 >/dev/null && ft check $t A1@390 pass --evidence https://e/2 --head D0 >/dev/null; } || { echo "check: $ERR"; return 1; }
   for r in A2@- A3@-; do ft check $t $r pass --evidence https://e/3 >/dev/null || { echo "check $r: $ERR"; return 1; }; done
   ft event $t deploy --head D1 --touched none
   must 'deploy touched none' 0 || return 1
@@ -1968,7 +1968,7 @@ case_carry() {
   # a second task: a deploy that names the id, or records nothing, brings the row back
   t=tk-carry2
   mk_running $t >/dev/null || return 1
-  ft rows $t "$ISSUE" >/dev/null && ft "done" $t "${DONE_FLAGS[@]}" --head b0 >/dev/null && ft event $t deploy --head D0 >/dev/null || { echo "setup: $ERR"; return 1; }
+  { ft rows $t "$ISSUE" >/dev/null && ft "done" $t "${DONE_FLAGS[@]}" --head b0 >/dev/null && ft event $t deploy --head D0 >/dev/null; } || { echo "setup: $ERR"; return 1; }
   ft check $t A1@1440 pass --evidence https://e/1 --head D0 >/dev/null && ft check $t A1@390 pass --evidence https://e/2 --head D0 >/dev/null || return 1
   for r in A2@- A3@-; do ft check $t $r pass --evidence https://e/3 >/dev/null || return 1; done
   ft event $t deploy --head D1 --touched A1 >/dev/null || return 1
