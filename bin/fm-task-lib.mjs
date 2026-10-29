@@ -34,7 +34,8 @@
 //   event    <task> <kind> [--note N] [--pr-url U] [--head H]   kinds: steer comment pr deploy protocol_violation
 //            divergence; --head only on deploy: the deployed head, which user-visible passes count on from then
 //   link     <parent> <child>                the child waits in todo while the parent is open
-//   rows     <task> <issue-url>              one check row per scenario x width from fm-acceptance.mjs
+//   rows     <task> <issue-url> [--surface all|user-visible]   one check row per scenario x width from
+//            fm-acceptance.mjs; user-visible writes the Tester's rows only and retires the others
 //   check    <task> <id>@<width> pass|fail|pending [--evidence E] [--head H] [--next-actor A]
 //            (--status S is the same as the result word); next actor firstmate on a pass, worker on a fail
 //   owner-check <task> <id>@<width> --page-title --url --steps --data --expected   (sets next actor owner;
@@ -284,7 +285,7 @@ const SPECS = {
   comment: { pos: ['task'], flags: { image: 'm', 'image-label': 'm' } },
   event: { pos: ['task', 'kind'], flags: { 'pr-url': 's', head: 's' } },
   link: { pos: ['parent', 'child'], flags: {} },
-  rows: { pos: ['task', 'issue'], flags: {} },
+  rows: { pos: ['task', 'issue'], flags: { surface: 's' } },
   check: { pos: ['task', 'target', 'status'], flags: { status: 's', evidence: 's', head: 's', 'next-actor': 's' } },
   'owner-check': { pos: ['task', 'target'], flags: { 'page-title': 's', url: 's', steps: 's', data: 's', expected: 's' } },
   show: { pos: ['task'], flags: {} },
@@ -890,7 +891,8 @@ async function cmdRows(args) {
   const task = fold(await taskEvents(taskId));
   if (!task) throw rule(`no such task ${taskId}`);
   if (CLOSED.includes(task.state)) throw rule(`rows is refused: ${taskId} is ${task.state}, and new rows or resets would sit under a closed task`);
-  const wanted = await wantedRows(issue);
+  const surface = oneOf(['all', 'user-visible'], args.flags.surface ?? 'all', 'surface');
+  const wanted = new Map([...(await wantedRows(issue))].filter(([, want]) => surface === 'all' || want.surface === surface));
   const have = new Map((await checkRows(taskId)).map((row) => [rowKey(row), row]));
   const counts = { added: 0, reset: 0, retired: 0, updated: 0, unchanged: 0 };
   const fresh = { status: 'pending', evidence: null, head: null, checkedAt: null };

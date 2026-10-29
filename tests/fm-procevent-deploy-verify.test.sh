@@ -629,7 +629,7 @@ scenario_rows_record() {
   cycle
   unset FM_TASK_SHADOW_WRITER
   [ "$CYCLE_AUTO" = 0 ] || { echo "autohandle=$CYCLE_AUTO"; return 1; }
-  grep -q "^rows alpha https://github.com/$REPO/issues/500 --key shadow:alpha:rows-[0-9a-f]* --actor shadow --role system$" "$LAB/writer.calls" \
+  grep -q "^rows alpha https://github.com/$REPO/issues/500 --surface user-visible --key shadow:alpha:rows-[0-9a-f]* --actor shadow --role system$" "$LAB/writer.calls" \
     || { echo "the rows task got no check rows: $(cat "$LAB/writer.calls" 2>&1)"; return 1; }
   grep -q "^event alpha deploy --note deploy deploy at $(sha s2): verify ask sent (cfw-modules#500) --head $(sha s2) --key " "$LAB/writer.calls" \
     || { echo "the rows task deploy event names no head: $(cat "$LAB/writer.calls")"; return 1; }

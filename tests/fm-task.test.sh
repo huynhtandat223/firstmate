@@ -1236,6 +1236,31 @@ case_deploy_head() {
   must 'a head on another event kind' 2 || return 1
 }
 
+# The Tester's rows: `rows --surface user-visible` writes only the user-visible rows (and retires the others), so a task
+# the deploy-verify ask gives rows waits on the Tester alone and goes to firstmate once those rows pass.
+case_rows_visible() {
+  BIN=$1; reset_db
+  local t=tk-rv r
+  mk_running $t >/dev/null; use_issue v1
+  ft "done" $t "${DONE_FLAGS[@]}" --head h1 >/dev/null
+  ft rows $t "$ISSUE" --surface user-visible
+  must 'rows of the user-visible scenarios' 0 || return 1
+  [ "$(db fm_task_check | jq -r '[.[] | select(.taskId == "tk-rv" and .status != "retired") | .scenarioId + "@" + .width] | sort | join(",")')" = 'A1@1440,A1@390' ] \
+    || { echo "rows written: $(db fm_task_check | jq -c '[.[] | [.scenarioId, .width, .status]]')"; return 1; }
+  ft event $t deploy --head d1 >/dev/null
+  for r in A1@1440 A1@390; do ft check $t $r pass --evidence https://example.test/$r --head d1 >/dev/null; done
+  [ "$(task_row $t | jq -r .nextActor)" = firstmate ] || { echo "the Tester's rows passed but the task waits on $(task_row $t | jq -r .nextActor)"; return 1; }
+  ft approve $t
+  must 'approve after the Tester rows pass' 0 || return 1
+  # a task that had every row: the internal ones are retired
+  mk_running tk-rv2 >/dev/null; ft rows tk-rv2 "$ISSUE" >/dev/null
+  ft rows tk-rv2 "$ISSUE" --surface user-visible >/dev/null
+  [ "$(db fm_task_check | jq -r '[.[] | select(.taskId == "tk-rv2" and .status != "retired") | .scenarioId] | unique | join(",")')" = A1 ] \
+    || { echo "internal rows stayed open: $(db fm_task_check | jq -c '[.[] | select(.taskId == "tk-rv2") | [.scenarioId, .status]]')"; return 1; }
+  ft rows tk-rv2 "$ISSUE" --surface some
+  must 'an unknown surface' 5 || return 1
+}
+
 # The gate's read: every user-visible row of the issue passes on the deployed head with its current digest and
 # evidence, and an approved event is newer than the last row. It writes nothing.
 case_gate() {
@@ -1582,7 +1607,7 @@ case_link_triage() {
   [ "$(task_state tk-lt-c2)" = ready ] || { echo "the parent closing left the child in $(task_state tk-lt-c2)"; return 1; }
 }
 
-CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate"}
+CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible"}
 
 # ---- real command -------------------------------------------------------------------
 
@@ -1688,4 +1713,5 @@ mutate 'the gate needs the approval newer than the last row' gate 'else if (last
 mutate 'the gate refuses a task the record does not hold' gate '  if (!fold(events)) {
     out(' '  if (false) {
     out('
+mutate 'rows --surface user-visible writes only the Tester rows' rows_visible "surface === 'all' || want.surface === surface" 'true'
 pass 'every guarded behavior has a red mutation proof'

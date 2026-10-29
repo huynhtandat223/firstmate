@@ -193,7 +193,7 @@ test_rows_task_gets_rows_and_the_deployed_head() {
   FAKE_STATE=review hook held t1 external 'verification pending: A1@1440 is pending'
   FAKE_STATE=review hook held t2 external 'verification pending: A1@1440 is pending'
   assert_equals "$(printf '%s\n' \
-    "rows t1 $VG_ISSUE" \
+    "rows t1 $VG_ISSUE --surface user-visible" \
     'event t1 deploy --note deploy deploy at abc123: verify ask sent (9) --head abc123' \
     'event t2 deploy --note deploy deploy at abc123: verify ask sent (9)' \
     'changes t2 --note old source holds the task' \
@@ -202,6 +202,20 @@ test_rows_task_gets_rows_and_the_deployed_head() {
     'done t2 --summary verification pending: A1@1440 is pending --changed-files - --verification old source verification pending --residual-risk - --next-actor tester')" \
     "$(calls)" "a rows task and a task begun before T5"
   pass "a task begun after T5 gets its check rows and the deployed head, and keeps its review on a verification-pending hold"
+}
+
+# A draft round is checked on the PR head, which is not deployed: its deploy event names no head, so a pass on a draft
+# cannot stand for the deployed head; the rows are written all the same.
+test_rows_task_draft_round_names_no_head() {
+  make_case rows-draft on
+  mkdir -p "$HOME_DIR/data/t1"
+  printf 'surface: user-visible\nissue: %s\nrecord: rows\n' "$VG_ISSUE" > "$HOME_DIR/data/t1/verify.md"
+  hook deploy-verify t1 abc123 draft 9 "$VG_ISSUE"
+  assert_equals "$(printf '%s\n' \
+    "rows t1 $VG_ISSUE --surface user-visible" \
+    'event t1 deploy --note deploy draft at abc123: verify ask sent (9)')" \
+    "$(calls)" "a draft round of a rows task"
+  pass "a draft round writes the Tester's rows and names no deployed head"
 }
 
 test_backlog_verbs() {
@@ -384,6 +398,7 @@ test_the_flag_file_carries_the_writer_settings
 test_events_of_the_other_scripts
 test_backlog_verbs
 test_rows_task_gets_rows_and_the_deployed_head
+test_rows_task_draft_round_names_no_head
 test_spawn_writes_the_record
 test_worker_status_command_writes_the_record
 test_teardown_writes_the_record
@@ -420,6 +435,8 @@ mutate_hook 'the flag file hands the writer its settings' test_the_flag_file_car
 mutate_hook 'the flag file hands over only the writer settings' test_the_flag_file_carries_the_writer_settings 'FM_TASK_BASE_URL=*|FM_TASK_AUTH=*|FM_TASK_TOKEN_FILE=*' '*=*'
 mutate_hook 'a rows task gets its check rows' test_rows_task_gets_rows_and_the_deployed_head '      w "rows-$(short "${2:-}|${5}")" rows "$TASK" "$5"' '      :'
 mutate_hook 'a rows task deploy event names the deployed head' test_rows_task_gets_rows_and_the_deployed_head 'verify ask sent (${4:-})" --head "${2:-}"' 'verify ask sent (${4:-})"'
+mutate_hook 'a draft round names no deployed head' test_rows_task_draft_round_names_no_head '      if [ "${3:-}" = deploy ]; then' '      if true; then'
+mutate_hook 'the hook writes only the Tester rows' test_rows_task_gets_rows_and_the_deployed_head 'rows "$TASK" "$5" --surface user-visible' 'rows "$TASK" "$5"'
 mutate_hook 'a verification-pending hold keeps a rows task in review' test_rows_task_gets_rows_and_the_deployed_head '  if [ "$current" = review ] && rows_task &&' '  if false &&'
 mutate_hook 'a captain hold is an ask for the owner' test_events_of_the_other_scripts '--why '"'"'a captain hold'"'"' --next-actor owner' '--why '"'"'a captain hold'"'"''
 mutate_hook 'a refused hold leaves a comment' test_events_of_the_other_scripts '|| w "hold-$key-comment" event' '|| : event'

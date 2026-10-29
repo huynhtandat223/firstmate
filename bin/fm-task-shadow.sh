@@ -28,8 +28,9 @@
 # resolved -> unblock. A writer rule refusal (a transition the record does not allow) is logged and left to the reconciler.
 #
 # A task begun after T5 ('record: rows' in data/<task>/verify.md, bin/fm-verify-gate-lib.sh) is verified on check rows:
-# its deploy-verify ask first writes the rows of <issue-url>, then a deploy event that names <sha> as the deployed head,
-# and a verification-pending hold leaves the task as it is while the record holds it in review.
+# its deploy-verify ask first writes the Tester's rows of <issue-url> (the user-visible ones), then a deploy event that
+# names <sha> as the deployed head on a deploy round (a draft round's head is not deployed, so it names none), and a
+# verification-pending hold leaves the task as it is while the record holds it in review.
 #
 # Every writer call carries an idempotency key built from the task, the hook event and the change, so a repeated hook
 # call, or two hooks that report one change, store one event.
@@ -255,8 +256,12 @@ case "$EVENT" in
     ;;
   deploy-verify)
     if rows_task && [ -n "${5:-}" ]; then
-      w "rows-$(short "${2:-}|${5}")" rows "$TASK" "$5"
-      w "deploy-$(short "${2:-}|${3:-}")" event "$TASK" deploy --note "deploy ${3:-} at ${2:-}: verify ask sent (${4:-})" --head "${2:-}"
+      w "rows-$(short "${2:-}|${5}")" rows "$TASK" "$5" --surface user-visible
+      if [ "${3:-}" = deploy ]; then
+        w "deploy-$(short "${2:-}|${3:-}")" event "$TASK" deploy --note "deploy ${3:-} at ${2:-}: verify ask sent (${4:-})" --head "${2:-}"
+      else
+        w "deploy-$(short "${2:-}|${3:-}")" event "$TASK" deploy --note "deploy ${3:-} at ${2:-}: verify ask sent (${4:-})"
+      fi
     else
       w "deploy-$(short "${2:-}|${3:-}")" event "$TASK" deploy --note "deploy ${3:-} at ${2:-}: verify ask sent (${4:-})"
     fi
