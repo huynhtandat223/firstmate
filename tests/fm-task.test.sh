@@ -1931,8 +1931,8 @@ case_owner_writer() {
 }
 
 # SG1 (#176 Step 5): every write folds the board card's step onto the row: stage by the step rule, stageSince only
-# when the step changes, lastEventAt and lastNote from the newest event, reviewer from the newest check, owner-check,
-# approved or changes event.
+# when the step changes, lastEventAt and lastNote from the newest event that is not a backlog view row event,
+# reviewer from the newest check, owner-check, approved or changes event.
 case_stage() {
   BIN=$1; reset_db
   local t=tk-sg row since prev long
@@ -1974,12 +1974,19 @@ case_stage() {
   ft comment $t --note "$long"; must 'long note' 0 || return 1
   [ "$(task_row $t | jq -r '.lastNote | length')" = 300 ] || { echo "lastNote is not cut to 300: $(task_row $t | jq -r '.lastNote | length')"; return 1; }
   [ "$(task_row $t | jq -r .reviewer)" = null ] || { echo "a task with no review event has a reviewer: $(task_row $t)"; return 1; }
+  # a backlog view row event is not a real event: lastNote and lastEventAt stay on the newest other event
+  ft comment $t --note 'real note'; must 'real note' 0 || return 1
+  local real_at; real_at=$(at_of $t "$(seq_of)")
+  printf '%s' "$t - row text" > "$TMP_ROOT/sg-row"; : > "$TMP_ROOT/sg-notes"
+  ft row $t --section 'In flight' --row-file "$TMP_ROOT/sg-row" --notes-file "$TMP_ROOT/sg-notes"; must 'row event' 0 || return 1
+  task_row $t | jq -e --arg at "$real_at" '.lastNote == "real note" and .lastEventAt == $at and .section == "In flight"' >/dev/null \
+    || { echo "a row event moved lastNote or lastEventAt: $(task_row $t)"; return 1; }
   # SG2: reproject --all fills the step fields of every row, and a second run repairs nothing
   api -X PATCH "$BASE/api/fm_task/$(task_row tk-sg | jq -r .id)" -d '{"stage":null,"stageSince":null}' >/dev/null
   api -X PATCH "$BASE/api/fm_task/$(task_row tk-sg2 | jq -r .id)" -d '{"lastNote":null}' >/dev/null
   ft reproject --all; must 'reproject --all' 0 || return 1
   grep -q '^reproject --all: 2 tasks, 2 repaired$' <<<"$OUT" || { echo "reproject --all did not repair both rows: $OUT"; return 1; }
-  [ "$(task_row tk-sg | jq -r .stage)" = passed ] && [ "$(task_row tk-sg2 | jq -r '.lastNote | length')" = 300 ] || { echo "reproject --all left a row unfilled: $(task_row tk-sg) $(task_row tk-sg2)"; return 1; }
+  [ "$(task_row tk-sg | jq -r .stage)" = passed ] && [ "$(task_row tk-sg2 | jq -r .lastNote)" = 'real note' ] || { echo "reproject --all left a row unfilled: $(task_row tk-sg) $(task_row tk-sg2)"; return 1; }
   ft reproject --all; must 'reproject --all again' 0 || return 1
   [ "$OUT" = 'reproject --all: 2 tasks, 0 repaired' ] || { echo "a second reproject --all repaired again: $OUT"; return 1; }
   return 0
@@ -2075,6 +2082,7 @@ mutate 'a deploy after the newest done is dev' stage "if (event.kind === 'deploy
 mutate 'a pr event after the newest started is pr' stage "if (event.kind === 'pr') pullRequest = true;" ";"
 mutate 'stageSince moves only when the step changes' stage "if (stage !== task.stage) Object.assign(task, { stage, stageSince: event.createdAt ?? null });" "Object.assign(task, { stage, stageSince: event.createdAt ?? null });"
 mutate 'the reviewer is the actor of the newest review event' stage "if (REVIEWER_KINDS.includes(event.kind)) task.reviewer = event.actor ?? null;" ";"
+mutate 'a row event does not move lastNote or lastEventAt' stage "if (event.kind !== 'row') Object.assign(task, { lastEventAt" "Object.assign(task, { lastEventAt"
 mutate 'lastNote is cut to 300' stage "String(bodyOf(event).note ?? '').slice(0, 300)" "String(bodyOf(event).note ?? '')"
 mutate 'reproject --all repairs every row' stage "      const result = await project(taskId);
       if (!result?.changed.length) continue;" "      continue;"
