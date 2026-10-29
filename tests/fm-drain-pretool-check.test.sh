@@ -59,10 +59,19 @@ test_chain_shapes_are_denied() {
     "{ bin/fm-wake-drain.sh; }; $ack" \
     "bash bin/fm-wake-drain.sh; bash $ack" \
     "FM_HOME=/x /abs/bin/fm-wake-drain.sh; FM_HOME=/x /abs/$ack" \
-    "$ack; $ack"; do
+    "$ack; $ack" \
+    "bash -c 'bin/fm-wake-drain.sh; $ack'" \
+    "sh -c \"bin/fm-wake-drain.sh && $ack\"" \
+    "bash -lc 'bin/fm-wake-drain.sh; $ack'" \
+    "if bin/fm-wake-drain.sh; then $ack; fi" \
+    "while bin/fm-wake-drain.sh; do $ack; done" \
+    "until false; do bin/fm-wake-drain.sh; $ack; done" \
+    "! bin/fm-wake-drain.sh || $ack" \
+    "case x in x) bin/fm-wake-drain.sh; $ack;; esac" \
+    $'case x in\n x)\n  bin/fm-wake-drain.sh\n  '"$ack"$'\n  ;;\nesac'; do
     [ "$(policy "$cmd")" = "$(printf 'deny\tchained-ack')" ] || fail "chain not denied: $cmd => $(policy "$cmd")"
   done
-  pass "an ack joined to another drain by ;, &&, a pipe, a subshell, a group or \$() is denied"
+  pass "an ack joined to another drain by ;, &&, a pipe, a subshell, a group or \$() is denied; so is one inside bash -c, if/while/until bodies and case arms"
 }
 
 test_da3_alone_and_source_reads_are_allowed() {
@@ -77,6 +86,10 @@ test_da3_alone_and_source_reads_are_allowed() {
     'sed -n 1,20p bin/fm-wake-drain.sh' \
     'bash -n bin/fm-wake-drain.sh; bin/fm-wake-drain.sh --ack-through 1 --recovery-generation g' \
     'echo "bin/fm-wake-drain.sh --ack-through 1"; bin/fm-wake-drain.sh' \
+    "bash -c 'bin/fm-wake-drain.sh'" \
+    "bash -c 'grep -n x bin/fm-wake-drain.sh'" \
+    "if true; then bin/fm-wake-drain.sh; fi" \
+    "case x in x) bin/fm-wake-drain.sh;; esac" \
     'ls bin; git status'; do
     [ "$(policy "$cmd")" = allow ] || fail "must allow: $cmd => $(policy "$cmd")"
   done
@@ -183,10 +196,9 @@ test_da4_ack_refused_while_a_captain_note_waits() {
   cp "$dir/err" "$TMP_ROOT/da4-refusal.txt"
   FM_HOME="$dir" FM_STATE_OVERRIDE="$dir/state" FM_CONFIG_OVERRIDE="$dir/config" "$ROOT/bin/fm-inbox.sh" drain --ack "$note" > "$dir/ackout"
   grep -q "acked $note" "$dir/ackout" || fail "DA4 the note was not acked: $(cat "$dir/ackout")"
-  lab_drain "$dir" > "$dir/out3"
-  read -r seq gen <<< "$(lab_ack_args "$dir")"
+  # The exact refused sequence and generation, with no new drain in between.
   lab_drain "$dir" --ack-through "$seq" --recovery-generation "$gen" > "$dir/out4" \
-    || fail "DA4 the ack was refused after the note was acked: $(cat "$dir/err")"
+    || fail "DA4 the same ack was refused after the note was acked: $(cat "$dir/err")"
   cp "$dir/out4" "$TMP_ROOT/da4-accepted.txt"
   pass "DA4: the ack is refused naming the note, and succeeds once fm-inbox.sh drain --ack handled it"
 }

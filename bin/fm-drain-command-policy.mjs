@@ -31,6 +31,28 @@ const REASONS = {
 const DRAIN = "fm-wake-drain.sh";
 const SHELLS = new Set(["sh", "bash", "zsh"]);
 const FILTERS = new Set(["grep", "head", "cut", "sed"]);
+// Shell reserved words that can lead a command node (`then cmd`, `do cmd`, `! cmd`).
+const RESERVED = new Set(["if", "then", "else", "elif", "fi", "while", "until", "do", "done", "!", "time"]);
+
+// A node with its leading reserved words removed, so commandPosition sees the
+// executed command word rather than `if` or `then`.
+function withoutReserved(node) {
+  let start = 0;
+  while (start < node.length && node[start].type === "word" && !node[start].quoted && RESERVED.has(node[start].value)) start += 1;
+  return node.slice(start);
+}
+
+// The literal payload of `bash -c '<payload>'` (also -lc, -ec), or null.
+function shellPayload(position) {
+  const words = position.words;
+  for (let i = position.index + 1; i < words.length; i += 1) {
+    if (/^-[A-Za-z]*c[A-Za-z]*$/.test(words[i].value)) {
+      const payload = words[i + 1]?.value === "--" ? words[i + 2] : words[i + 1];
+      return payload ? payload.value : null;
+    }
+  }
+  return null;
+}
 
 function isPipe(separator) {
   return separator === "|" || separator === "|&";
@@ -48,7 +70,7 @@ function shellScript(position) {
   return null;
 }
 
-function drainExecution(position) {
+function drainExecution(position, found) {
   if (!position.command) return null;
   const name = basename(position.command.value);
   let script = null;
@@ -56,6 +78,11 @@ function drainExecution(position) {
   if (name === DRAIN) {
     script = position.command.value;
   } else if (SHELLS.has(name)) {
+    const payload = shellPayload(position);
+    if (payload !== null) {
+      collect(payload, found);
+      return null;
+    }
     script = shellScript(position);
     first = position.words.findIndex((word) => word.value === script);
   }
@@ -64,8 +91,17 @@ function drainExecution(position) {
   return { ack };
 }
 
+// The shared lexer cannot read a case pattern such as `x)`. Rewrite each pattern
+// and `;;` into a plain `;` so the commands in the case bodies still classify.
+function flattenCase(program) {
+  return program
+    .replace(/(^|\bin\s|;;\s*|\n)\s*\(?[^\s()|;'"]+(?:\|[^\s()|;'"]+)*\)(?=\s)/g, "$1 ; ")
+    .replace(/;;/g, ";");
+}
+
 function collect(program, found) {
-  const lexed = new Lexer(program).tokenize();
+  let lexed = new Lexer(program).tokenize();
+  if (lexed.error && /\bcase\b[\s\S]*\bin\b/.test(program)) lexed = new Lexer(flattenCase(program)).tokenize();
   // Fail open on syntax this classifier cannot tokenize: the guard's threat
   // model is agent mistakes, which tokenize.
   if (lexed.error) return;
@@ -75,11 +111,11 @@ function collect(program, found) {
       if (token.type === "group") collect(token.content, found);
       if (token.type === "word") for (const sub of token.subs) collect(sub.content, found);
     }
-    const execution = drainExecution(commandPosition(nodes[index]));
+    const execution = drainExecution(commandPosition(withoutReserved(nodes[index])), found);
     if (!execution) continue;
     let filter = "";
     if (isPipe(separators[index]) && nodes[index + 1]) {
-      const next = commandPosition(nodes[index + 1]).command;
+      const next = commandPosition(withoutReserved(nodes[index + 1])).command;
       if (next && FILTERS.has(basename(next.value))) filter = basename(next.value);
     }
     found.push({ ...execution, filter });
