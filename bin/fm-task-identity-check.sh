@@ -11,7 +11,8 @@
 #   - an id found as a done row in data/done-archive.md or data/backlog.md,
 #     citing the file and line;
 #   - an id with a local fm/<id> branch in the project clone <repo> (the pool
-#     worktrees share that clone's refs), naming the branch;
+#     worktrees share that clone's refs), naming the branch; only when <repo> is
+#     given, which intake does and the create that follows dispatch does not;
 #   - a title that carries a ticket key (DEV-n, PS-n) already carried by the
 #     title of a live (unchecked) backlog task, naming that task.
 # pr: called by bin/fm-pr-check.sh. The task's linked issue is the first

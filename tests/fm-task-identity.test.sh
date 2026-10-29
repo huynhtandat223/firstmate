@@ -44,6 +44,27 @@ test_ti1_a_done_id_is_refused_with_its_line() {
   pass "TI1: adding task dci-screen-triggers is refused, citing data/done-archive.md and its line; a new id and no match pass"
 }
 
+test_a_create_after_dispatch_is_not_refused_for_its_own_branch() {
+  local out
+  new_home after-dispatch
+  git init -q "$HOME_DIR/projects/proj"
+  git -C "$HOME_DIR/projects/proj" commit -q --allow-empty -m i
+  # The spawn made the pool worktree, whose branch the project clone shares.
+  git -C "$HOME_DIR/projects/proj" branch fm/spawned-task
+  printf 'token\n' > "$HOME_DIR/token"
+  printf -- '- [x] done-task - old (kind: ship)\n' > "$HOME_DIR/data/done-archive.md"
+  # The API address is closed: a create that passes the identity check fails on the network,
+  # one the check refuses stops before it.
+  out=$(FM_HOME="$HOME_DIR" FM_TASK_BASE_URL=http://127.0.0.1:9 FM_TASK_TOKEN_FILE="$HOME_DIR/token" "$ROOT/bin/fm-task.sh" create spawned-task --title "Spawned" --kind ship --repo proj 2>&1)
+  assert_not_contains "$out" "task identity" "a create after dispatch must not be refused for the branch its own spawn made: $out"
+  out=$(FM_HOME="$HOME_DIR" FM_TASK_BASE_URL=http://127.0.0.1:9 FM_TASK_TOKEN_FILE="$HOME_DIR/token" "$ROOT/bin/fm-task.sh" create done-task --title "Again" --kind ship --repo proj 2>&1)
+  assert_contains "$out" "task identity" "a create of a done id is still refused: $out"
+  # Intake keeps the branch check: the tasks-axi add path passes the repo.
+  run add spawned-task "Spawned" proj
+  expect_code 1 "$RC" "intake must still refuse an id whose branch exists: $OUT"
+  pass "a fm-task.sh create after dispatch is not refused for its own fm/<id> branch, while a done id and the intake branch check still refuse"
+}
+
 test_the_fm_branch_blocks_reuse() {
   new_home branch
   git init -q "$HOME_DIR/projects/proj"
@@ -148,6 +169,7 @@ test_the_callers_run_the_check() {
 }
 
 test_ti1_a_done_id_is_refused_with_its_line
+test_a_create_after_dispatch_is_not_refused_for_its_own_branch
 test_the_fm_branch_blocks_reuse
 test_ti2_a_second_task_for_one_ticket_key_is_refused
 test_log_only_until_the_switch_is_set
