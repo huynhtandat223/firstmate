@@ -189,4 +189,21 @@ fm_pr_poll_artifacts_valid "$HOME_DIR/state" ios "$ROOT/bin/fm-pr-poll.sh" \
   || fail "a remote relaunch broke PR poll authentication by writing harness/model/effort after pr="
 pass "a remote relaunch keeps an already-armed PR poll authenticating"
 
+# --- the parent's model deny list covers a direct relaunch -------------------
+reset_meta
+cp "$HOME_DIR/state/ios.meta" "$TMP/ios-before-deny.meta"
+printf '*deny-me*  captain rule: this model is never used\n' > "$HOME_DIR/config/model-deny"
+printf 'block\n' > "$HOME_DIR/config/enforce-model-deny"
+OUT=$(run_relaunch ios claude deny-me-1 medium); RC=$?
+[ "$RC" -ne 0 ] || fail "a direct relaunch onto a denied model must be refused"
+assert_contains "$OUT" "captain rule: this model is never used" "the refusal should carry the deny reason"
+assert_not_contains "$OUT" "relaunched ios" "a denied model must not reach the host"
+cmp -s "$TMP/ios-before-deny.meta" "$HOME_DIR/state/ios.meta" || fail "a denied relaunch must not touch the parent's record"
+rm -f "$HOME_DIR/config/enforce-model-deny"
+OUT=$(run_relaunch ios claude deny-me-1 medium); RC=$?
+expect_code 0 "$RC" "log-only must not refuse"$'\n'"$OUT"
+grep -q 'would-refuse	deny-me-1	' "$HOME_DIR/state/enforce-model-deny.log" || fail "log-only wrote no would-refuse line"
+rm -f "$HOME_DIR/config/model-deny"
+pass "a direct remote relaunch checks the parent's config/model-deny before the host call"
+
 echo "ALL TESTS PASSED"

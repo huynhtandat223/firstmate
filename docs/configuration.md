@@ -441,6 +441,14 @@ The watched ports are 9222, 9333 and every port in `config/browser-ports` (one p
 The refusal names the safe form: `CHROME_DEVTOOLS_AXI_SESSION=<name> chrome-devtools-axi stop`, and only for a session whose owner task is done.
 A heredoc, `echo` or `grep` that only mentions `pkill chrome` is never matched, and the check reads `config/enforce-browser-kill`.
 
+## Model deny list (config/model-deny)
+
+`config/model-deny` is captain-private and holds one glob and its reason per line, the glob first; blank lines and `#` comment lines are ignored.
+`bin/fm-spawn.sh` (`--model` and a secondmate model pin, local or remote), `bin/fm-control.sh relaunch` and `bin/fm-remote-secondmate-relaunch.sh` (a remote mate, on the parent's config before the relaunch crosses the hop, for a direct run and for `bin/fm-secondmate-restart.sh`) refuse a model that matches a glob before any endpoint, worktree or record exists, and print that line's reason.
+A line with a glob and no reason refuses, so a hit always says why; with the file absent nothing changes.
+`bin/fm-model-deny-lib.sh` owns the format and the check.
+The check is log-only until `config/enforce-model-deny` holds `block`: each hit is written to `state/enforce-model-deny.log` and the launch goes ahead.
+
 ## Backlog backend (.tasks.toml / config/backlog-backend)
 
 The tracked `.tasks.toml` pins the default `tasks-axi` markdown backend to `data/backlog.md`, with `done_keep = 10` and an archive at `data/done-archive.md`.

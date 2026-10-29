@@ -868,6 +868,24 @@ launches_after_inherit=0
 [ "$launches_before_inherit" -eq "$launches_after_inherit" ] \
   || fail "remote spawn reached launch after ambiguous partial inheritance"
 assert_absent "$PARENT/state/ios.meta" "failed remote inheritance published launch metadata"
+# The parent's config/model-deny also covers a remote second mate: the model is checked
+# on this host before any ssh call, launch or record exists.
+printf '*deny-me*  captain rule: this model is never used\n' > "$PARENT/config/model-deny"
+printf 'block\n' > "$PARENT/config/enforce-model-deny"
+ssh_before_deny=$(cat "$SSH_COUNT" 2>/dev/null || echo 0)
+launches_before_deny=0
+[ ! -f "$HERDR_LOG" ] || launches_before_deny=$(grep -c '^tab create' "$HERDR_LOG" || true)
+if remote_env "$ROOT/bin/fm-spawn.sh" ios --secondmate --model deny-me-1 > "$TMP_ROOT/spawn-model-deny.out" 2>&1; then
+  fail "remote spawn launched a model on the parent's deny list"
+fi
+assert_grep 'captain rule: this model is never used' "$TMP_ROOT/spawn-model-deny.out" "remote model refusal lacks the reason"
+[ "$ssh_before_deny" = "$(cat "$SSH_COUNT" 2>/dev/null || echo 0)" ] || fail "remote spawn reached the host before the model deny check"
+launches_after_deny=0
+[ ! -f "$HERDR_LOG" ] || launches_after_deny=$(grep -c '^tab create' "$HERDR_LOG" || true)
+[ "$launches_before_deny" -eq "$launches_after_deny" ] || fail "remote spawn launched after the model deny refusal"
+assert_absent "$PARENT/state/ios.meta" "a refused remote model published launch metadata"
+rm -f "$PARENT/config/model-deny" "$PARENT/config/enforce-model-deny"
+pass "a remote second mate on a model in the parent's config/model-deny is refused before any host call or record"
 out=$(remote_env "$ROOT/bin/fm-spawn.sh" ios --secondmate)
 assert_contains "$out" 'remote=remote-mac backend=herdr' "remote spawn did not report separate host and backend dimensions"
 assert_grep 'remote_host=remote-mac' "$PARENT/state/ios.meta" "parent metadata omitted the remote host"
