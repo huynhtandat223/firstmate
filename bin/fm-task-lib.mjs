@@ -26,7 +26,8 @@
 //            kind: transient|dependency|external|credential|failure; running -> blocked,
 //            a dependency waits in todo on --on PARENT; a third block of one kind goes to triage
 //   unblock  <task>                          blocked|triage -> ready
-//   approve  <task>                          review -> done (refused while a check row is pending or failed)
+//   approve  <task>                          review -> done (refused while a check row is pending or failed, and
+//            on a task with a deploy event until its user-visible rows pass on a deployed head)
 //   changes  <task> --note WHY               review -> ready
 //   reopen   <task> --reason WHY             done -> ready, next actor firstmate; archived stays final
 //   archive  <task>                          triage|todo|ready|blocked|review|done -> archived
@@ -35,7 +36,7 @@
 //            divergence; --head only on deploy: the deployed head, which user-visible passes count on from then
 //   link     <parent> <child>                the child waits in todo while the parent is open
 //   rows     <task> <issue-url> [--surface all|user-visible]   one check row per scenario x width from
-//            fm-acceptance.mjs; user-visible writes the Tester's rows only and retires the others
+//            fm-acceptance.mjs; user-visible adds, resets and retires the Tester's rows only
 //   check    <task> <id>@<width> pass|fail|pending [--evidence E] [--head H] [--next-actor A]
 //            (--status S is the same as the result word); next actor firstmate on a pass, worker on a fail
 //   owner-check <task> <id>@<width> --page-title --url --steps --data --expected   (sets next actor owner;
@@ -675,8 +676,9 @@ const cmdReopen = async (args) => {
 const cmdArchive = simple('archive', 'archived', async () => ({ state: 'archived', nextActor: 'firstmate' }));
 // A user-visible pass counts for the head that was built or deployed last: the head of the newest done call, or of a
 // newer deploy event that names one (the Tester checks the deployed head, which a merge makes differ from the worker's).
+const lastHeadEvent = (events) => [...events].reverse().find((e) => e.kind === 'done' || (e.kind === 'deploy' && bodyOf(e).head));
 async function builtHead(taskId) {
-  const last = [...(await taskEvents(taskId))].reverse().find((e) => e.kind === 'done' || (e.kind === 'deploy' && bodyOf(e).head));
+  const last = lastHeadEvent(await taskEvents(taskId));
   if (last?.kind === 'deploy') return bodyOf(last).head;
   return last ? ((await firstRow('fm_event_done', `fmTaskEventId eq ${last.id}`))?.head ?? null) : null;
 }
@@ -691,11 +693,16 @@ const newestRows = (rows, events) =>
   });
 
 const cmdApprove = simple('approve', 'approved', async (task, args, taskId) => {
-  const rows = newestRows(await checkRows(taskId), await taskEvents(taskId));
+  const events = await taskEvents(taskId);
+  const rows = newestRows(await checkRows(taskId), events);
   const open = openRows(rows);
   if (open.length) throw rule(`approve is refused while check rows are open: ${open.map((r) => `${rowKey(r)} (${r.status})`).join(', ')}`);
   const visible = rows.filter((r) => r.surface === 'user-visible');
   if (task.surface === 'user-visible' && !visible.length) throw rule(`approve is refused: ${taskId} is user-visible and has no check rows; run rows first`);
+  // once a task is deployed, its user-visible rows count only on a deployed head: a draft round's deploy event names none
+  if (visible.length && events.some((e) => e.kind === 'deploy') && lastHeadEvent(events)?.kind !== 'deploy') {
+    throw rule(`approve is refused: ${taskId} has no deployed head after its last done; its user-visible rows count only on a deployed head`);
+  }
   if (visible.length) {
     const head = await builtHead(taskId);
     const stale = visible.filter((r) => (r.head ?? null) !== head);
@@ -931,7 +938,7 @@ async function cmdRows(args) {
     }
   }
   for (const [key, row] of have) {
-    if (wanted.has(key) || row.status === 'retired') continue;
+    if (wanted.has(key) || row.status === 'retired' || (surface !== 'all' && row.surface !== surface)) continue;
     ok(await http('PATCH', `/api/fm_task_check/${row.id}`, { status: 'retired' }), `retire the check row ${key}`);
     counts.retired++;
   }

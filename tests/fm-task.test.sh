@@ -1252,13 +1252,41 @@ case_rows_visible() {
   [ "$(task_row $t | jq -r .nextActor)" = firstmate ] || { echo "the Tester's rows passed but the task waits on $(task_row $t | jq -r .nextActor)"; return 1; }
   ft approve $t
   must 'approve after the Tester rows pass' 0 || return 1
-  # a task that had every row: the internal ones are retired
+  # rows of another surface are left as they are; a user-visible row the issue dropped is retired
   mk_running tk-rv2 >/dev/null; ft rows tk-rv2 "$ISSUE" >/dev/null
+  ft check tk-rv2 A2@- pass --evidence unit >/dev/null
+  use_issue v3
   ft rows tk-rv2 "$ISSUE" --surface user-visible >/dev/null
-  [ "$(db fm_task_check | jq -r '[.[] | select(.taskId == "tk-rv2" and .status != "retired") | .scenarioId] | unique | join(",")')" = A1 ] \
-    || { echo "internal rows stayed open: $(db fm_task_check | jq -c '[.[] | select(.taskId == "tk-rv2") | [.scenarioId, .status]]')"; return 1; }
+  [ "$(db fm_task_check | jq -r '[.[] | select(.taskId == "tk-rv2") | .scenarioId + "@" + .width + ":" + .status] | sort | join(",")')" = 'A1@1440:pending,A1@390:retired,A2@-:pass,A3@-:pending' ] \
+    || { echo "rows after a user-visible run: $(db fm_task_check | jq -c '[.[] | select(.taskId == "tk-rv2") | [.scenarioId, .width, .status]]')"; return 1; }
+  use_issue v1
   ft rows tk-rv2 "$ISSUE" --surface some
   must 'an unknown surface' 5 || return 1
+}
+
+# Once a task has a deploy event, a user-visible pass counts only on a deployed head: passes on the worker's head from a
+# draft round (whose deploy event names no head) cannot close the task before the deploy.
+case_approve_deployed() {
+  BIN=$1; reset_db
+  local t=tk-ad r
+  mk_running $t >/dev/null; use_issue v1; ft rows $t "$ISSUE" --surface user-visible >/dev/null
+  ft "done" $t "${DONE_FLAGS[@]}" --head h1 >/dev/null
+  ft event $t deploy --note 'draft round' >/dev/null
+  for r in A1@1440 A1@390; do ft check $t $r pass --evidence https://example.test/$r --head h1 >/dev/null; done
+  ft approve $t
+  must 'approve on draft passes before a deploy' 5 || return 1
+  case $ERR in *'no deployed head'*) ;; *) echo "the refusal does not name the missing deployed head: $ERR"; return 1 ;; esac
+  ft event $t deploy --note 'deploy round' --head d1 >/dev/null
+  for r in A1@1440 A1@390; do ft check $t $r pass --evidence https://example.test/$r --head d1 >/dev/null; done
+  ft approve $t
+  must 'approve on passes on the deployed head' 0 || return 1
+  # new work after the deploy needs a new deployed head
+  mk_running tk-ad2 >/dev/null; ft rows tk-ad2 "$ISSUE" --surface user-visible >/dev/null
+  ft event tk-ad2 deploy --head d1 >/dev/null
+  ft "done" tk-ad2 "${DONE_FLAGS[@]}" --head h2 >/dev/null
+  for r in A1@1440 A1@390; do ft check tk-ad2 $r pass --evidence https://example.test/$r --head h2 >/dev/null; done
+  ft approve tk-ad2
+  must 'approve on a worker head newer than the deploy' 5 || return 1
 }
 
 # The gate's read: every user-visible row of the issue passes on the deployed head with its current digest and
@@ -1607,7 +1635,7 @@ case_link_triage() {
   [ "$(task_state tk-lt-c2)" = ready ] || { echo "the parent closing left the child in $(task_state tk-lt-c2)"; return 1; }
 }
 
-CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible"}
+CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed"}
 
 # ---- real command -------------------------------------------------------------------
 
@@ -1656,7 +1684,7 @@ mutate 'a link cannot make a cycle' parents 'if (!existing && (await wouldCycle(
 mutate 'a value outside its list is refused' value_lists 'if (!list.includes(value))' 'if (false)'
 mutate 'a changed digest resets a passed row' rows 'row.line !== want.line || row.acceptanceDigest !== want.acceptanceDigest' 'row.line !== want.line'
 mutate 'a changed line resets a passed row' rows "changed && row.status === 'pass'" 'false'
-mutate 'a removed id is retired' rows "if (wanted.has(key) || row.status === 'retired') continue;" 'continue;'
+mutate 'a removed id is retired' rows "if (wanted.has(key) || row.status === 'retired' ||" "if (true ||"
 mutate 'an issue with no template is refused' rows ", 'parse', issue, '--strict']" ", 'parse', issue]"
 mutate 'open rows block the approval' rows 'if (open.length) throw rule(`approve is refused' 'if (false) throw rule(`approve is refused'
 mutate 'a check row cannot read owner without its item' owner 'if (nextActor === '"'"'owner'"'"' && !(await ownerItem(taskId, target)))' 'if (false)'
@@ -1714,4 +1742,6 @@ mutate 'the gate refuses a task the record does not hold' gate '  if (!fold(even
     out(' '  if (false) {
     out('
 mutate 'rows --surface user-visible writes only the Tester rows' rows_visible "surface === 'all' || want.surface === surface" 'true'
+mutate 'rows of another surface are left as they are' rows_visible "|| (surface !== 'all' && row.surface !== surface)) continue;" ') continue;'
+mutate 'a deployed task needs a deployed head to approve' approve_deployed "&& lastHeadEvent(events)?.kind !== 'deploy') {" '&& false) {'
 pass 'every guarded behavior has a red mutation proof'
