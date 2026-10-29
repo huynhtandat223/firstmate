@@ -59,7 +59,8 @@
 //            $FM_HOME/data, /backlog.md. Line 1 names the record; the checkbox is [x] in Done; in a section the rows
 //            follow the event that put them there, In flight and Done newest first, other sections oldest first. A
 //            line outside a row other than a blank one refuses the sync (exit 5) after the import, file unchanged.
-//            The record is shared by every home: a view holds and changes only the rows its own file wrote.
+//            The record is shared by every home: a view holds and changes only the rows its own file wrote. A sync and
+//            a row call of one file each hold an exclusive lock on <file>.view-lock (perl's flock) while they run.
 //   show     <task> [--json]   list [--state S] [--actor A] [--json]   resume <task>   reproject <task>
 // Every write takes --key K (the idempotency key; a re-send returns the first event), --actor NAME
 // (default FM_TASK_ACTOR, FM_TASK_ID, then the login name) and --role (default FM_TASK_ROLE, then the
@@ -96,7 +97,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { attr, hermes, holdText } from './fm-task-sources-lib.mjs';
 
@@ -820,6 +821,28 @@ function rowSpec(taskId, set, note, file) {
   const doc = { title: `backlog row ${taskId}`, mediaType: 'text/markdown', content: `${set.row}\n${set.notes}` };
   return { kind: 'row', note, set: { section: set.section, rowDocument: true }, extra, children: { documents: [doc] } };
 }
+// Every sync and row call of one backlog file holds an exclusive lock on <file>.view-lock for its reads, writes and
+// render, so an older one never writes its rows after a newer one. Node has no flock, so a perl child takes the lock
+// and holds it until this process closes its stdin (or ends).
+const LOCK_PERL = 'use Fcntl qw(:flock); open(my $f, ">>", shift) or die "cannot open the lock: $!\\n"; flock($f, LOCK_EX) or die "cannot lock: $!\\n"; $| = 1; print "locked\\n"; <STDIN>;';
+async function withBacklogLock(file, fn) {
+  const holder = spawn('perl', ['-e', LOCK_PERL, `${file}.view-lock`], { stdio: ['pipe', 'pipe', 'pipe'] });
+  await new Promise((resolve, reject) => {
+    const failed = (why) => reject(new Fail(3, `the backlog lock ${file}.view-lock was not taken: ${why}`));
+    holder.once('error', (error) => failed(error.message));
+    holder.once('exit', (code) => failed(`exit ${code}`));
+    holder.stdout.once('data', () => {
+      holder.removeAllListeners('exit');
+      resolve();
+    });
+  });
+  try {
+    return await fn();
+  } finally {
+    holder.stdin.end();
+  }
+}
+
 // A backlog file's identity: its real path, so a link to the file names the same view (and a write lands in the file).
 // The backlog a command names: --file, else FM_DATA_OVERRIDE, else $FM_HOME/data, then backlog.md.
 const backlogFile = (file) => backlogPath(file || path.join(process.env.FM_DATA_OVERRIDE || path.join(process.env.FM_HOME || '.', 'data'), 'backlog.md'));
@@ -844,20 +867,23 @@ async function cmdRow(args) {
     set = rowValues(taskId, f.section, readText(f['row-file'], 'the row file'), readText(f['notes-file'], 'the notes file'));
   }
   const file = backlogFile(f.file);
-  const result = await write(taskId, who, async ({ task }) => {
-    if (!task) throw rule('no such task');
-    return rowSpec(taskId, set, noteOf(args), file);
-  });
+  const store = () =>
+    write(taskId, who, async ({ task }) => {
+      if (!task) throw rule('no such task');
+      return rowSpec(taskId, set, noteOf(args), file);
+    });
+  if (!fs.existsSync(file)) return store();
   // the view shows the row at once, so the next sync does not take the file's older copy back
-  if (fs.existsSync(file)) {
+  return withBacklogLock(file, async () => {
+    const result = await store();
     try {
       out(await syncBacklog(file, who, { skip: taskId }));
     } catch (error) {
       if (error instanceof Fail) throw new Fail(error.code, `the row is stored; ${file} was not generated: ${error.message}`);
       throw error;
     }
-  }
-  return result;
+    return result;
+  });
 }
 
 // The rows of a backlog file in file order, and the first line the record cannot hold (null when there is none).
@@ -980,7 +1006,8 @@ async function cmdBacklog(args) {
     return out(`rendered ${args.flags.out}`);
   }
   if (args.flags.out) throw usage('--out is for render');
-  out(await syncBacklog(file, identity(args, 'firstmate'), { absorbOnly: args.flags['absorb-only'] }));
+  const who = identity(args, 'firstmate');
+  out(await withBacklogLock(file, () => syncBacklog(file, who, { absorbOnly: args.flags['absorb-only'] })));
 }
 
 // Absorb a backlog file into the record, then render it from the record. `skip` names a task whose record row was just

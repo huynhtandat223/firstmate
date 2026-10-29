@@ -503,8 +503,7 @@ fm_backlog_shadow() {
 # writes every row the file changed to the record and renders the file from the record. On while config/task-shadow is
 # on, with that file's writer settings. It never fails the caller: a sync that does not finish within
 # FM_TASK_VIEW_TIMEOUT seconds (default 120, the wait for the lock included) leaves the file as tasks-axi wrote it, and
-# the next sync absorbs it. Syncs of one file run one at a time under an exclusive lock on <file>.view-lock (perl's
-# flock, which macOS has too), so an older sync cannot write its rows after a newer one. Each
+# the next sync absorbs it. The writer serializes the syncs and row calls of one file (fm-task.sh --help). Each
 # run is one line in <state>/task-shadow.log. FM_TASK_VIEW_WRITER, else FM_TASK_SHADOW_WRITER, replaces bin/fm-task.sh, so a
 # caller that replaces the record writer replaces it here too (the tests use stand-ins).
 fm_backlog_view_sync() {  # <backlog-file>
@@ -516,11 +515,7 @@ fm_backlog_view_sync() {  # <backlog-file>
     # shellcheck source=bin/fm-task-shadow-config-lib.sh
     . "$lib/fm-task-shadow-config-lib.sh"
     fm_task_shadow_config "$config/task-shadow"
-    # shellcheck disable=SC2016 # perl source, not shell
-    fm_run_timed "${FM_TASK_VIEW_TIMEOUT:-120}" perl -e '$^F = 255; use Fcntl qw(:flock); my $lock = shift;
-      open(my $fh, ">>", $lock) or die "cannot open $lock: $!\n"; flock($fh, LOCK_EX) or die "cannot lock $lock: $!\n";
-      exec @ARGV or die "cannot run $ARGV[0]: $!\n"' "$file.view-lock" \
-      "${FM_TASK_VIEW_WRITER:-${FM_TASK_SHADOW_WRITER:-$lib/fm-task.sh}}" backlog sync --file "$file" --actor backlog-view 2>&1 </dev/null
+    fm_run_timed "${FM_TASK_VIEW_TIMEOUT:-120}" "${FM_TASK_VIEW_WRITER:-${FM_TASK_SHADOW_WRITER:-$lib/fm-task.sh}}" backlog sync --file "$file" --actor backlog-view 2>&1 </dev/null
   )
   rc=$?
   mkdir -p "$state" 2>/dev/null

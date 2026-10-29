@@ -272,27 +272,7 @@ SH
   pass "fm-tasks-axi.sh syncs the task record backlog view after each mutation while config/task-shadow is on"
 }
 
-# Two view syncs of one backlog file run one after the other, never overlapping.
-test_view_sync_serialized() {
-  local dir log
-  dir="$TMP_ROOT/view-serial"
-  mkdir -p "$dir/config" "$dir/data"
-  : > "$dir/config/task-shadow"; : > "$dir/data/backlog.md"
-  log="$dir/order.log"
-  printf '#!/usr/bin/env bash\necho "start $$" >> %q\nsleep 1\necho "end $$" >> %q\n' "$log" "$log" > "$dir/slow-writer"
-  chmod +x "$dir/slow-writer"
-  # shellcheck disable=SC2016 # the inner script reads its own arguments
-  for _ in 1 2; do
-    FM_CONFIG_OVERRIDE="$dir/config" FM_STATE_OVERRIDE="$dir/state" FM_TASK_VIEW_WRITER="$dir/slow-writer" \
-      bash -c '. "$1/bin/fm-tasks-axi-lib.sh"; . "$1/bin/fm-backlog-transition-lib.sh"; fm_backlog_view_sync "$2"' _ "$ROOT" "$dir/data/backlog.md" &
-  done
-  wait
-  assert_equals "start end start end" "$(cut -d' ' -f1 "$log" | tr '\n' ' ' | sed 's/ $//')" "two view syncs of one file overlapped"
-  pass "fm_backlog_view_sync runs one sync of a backlog file at a time"
-}
-
 test_guard_reports_regular_code_root_backlog
-test_view_sync_serialized
 test_guard_reports_foreign_link_and_archive
 test_guard_silent_for_single_home
 if [ "$HAVE_TASKS_AXI" = 1 ]; then

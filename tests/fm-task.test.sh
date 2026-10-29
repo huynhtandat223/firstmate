@@ -1738,6 +1738,20 @@ case_backlog() {
   cp "$d/after1.md" "$f"; ft backlog sync --file "$f" >/dev/null || return 1
   cmp -s "$f" "$d/after1.md" || { echo "setup: the fixture did not come back"; return 1; }
   events=$(count fm_task_event)
+  # every sync and row call of one backlog file holds its lock: each waits for another holder
+  local held=$((SECONDS))
+  # shellcheck disable=SC2016 # perl source
+  perl -e 'use Fcntl qw(:flock); open(my $f, ">>", shift) or die; flock($f, LOCK_EX) or die; sleep 3' "$f.view-lock" &
+  sleep 0.5; held=$SECONDS
+  ft backlog sync --file "$f"
+  [ $((SECONDS - held)) -ge 2 ] || { echo "a sync did not wait for the backlog lock"; return 1; }
+  perl -e 'use Fcntl qw(:flock); open(my $f, ">>", shift) or die; flock($f, LOCK_EX) or die; sleep 3' "$f.view-lock" &
+  sleep 0.5; held=$SECONDS
+  FM_DATA_OVERRIDE=$d ft row bl-f1 --section 'In flight' --row-file "$d/f1-row" --notes-file "$d/f1-notes"
+  [ $((SECONDS - held)) -ge 2 ] || { echo "a row call did not wait for the backlog lock"; return 1; }
+  wait
+  cp "$d/after1.md" "$f"; ft backlog sync --file "$f" >/dev/null || return 1
+  events=$(count fm_task_event)
   # a link to the file names the same view: nothing is written and the link stays a link
   ln -s "$f" "$d/link.md"
   ft backlog sync --file "$d/link.md"
@@ -1975,15 +1989,15 @@ mutate 'a view renders only the rows of its own file' backlog '.filter((t) => t.
 mutate 'In flight and Done list the newest entry first' backlog 'NEWEST_FIRST.includes(name) ? b.entry - a.entry : a.entry - b.entry' 'a.entry - b.entry'
 mutate 'a row keeps its place until it changes section' backlog 'if (place.get(e.taskId) !== where) entry.set(e.taskId, e.seq);' 'entry.set(e.taskId, e.seq);'
 mutate 'a row call without --file names the home backlog' backlog '  const file = backlogFile(f.file);
-  const result' "  const file = f.file ? backlogPath(f.file) : '-';
-  const result"
+  const store' "  const file = f.file ? backlogPath(f.file) : '-';
+  const store"
 mutate 'a replayed older deploy adds no deployed line' verify_view 'if (newer.some((e) => bodyOf(e).head)) return;' ';'
+mutate 'a sync holds the backlog lock' backlog "out(await withBacklogLock(file, () => syncBacklog(file, who, { absorbOnly: args.flags['absorb-only'] })));" "out(await syncBacklog(file, who, { absorbOnly: args.flags['absorb-only'] }));"
+mutate 'a row call holds the backlog lock' backlog '  return withBacklogLock(file, async () => {' '  return (async (f) => f())(async () => {'
 mutate 'a link to the backlog names the same view' backlog '    return fs.realpathSync(file);' '    return path.resolve(file);'
 mutate '--absorb-only leaves the file' backlog 'if (absorbOnly) return' 'if (false) return'
 mutate 'a row call renders its view without taking the file copy back' backlog '    if (r.id === skip) continue;' ''
-mutate 'a row call renders its home view' backlog '  if (fs.existsSync(file)) {
-    try {' '  if (false) {
-    try {'
+mutate 'a row call renders its home view' backlog '  if (!fs.existsSync(file)) return store();' '  if (true) return store();'
 mutate 'a line the record cannot hold refuses the sync' backlog 'if (problem) throw rule(problem);' ';'
 mutate 'a refused file still imports its new tasks' backlog $'  let written = 0;\n  for (const r of rows) {' $'  let written = 0;\n  if (problem) throw rule(problem);\n  for (const r of rows) {'
 mutate 'a status file the writer creates names the record on line 1' status_view 'const head = prior === null ?' 'const head = false ?'
