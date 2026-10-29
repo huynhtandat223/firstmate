@@ -69,6 +69,13 @@ function digestHoldsCaptain(text) {
   return at !== -1 && at < REACH_LINES;
 }
 
+// The harness replaces an oversize hook output with a <persisted-output> notice
+// and a 2KB preview. The words "Output too large" also sit inside the digest's
+// own RE-EMIT CUE, so only the wrapper tag marks a real spill.
+function isSpillNotice(text) {
+  return text.trimStart().startsWith("<persisted-output>");
+}
+
 function readsCaptain(use) {
   const target = commandOf(use);
   if (use.name === "Read") return /(^|\/)data\/captain\.md$/.test(target);
@@ -95,7 +102,7 @@ export function findStops(rows, options = {}) {
     const digest = hookContent(row);
     if (digest !== null) {
       sessionStartIdx = index;
-      sessionStartInReach = digestHoldsCaptain(digest) && !digest.includes("Output too large");
+      sessionStartInReach = digestHoldsCaptain(digest) && !isSpillNotice(digest);
       readSince = false;
     }
     for (const use of toolUses(row)) {

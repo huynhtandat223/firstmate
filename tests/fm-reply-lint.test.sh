@@ -38,10 +38,13 @@ make_primary() {  # <dir> [block]
 }
 
 # Transcript builders: one JSON object per line.
-t_session_start() {  # <file> <in-reach|late>: a SessionStart digest with captain.md early or late
+t_session_start() {  # <file> <in-reach|late|spill>: a SessionStart digest with captain.md early or late
   local file=$1 mode=$2 digest i
-  digest=$'RE-EMIT CUE: read the file\n'
-  if [ "$mode" = in-reach ]; then
+  digest=$'RE-EMIT CUE: if this output ends with "Output too large ... Full output saved to <path>",\nread that whole file now, before acting.\n'
+  if [ "$mode" = spill ]; then
+    digest=$'<persisted-output>\nOutput too large (78KB). Full output saved to: /x/tool-results/hook.txt\n\nPreview (first 2KB):\n'"$digest"
+    digest+=$'data/captain.md\n--------------------------------------------------------------------------------\nrules\n'
+  elif [ "$mode" = in-reach ]; then
     digest+=$'data/captain.md\n--------------------------------------------------------------------------------\nrules\n'
   else
     for i in $(seq 1 600); do digest+="filler line $i"$'\n'; done
@@ -58,7 +61,8 @@ t_reply() {  # <file> <uuid> <text>
 
 stop() {  # <dir> <transcript> [stop_hook_active]: runs the hook; sets RC and ERR
   local dir=$1 transcript=$2 active=${3:-false}
-  ERR=$(jq -cn --arg t "$transcript" --argjson a "$active" '{hook_event_name:"Stop",transcript_path:$t,stop_hook_active:$a,session_id:"s1"}' \
+  ERR=$(jq -cn --arg t "$transcript" --argjson a "$active" --arg s "${STOP_SESSION:-s1}" --arg l "${STOP_LAST_TEXT:-}" \
+    '{hook_event_name:"Stop",transcript_path:$t,stop_hook_active:$a,session_id:$s} + (if $l == "" then {} else {last_assistant_message:$l} end)' \
     | env -u FM_HOME -u FM_STATE_OVERRIDE -u FM_CONFIG_OVERRIDE -u FM_ROOT_OVERRIDE "$dir/bin/fm-reply-lint.sh" --claude 2>&1 >/dev/null)
   RC=$?
 }
@@ -205,6 +209,26 @@ test_rl5_reach_digest_and_shell_read_count() {
   pass "RL5: a digest with captain.md in reach or a shell read satisfies it; a read before the last SessionStart does not"
 }
 
+test_rl5_real_reemit_digest_is_not_a_spill() {
+  local dir="$TMP_ROOT/rl5-cue" tr
+  make_primary "$dir" block
+  tr="$dir/real.jsonl"
+  t_session_start "$tr" in-reach
+  t_reply "$tr" r1 "$VI_REPLY"
+  stop "$dir" "$tr"
+  [ "$RC" -eq 0 ] && [ -z "$ERR" ] || fail "a re-emit digest whose cue says 'Output too large' is not a spill, got exit $RC: $ERR"
+  tr="$dir/spill.jsonl"
+  t_session_start "$tr" spill
+  t_reply "$tr" r1 "$VI_REPLY"
+  stop "$dir" "$tr"
+  [ "$RC" -eq 2 ] || fail "a persisted-output spill notice must not count as a read, got exit $RC"
+  pass "RL5: the RE-EMIT CUE text is not mistaken for a spill; a real persisted-output notice is"
+}
+
+
+
+
+
 test_inert_in_a_task_worktree_and_fails_open() {
   local base="$TMP_ROOT/inert-base" wt="$TMP_ROOT/inert-wt" tr
   make_primary "$base" block
@@ -261,6 +285,7 @@ test_log_only_until_the_switch_is_set
 test_rl4_waiting_notes_block_once_naming_both
 test_rl5_unread_captain_md_blocks_once
 test_rl5_reach_digest_and_shell_read_count
+test_rl5_real_reemit_digest_is_not_a_spill
 test_inert_in_a_task_worktree_and_fails_open
 test_claude_settings_register_the_lint
 test_replay_lists_flagged_turns
