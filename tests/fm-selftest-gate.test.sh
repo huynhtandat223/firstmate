@@ -360,7 +360,7 @@ BRIEF_TASK=board-task
 
 # make_brief_home <name> [features...]: a lab home, a gh stub that serves
 # $FM_TEST_ISSUE_BODY as the issue body, and a lab cfw-modules clone whose
-# origin/main holds the named fixture feature files (none: no feature files).
+# origin/main holds the named fixture feature files (tests/fixtures/selftest-gate/features/<name>.body, copied as <name>.md) (none: no feature files).
 make_brief_home() {
   local name=$1 dir="$TMP_ROOT/$1" feature
   shift
@@ -370,9 +370,9 @@ make_brief_home() {
   fm_git_init_commit "$dir/clone"
   if [ "$#" -gt 0 ]; then
     mkdir -p "$dir/clone/.agents/skills/verify-cfw/features"
-    cp "$FIXTURE/features/README.md" "$dir/clone/.agents/skills/verify-cfw/features/README.md"
+    cp "$FIXTURE/features/README.body" "$dir/clone/.agents/skills/verify-cfw/features/README.md"
     for feature in "$@"; do
-      cp "$FIXTURE/features/$feature.md" "$dir/clone/.agents/skills/verify-cfw/features/$feature.md"
+      cp "$FIXTURE/features/$feature.body" "$dir/clone/.agents/skills/verify-cfw/features/$feature.md"
     done
     git -C "$dir/clone" add -A
     git -C "$dir/clone" commit -q -m features
