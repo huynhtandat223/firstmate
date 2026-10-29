@@ -437,6 +437,13 @@ It allows `fetch <remote> [<branch>]`, `merge --ff-only`, and every read.
 The refusal names `gh pr diff <n>` to read a PR and `git -C <worker worktree>` to change code.
 It reads `config/enforce-clone-git`, and `bin/fm-clone-git-command-policy.mjs --replay <transcript or directory>` lists the commands a past transcript would have denied with their session ids.
 
+## Project rules in briefs (data/project-rules/<repo>.md)
+
+`bin/fm-brief.sh` copies every line of `data/project-rules/<repo-name>.md` that starts with `brief:` into the brief's `## Firstmate spec`.
+The copy is verbatim, tag included, in file order, and sits below the `{FIRSTMATE_SPEC}` fill.
+A line without the tag is never copied, and a project with no rules file adds nothing.
+Firstmate tags the lines in its private rules file; the file is not tracked.
+
 ## Backlog backend (.tasks.toml / config/backlog-backend)
 
 The tracked `.tasks.toml` pins the default `tasks-axi` markdown backend to `data/backlog.md`, with `done_keep = 10` and an archive at `data/done-archive.md`.

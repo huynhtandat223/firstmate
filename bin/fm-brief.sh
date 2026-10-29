@@ -120,6 +120,9 @@
 # names the issue and the command `bin/fm-acceptance.mjs rows <issue-url> --surface all` (every scenario, internal ones too), so the
 # worker reads the scenario list from the one parser and the brief carries no list
 # of its own. Acceptance wording appears in the brief only through this section.
+# A ship or scout brief also copies every line of data/project-rules/<repo-name>.md that starts with
+# `brief:` into `## Firstmate spec`, below the {FIRSTMATE_SPEC} fill, verbatim (tag included) and in
+# file order; untagged lines are never copied, and a missing file adds nothing.
 # --check <task-id> reads data/<task-id>/brief.md after Firstmate filled it and
 # refuses a `# Task` body that names an acceptance id range (ids of capital letters
 # then digits, as the parser reads them, two of them joined by a dash, `..` or `to`):
@@ -693,6 +696,17 @@ IFS= read -r -d '' TASK_SECTION <<'EOF' || true
 {FIRSTMATE_SPEC}
 EOF
 TASK_SECTION=${TASK_SECTION%$'\n'}
+# Project rules (spec huynhtandat223/firstmate#200, E8c): every line of data/project-rules/<repo>.md
+# that starts with `brief:` goes under `## Firstmate spec`, verbatim and in file order, below the
+# {FIRSTMATE_SPEC} fill; an untagged line is never copied. A missing file adds nothing.
+case "$REPO" in
+  */* | .*) PROJECT_RULES_FILE='' ;;
+  *) PROJECT_RULES_FILE="$DATA/project-rules/$REPO.md" ;;
+esac
+if [ -n "$PROJECT_RULES_FILE" ] && [ -r "$PROJECT_RULES_FILE" ]; then
+  PROJECT_RULES=$(grep '^brief:' "$PROJECT_RULES_FILE" || true)
+  [ -z "$PROJECT_RULES" ] || TASK_SECTION="$TASK_SECTION"$'\n'"$PROJECT_RULES"
+fi
 
 REQUIRED_SKILLS_SECTION=$(printf '%s\n' \
   '# Required skills and instructions' \
