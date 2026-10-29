@@ -23,6 +23,20 @@ command -v curl >/dev/null 2>&1 || fail 'curl is required'
 
 TMP_ROOT=$(fm_test_tmproot fm-task)
 mkdir -p "$TMP_ROOT/fakebin"
+# Every case runs under a temporary home: a write that keeps the legacy status file must never reach the caller's own
+# FM_HOME. The caller's state/ listing is taken now and checked after the cases.
+LIVE_HOME=${FM_HOME:-}
+LIVE_STATE_BEFORE="$TMP_ROOT/live-state-before"
+if [ -n "$LIVE_HOME" ] && [ -d "$LIVE_HOME/state" ]; then (cd "$LIVE_HOME/state" && find . -mindepth 1 -maxdepth 1) | sort > "$LIVE_STATE_BEFORE"; fi
+export FM_HOME="$TMP_ROOT/home"
+mkdir -p "$FM_HOME/state"
+live_home_untouched() {  # fail when the caller's state/ holds a file it did not hold before the cases ran
+  [ -f "$LIVE_STATE_BEFORE" ] || return 0
+  local added
+  added=$( (cd "$LIVE_HOME/state" && find . -mindepth 1 -maxdepth 1) | sort | comm -13 "$LIVE_STATE_BEFORE" -)
+  [ -z "$added" ] || fail "a case wrote into the caller's FM_HOME state/: $(tr '\n' ' ' <<<"$added")"
+  pass "fm-task leaves the caller's FM_HOME state/ unchanged"
+}
 TOKEN="tok-$$-$RANDOM"
 printf '%s\n' "$TOKEN" > "$TMP_ROOT/token"
 chmod 600 "$TMP_ROOT/token"
@@ -1980,6 +1994,8 @@ for c in $CASES; do
   pass "fm-task $c"
 done
 
+live_home_untouched
+
 # FM_TASK_CASES="a b" runs just those cases and skips the mutation proofs.
 [ -z "${FM_TASK_CASES:-}" ] || exit 0
 
@@ -2130,3 +2146,4 @@ mutate_owner 'the writer operation needs the owner the row appends' "case \"\$OW
 mutate_owner 'the writer runs as the owner' 'FM_TASK_ROLE=owner' 'FM_TASK_ROLE=worker'
 mutate_owner 'an answer unblocks after its comment' 'run comment "$TASK" --note "$text" && run unblock "$TASK" || RC=$?' 'run comment "$TASK" --note "$text" || RC=$?'
 pass 'every guarded behavior has a red mutation proof'
+live_home_untouched
