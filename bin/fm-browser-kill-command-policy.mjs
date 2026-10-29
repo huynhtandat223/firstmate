@@ -6,7 +6,9 @@
 // policy finds a kill, pkill or killall (also `xargs kill`, `fuser -k`) aimed at
 // a browser: a pattern naming chrome, chromium or chrome-devtools, a pid in the
 // list the transport resolved as a browser, or a watched debugging port named in
-// the command, its substitutions or the pipeline feeding it. A browser session
+// the command, its substitutions, the pipeline feeding it, or a variable a
+// bare assignment set from such a lookup. A bare number is a pid, so `kill 9222`
+// and signal 0 (`kill -0 <pid>`) are not matched. A browser session
 // closes by its name instead: CHROME_DEVTOOLS_AXI_SESSION=<name>
 // chrome-devtools-axi stop. A heredoc, echo or grep that only mentions
 // `pkill chrome` is not a command position and is never matched. The
@@ -46,12 +48,29 @@ function mentionsPort(text, ports) {
   return ports.some((port) => new RegExp(`(^|[^0-9])${port}([^0-9]|$)`).test(text));
 }
 
+// A bare number is a pid even when it equals a watched port (kill 9222), so only
+// a word that is more than digits, or a substitution, can be a port lookup.
+function portLookupText(words) {
+  return words.map((word) => [/^\d+$/.test(word.value) ? "" : word.value, ...(word.subs || []).map((sub) => sub.content)].join(" ")).join(" ");
+}
+
+// Signal 0 only tests that a process exists.
+function isSignalZero(args) {
+  return args.some((word, i) => word.value === "-0" || ((word.value === "-s" || word.value === "-n" || word.value === "--signal") && args[i + 1]?.value === "0") || word.value === "--signal=0");
+}
+
+function referencesVariable(word, name) {
+  return new RegExp(`\\$(\\{${name}[^}]*\\}|${name}(?![A-Za-z0-9_]))`).test(word.value);
+}
+
 // The verdict for one kill-like invocation: the words it kills with, and the
 // text of the stages that feed it through a pipe (xargs kill).
-function killVerdict(args, fed, ports, pids) {
+function killVerdict(args, fed, ports, pids, tainted = {}) {
+  if (isSignalZero(args)) return null;
   const argText = args.map(wordText).join(" ");
-  if (mentionsPort(argText, ports) || mentionsPort(fed, ports)) return "kill-browser-port";
+  if (mentionsPort(portLookupText(args), ports) || mentionsPort(fed, ports)) return "kill-browser-port";
   if (BROWSER_NAME.test(argText) || BROWSER_NAME.test(fed)) return "kill-browser-name";
+  for (const [name, code] of Object.entries(tainted)) if (args.some((word) => referencesVariable(word, name))) return code;
   if (args.some((word) => /^\d+$/.test(word.value) && pids.has(Number(word.value)))) return "kill-browser-pid";
   return null;
 }
@@ -60,16 +79,34 @@ function decision(command, options = {}) {
   const ports = [...new Set([...DEFAULT_PORTS, ...(options.ports || [])])];
   const pids = new Set(options.pids || []);
   let code = null;
-  walkCommands(command, (position, context) => {
-    if (code || !position.command) return;
+  walkCommands(command, (position, context, scope) => {
+    if (code) return;
+    if (!position.command) {
+      // A bare `NAME=value` line: a value that came from a watched-port or browser
+      // lookup taints NAME, so a later `kill "$NAME"` is judged as that lookup.
+      if (position.prefixAssignments > 0 && position.prefixAssignments === position.words.length) {
+        scope.tainted = { ...(scope.tainted || {}) };
+        for (const word of position.words) {
+          const equals = word.value.indexOf("=");
+          const name = word.value.slice(0, equals);
+          const value = { value: word.value.slice(equals + 1), subs: word.subs };
+          const inherited = Object.entries(scope.tainted).find(([other]) => referencesVariable(value, other));
+          if (mentionsPort(portLookupText([value]), ports)) scope.tainted[name] = "kill-browser-port";
+          else if (BROWSER_NAME.test(wordText(value))) scope.tainted[name] = "kill-browser-name";
+          else if (inherited) scope.tainted[name] = inherited[1];
+          else delete scope.tainted[name];
+        }
+      }
+      return;
+    }
     const name = basename(position.command.value);
     const rest = position.words.slice(position.index + 1);
     const fed = (context.pipeline || []).flatMap((stage) => stage.words.map(wordText)).join(" ");
     if (KILLERS.has(name)) {
-      code = killVerdict(rest, "", ports, pids);
+      code = killVerdict(rest, "", ports, pids, scope.tainted);
     } else if (name === "xargs") {
       const at = rest.findIndex((word) => KILLERS.has(basename(word.value)));
-      if (at !== -1) code = killVerdict(rest.slice(at + 1), fed, ports, pids);
+      if (at !== -1) code = killVerdict(rest.slice(at + 1), fed, ports, pids, scope.tainted);
     } else if (name === "fuser" && rest.some((word) => /^-[A-Za-z]*k/.test(word.value))) {
       const argText = rest.map(wordText).join(" ");
       if (mentionsPort(argText, ports)) code = "kill-browser-port";

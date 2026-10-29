@@ -129,7 +129,11 @@ test_state_changing_verbs_are_denied() {
     'git -C projects/x branch topic origin/main' \
     'git -C projects/x worktree add /tmp/wt origin/main' \
     'git -C projects/x worktree remove /tmp/wt' \
-    'git -C projects/x remote add other https://example.invalid/x.git'; do
+    'git -C projects/x remote add other https://example.invalid/x.git' \
+    'git -C projects/x update-ref refs/heads/rogue HEAD' \
+    'git -C projects/x update-ref -d refs/heads/main' \
+    'git -C projects/x symbolic-ref HEAD refs/heads/rogue' \
+    'git -C projects/x symbolic-ref -d HEAD'; do
     [ "$(policy "$cmd" | cut -f1)" = deny ] || fail "must deny: $cmd => $(policy "$cmd")"
   done
   pass "a state-changing verb aimed at a clone is denied: fetch of a refspec, pull, checkout, switch, reset, commit, stash, rebase, cherry-pick, push, clean, merge without --ff-only, add, restore, branch and worktree and remote changes"
@@ -193,6 +197,11 @@ test_other_targets_and_mentions_are_allowed() {
     'cat > /tmp/note <<EOF
 git -C projects/x reset --hard
 EOF' \
+    'git -C "$WT/projects/x" reset --hard' \
+    'git -C ${WT}/projects/x commit -m x' \
+    'git -C projects/x symbolic-ref HEAD' \
+    'git -C projects/x symbolic-ref --short HEAD' \
+    'git -C projects/x show-ref' \
     'ls projects/x; gh pr diff 1699 --repo o/r' \
     'gh pr view 1699 --repo o/r --json files'; do
     [ "$(policy "$cmd")" = allow ] || fail "must allow: $cmd => $(policy "$cmd")"
