@@ -344,7 +344,8 @@ fm_task_inbox_steer_problem() {  # <state-dir> <task-id> <raw-text> <body-text> 
 # The instruction text of a steer, for the duplicate compare. A marked
 # secondmate request carries the transport marker and a fresh correlation token
 # ahead of the text, so two identical steers differ in those bytes only; both
-# are removed here. Text without the marker is returned unchanged.
+# are removed here, with the one space the marker adds after the token.
+# Text without the marker is returned unchanged.
 fm_task_inbox_steer_text() {  # <enqueued-text> <result-var>
   local plain=$1 result_var=$2 marker
   if [ -z "${FM_FROMFIRST_MARK-}" ]; then
@@ -358,8 +359,8 @@ fm_task_inbox_steer_text() {  # <enqueued-text> <result-var>
       case "${plain:0:21}" in
         corr=[a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9])
           plain=${plain:21}
-          while [ "${plain# }" != "$plain" ]; do plain=${plain# }; done
-          while [ "${plain#$'\t'}" != "$plain" ]; do plain=${plain#$'\t'}; done
+          # The marker adds exactly one space after the token (fm_pending_reply_embed_corr).
+          plain=${plain# }
           ;;
       esac
       ;;

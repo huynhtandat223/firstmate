@@ -128,6 +128,24 @@ test_sd1_secondmate_steers_compare_without_marker_and_corr() {
 
 # Issue #206: a worker moves an unhandled record into handled/ after the glob
 # expands and before the stat. The scan must read it again from handled/.
+# Reader round 2 on PR 220: the marker adds one separator after the corr token;
+# the leading blanks of the instruction belong to the instruction.
+test_sd1_leading_blanks_of_a_secondmate_steer_still_count() {
+  local dir
+  dir=$(setup_case sd1-blanks block)
+  rm -f "$dir/home/state/t1.meta"
+  fm_write_secondmate_meta "$dir/home/state/sm.meta" "$dir/home" "sess:fm-t1"
+  send "$dir" sm "    $BODY_A"
+  [ "$RC" -eq 0 ] || fail "the first indented secondmate send must be written: $ERR"
+  send "$dir" sm "$BODY_A"
+  [ "$RC" -eq 0 ] || fail "a steer that differs by leading blanks is not a duplicate of the indented one: $ERR"
+  send "$dir" sm $'\t'"$BODY_A"
+  [ "$RC" -eq 0 ] || fail "a steer that differs by a leading tab is not a duplicate: $ERR"
+  send "$dir" sm "    $BODY_A"
+  [ "$RC" -ne 0 ] || fail "an identical indented steer must still be refused"
+  pass "#206 round 2: steers that differ by leading blanks are different; an identical indented one is still a duplicate"
+}
+
 test_sd1_record_moved_to_handled_mid_scan_is_still_matched() {
   local dir state out
   dir=$(setup_case sd1-vanish block)
@@ -243,6 +261,7 @@ test_sd1_identical_handled_steer_is_refused_inside_the_window
 test_sd1_old_handled_steer_is_allowed_but_old_unhandled_is_not
 test_sd1_secondmate_steers_compare_without_marker_and_corr
 test_sd1_record_moved_to_handled_mid_scan_is_still_matched
+test_sd1_leading_blanks_of_a_secondmate_steer_still_count
 test_sd1_log_only_until_the_switch_is_set
 test_sd2_short_body_is_refused
 test_sd3_again_writes_the_repeat
