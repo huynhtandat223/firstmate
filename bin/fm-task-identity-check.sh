@@ -74,20 +74,26 @@ check_add() {
   done
 }
 
+# issue_key <url>: host/owner/repo#number, lowercased, with the scheme, any trailing slash,
+# query or fragment dropped, so two spellings of one issue compare equal.
+issue_key() {
+  printf '%s' "$1" | sed -E 's|^[A-Za-z]+://||; s|[?#].*$||; s|/+$||; s|^([^/]+)/(.*)/issues/([0-9]+)$|\1/\2#\3|' | tr '[:upper:]' '[:lower:]'
+}
+
 check_pr() {
   local id=$1 url=$2 block linked closes ref
   [ -f "$DATA/backlog.md" ] || exit 0
   block=$(awk -v id="$id" '
     /^- \[[ x]\] / { row = $0; sub(/^- \[[ x]\] /, "", row); sub(/ .*/, "", row); on = (row == id) }
     on { print }' "$DATA/backlog.md")
-  linked=$(printf '%s\n' "$block" | grep -oE 'https?://[^ )]+/issues/[0-9]+' | head -1)
+  linked=$(printf '%s\n' "$block" | grep -oEi 'https?://[^ )]+/issues/[0-9]+' | head -1)
   [ -n "$linked" ] || exit 0
   case "$url" in https://github.com/*/pull/*) ;; *) exit 0 ;; esac
   command -v gh >/dev/null 2>&1 || exit 0
   closes=$(gh pr view "$url" --json closingIssuesReferences --jq '.closingIssuesReferences[].url' 2>/dev/null) || exit 0
   [ -n "$closes" ] || exit 0
   while IFS= read -r ref; do
-    [ "$ref" != "$linked" ] || exit 0
+    [ "$(issue_key "$ref")" != "$(issue_key "$linked")" ] || exit 0
   done <<< "$closes"
   hit wrong-issue "PR $url closes $(printf '%s' "$closes" | tr '\n' ' ')but task $id is linked to $linked; link the PR that closes $linked, or correct the task's issue"
 }

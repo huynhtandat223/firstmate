@@ -439,6 +439,7 @@ A hit blocks at most once per turn, and `bin/fm-reply-lint.sh --replay <transcri
 The shadow create that follows dispatch (`bin/fm-task-shadow.sh`) skips `add`, because the spawn has already made the `fm/<id>` branch visible in the clone.
 A ticket key matches whole (`DEV-12` does not match `DEV-12A`), and only `data/backlog.md` is read for live tasks, not the task record.
 `pr` runs in `bin/fm-pr-check.sh`, on the merge path too: it refuses a GitHub PR whose closing references name other issues and omit the task's linked issue, the first `.../issues/<n>` URL in its backlog item, naming both.
+The linked and closing issue URLs are compared as host, owner, repo and number, so scheme, host case and a trailing slash do not matter.
 A PR with no closing reference, a task with no linked issue, or an unreadable forge passes.
 The checks are log-only until `config/enforce-task-identity` holds `block`: each hit is written to `state/enforce-task-identity.log` and the command goes on.
 

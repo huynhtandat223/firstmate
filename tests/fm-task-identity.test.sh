@@ -156,6 +156,17 @@ test_ti3_a_pr_closing_another_issue_is_refused() {
   make_fake_gh https://github.com/huynhtandat223/cfw-modules/issues/1707 https://github.com/huynhtandat223/cfw-modules/issues/1708
   run pr titan-start-profile-maint "$pr"
   expect_code 0 "$RC" "a PR that also closes the linked issue passes: $OUT"
+  # The same issue spelled differently (scheme, host case, trailing slash) is the same issue.
+  make_fake_gh HTTPS://GitHub.com/huynhtandat223/CFW-Modules/issues/1707/
+  run pr titan-start-profile-maint https://github.com/huynhtandat223/cfw-modules/pull/1715
+  expect_code 0 "$RC" "a closing reference spelled with another case, scheme or trailing slash is the linked issue: $OUT"
+  printf -- '- [x] spelled - T http://GitHub.com/huynhtandat223/cfw-modules/issues/1707/ (kind: ship)\n' >> "$HOME_DIR/data/backlog.md"
+  make_fake_gh https://github.com/huynhtandat223/cfw-modules/issues/1707
+  run pr spelled https://github.com/huynhtandat223/cfw-modules/pull/1715
+  expect_code 0 "$RC" "a linked issue spelled with another scheme, case or trailing slash matches: $OUT"
+  make_fake_gh https://github.com/huynhtandat223/cfw-modules/issues/17070
+  run pr spelled https://github.com/huynhtandat223/cfw-modules/pull/1715
+  expect_code 1 "$RC" "issue 17070 is not issue 1707: $OUT"
   run pr no-such-task "$pr"
   expect_code 0 "$RC" "a task with no backlog item has no linked issue: $OUT"
   FAKEBIN=''
