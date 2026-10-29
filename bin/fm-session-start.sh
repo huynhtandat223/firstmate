@@ -448,7 +448,8 @@ print_file_or_absent() {
 # find them there, so they print before the bulk sections, not in CONTEXT. The
 # handoff text rides under the data/captain.md subsection with a plain marker
 # line, never a new heading, so the set of section headings is unchanged. The
-# named path must resolve to a regular file inside this home.
+# named path, after every symlink is resolved, must be a regular file inside
+# this home.
 HANDOFF_PRINT_MAX_BYTES=40000
 print_captain_context() {
   local start_line rel resolved home_real size
@@ -460,7 +461,9 @@ print_captain_context() {
     if [ -n "$rel" ]; then
       case "$rel" in /*) resolved=$rel ;; *) resolved="$FM_HOME/$rel" ;; esac
       home_real=$(cd "$FM_HOME" 2>/dev/null && pwd -P) || home_real=
-      resolved=$(cd "$(dirname "$resolved")" 2>/dev/null && printf '%s/%s' "$(pwd -P)" "$(basename "$resolved")") || resolved=
+      # Resolve the whole path, the final symlink included, so a link inside the
+      # home that points outside it fails the containment test below.
+      resolved=$(perl -MCwd=realpath -e 'my $p = realpath($ARGV[0]); print $p if defined $p' "$resolved" 2>/dev/null) || resolved=
       if [ -n "$home_real" ] && [ -n "$resolved" ] && [ -f "$resolved" ]; then
         case "$resolved" in
           "$home_real"/*)

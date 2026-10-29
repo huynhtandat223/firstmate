@@ -2674,11 +2674,63 @@ digest_headings() {  # <digest>: sorted section and subsection headings
         if (line[i + 1] == sr) print line[i]
         else if (line[i - 1] == r && line[i + 1] == r) print line[i]
       }
-    }' | sort
+    }' | LC_ALL=C sort
+}
+
+# The sorted section and subsection headings of the digest at main e0bbbd11 for
+# the captain_order_world fixture (the home path normalised to HOME). Moving the
+# captain block must change only the order, so the set stays equal. Update the
+# lists when a heading is added or removed on purpose.
+MAIN_HEADINGS_STARTUP='AFK
+BOOTSTRAP
+CONTEXT
+FLEET STATE
+HOME ROLE
+LOCK
+NETWORK CHECKS
+NEXT STEP
+Orphan status logs (state/*.status without matching .meta)
+READ-ONCE CONTRACT
+SESSION START - HOME
+SUPERVISION OPERATING INSTRUCTIONS - primary harness: claude
+WAKE QUEUE
+Work under way (state/*.meta)
+data/backlog.md
+data/captain-shared.md (shared, main-authoritative, read-only in secondmate homes)
+data/captain.md
+data/learnings.md
+data/projects.md
+data/secondmates.md'
+MAIN_HEADINGS_REEMIT='AFK
+BOOTSTRAP
+CONTEXT
+FLEET STATE
+HOME ROLE
+LOCK
+NETWORK CHECKS
+NEXT STEP
+Orphan status logs (state/*.status without matching .meta)
+READ-ONCE CONTRACT
+SESSION START (CONTEXT RE-EMIT) - HOME
+SUPERVISION OPERATING INSTRUCTIONS - primary harness: claude
+WAKE QUEUE
+Work under way (state/*.meta)
+data/backlog.md
+data/captain-shared.md (shared, main-authoritative, read-only in secondmate homes)
+data/captain.md
+data/learnings.md
+data/projects.md
+data/secondmates.md'
+
+assert_headings_equal_main() {  # <digest> <startup|reemit> <home>
+  local now want
+  now=$(digest_headings "$1" | sed "s|$3|HOME|")
+  if [ "$2" = startup ]; then want=$MAIN_HEADINGS_STARTUP; else want=$MAIN_HEADINGS_REEMIT; fi
+  [ "$now" = "$want" ] || fail "$2 digest headings differ from main:"$'\n'"$(diff <(printf '%s\n' "$want") <(printf '%s\n' "$now"))"
 }
 
 test_startup_digest_puts_captain_context_in_reach() {
-  local rec root home fakebin out first_head
+  local rec root home fakebin out
   rec=$(captain_order_world captain-order-startup)
   IFS='|' read -r root home fakebin <<FIXTURE
 $rec
@@ -2687,10 +2739,7 @@ FIXTURE
   assert_captain_block_in_reach "$out" startup
   assert_not_contains "$out" "RE-EMIT CUE" "a startup digest printed the re-emit cue"
   [ "$(printf '%s\n' "$out" | grep -c -x 'data/captain.md')" -eq 1 ] || fail "data/captain.md printed more than once"
-  first_head=$(digest_headings "$out")
-  assert_contains "$first_head" "CONTEXT" "the heading set lost CONTEXT"
-  assert_contains "$first_head" "data/learnings.md" "the heading set lost data/learnings.md"
-  assert_not_contains "$first_head" "handoff" "the handoff added a heading"
+  assert_headings_equal_main "$out" startup "$home"
   pass "a startup digest holds captain.md, the Start here handoff and captain-shared.md inside line 470"
 }
 
@@ -2704,6 +2753,7 @@ FIXTURE
     env -u CLAUDECODE -u PI_CODING_AGENT -u FM_PI_HARNESS -u GROK_AGENT \
     "$SESSION_START" --reemit)
   assert_captain_block_in_reach "$out" re-emit
+  assert_headings_equal_main "$out" reemit "$home"
   [ "$(printf '%s\n' "$out" | sed -n 1p | cut -c1-12)" = "RE-EMIT CUE:" ] || fail "the re-emit cue is not the first line"
   pass "a re-emit digest holds the same block inside line 470 with the cue still first"
 }
@@ -2721,6 +2771,22 @@ FIXTURE
   assert_not_contains "$out" "OUTSIDE HOME SECRET" "a Start here path outside the home was printed"
   assert_contains "$out" "CAPTAIN LAST LINE" "captain.md itself must still print"
   pass "a Start here path outside the home is not printed"
+}
+
+test_captain_context_skips_a_symlink_that_escapes_the_home() {
+  local rec root home fakebin out outside
+  rec=$(captain_order_world captain-order-symlink)
+  IFS='|' read -r root home fakebin <<FIXTURE
+$rec
+FIXTURE
+  outside="$TMP_ROOT/captain-order-symlink/elsewhere.md"
+  printf 'ESCAPED SYMLINK SECRET\n' > "$outside"
+  rm -f "$home/data/handoffs/latest.md"
+  ln -s "$outside" "$home/data/handoffs/latest.md"
+  out=$(FM_FAKE_HARNESS_PID=$$ run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_not_contains "$out" "ESCAPED SYMLINK SECRET" "a Start here symlink pointing outside the home was printed"
+  assert_contains "$out" "CAPTAIN LAST LINE" "captain.md itself must still print"
+  pass "a Start here symlink that resolves outside the home is not printed"
 }
 
 test_reemit_cue_survives_the_hook_output_preview() {
@@ -3442,6 +3508,7 @@ test_reemit_cue_survives_the_hook_output_preview
 test_startup_digest_puts_captain_context_in_reach
 test_reemit_digest_puts_captain_context_in_reach_and_keeps_the_cue_first
 test_captain_context_skips_a_handoff_outside_the_home
+test_captain_context_skips_a_symlink_that_escapes_the_home
 test_agents_baseline_stays_at_true_start_and_reemits_on_every_drifted_pi_compact
 test_read_only_pi_compact_refreshes_against_its_own_session_identity
 test_codex_unreachable_reset_sources_do_not_claim_instruction_refresh
