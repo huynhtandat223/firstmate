@@ -419,6 +419,16 @@ A `paused` line waits on something outside firstmate and keeps the `config/wait-
 A newer status line, a steering message from `bin/fm-send.sh`, a captain hold, or a merge clears the listed wait.
 The refusal names each task, its verb, and its age, and the drain consumes nothing while it stands.
 
+## Harness check switches (config/enforce-<check>)
+
+A harness check that can block starts in log-only mode: each hit is written to `state/enforce-<check>.log` and nothing is blocked.
+Firstmate reviews that log for false positives, then writes `block` on the first line of `config/enforce-<check>` to make the check block.
+A missing file, an empty file, or any other word keeps the check in log-only mode.
+`bin/fm-enforce-lib.sh` owns the switch and the log line format (epoch, mode, code, text).
+The first check is `drain-ack`: `bin/fm-drain-pretool-check.sh` denies one command that acknowledges a wake drain and runs another drain, and `bin/fm-wake-drain.sh` refuses an acknowledgement while a captain note waits in `state/inbox/`.
+Both read `config/enforce-drain-ack`.
+A drain piped into `grep`, `head`, `cut` or `sed` is only ever logged.
+
 ## Backlog backend (.tasks.toml / config/backlog-backend)
 
 The tracked `.tasks.toml` pins the default `tasks-axi` markdown backend to `data/backlog.md`, with `done_keep = 10` and an archive at `data/done-archive.md`.
