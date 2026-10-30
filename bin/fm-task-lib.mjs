@@ -682,7 +682,23 @@ function clearingEvent(wait, events) {
   if (clearsOn === 'merge') return later.find((e) => e.kind === 'pr' && /\bmerged\b/i.test(bodyOf(e).note ?? '')) ?? closing;
   // The pr-review source writes one ci event for the PR's current head once its checks finish, green or failed,
   // so the delivered CI result is that event whatever head the worker was waiting on.
-  if (clearsOn === 'ci') return later.find((e) => e.kind === 'ci') ?? closing;
+  if (clearsOn === 'ci') {
+    const newer = later.find((e) => e.kind === 'ci');
+    if (newer) return newer;
+    const results = events.filter((e) => e.kind === 'ci' && bodyOf(e).head);
+    const prUrl = fold(events)?.prUrl;
+    if (results.length && prUrl) {
+      const read = spawnSync(process.env.FM_TASK_GH || 'gh', ['pr', 'view', prUrl, '--json', 'headRefOid'], { encoding: 'utf8', timeout: 20000 });
+      try {
+        const head = JSON.parse(read.stdout).headRefOid;
+        if (!read.error && read.status === 0 && head) {
+          const matching = results.findLast((e) => bodyOf(e).head === head);
+          if (matching) return matching;
+        }
+      } catch { /* An unreadable current head cannot clear an earlier result. */ }
+    }
+    return closing;
+  }
   const rowEvents = later.filter((e) => (e.kind === 'check' || e.kind === 'owner-check') && bodyOf(e).row && bodyOf(e).values);
   const newest = (key) => rowEvents.filter((e) => bodyOf(e).row === key).at(-1);
   const asked = rows.length ? rows : [...new Set(rowEvents.map((e) => bodyOf(e).row))];

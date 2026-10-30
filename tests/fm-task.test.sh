@@ -1939,6 +1939,15 @@ SH
   ci_seq=$(seq_of)
   ft event tk-ci ci --head h3 --note 'CI green' >/dev/null || return 1
   grep -q "^resolved .*key=wait-$ci_seq.*cleared: ci event" "$FM_HOME/state/tk-ci.status" || { echo 'green CI did not clear wait'; return 1; }
+  # A completed result can arrive just before the wait; only the live PR head counts.
+  cat > "$TMP_ROOT/ci-head-gh" <<'SH'
+#!/usr/bin/env bash
+printf '{"headRefOid":"h3"}\n'
+SH
+  chmod +x "$TMP_ROOT/ci-head-gh"
+  FM_TASK_GH="$TMP_ROOT/ci-head-gh" ft event tk-ci wait --next-actor ci --clears-on ci --note 'already completed h3' >/dev/null || return 1
+  ci_seq=$(seq_of)
+  grep -q "^resolved .*key=wait-$ci_seq.*cleared: ci event" "$FM_HOME/state/tk-ci.status" || { echo 'current-head CI result before wait did not clear it'; return 1; }
   # the owner's question waits on the answer
   mk_running tk-w2 >/dev/null || return 1
   ft ask tk-w2 "${ASK_FLAGS[@]}" --next-actor owner
