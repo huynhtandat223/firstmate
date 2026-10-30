@@ -2112,6 +2112,11 @@ case_owner_writer() {
   ow --action comment --task $t --note bad --owner u-1 --to missing-worker
   must 'dead recipient' 2 || return 1
   [ "$(count fm_task_event)" = "$before" ] || return 1
+  local legacy_digest
+  legacy_digest=$(printf '%s\0%s\0%s' u-1 'KO1 owner comment' "$(date -u +%Y-%m-%dT%H:%M)" | sha256sum)
+  legacy_digest=${legacy_digest%% *}
+  ft comment $t --note 'KO1 owner comment' --key "owner-comment:$t:$legacy_digest" --actor owner:u-1 --role owner
+  must 'legacy owner comment' 0 || return 1
   ow --action comment --task $t --note 'KO1 owner comment' --owner u-1 --to firstmate
   must 'owner comment' 0 || return 1
   ow --action comment --task $t --note 'KO1 owner comment' --owner u-1

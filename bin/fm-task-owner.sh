@@ -99,7 +99,11 @@ case "$ACTION" in
       if worker_live "$TASK"; then TO=$TASK; else TO=firstmate; fi
     fi
     [ "$TO" = firstmate ] || worker_live "$TO" || usage 'recipient must be firstmate or a live worker'
-    digest=$(printf '%s\0%s\0%s\0%s' "$OWNER" "$NOTE" "$ASK" "$(date -u +%Y-%m-%dT%H:%M)" | sha256sum) || usage 'comment digest failed'
+    if [ -z "$ASK" ]; then
+      digest=$(printf '%s\0%s\0%s' "$OWNER" "$NOTE" "$(date -u +%Y-%m-%dT%H:%M)" | sha256sum) || usage 'comment digest failed'
+    else
+      digest=$(printf '%s\0%s\0%s\0%s' "$OWNER" "$NOTE" "$ASK" "$(date -u +%Y-%m-%dT%H:%M)" | sha256sum) || usage 'comment digest failed'
+    fi
     digest=${digest%% *}
     [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || usage 'comment digest is empty or invalid'
     ask_args=()
