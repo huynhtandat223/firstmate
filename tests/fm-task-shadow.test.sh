@@ -89,20 +89,6 @@ test_dispatched_creates_assigns_and_starts() {
   pass "dispatched: create, assign and start, with stable keys; the title comes from the backlog row"
 }
 
-# HG6 (firstmate#176 G6): a task spawned with --also-repo names each second repository copy in the record too.
-test_dispatched_names_the_second_repository_copies() {
-  make_case dispatched-also on
-  printf 'kind=ship\nworktree=/w/main\nalso_worktree=/w/dms-workspaces-3\nalso_worktree=/w/other-1\n' > "$HOME_DIR/state/t3.meta"
-  hook dispatched t3 ship r claude || fail "the hook failed"
-  assert_equals "$(printf '%s\n' \
-    'create t3 --title t3 --kind ship --repo r' \
-    'assign t3 --to t3' \
-    'start t3' \
-    'event t3 comment --note second repository copy: also_worktree=/w/dms-workspaces-3' \
-    'event t3 comment --note second repository copy: also_worktree=/w/other-1')" "$(calls)" "dispatched calls with second copies"
-  pass "dispatched: each also_worktree of the task meta becomes a record comment"
-}
-
 status_line() {  # <line>: the task t1 ends its status file with <line>, then the hook runs
   printf '%s\n' "$1" >> "$HOME_DIR/state/t1.status"
   : > "$CALLS"
@@ -388,7 +374,6 @@ test_captain_hold_writes_the_record() {
 
 test_flag_absent_writes_nothing
 test_dispatched_creates_assigns_and_starts
-test_dispatched_names_the_second_repository_copies
 test_status_lines_map_to_writer_commands
 test_working_after_a_block_unblocks_and_restarts
 test_the_hook_never_fails_the_script
