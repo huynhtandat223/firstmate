@@ -3519,7 +3519,6 @@ resurface_after_downtime() {
 }
 
 while :; do
-  fm_run_timed 10 env FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task.sh" route-owner-comments --consumer "owner-comments-${FM_HOME##*/}" >/dev/null 2>&1 || true
   # Scope delivery to this home's direct task records, never another home's events.
   task_delivery_processed=0
   for task_meta in "$STATE"/*.meta; do

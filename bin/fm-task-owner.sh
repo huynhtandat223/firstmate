@@ -6,12 +6,15 @@
 # a page value. Each action runs bin/fm-task.sh, the one writer, with that owner as actor (`owner:<id>`, role
 # owner); the writer keeps seq, the transitions and the projection, and this file adds no rule of its own.
 #
-# Usage: fm-task-owner.sh --action ACTION --task TASK [--option O] [--row ID@W] [--note N] --owner ID
+# Usage: fm-task-owner.sh --action ACTION --task TASK [--option O] [--row ID@W] [--note N] [--to RECIPIENT] --owner ID
 #   comment  a task comment: store the note once per owner, note and minute              needs --note
 #   answer   a question:     comment "answer: <option>" (and " - <note>"), then unblock    needs --option
 #   unblock  a block:        comment "<note>", then unblock                                needs --note
 #   pass     an owner row:   check TASK ROW pass --evidence "<note>" (or "owner pass")     needs --row
 #   fail     an owner row:   check TASK ROW fail --evidence "<note>"                        needs --row and --note
+#   comment delivers a new event in this call: --to firstmate uses fm-inbox note; a live task uses fm-send.
+#   Without --to, the task's live worker is selected, else firstmate. Invalid recipients write nothing.
+#   Replayed comment keys do not deliver again.
 #   A pass or fail by role owner also sets the row's owner item (bin/fm-task-lib.mjs, check).
 #
 # Prints one JSON line for the page: {"ok":true|false,"action","task","writes":[writer lines],"error"?}.
@@ -26,7 +29,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export FM_HOME="${FM_HOME:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 WRITER="${FM_TASK_OWNER_WRITER:-$SCRIPT_DIR/fm-task.sh}"
 
-ACTION='' TASK='' OPTION='' ROW='' NOTE='' OWNER=''
+ACTION='' TASK='' OPTION='' ROW='' NOTE='' OWNER='' TO=''
 WRITES='[]'
 
 reply() {  # <ok> [error]: the one JSON line, then exit with the code in RC
@@ -45,6 +48,7 @@ while [ "$#" -gt 0 ]; do
     --row) ROW=$2 ;;
     --note) NOTE=$2 ;;
     --owner) OWNER=$2 ;;
+    --to) TO=$2 ;;
     *) usage "unknown argument $1" ;;
   esac
   shift 2
@@ -69,14 +73,43 @@ run() {
   return "$rc"
 }
 
+# Resolve only recorded workers in this home, using the shared backend liveness interface.
+worker_live() {
+  local meta="$FM_HOME/state/$1.meta" backend target
+  [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return 1
+  [ -f "$meta" ] || return 1
+  backend=$(fm_backend_of_meta "$meta")
+  target=$(fm_backend_target_of_meta "$meta")
+  [ "$(fm_backend_agent_alive "$backend" "$target")" = alive ]
+}
+
 RC=0
 case "$ACTION" in
   comment)
     [[ "$NOTE" =~ [^[:space:]] ]] || usage 'comment needs a nonblank --note'
+    # shellcheck source=bin/fm-backend.sh
+    . "$SCRIPT_DIR/fm-backend.sh"
+    if [ -z "$TO" ]; then
+      if worker_live "$TASK"; then TO=$TASK; else TO=firstmate; fi
+    fi
+    [ "$TO" = firstmate ] || worker_live "$TO" || usage 'recipient must be firstmate or a live worker'
     digest=$(printf '%s\0%s\0%s' "$OWNER" "$NOTE" "$(date -u +%Y-%m-%dT%H:%M)" | sha256sum) || usage 'comment digest failed'
     digest=${digest%% *}
     [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || usage 'comment digest is empty or invalid'
     run comment "$TASK" --note "$NOTE" --key "owner-comment:$TASK:$digest" || RC=$?
+    if [ "$RC" -eq 0 ] && ! [[ "$WRITES" == *'(already recorded)'* ]]; then
+      seq=$(jq -r '.[0]' <<<"$WRITES")
+      seq=${seq#seq=}; seq=${seq%% *}
+      [[ "$seq" =~ ^[0-9]+$ ]] || { ERROR='writer returned no comment sequence'; RC=3; }
+      if [ "$RC" -eq 0 ]; then
+        message="Owner comment on $TASK (seq $seq): $NOTE"
+        if [ "$TO" = firstmate ]; then
+          "$SCRIPT_DIR/fm-inbox.sh" note --request-id "owner-comment-$seq" -- "$message" >/dev/null || { RC=$?; ERROR='comment stored but firstmate delivery failed'; }
+        else
+          "$SCRIPT_DIR/fm-send.sh" "$TO" "$message" >/dev/null || { RC=$?; ERROR='comment stored but worker delivery failed'; }
+        fi
+      fi
+    fi
     ;;
   answer)
     [ -n "$OPTION" ] || usage 'answer needs --option'
