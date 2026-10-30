@@ -869,15 +869,18 @@ async function builtHead(taskId) {
   if (last?.kind === 'deploy') return bodyOf(last).head;
   return last ? ((await firstRow('fm_event_done', `fmTaskEventId eq ${last.id}`))?.head ?? null) : null;
 }
-// A pass on an earlier deployed head carries to the later deployed heads (G2) when every deploy event after the pass
-// records the scenarios its PRs touched (`Scenarios touched:`, deploy --touched) and none names the row's id. A deploy
-// event that records none (an older deploy, or a PR without the line) touches every row.
+// A pass on an earlier deployed head carries to the later deployed heads (G2) when every deploy event after the newest
+// deploy of the pass's head records the scenarios its PRs touched (`Scenarios touched:`, deploy --touched) and none names
+// the row's id. The count starts at that deploy, not at the check event, so a late check on an older head cannot skip a
+// deploy that touched the row before the check. A deploy event that records none (an older deploy, or a PR without the
+// line) touches every row.
 function carried(row, events) {
   if (row.surface !== 'user-visible' || row.status !== 'pass' || !row.head) return false;
-  const since = rowEvent(events, row)?.seq ?? 0;
   const deploys = events.filter((e) => e.kind === 'deploy' && bodyOf(e).head);
-  const later = deploys.filter((e) => e.seq > since);
-  if (!later.length || !deploys.some((e) => e.seq < later[0].seq && bodyOf(e).head === row.head)) return false;
+  const own = [...deploys].reverse().find((e) => bodyOf(e).head === row.head);
+  if (!own) return false;
+  const later = deploys.filter((e) => e.seq > own.seq);
+  if (!later.length) return false;
   return later.every((e) => Array.isArray(bodyOf(e).touched) && !bodyOf(e).touched.includes(row.scenarioId));
 }
 const passedOnOtherHead = (row, head, events) => row.surface === 'user-visible' && row.status === 'pass' && (row.head ?? null) !== head && !carried(row, events);
