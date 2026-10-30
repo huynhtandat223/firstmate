@@ -1965,6 +1965,10 @@ case_carry() {
   ft gate $t --issue "$ISSUE" --head D1
   must 'gate on carried passes' 0 || return 1
   grep -qx 'A1@1440 carried: pass on head D0, and no later deployed PR names A1' <<<"$OUT" || { echo "gate does not print the carried pass: $OUT"; return 1; }
+  # PR 223 review: a carried pass counts only for the latest recorded deployed head, not for any --head
+  ft gate $t --issue "$ISSUE" --head D9
+  must 'gate on carried passes for a head never deployed' 5 || return 1
+  grep -q 'A1@1440 passed on head D0, not the deployed head D9' <<<"$OUT" || { echo "gate let a carried pass count for D9: $OUT"; return 1; }
   # a second task: a deploy that names the id, or records nothing, brings the row back
   t=tk-carry2
   mk_running $t >/dev/null || return 1
