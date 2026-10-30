@@ -70,11 +70,10 @@
 # line `Scenarios touched: <ids>|none|all`; a PR with no line names none. A pass on
 # an earlier deployed head carries while no PR of the deploy names its id: the ask
 # drops that row, drops an id with no row left from `lines`, and lists the row under
-# `carried` with the head it passed on. A task begun after T5 reads its rows with
-# `checks <task>` after its deploy event, which records `--touched`; any other task
-# reads the `| pass |` rows of the Tester's file <tester home>/data/verify/<task>.md
-# with its last `verified: ... head=` (the home is FM_TESTER_HOME, or home= in
-# state/<assistance>.meta). An ask with no row left is not sent; the ledger gets a
+# `carried` with the head it passed on. Only a task begun after T5 carries: it reads
+# its rows with `checks <task>` after its deploy event, which records `--touched`. A
+# task begun before T5 keeps the old path (no migration): nothing of it carries, and
+# its ask holds every row. An ask with no row left is not sent; the ledger gets a
 # carry line instead. A draft round and a replay ask are never narrowed.
 # The rows round (firstmate#176 G4) asks the Tester from the record: each poll reads
 # `checks <task>` for every task with state/<task>.meta and 'record: rows', and
@@ -695,7 +694,7 @@ record_rows() {  # <ask-json>
 # The rows of a deploy ask that carry (G2, see the header): a JSON array of {key, head}. Returns 1 with DELIVER_ERROR
 # set when the task record cannot be read.
 carried_rows() {  # <ask-json> <dry 0|1>
-  local ask=$1 dry=$2 task sha touched json home file vhead
+  local ask=$1 dry=$2 task sha touched json
   task=$(jq -r .task <<<"$ask")
   sha=$(jq -r .sha <<<"$ask")
   touched=$(jq -r '.touched // "all"' <<<"$ask")
@@ -713,18 +712,8 @@ carried_rows() {  # <ask-json> <dry 0|1>
     jq -c '[.rows[] | select(.status == "pass" and (.due | not)) | {key, head}]' <<<"$json"
     return 0
   fi
-  home=${FM_TESTER_HOME:-}
-  [ -n "$home" ] || [ ! -f "$STATE/$ASSISTANCE.meta" ] || home=$(sed -n 's/^home=//p' "$STATE/$ASSISTANCE.meta" | tail -n 1)
-  file="$home/data/verify/$task.md"
-  vhead=
-  [ -z "$home" ] || [ ! -f "$file" ] || vhead=$(sed -n 's/^verified: tester .*head=\([^ ]*\).*/\1/p' "$file" | tail -n 1)
-  if [ -z "$vhead" ] || [ "$touched" = all ]; then
-    printf '[]\n'
-    return 0
-  fi
-  awk -F' [|] ' '/^- [^ ]+@[^ ]+ [|] / && $3 == "pass" { k = $1; sub(/^- /, "", k); print k }' "$file" \
-    | jq -Rsc --arg h "$vhead" --arg t "$touched" '($t | split(",")) as $ids
-      | split("\n") | map(select(. != "" and ((split("@")[0]) as $id | $ids | index($id) | not)) | {key: ., head: $h})'
+  # A task begun before T5 keeps the old path: nothing carries, the Tester is asked for every row.
+  printf '[]\n'
 }
 
 # A deploy ask without its carried rows: the rows and lines left, plus `carried`. A draft round passes unchanged.
