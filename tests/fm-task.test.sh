@@ -301,6 +301,10 @@ const server = http.createServer((req, res) => {
         return reply(res, 503, { success: false, errorCode: 'UNAVAILABLE' });
       }
     }
+    if (verb === 'create' && delay.n > 0 && delay.verb === 'create' && delay.table === table) {
+      delay.n--;
+      return setTimeout(() => reply(res, out.status, out.body), delay.ms);
+    }
     return reply(res, out.status, out.body);
   });
 });
@@ -1904,7 +1908,10 @@ case_wait() {
   [ "$(declared "$f")" = "$line" ] || { echo "the watcher's reader does not take the wait: [$(declared "$f")]"; return 1; }
   ft event tk-w1 wait --next-actor tester --clears-on rows --rows 'A1@1440,A1@390' --note 'A1 on head h1' --key w1-wait
   [ "$(grep -c "key=wait-$n" "$f")" = 1 ] || { echo "a replayed wait wrote a second line"; return 1; }
+  FM_HOME="$TMP_ROOT/wait-other" ft check tk-w1 A1@390 pending --evidence waiting --head h1 >/dev/null || return 1
   FM_HOME="$TMP_ROOT/wait-other" ft check tk-w1 A1@1440 pass --evidence e1 --head h1 >/dev/null || { echo "check: $ERR"; return 1; }
+  ft deliver tk-w1 --consumer wait-test >/dev/null || { echo "deliver partial rows: $ERR"; return 1; }
+  [ "$(declared "$f")" = "$line" ] || { echo 'partial row results cleared the declared wait'; return 1; }
   grep -q '^resolved .*wait-' "$f" && { echo "one of two asked rows resolved the wait"; return 1; }
   FM_HOME="$TMP_ROOT/wait-other" ft check tk-w1 A1@390 pass --evidence e2 --head h1 >/dev/null || { echo "check: $ERR"; return 1; }
   [ -e "$TMP_ROOT/wait-other/state/tk-w1.status" ] && { echo "another home got a status line for the wait"; return 1; }
@@ -2005,6 +2012,81 @@ case_carry() {
 # cfw-modules#1678 TR52 (change 194): the board's writer operation runs the one writer as the signed-in owner. An
 # answer comments and unblocks, a pass or fail by the owner also sets the row's owner item, and a call without the
 # owner the script row appends writes nothing.
+case_owner_crash() {
+  BIN=$1; reset_db
+  export FM_HOME="$TMP_ROOT/router-crash-$RANDOM"
+  mkdir -p "$FM_HOME/state"
+  ft create tk-crash --title t --kind other >/dev/null || return 1
+  ft comment tk-crash --note recovery --role owner --actor owner:u-1 --key owner-comment:crash >/dev/null || return 1
+  curl -s -X POST "$BASE/__x/delay/fm_task_delivery?ms=3000&n=1&verb=create" >/dev/null
+  node "$BIN/fm-task-lib.mjs" route-owner-comments --consumer owner-comments-crash > "$TMP_ROOT/crash-out" 2>&1 &
+  local pid=$! n
+  for n in $(seq 1 100); do [ "$(count fm_task_delivery)" = 1 ] && break; sleep 0.02; done
+  [ "$(count fm_task_delivery)" = 1 ] || { kill "$pid"; return 1; }
+  kill -KILL "$pid"; wait "$pid" 2>/dev/null || true
+  [ ! -f "$FM_HOME/state/.wake-queue" ] || return 1
+  ft route-owner-comments --consumer owner-comments-crash
+  must 'crash recovery' 0 || return 1
+  grep -q 'Owner comment on tk-crash .*recovery' "$FM_HOME/state/.wake-queue" || { echo 'crash intent did not recover'; return 1; }
+  ft route-owner-comments --consumer owner-comments-crash
+  must 'crash replay' 0 || return 1
+  [ "$(wc -l < "$FM_HOME/state/.wake-queue")" = 1 ] || return 1
+}
+
+case_owner_router() {
+  BIN=$1; reset_db
+  export FM_HOME="$TMP_ROOT/router-home-$RANDOM"
+  mkdir -p "$FM_HOME/state"
+  ft create tk-router --title t --kind other >/dev/null || return 1
+  ft comment tk-router --note ok --role owner --actor owner:u-1 --key owner-comment:router-ok >/dev/null || return 1
+  ft comment tk-router --note agent --role worker >/dev/null || return 1
+  ft route-owner-comments --consumer owner-comments-test
+  must 'route no worker' 0 || return 1
+  grep -q 'Owner comment on tk-router (seq .*): ok' "$FM_HOME/state/.wake-queue" || return 1
+  [ "$(count fm_task_delivery)" = 1 ] || return 1
+  local before
+  before=$(wc -l < "$FM_HOME/state/.wake-queue")
+  log_reset
+  ft route-owner-comments --consumer owner-comments-test
+  must 'router replay' 0 || return 1
+  [ "$(posts POST fm_task_delivery)" = 0 ] || return 1
+  [ "$(wc -l < "$FM_HOME/state/.wake-queue")" = "$before" ] || return 1
+  [ "$(count fm_task_delivery)" = 1 ] || return 1
+  ft comment tk-router --note newer --role owner --actor owner:u-1 --key owner-comment:router-new >/dev/null || return 1
+  ft route-owner-comments --consumer owner-comments-test
+  must 'new comment after cursor' 0 || return 1
+  grep -q 'Owner comment on tk-router (seq .*): newer' "$FM_HOME/state/.wake-queue" || return 1
+  [ "$(count fm_task_delivery)" = 2 ] || return 1
+  ft route-owner-comments --consumer owner-comments-test
+  must 'new cursor replay' 0 || return 1
+  [ "$(count fm_task_delivery)" = 2 ] || return 1
+}
+
+case_description_thread() {
+  BIN=$1; reset_db
+  local t=tk-description before
+  ft create "$t" --title t --kind other >/dev/null || return 1
+  printf '# Probe\n\nFull description.\n' > "$TMP_ROOT/description.md"
+  before=$(task_state "$t")
+  ft describe "$t" --document "$TMP_ROOT/description.md"
+  must 'description' 0 || return 1
+  [ "$(task_state "$t")" = "$before" ] || return 1
+  db fm_event_document | jq -e --rawfile content "$TMP_ROOT/description.md" '.[] | .title == "Description" and .content == $content and .mediaType == "text/markdown"' >/dev/null || return 1
+  ft comment "$t" --note 'first full comment' --actor owner:u-1 --role owner >/dev/null || return 1
+  local seq
+  seq=$(db fm_task_event | jq '[.[] | select(.kind == "comment")][0].seq')
+  ft comment "$t" --note $'second\nfull comment' --actor worker-1 --role worker >/dev/null || return 1
+  ft thread "$t"
+  must 'thread' 0 || return 1
+  [[ "$OUT" == *'owner:u-1'* && "$OUT" == *'owner'* && "$OUT" == *'first full comment'* && "$OUT" == *$'second\nfull comment'* ]] || return 1
+  [[ "$OUT" != *'Full description.'* ]] || return 1
+  ft thread "$t" --since "$seq"
+  must 'thread since' 0 || return 1
+  [[ "$OUT" != *'first full comment'* && "$OUT" == *$'second\nfull comment'* ]] || return 1
+  ft describe "$t" --document "$TMP_ROOT/missing.md"
+  must 'missing description' 2 || return 1
+}
+
 case_owner_writer() {
   BIN=$1; reset_db
   export FM_HOME="$TMP_ROOT/owner-writer-home"
@@ -2013,6 +2095,26 @@ case_owner_writer() {
   ow() { OUT=$("$BIN/fm-task-owner.sh" "$@" 2>"$TMP_ROOT/err"); RC=$?; ERR=$(cat "$TMP_ROOT/err"); }
   mk_running $t >/dev/null || { echo "setup: $ERR"; return 1; }
   ft ask $t "${ASK_FLAGS[@]}" --next-actor owner >/dev/null || { echo "setup ask: $ERR"; return 1; }
+  before=$(count fm_task_event)
+  local hashbin="$TMP_ROOT/hashbin" oldpath=$PATH
+  mkdir -p "$hashbin"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$hashbin/sha256sum"
+  chmod +x "$hashbin/sha256sum"
+  PATH="$hashbin:$oldpath" ow --action comment --task $t --note digest --owner u-1
+  must 'failed digest' 2 || return 1
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$hashbin/sha256sum"
+  PATH="$hashbin:$oldpath" ow --action comment --task $t --note digest --owner u-1
+  must 'empty digest' 2 || return 1
+  [ "$(count fm_task_event)" = "$before" ] || return 1
+  ow --action comment --task $t --note '   ' --owner u-1
+  must 'whitespace comment' 2 || return 1
+  [ "$(count fm_task_event)" = "$before" ] || return 1
+  ow --action comment --task $t --note 'KO1 owner comment' --owner u-1
+  must 'owner comment' 0 || return 1
+  ow --action comment --task $t --note 'KO1 owner comment' --owner u-1
+  must 'owner comment replay' 0 || return 1
+  [ "$(count fm_task_event)" = "$((before + 1))" ] || return 1
+  db fm_task_event | jq -e '.[] | select(.kind == "comment") | .actor == "owner:u-1" and .actorRole == "owner" and (.idempotencyKey | startswith("owner-comment:")) and (.body | fromjson | .note == "KO1 owner comment")' >/dev/null || return 1
   before=$(count fm_task_event)
   ow --action answer --task $t --option 'Option A'
   must 'no owner' 2 || return 1
@@ -2026,7 +2128,7 @@ case_owner_writer() {
   must 'answer' 0 || return 1
   jq -e '.ok and .action == "answer" and (.writes | length) == 2' <<<"$OUT" >/dev/null || { echo "answer reply: $OUT"; return 1; }
   [ "$(task_state $t)" = ready ] || { echo "the answer did not unblock: $(task_state $t)"; return 1; }
-  db fm_task_event | jq -e --arg t $t '[.[] | select(.taskId == $t and (.kind == "comment" or .kind == "unblocked"))] | length == 2 and all(.actor == "owner:u-1" and .actorRole == "owner") and (map(select(.kind == "comment"))[0].body | fromjson | .note == "answer: Option A - go")' >/dev/null \
+  db fm_task_event | jq -e --arg t $t '[.[] | select(.taskId == $t and (.kind == "comment" or .kind == "unblocked") and ((.idempotencyKey // "") | startswith("owner-comment:") | not))] | length == 2 and all(.actor == "owner:u-1" and .actorRole == "owner") and (map(select(.kind == "comment"))[0].body | fromjson | .note == "answer: Option A - go")' >/dev/null \
     || { echo "the answer events: $(db fm_task_event | jq -c --arg t $t '[.[] | select(.taskId == $t) | {kind, actor, actorRole}]')"; return 1; }
   tail -n 1 "$FM_HOME/state/$t.status" | grep -q '^resolved ' || { echo "the answer wrote no resolved line: $(tail -n 2 "$FM_HOME/state/$t.status")"; return 1; }
   ow --action answer --task $t --option 'Option A' --owner u-1
@@ -2110,6 +2212,10 @@ case_stage() {
   ft comment $t --note "$stamp"; must 'real comment with stamp JSON' 0 || return 1
   task_row $t | jq -e --arg note "$stamp" '.lastNote == $note' >/dev/null \
     || { echo "a real comment shaped like a stamp did not become lastNote: $(task_row $t)"; return 1; }
+  ft comment $t --note 'different prior note'; must 'different prior note' 0 || return 1
+  ft comment $t --note "$stamp" --key 'backfill:another-task:backlog:0123abcd'; must 'stamp under another task key' 0 || return 1
+  task_row $t | jq -e --arg note "$stamp" '.lastNote == $note' >/dev/null \
+    || { echo 'a foreign task key hid a real note'; return 1; }
   ft comment $t --note 'real note'; must 'real note again' 0 || return 1  # the note SG2 expects reproject to restore
   # a reconcile divergence ({"field","oldSource","record"} under a reconcile:<task>: key, fm-task-reconcile-lib.mjs) is a
   # comparison record, not a note: lastNote stays
@@ -2128,7 +2234,7 @@ case_stage() {
   return 0
 }
 
-CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed row backlog status_view verify_view owner_writer stage wait carry"}
+CASES=${FM_TASK_CASES:-"owner_crash owner_router description_thread terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed row backlog status_view verify_view owner_writer stage wait carry"}
 
 # ---- real command -------------------------------------------------------------------
 
@@ -2150,6 +2256,8 @@ for f in fm-task.sh fm-task-lib.mjs fm-acceptance.mjs fm-task-owner.sh; do cp "$
 cp "$TMP_ROOT/fm-task-owner.sh.orig" "$MBIN/fm-task-owner.sh"; chmod +x "$MBIN/fm-task-owner.sh"
 cp "$TMP_ROOT/fm-acceptance.mjs.orig" "$MBIN/fm-acceptance.mjs"
 cp "$TMP_ROOT/fm-task.sh.orig" "$MBIN/fm-task.sh"
+cp "$ROOT/bin/fm-task-sources-lib.mjs" "$MBIN/fm-task-sources-lib.mjs"
+cp "$ROOT/bin/fm-backend.sh" "$ROOT/bin/fm-wake-lib.sh" "$ROOT/bin/fm-path-lib.sh" "$MBIN/"
 chmod +x "$MBIN/fm-task.sh"
 LIB="$MBIN/fm-task-lib.mjs"
 
@@ -2160,9 +2268,13 @@ mutate() {  # <label> <case> <exact source text> <replacement>
   if out=$(case_"$2" "$MBIN" 2>&1); then
     fail "removing the guard '$1' left case $2 green"
   fi
+  case "$out" in *ERR_MODULE_NOT_FOUND*|*'Cannot find module'*) fail "mutation '$1' failed to load: $out" ;; esac
   pass "guard '$1' is needed: case $2 goes red without it"
 }
 
+mutate 'owner comments route to firstmate without a worker' owner_router "if (sent.status !== 0) {" "if (false) {"
+mutate 'owner comments retain the newest event after a claim' owner_router 'const after = latest?.seq ?? 0;' 'const after = Number.MAX_SAFE_INTEGER;'
+mutate 'thread prints full comments' description_thread "bodyOf(event).note ?? ''}" "''}"
 mutate 'the event and its child travel in one request' terminal 'Object.assign(body, spec.children || {});' ';'
 mutate 'an empty value is refused' terminal "if (value === '') throw usage" 'if (false) throw usage'
 mutate 'the option count is checked' terminal 'if (options.length < 2 || options.length > 6)' 'if (false)'

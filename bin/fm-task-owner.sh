@@ -7,6 +7,7 @@
 # owner); the writer keeps seq, the transitions and the projection, and this file adds no rule of its own.
 #
 # Usage: fm-task-owner.sh --action ACTION --task TASK [--option O] [--row ID@W] [--note N] --owner ID
+#   comment  a task comment: store the note once per owner, note and minute              needs --note
 #   answer   a question:     comment "answer: <option>" (and " - <note>"), then unblock    needs --option
 #   unblock  a block:        comment "<note>", then unblock                                needs --note
 #   pass     an owner row:   check TASK ROW pass --evidence "<note>" (or "owner pass")     needs --row
@@ -70,6 +71,13 @@ run() {
 
 RC=0
 case "$ACTION" in
+  comment)
+    [[ "$NOTE" =~ [^[:space:]] ]] || usage 'comment needs a nonblank --note'
+    digest=$(printf '%s\0%s\0%s' "$OWNER" "$NOTE" "$(date -u +%Y-%m-%dT%H:%M)" | sha256sum) || usage 'comment digest failed'
+    digest=${digest%% *}
+    [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || usage 'comment digest is empty or invalid'
+    run comment "$TASK" --note "$NOTE" --key "owner-comment:$TASK:$digest" || RC=$?
+    ;;
   answer)
     [ -n "$OPTION" ] || usage 'answer needs --option'
     text="answer: $OPTION${NOTE:+ - $NOTE}"
@@ -84,6 +92,6 @@ case "$ACTION" in
     [ "$ACTION" = pass ] || [ -n "$NOTE" ] || usage 'fail needs --note'
     run check "$TASK" "$ROW" "$ACTION" --evidence "${NOTE:-owner pass}" || RC=$?
     ;;
-  *) usage "--action must be answer, unblock, pass or fail" ;;
+  *) usage "--action must be comment, answer, unblock, pass or fail" ;;
 esac
 if [ "$RC" -eq 0 ]; then reply true; else reply false "$ERROR"; fi
