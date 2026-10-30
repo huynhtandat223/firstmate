@@ -22,7 +22,7 @@ The role controls the role-allowed capability set and communication boundary.
 - `worker` may use this policy and only the capability named by its delivery path.
 - `firstmate` may use this policy and the ordinary Firstmate lifecycle owners.
 
-A `worker` may also use the verification capability when it verifies expected behavior or claims a task done.
+A `worker` may also use the verification capability when it verifies expected behavior or claims a task done, and the `how` and `why` capabilities when their trigger is active.
 Any role may use an interview or crystallization capability when the captain asks for it in that session.
 
 A role may use a capability only when its trigger is active.
@@ -44,8 +44,11 @@ Load only the exact file named by the first matching trigger, when the trigger o
 | Verification of a task's expected behavior begins, or a completion claim is about to be made | `/home/dathuynh/codes/firstmate/custom-skills/classical-testing/SKILL.md` |
 | A review task is opened | `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/code-review/SKILL.md` |
 | A diagnosis task is opened | `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/diagnosing-bugs/SKILL.md` |
+| A worker must change or judge existing behaviour it has not traced, or a placement or ownership question is open | `/home/dathuynh/.agents/skills/how/SKILL.md` |
+| A worker or firstmate is about to change, remove or overrule something whose reason is not in front of it (a regression stays with the diagnosis row) | `/home/dathuynh/.agents/skills/why/SKILL.md` |
 
 The vendored bytes under `custom-skills/matt/` are immutable.
+Adapted skills (`how`, `why`, `arena`, `swarm`) are not vendored: each carries a `PROVENANCE.md` naming its upstream commit and what changed.
 Read the exact path, preserve its procedure, and return here only for Firstmate authority and communication boundaries.
 
 ## Lazy loading and communication
