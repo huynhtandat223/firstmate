@@ -461,19 +461,25 @@ env_lease() {  # <fm-lease.sh args>...
   FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE "$SCRIPT_DIR/fm-lease.sh" "$@"
 }
 
-# The Tester's env lease ends when every ask that holds it has a result that is not pending on each of its rows. A
-# later claim by the Tester refreshes the same lease, so the asks that hold it are all asks naming it after its last
-# release line.
+# The asks that hold the Tester's lease <env:name>: a JSON array of the ledger's ask lines naming it after its last
+# release line. A later claim by the Tester refreshes the same lease, so every one of them holds it.
+lease_asks() {  # <env:name>
+  [ -f "$LEDGER" ] || { printf '[]\n'; return 0; }
+  # shellcheck disable=SC2016 # jq variables, not shell
+  jq -Rsc --arg l "$1" '[split("\n")[] | fromjson? | objects] as $all
+    | ([range(0; $all | length) | select($all[.].type == "release" and $all[.].lease == $l)] | last // -1) as $r
+    | [$all[$r + 1:][] | select(.type == "ask" and ((.leases // []) | index($l)))]' "$LEDGER"
+}
+
+# The Tester's env lease ends when every ask that holds it (lease_asks) has a result that is not pending on each of
+# its rows.
 release_landed_leases() {
   local f name asks ask task json landed
   for f in "$STATE"/.envlease-*; do
     [ -e "$f" ] && [ -f "$LEDGER" ] || continue
     name=${f##*/.envlease-}
     [ "$(cut -f1 "$f" 2>/dev/null)" = "$ASSISTANCE" ] || continue
-    # shellcheck disable=SC2016 # jq variables, not shell
-    asks=$(jq -Rsc --arg l "env:$name" '[split("\n")[] | fromjson? | objects] as $all
-      | ([range(0; $all | length) | select($all[.].type == "release" and $all[.].lease == $l)] | last // -1) as $r
-      | [$all[$r + 1:][] | select(.type == "ask" and ((.leases // []) | index($l)))]' "$LEDGER")
+    asks=$(lease_asks "env:$name")
     [ "$(jq length <<<"$asks")" -gt 0 ] || continue
     landed=1
     while IFS= read -r ask; do
@@ -783,7 +789,7 @@ rows_wait() {  # <ask-json> <suffix> <note>
 }
 
 # A rows-round ask: another holder's env lease, then the env gates, then the Tester's env leases; a held ask gets its wait
-# and hold line, a sent ask its wait, record and ledger line (a failed send gives its leases back).
+# and hold line, a sent ask its wait, record and ledger line (a failed send gives back the leases no other ask holds).
 deliver_rows_ask() {  # <ask-json>
   local ask=$1 file name envs='[]' held='' content record out lease_hold=0
   local -a names=() claimed=()
@@ -839,9 +845,14 @@ deliver_rows_ask() {  # <ask-json>
   ledger_append "$(jq -c --arg r "$DELIVER_BASE" --argjson at "$(date +%s)" 'del(.arrival) + {type: "ask", record: $r, at: $at}' <<<"$ask")"
 }
 
-release_claimed() {  # <env:name>...: give back the leases this delivery claimed
+# Give back the leases this delivery claimed, except one another ask still holds (lease_asks): the delivery's claim only
+# refreshed that lease, and release_landed_leases ends it when those asks land.
+release_claimed() {  # <env:name>...
   local lease
-  for lease in "$@"; do env_lease release "$lease" --holder "$ASSISTANCE" >/dev/null 2>&1 || true; done
+  for lease in "$@"; do
+    [ "$(lease_asks "$lease" | jq length)" -eq 0 ] || continue
+    env_lease release "$lease" --holder "$ASSISTANCE" >/dev/null 2>&1 || true
+  done
 }
 
 deliver_ask() {  # <ask-json>
