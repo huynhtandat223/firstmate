@@ -983,10 +983,12 @@ The skill text owns the marker spelling, the tick order, and the reinforcement r
 
 ## PR review rounds (config/pr-review.json)
 
-The built-in `pr-review` process-event source ([`bin/fm-procevent-pr-review.sh`](../bin/fm-procevent-pr-review.sh)) starts a review round for each new head of an open `fm/<task>` pull request.
-A round asks the Reviewer assistance and a ChatGPT reader about that exact head, labels each finding by whether the PR's diff caused it, and wakes firstmate once with both results.
-The script header owns the result format, the finding labels, the ledger under `data/pr-review/`, and its environment; `bin/fm-procevent.sh` owns arming and acknowledgement.
-Firstmate still verifies every finding and gives the verdict; the source never merges and never changes a PR.
+The built-in `pr-review` process-event source ([`bin/fm-procevent-pr-review.sh`](../bin/fm-procevent-pr-review.sh)) starts a review round for each new head of an open task pull request.
+A round asks the Reviewer assistance and a ChatGPT reader about that exact head and sends the in-scope findings directly to the worker, without waking firstmate for a delivered round.
+The same poll sends failed CI results to the worker and clears declared CI waits; green and superseded heads send no inbox message.
+The script header owns worker resolution, delivery, the retained findings firstmate reads at done, CI results, and the ledger under `data/pr-review/`; `bin/fm-task.sh --help` owns declared wait commands and the refusal of a transient block while PR checks run.
+`bin/fm-procevent.sh` owns arming and acknowledgement.
+Firstmate's review at done is unchanged; the source never merges and never changes a PR.
 
 `config/pr-review.json` is a local, gitignored file.
 A missing file, or `enabled` other than `true`, means the source reads no GitHub data, asks no one, and writes no ledger line.

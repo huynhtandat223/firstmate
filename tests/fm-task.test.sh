@@ -1918,6 +1918,27 @@ case_wait() {
   [ -z "$(declared "$f")" ] || { echo "the wait still reads as declared: $(declared "$f")"; return 1; }
   ft deliver tk-w1 --consumer wait-test >/dev/null
   [ "$(grep -c "^resolved .*key=wait-$n" "$f")" = 1 ] || { echo "a second read wrote a second resolved line"; return 1; }
+  # WF4: a transient block refuses running PR checks; a CI event clears the declared wait.
+  mk_running tk-ci >/dev/null || return 1
+  ft event tk-ci pr --pr-url https://github.com/example/repo/pull/8 >/dev/null || return 1
+  cat > "$TMP_ROOT/ci-gh" <<'SH'
+#!/usr/bin/env bash
+printf '[{"name":"build","state":"IN_PROGRESS"}]\n'
+SH
+  chmod +x "$TMP_ROOT/ci-gh"
+  FM_TASK_GH="$TMP_ROOT/ci-gh" ft block transient tk-ci --reason 'CI running' --next-actor worker
+  must 'transient CI block' 5 || return 1
+  [[ "$ERR" == *'event tk-ci wait --next-actor ci --clears-on ci'* ]] || { echo "missing wait command: $ERR"; return 1; }
+  [ "$(task_state tk-ci)" = running ] || { echo 'refused block changed task state'; return 1; }
+  ft event tk-ci wait --next-actor ci --clears-on ci --note 'checks on h1' >/dev/null || return 1
+  local ci_seq
+  ci_seq=$(seq_of)
+  ft event tk-ci ci --head h2 --note 'delivered CI failure on newer head' >/dev/null || { echo "$ERR"; return 1; }
+  grep -q "^resolved .*key=wait-$ci_seq.*cleared: ci event" "$FM_HOME/state/tk-ci.status" || { echo 'CI result did not clear wait'; return 1; }
+  ft event tk-ci wait --next-actor ci --clears-on ci --note 'checks on h3' >/dev/null || return 1
+  ci_seq=$(seq_of)
+  ft event tk-ci ci --head h3 --note 'CI green' >/dev/null || return 1
+  grep -q "^resolved .*key=wait-$ci_seq.*cleared: ci event" "$FM_HOME/state/tk-ci.status" || { echo 'green CI did not clear wait'; return 1; }
   # the owner's question waits on the answer
   mk_running tk-w2 >/dev/null || return 1
   ft ask tk-w2 "${ASK_FLAGS[@]}" --next-actor owner

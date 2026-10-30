@@ -196,7 +196,8 @@ esac
 . "$SCRIPT_DIR/fm-role-lib.sh"
 PAUSED_VERB=${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}
 IFS= read -r -d '' CREWMATE_PAUSE_INSTRUCTIONS <<EOF || true
-   Use \`$PAUSED_VERB: {why}\` - distinct from \`blocked:\` - when deliberately waiting for work or an external condition expected to clear on its own, including your own validation round.
+   For a CI wait, use \`bin/fm-task.sh event <task> wait --next-actor ci --clears-on ci --note '<why>'\`; the PR review source delivers a failed result to your inbox and clears the wait when checks finish.
+   Use \`$PAUSED_VERB: {why}\` for other external waits - distinct from \`blocked:\` - including your own validation round.
    Before ending your turn with your own background shell or monitor still running, or before waiting on your own pipeline run or a long foreground command, append \`$PAUSED_VERB [at=<epoch>]: {job and completion condition}\` to the status file.
    Name what you are waiting for and what will let you resume; do not repeat the declaration on every poll.
    Do not declare active implementation or reasoning as a wait.
@@ -601,7 +602,8 @@ Bound that command by what your harness lets one command run: in Pi pass the bas
 Give any `--wait` a duration a little under that bound.
 When the bound passes with nothing changed, run the same blocking command again, with no status check in between.
 The one exception is `respond`: it sent its answer before it began waiting, so reattach with `no-mistakes axi run --wait` instead, and never send the same `respond` again, because it would answer whichever gate parks next without you reading it.
-A wait your shell can watch this way needs no `paused:` line, except your own pipeline run, a long foreground command, or your own validation round, which you declare once just before its blocking hold: append `paused:` once just before its first blocking command, then stay in the command, and never append it again as you reissue that command.
+Declare a CI wait with `bin/fm-task.sh event <task> wait --next-actor ci --clears-on ci --note '<why>'` before its first blocking command; the result clears it automatically.
+For another wait your shell can watch this way, append `paused:` once before your own pipeline run, a long foreground command, or your own validation round, then stay in the command as you reissue it.
 EOF
 WAIT_SECTION=${WAIT_SECTION%$'\n'}
 WAIT_BLOCK=
