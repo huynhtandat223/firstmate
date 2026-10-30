@@ -844,9 +844,49 @@ scenario_rows_lease() {
   [ "$(ledger_count '.type == "release" and .lease == "env:company" and .task == "alpha"')" = 1 ] || { echo "no release line: $(ledger)"; return 1; }
 }
 
+# PR 223 review: two live rows asks hold `env:company` for the Tester (the second claim refreshes the same lease). The
+# newer ask landing first must not release the lease while the older ask still has a pending row; the poll after both
+# land releases it once and names both asks.
+scenario_rows_lease_two() {
+  new_lab "$1"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s/writer.calls"\ncase "$1" in checks) cat "%s/checks-$2.json" ;; esac\n' "$LAB" "$LAB" > "$LAB/writer"
+  chmod +x "$LAB/writer"
+  : > "$H/config/task-shadow"
+  local t row
+  row='{"task":"%s","state":"running","nextActor":"worker","issueUrl":"https://github.com/%s/issues/%s","head":null,"rows":[{"key":"A1@1440","scenarioId":"A1","width":"1440","surface":"user-visible","status":"%s","nextActor":"tester","head":"%s","carried":false,"due":true}]}\n'
+  mkdir -p "$H/config/env"
+  for t in alpha:500:h1 gamma:501:h2; do
+    printf 'kind=ship\n' > "$H/state/${t%%:*}.meta"
+    mkdir -p "$H/data/${t%%:*}"
+    printf 'surface: user-visible\nissue: https://github.com/%s/issues/%s\nrecord: rows\n' "$REPO" "$(cut -d: -f2 <<<"$t")" > "$H/data/${t%%:*}/verify.md"
+    fx_issue_raw "$(cut -d: -f2 <<<"$t")" "$(tpl_issue_body "$(tpl_scenario_env A1 'DMS env `company`' 1440)")"
+    # shellcheck disable=SC2059 # the row template above is the format
+    printf "$row" "${t%%:*}" "$REPO" "$(cut -d: -f2 <<<"$t")" pending "$(sha "${t##*:}")" > "$LAB/checks-${t%%:*}.json"
+  done
+  printf '9\n' > "$LAB/ram"
+  printf 'ram-read=cat %s/ram\nfloor-gb=6\nnever-touch=Titan.exe\n' "$LAB" > "$H/config/env/company"
+  fx_runs "1:completed:success:s0"
+  set_cursor 1 s0
+  export FM_TASK_SHADOW_WRITER="$LAB/writer"
+  cycle
+  [ "$(ledger_count '.type == "ask" and .leases == ["env:company"]')" = 2 ] || { unset FM_TASK_SHADOW_WRITER; echo "two asks do not both hold the lease: $(ledger)"; return 1; }
+  # the newer ask lands first: the older one is still pending, so the lease stays
+  # shellcheck disable=SC2059 # the row template above is the format
+  printf "$row" gamma "$REPO" 501 pass "$(sha h2)" > "$LAB/checks-gamma.json"
+  cycle
+  "$BIN/fm-lease.sh" check env:company >/dev/null || { unset FM_TASK_SHADOW_WRITER; echo "the lease was released while alpha's row was pending: $(ledger)"; return 1; }
+  [ "$(ledger_count '.type == "release"')" = 0 ] || { unset FM_TASK_SHADOW_WRITER; echo "a release line while alpha was pending: $(ledger)"; return 1; }
+  # shellcheck disable=SC2059 # the row template above is the format
+  printf "$row" alpha "$REPO" 500 pass "$(sha h1)" > "$LAB/checks-alpha.json"
+  cycle
+  unset FM_TASK_SHADOW_WRITER
+  ! "$BIN/fm-lease.sh" check env:company >/dev/null 2>&1 || { echo "the lease outlived both asks: $("$BIN/fm-lease.sh" check env:company)"; return 1; }
+  [ "$(ledger_count '.type == "release" and .lease == "env:company" and (.tasks | sort) == ["alpha", "gamma"]')" = 1 ] || { echo "no one release line naming both asks: $(ledger)"; return 1; }
+}
+
 run_scenarios() {  # <bin-dir>
   local s rc=0
-  for s in ledger skips not_deployed draft record failures runner skip_catchup rows refused replay replay_refused shadow rows_record carry rows_ask rows_lease; do
+  for s in ledger skips not_deployed draft record failures runner skip_catchup rows refused replay replay_refused shadow rows_record carry rows_ask rows_lease rows_lease_two; do
     out=$(scenario_"$s" "$1" 2>&1) || { printf 'scenario %s: %s\n' "$s" "$out"; rc=1; }
   done
   return $rc
@@ -854,7 +894,7 @@ run_scenarios() {  # <bin-dir>
 
 # ---- real adapter -----------------------------------------------------------
 
-for s in ledger skips not_deployed draft record failures runner skip_catchup rows refused replay replay_refused shadow rows_record carry rows_ask rows_lease; do
+for s in ledger skips not_deployed draft record failures runner skip_catchup rows refused replay replay_refused shadow rows_record carry rows_ask rows_lease rows_lease_two; do
   out=$(scenario_"$s" "$ROOT/bin" 2>&1) || fail "scenario $s failed on the real adapter: $out"
   pass "deploy-verify $s"
 done
