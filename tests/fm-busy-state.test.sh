@@ -564,6 +564,30 @@ test_herdr_native_busy_claude_idle_prompt() {
   pass "an idle Claude prompt with no hook record overrides herdr's native busy only when both reads agree"
 }
 
+# PR 223 review: the rendered read of a Claude pane must use Claude's own busy
+# signature. Claude's spinner footer ("✢ Onioning… (1m 40s ...") does not match
+# the generic default, so without the harness a working Claude pane under native
+# busy read idle. The capture is the only stub; the real rendered read runs.
+test_herdr_native_busy_claude_spinner_stays_busy() {
+  local state out
+  state=$(new_state_dir herdr-claude-spinner)
+  out=$(
+    # shellcheck source=/dev/null
+    . "$ROOT/bin/backends/herdr.sh"
+    # shellcheck disable=SC2329 # invoked indirectly through fm_busy_classify
+    fm_backend_busy_state() { printf busy; }
+    # shellcheck disable=SC2329 # invoked indirectly through fm_busy_classify
+    fm_backend_herdr_composer_state() { printf empty; }
+    # shellcheck disable=SC2329 # invoked indirectly through fm_backend_herdr_rendered_busy_state
+    fm_backend_herdr_capture() {
+      printf '%s\n' '● Reading the brief' '' '✢ Onioning… (1m 40s · ↓ 2.1k tokens)' '' '╭──────────╮' '│ >        │' '╰──────────╯'
+    }
+    fm_busy_classify herdr s:p claude t1 "$state"
+  )
+  [ "$out" = "busy herdr-native" ] || fail "a working Claude pane (spinner footer, empty composer) must stay busy, got '$out'"
+  pass "a Claude spinner footer keeps native busy: the rendered read uses Claude's busy signature"
+}
+
 # The record parser runs inside sourcing callers (the watcher, the daemon, the
 # crew-state reader), so it must not disturb their shell: no clobbered
 # positional parameters and no changed glob setting.
@@ -677,6 +701,7 @@ test_cursor_ignores_rendered_and_native_signals
 test_dead_endpoint_overrides
 test_herdr_native_busy_only
 test_herdr_native_busy_claude_idle_prompt
+test_herdr_native_busy_claude_spinner_stays_busy
 test_record_read_leaves_caller_shell_intact
 test_boolean_view_never_promotes_unknown
 
