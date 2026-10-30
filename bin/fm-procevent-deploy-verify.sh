@@ -462,22 +462,32 @@ env_lease() {  # <fm-lease.sh args>...
   FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE "$SCRIPT_DIR/fm-lease.sh" "$@"
 }
 
-# The Tester's env leases end when every row of the ask that claimed them has a result that is not pending.
+# The Tester's env lease ends when every ask that holds it has a result that is not pending on each of its rows. A
+# later claim by the Tester refreshes the same lease, so the asks that hold it are all asks naming it after its last
+# release line.
 release_landed_leases() {
-  local f name ask task json
+  local f name asks ask task json landed
   for f in "$STATE"/.envlease-*; do
     [ -e "$f" ] && [ -f "$LEDGER" ] || continue
     name=${f##*/.envlease-}
     [ "$(cut -f1 "$f" 2>/dev/null)" = "$ASSISTANCE" ] || continue
     # shellcheck disable=SC2016 # jq variables, not shell
-    ask=$(jq -Rc --arg l "env:$name" 'fromjson? | select(.type == "ask" and ((.leases // []) | index($l)))' "$LEDGER" | tail -n 1)
-    [ -n "$ask" ] || continue
-    task=$(jq -r .task <<<"$ask")
-    json=$(task_writer checks "$task" 2>/dev/null) || continue
-    jq -e --argjson k "$(jq -c '[.rows[] | ltrimstr("- ") | split(" | ")[0]]' <<<"$ask")" \
-      '(.rows | type == "array") and all(.rows[] | select(.key as $r | $k | index($r)); .status != "pending")' <<<"$json" >/dev/null 2>&1 || continue
+    asks=$(jq -Rsc --arg l "env:$name" '[split("\n")[] | fromjson? | objects] as $all
+      | ([range(0; $all | length) | select($all[.].type == "release" and $all[.].lease == $l)] | last // -1) as $r
+      | [$all[$r + 1:][] | select(.type == "ask" and ((.leases // []) | index($l)))]' "$LEDGER")
+    [ "$(jq length <<<"$asks")" -gt 0 ] || continue
+    landed=1
+    while IFS= read -r ask; do
+      task=$(jq -r .task <<<"$ask")
+      json=$(task_writer checks "$task" 2>/dev/null) || { landed=0; break; }
+      jq -e --argjson k "$(jq -c '[.rows[] | ltrimstr("- ") | split(" | ")[0]]' <<<"$ask")" \
+        '(.rows | type == "array") and all(.rows[] | select(.key as $r | $k | index($r)); .status != "pending")' <<<"$json" >/dev/null 2>&1 \
+        || { landed=0; break; }
+    done < <(jq -c '.[]' <<<"$asks")
+    [ "$landed" = 1 ] || continue
     env_lease release "env:$name" --holder "$ASSISTANCE" >/dev/null 2>&1 || continue
-    ledger_append "$(jq -c --arg l "env:$name" --argjson at "$(date +%s)" '{type: "release", lease: $l, task, key, at: $at}' <<<"$ask")"
+    ledger_append "$(jq -c --arg l "env:$name" --argjson at "$(date +%s)" \
+      'last as $n | {type: "release", lease: $l, task: $n.task, key: $n.key, tasks: (map(.task) | unique), keys: map(.key), at: $at}' <<<"$asks")"
   done
 }
 

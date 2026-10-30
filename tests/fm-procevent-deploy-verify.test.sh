@@ -1059,4 +1059,6 @@ mutate 'the poll releases the lease of landed rows' rows_lease \
   's/^  release_landed_leases\n//m'
 mutate 'pending rows keep the lease' rows_lease \
   's/; \.status != "pending"\)/; true)/'
+mutate 'every ask holding a lease must land before its release' rows_lease_two \
+  's/done < <\(jq -c .\.\[\]. <<<"\$asks"\)/done < <(jq -c "last" <<<"\$asks")/'
 pass 'every guarded behavior has a red mutation proof'
