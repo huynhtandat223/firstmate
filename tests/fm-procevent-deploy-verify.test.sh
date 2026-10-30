@@ -890,9 +890,46 @@ scenario_rows_lease_two() {
   [ "$(ledger_count '.type == "release" and .lease == "env:company" and (.tasks | sort) == ["alpha", "gamma"]')" = 1 ] || { echo "no one release line naming both asks: $(ledger)"; return 1; }
 }
 
+# PR 223 reader round 2: a rows ask whose send fails gives back only a lease no other ask holds. Alpha's ask holds
+# `env:company` for the Tester; gamma's ask on the same env then fails to send (the Tester is unregistered), and the
+# lease alpha's pending row needs stays.
+scenario_rows_lease_failed_send() {
+  new_lab "$1"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s/writer.calls"\ncase "$1" in checks) cat "%s/checks-$2.json" ;; esac\n' "$LAB" "$LAB" > "$LAB/writer"
+  chmod +x "$LAB/writer"
+  : > "$H/config/task-shadow"
+  local t row
+  row='{"task":"%s","state":"running","nextActor":"worker","issueUrl":"https://github.com/%s/issues/%s","head":null,"rows":[{"key":"A1@1440","scenarioId":"A1","width":"1440","surface":"user-visible","status":"%s","nextActor":"tester","head":"%s","carried":false,"due":true}]}\n'
+  mkdir -p "$H/config/env"
+  for t in alpha:500:h1 gamma:501:h2; do
+    mkdir -p "$H/data/${t%%:*}"
+    printf 'surface: user-visible\nissue: https://github.com/%s/issues/%s\nrecord: rows\n' "$REPO" "$(cut -d: -f2 <<<"$t")" > "$H/data/${t%%:*}/verify.md"
+    fx_issue_raw "$(cut -d: -f2 <<<"$t")" "$(tpl_issue_body "$(tpl_scenario_env A1 'DMS env `company`' 1440)")"
+    # shellcheck disable=SC2059 # the row template above is the format
+    printf "$row" "${t%%:*}" "$REPO" "$(cut -d: -f2 <<<"$t")" pending "$(sha "${t##*:}")" > "$LAB/checks-${t%%:*}.json"
+  done
+  printf '9\n' > "$LAB/ram"
+  printf 'ram-read=cat %s/ram\nfloor-gb=6\nnever-touch=Titan.exe\n' "$LAB" > "$H/config/env/company"
+  fx_runs "1:completed:success:s0"
+  set_cursor 1 s0
+  export FM_TASK_SHADOW_WRITER="$LAB/writer"
+  printf 'kind=ship\n' > "$H/state/alpha.meta"
+  cycle
+  [ "$(ledger_count '.type == "ask" and .task == "alpha" and .leases == ["env:company"]')" = 1 ] || { unset FM_TASK_SHADOW_WRITER; echo "alpha's ask does not hold the lease: $(ledger)"; return 1; }
+  # gamma's ask fails to send: the lease alpha's pending row holds stays with the Tester
+  printf 'kind=ship\n' > "$H/state/gamma.meta"
+  unregister_tester
+  cycle
+  [ "$(ledger_count '.type == "ask" and .task == "gamma"')" = 0 ] || { unset FM_TASK_SHADOW_WRITER; echo "gamma's ask went out: $(ledger)"; return 1; }
+  [ "$("$BIN/fm-lease.sh" check env:company 2>/dev/null | cut -d' ' -f1)" = tester ] \
+    || { unset FM_TASK_SHADOW_WRITER; echo "gamma's failed send gave back the lease alpha's ask holds: $("$BIN/fm-lease.sh" check env:company 2>&1)"; return 1; }
+  register_tester
+  unset FM_TASK_SHADOW_WRITER
+}
+
 run_scenarios() {  # <bin-dir>
   local s rc=0
-  for s in ledger skips not_deployed draft record failures runner skip_catchup rows refused replay replay_refused shadow rows_record carry rows_ask rows_lease rows_lease_two; do
+  for s in ledger skips not_deployed draft record failures runner skip_catchup rows refused replay replay_refused shadow rows_record carry rows_ask rows_lease rows_lease_two rows_lease_failed_send; do
     out=$(scenario_"$s" "$1" 2>&1) || { printf 'scenario %s: %s\n' "$s" "$out"; rc=1; }
   done
   return $rc
@@ -900,7 +937,7 @@ run_scenarios() {  # <bin-dir>
 
 # ---- real adapter -----------------------------------------------------------
 
-for s in ledger skips not_deployed draft record failures runner skip_catchup rows refused replay replay_refused shadow rows_record carry rows_ask rows_lease rows_lease_two; do
+for s in ledger skips not_deployed draft record failures runner skip_catchup rows refused replay replay_refused shadow rows_record carry rows_ask rows_lease rows_lease_two rows_lease_failed_send; do
   out=$(scenario_"$s" "$ROOT/bin" 2>&1) || fail "scenario $s failed on the real adapter: $out"
   pass "deploy-verify $s"
 done
