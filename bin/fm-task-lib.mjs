@@ -36,7 +36,8 @@
 //   archive  <task>                          triage|todo|ready|blocked|review|done -> archived
 //   describe <task> --document FILE.md [--document-title T]              any state; default title Description
 //   thread   <task> [--since SEQ]                                       full comments, oldest first
-//   comment  <task> --note T [--image PATH --image-label L]...             any state
+//   comment  <task> --note T [--image PATH --image-label L]... [--ask why|how|wait-what] [--reply-to SEQ]
+//            any state; reply-to must name a comment of this task
 //   event    <task> <kind> [--note N] [--pr-url U] [--head H]   kinds: steer comment pr deploy ci protocol_violation
 //            divergence; --head on deploy (the deployed head, which user-visible passes count on from then) or on ci
 //            (the head the CI result read); no other kind takes it
@@ -92,6 +93,7 @@
 // cannot: the value lists (states, kinds, actors, roles), an empty value, 2 to 6 options, and the
 // transitions below.
 //
+// Every new event body carries stage from the existing fold after that event; old events are not backfilled.
 // Event log and projection. `seq` is global: the writer reads the highest, creates seq + 1 under the unique
 // key and retries on 409 (reading the task's events again each time, so a transition is checked against the
 // events that are really before it). Each event body is JSON {"v":1,"note":...,"set":{...}} and `set` holds
@@ -252,7 +254,17 @@ async function firstRow(table, filter, orderby = 'id') {
   return (ok(await http('GET', `/api/${table}?${query.join('&')}`), `list ${table}`).value || [])[0] || null;
 }
 const highestSeq = async () => (await firstRow('fm_task_event', 'seq ge 0', 'seq desc'))?.seq ?? 0;
-const taskEvents = (taskId) => listAll('fm_task_event', { filter: `taskId eq ${lit(taskId)}`, orderby: 'seq' });
+async function taskEvents(taskId) {
+  const events = await listAll('fm_task_event', { filter: `taskId eq ${lit(taskId)}`, orderby: 'seq' });
+  for (const event of events) {
+    const body = bodyOf(event);
+    if (!body.noteDocument) continue;
+    const doc = await firstRow('fm_event_document', `fmTaskEventId eq ${event.id} and title eq 'Event note'`);
+    if (!doc) throw new Fail(3, `the note document of event ${event.seq} is missing`);
+    event.body = JSON.stringify({ ...body, note: doc.content });
+  }
+  return events;
+}
 const eventByKey = (key) => firstRow('fm_task_event', `idempotencyKey eq ${lit(key)}`);
 const taskRow = (taskId) => firstRow('fm_task', `taskId eq ${lit(taskId)}`);
 const checkRows = (taskId) => listAll('fm_task_check', { filter: `taskId eq ${lit(taskId)}`, orderby: 'scenarioId' });
@@ -375,7 +387,7 @@ const SPECS = {
   archive: { pos: ['task'], flags: {} },
   describe: { pos: ['task'], flags: { document: 's', 'document-title': 's' } },
   thread: { pos: ['task'], flags: { since: 's' } },
-  comment: { pos: ['task'], flags: { image: 'm', 'image-label': 'm' } },
+  comment: { pos: ['task'], flags: { image: 'm', 'image-label': 'm', ask: 's', 'reply-to': 's' } },
   event: { pos: ['task', 'kind'], flags: { 'pr-url': 's', head: 's', touched: 's', 'next-actor': 's', 'clears-on': 's', rows: 's' } },
   checks: { pos: ['task'], flags: { 'as-deployed': 's', touched: 's' } },
   link: { pos: ['parent', 'child'], flags: {} },
@@ -479,7 +491,14 @@ async function append(taskId, who, build) {
     const events = await taskEvents(taskId);
     const spec = await build({ task: fold(events), events });
     checkSet(spec.set || {});
+    if (spec.note && JSON.stringify({ v: 1, note: spec.note, set: spec.set || {}, ...spec.extra }).length > 8000 - EVENT_STAGE_BUDGET) {
+      spec.children = { ...spec.children, documents: [...(spec.children?.documents || []), { title: 'Event note', mediaType: 'text/plain', content: spec.note }] };
+      spec.note = '';
+      spec.extra = { ...spec.extra, noteDocument: true };
+    }
     const body = { seq: high + 1, taskId, kind: spec.kind, actorRole: who.role, actor: who.actor, body: wireBody(spec), idempotencyKey: who.key };
+    const stage = fold([...events, body])?.stage;
+    body.body = wireBody({ ...spec, extra: { ...spec.extra, stage } });
     Object.assign(body, spec.children || {});
     let res;
     try {
@@ -980,9 +999,11 @@ function rowValues(taskId, section, row, notes) {
 
 // A row event, naming the backlog file whose view holds the row; text over one event body goes in a documents child
 // as `<row>\n<notes>`.
+// Reserve 64 characters for the stage metadata append adds, without duplicating its fold rules.
+const EVENT_STAGE_BUDGET = 64;
 function rowSpec(taskId, set, note, file) {
   const extra = { file };
-  if (set.row === undefined || JSON.stringify({ v: 1, note, set, ...extra }).length <= 8000) return { kind: 'row', note, set, extra };
+  if (set.row === undefined || JSON.stringify({ v: 1, note, set, ...extra }).length <= 8000 - EVENT_STAGE_BUDGET) return { kind: 'row', note, set, extra };
   const doc = { title: `backlog row ${taskId}`, mediaType: 'text/markdown', content: `${set.row}\n${set.notes}` };
   return { kind: 'row', note, set: { section: set.section, rowDocument: true }, extra, children: { documents: [doc] } };
 }
@@ -1248,9 +1269,15 @@ async function cmdComment(args) {
   const who = identity(args, 'worker');
   const images = imagesOf(args);
   if (!args.flags.note && !images.length) throw usage('comment needs --note or --image');
-  return write(taskId, who, async ({ task }) => {
+  const ask = args.flags.ask;
+  if (ask !== undefined && !['why', 'how', 'wait-what'].includes(ask)) throw usage('--ask must be why, how or wait-what');
+  const reply = args.flags['reply-to'];
+  if (reply !== undefined && (!/^[1-9][0-9]*$/.test(reply) || !Number.isSafeInteger(Number(reply)))) throw usage('--reply-to must be a positive integer sequence');
+  return write(taskId, who, async ({ task, events }) => {
     guard('comment', task);
-    return { kind: 'comment', note: noteOf(args), children: withImages({}, images) };
+    if (reply !== undefined && !events.some((event) => event.seq === Number(reply) && event.kind === 'comment')) throw rule('--reply-to must name an existing comment of this task');
+    const spec = { kind: 'comment', note: noteOf(args), extra: { ...(ask ? { ask } : {}), ...(reply !== undefined ? { replyTo: Number(reply) } : {}) }, children: withImages({}, images) };
+    return spec;
   });
 }
 

@@ -483,6 +483,13 @@ Log-only logs those breaches and changes no launch.
 `bin/fm-dms-account-lib.sh` owns the file format and the check.
 The check is log-only until `config/enforce-dms-account` holds `block`: each hit is written to `state/enforce-dms-account.log` and the launch goes ahead.
 
+## Board task comments and stage history
+
+The board uses `bin/fm-task-owner.sh` for owner actions and `bin/fm-task.sh` for the event record.
+Their headers own the question-comment and linked-reply options.
+New events carry the stage computed by the existing fold after that event, so the board can draw history without a second copy of the stage rules.
+Old events are not backfilled.
+
 ## Task identity checks (config/enforce-task-identity)
 
 `bin/fm-task-identity-check.sh` owns three checks on task identity.
