@@ -124,5 +124,5 @@ fm_brief_verify_check() {  # <task-id> <brief-file>
   done < <(printf '%s\n' "$features" | sort -u)
   [ -n "$missing" ] || return 0
   fm_brief_verify_hit "$config" "$state" missing-verify \
-    "the brief for $task names no \`verify-cfw run <feature>\` for: $missing; name the run (npm run verify-cfw -- run <feature> --target storybook:<branch> --widths 1440,390 --json --out data/$task/) in the brief"
+    "the brief for $task names no \`verify-cfw run <feature>\` for: $missing; name the run (npm run verify-cfw -- run <feature> --target url:<base> --widths 1440,390 --json --out data/$task/) in the brief"
 }

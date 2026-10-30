@@ -485,7 +485,7 @@ test_sg5_a_brief_names_the_verify_run_for_each_mapped_page() {
   assert_equals '' "$(brief_log "$dir")" "sg5: and logs nothing"
 
   dir=$(make_brief_home sg5-npm board-task-detail)
-  write_brief "$dir" "$CFW_ISSUE" "Run npm run verify-cfw -- run board-task-detail,screens-debug-steps --target storybook:fm/x."
+  write_brief "$dir" "$CFW_ISSUE" "Run npm run verify-cfw -- run board-task-detail,screens-debug-steps --target url:http://127.0.0.1:6123."
   check_brief "$dir" "$FIXTURE/cfw-modules-1678.body"
   assert_equals '' "$ERR" "sg5: the npm form with a feature list names the run too"
 

@@ -14,7 +14,9 @@
 #                     (every repository).
 # Receipt rule, only for a task with surface=user-visible in state/<task>.meta
 # on huynhtandat223/cfw-modules (the name is matched without regard to case). The body needs
-#   Self-test: verify-cfw run <features> --target storybook:<branch> head=<sha> PASS
+#   Self-test: verify-cfw run <features> --target url:<base> head=<sha> PASS
+# where <base> is a Storybook the task serves itself (verify-cfw's url: target);
+# Storybook 5010 (storybook:<branch>) is the owner's UI/UX review, not a self-test.
 # (a body may keep older lines; the line whose sha prefixes the live head is read)
 # and data/<task>/selftest-<head>.json, written by the cfw-modules verify-cfw
 # tool, must read PASS at the live head:
@@ -107,11 +109,11 @@ fm_selftest_phrase_hits() {
 # The plain Self-test line for the live head, or nothing. A body may keep older
 # lines, so the line whose sha is a prefix of the live head wins; with none, the
 # first line is returned, for the stale-head message. Prints
-# "<features><TAB><branch><TAB><sha>".
+# "<features><TAB><base><TAB><sha>".
 # fm_selftest_line <body-file> <live-head>
 fm_selftest_line() {
   local n text first='' live=${2,,}
-  local re='^Self-test:[[:space:]]+verify-cfw[[:space:]]+run[[:space:]]+([^[:space:]]+)[[:space:]]+--target[[:space:]]+storybook:([^[:space:]]+)[[:space:]]+head=([0-9a-fA-F]{9,})[[:space:]]+PASS[[:space:]]*$'
+  local re='^Self-test:[[:space:]]+verify-cfw[[:space:]]+run[[:space:]]+([^[:space:]]+)[[:space:]]+--target[[:space:]]+url:([^[:space:]]+)[[:space:]]+head=([0-9a-fA-F]{9,})[[:space:]]+PASS[[:space:]]*$'
   while IFS=$'\t' read -r n text; do
     if [[ "$text" =~ $re ]]; then
       local found
@@ -129,18 +131,18 @@ fm_selftest_line() {
 # The receipt rule for one user-visible cfw-modules task.
 # fm_selftest_receipt_rule <body-file> <task-id> <live-head>
 fm_selftest_receipt_rule() {
-  local body=$1 task=$2 head=$3 found features branch sha receipt result_head out
+  local body=$1 task=$2 head=$3 found features base sha receipt result_head out
   local out_dir="$FM_HOME/data/$task" cmd
   found=$(fm_selftest_line "$body" "$head")
   features='<features>'
-  branch='<branch>'
+  base='<base>'
   if [ -n "$found" ]; then
-    IFS=$'\t' read -r features branch sha <<< "$found"
+    IFS=$'\t' read -r features base sha <<< "$found"
   fi
-  cmd="npm run verify-cfw -- run $features --target storybook:$branch --head $head --widths 1440,390 --json --out $out_dir/"
+  cmd="npm run verify-cfw -- run $features --target url:$base --head $head --widths 1440,390 --json --out $out_dir/"
   if [ -z "$found" ]; then
     fm_selftest_hit merge-selftest no-selftest-line \
-      "the PR body has no \"Self-test: verify-cfw run <features> --target storybook:<branch> head=<sha> PASS\" line; run: $cmd"
+      "the PR body has no \"Self-test: verify-cfw run <features> --target url:<base> head=<sha> PASS\" line; run: $cmd"
     return 0
   fi
   sha=${sha,,}
@@ -207,8 +209,8 @@ fm_selftest_receipt_rule() {
   line_features=$(printf '%s\n' "$features" | tr ',' '\n' | sort -u | paste -sd, -)
   [ "$receipt_features" = "$line_features" ] \
     || differs="$differs; the receipt ran features ${receipt_features:-none} but the Self-test line names $line_features"
-  [ "$receipt_target" = "storybook:$branch" ] \
-    || differs="$differs; the receipt ran target ${receipt_target:-none} but the Self-test line names storybook:$branch"
+  [ "$receipt_target" = "url:$base" ] \
+    || differs="$differs; the receipt ran target ${receipt_target:-none} but the Self-test line names url:$base"
   local width
   for width in 1440 390; do
     case ",$receipt_widths," in
