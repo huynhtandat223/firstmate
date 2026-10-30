@@ -603,7 +603,7 @@ Give any `--wait` a duration a little under that bound.
 When the bound passes with nothing changed, run the same blocking command again, with no status check in between.
 The one exception is `respond`: it sent its answer before it began waiting, so reattach with `no-mistakes axi run --wait` instead, and never send the same `respond` again, because it would answer whichever gate parks next without you reading it.
 Declare a CI wait with `bin/fm-task.sh event <task> wait --next-actor ci --clears-on ci --note '<why>'` before its first blocking command; the result clears it automatically.
-For another wait your shell can watch this way, append `paused:` once before your own pipeline run, a long foreground command, or your own validation round, then stay in the command as you reissue it.
+For another wait your shell can watch this way, append `paused:` for your own pipeline run, a long foreground command, or your own validation round, which you declare once just before its blocking hold; then stay in the command as you reissue it.
 EOF
 WAIT_SECTION=${WAIT_SECTION%$'\n'}
 WAIT_BLOCK=
