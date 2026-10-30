@@ -1595,6 +1595,9 @@ async function cmdGate(args) {
   const wanted = [...(await wantedRows(f.issue))].filter(([, want]) => want.surface === 'user-visible');
   if (!wanted.length) problems.push(`issue ${f.issue} has no user-visible scenario row`);
   const have = new Map(newestRows(await checkRows(taskId), events).map((r) => [rowKey(r), r]));
+  // a carried pass counts only for the latest recorded deployed head
+  const lastDeploy = [...events].reverse().find((e) => e.kind === 'deploy' && bodyOf(e).head);
+  const deployedHead = lastDeploy ? bodyOf(lastDeploy).head : null;
   for (const [key, want] of wanted) {
     const row = have.get(key);
     if (!row) {
@@ -1609,7 +1612,7 @@ async function cmdGate(args) {
     const ev = row.evidence ?? '';
     if (!ev || ev === '-') problems.push(`${key} is pass without evidence`);
     else if (!/^https?:\/\/./.test(ev) && !fs.existsSync(path.resolve(f['evidence-root'] || '.', ev))) problems.push(`${key} evidence path does not exist: ${ev}`);
-    if ((row.head ?? null) !== f.head && carried(row, events)) out(`${key} carried: pass on head ${row.head}, and no later deployed PR names ${row.scenarioId}`);
+    if ((row.head ?? null) !== f.head && f.head === deployedHead && carried(row, events)) out(`${key} carried: pass on head ${row.head}, and no later deployed PR names ${row.scenarioId}`);
     else if ((row.head ?? null) !== f.head) problems.push(`${key} passed on head ${row.head ?? 'none'}, not the deployed head ${f.head}`);
   }
   const wantedKeys = new Set(wanted.map(([key]) => key));

@@ -2292,6 +2292,7 @@ mutate 'a deploy that names an id brings its row back' carry "Array.isArray(body
 mutate 'a deploy that records nothing touches every row' carry "Array.isArray(bodyOf(e).touched) && !bodyOf(e).touched.includes(row.scenarioId)" "!(bodyOf(e).touched || []).includes(row.scenarioId)"
 mutate 'the gate prints each carried pass with its head' carry "&& carried(row, events)) out(" "&& false) out("
 mutate 'a carried pass counts the deploys after its head was deployed' carry "const own = [...deploys].reverse().find((e) => bodyOf(e).head === row.head);" "const own = rowEvent(events, row);"
+mutate 'a carried pass counts only for the latest deployed head' carry '&& f.head === deployedHead && carried(row, events)) out(' '&& carried(row, events)) out('
 mutate 'checks --as-deployed reads a next deploy' carry "const view = as ? [" "const view = false ? ["
 mutate 'an owner pass or fail sets the owner item' owner_writer "if (who.role === 'owner' && status !== 'pending') await ownerVerdict(" "if (false) await ownerVerdict("
 mutate_owner() {  # <label> <exact wrapper text> <replacement>: the owner_writer case goes red
