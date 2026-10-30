@@ -67,7 +67,8 @@
 # bin/fm-task.sh, and config/task-shadow holds its settings.
 # A deploy round asks only for the rows the Tester checks on the deployed head
 # (firstmate#176 G2). Each merged PR names the scenarios it changes in one PR-body
-# line `Scenarios touched: <ids>|none|all`; a PR with no line names none. A pass on
+# line `Scenarios touched: <ids>|none|all`; only an explicit `none` names none, and
+# a PR with no line, or a line with neither ids nor `none`, touches all. A pass on
 # an earlier deployed head carries while no PR of the deploy names its id: the ask
 # drops that row, drops an id with no row left from `lines`, and lists the row under
 # `carried` with the head it passed on. Only a task begun after T5 carries: it reads
@@ -268,20 +269,22 @@ keep_pending_result() { attention_skip "$1"; }
 
 issue_ref() { printf '%s#%s\n' "${REPO##*/}" "$1"; }
 
-# The PR body's `Scenarios touched:` line: all, none (also for a body with no line), or its ids, comma-separated.
+# The PR body's `Scenarios touched:` line: all, none, or its ids, comma-separated. Only an explicit `none` names none;
+# a body with no line, or a line with neither ids nor `none`, touches all, so its deploy carries nothing.
 pr_touched() {  # <pr-body>
   printf '%s\n' "$1" | tr -d '\r`' | awk '
     tolower($0) ~ /^[ \t]*([-*][ \t]*)?scenarios touched:/ {
       sub(/^[^:]*:/, ""); gsub(/[ \t,;]+/, " ")
-      n = split($0, ids, " "); o = ""
+      n = split($0, ids, " "); o = ""; z = 0
       for (i = 1; i <= n; i++) {
         id = ids[i]; sub(/\.$/, "", id); t = tolower(id)
         if (t == "all") { print "all"; found = 1; exit }
-        if (t != "none" && id ~ /^[A-Za-z0-9_.-]+$/) o = o (o == "" ? "" : ",") id
+        if (t == "none") z = 1
+        else if (id ~ /^[A-Za-z0-9_.-]+$/) o = o (o == "" ? "" : ",") id
       }
-      print (o == "" ? "none" : o); found = 1; exit
+      print (o != "" ? o : (z ? "none" : "all")); found = 1; exit
     }
-    END { if (!found) print "none" }'
+    END { if (!found) print "all" }'
 }
 
 # Plan the deploy of <sha>: every merged PR in the commits since <base> maps to
