@@ -1675,6 +1675,19 @@ case_row() {
   must 'row just below event limit' 0 || return 1
   [ "$(count fm_event_document)" = $((docs + 1)) ] || { echo 'near-limit row did not travel in a document'; return 1; }
   task_row tk-row1 | jq -e --rawfile r "$d/near-row" '.row == $r and .notes == ""' >/dev/null || return 1
+  # Long comments and skill replies keep their complete note in a document.
+  local long_note question_seq
+  long_note=$(head -c 7958 /dev/zero | tr '\0' c)
+  ft comment tk-row1 --note "$long_note"; must '7958-character comment' 0 || return 1
+  question_seq=$(seq_of)
+  ft thread tk-row1; must 'read long comment' 0 || return 1
+  grep -Fx "$long_note" <<<"$OUT" >/dev/null || return 1
+  long_note=$(head -c 20000 /dev/zero | tr '\0' r)
+  ft comment tk-row1 --reply-to "$question_seq" --note "$long_note"; must '20000-character reply' 0 || return 1
+  ft thread tk-row1; must 'read long reply' 0 || return 1
+  grep -Fx "$long_note" <<<"$OUT" >/dev/null || return 1
+  ft show tk-row1 --json; must 'show long reply' 0 || return 1
+  [ "$(jq -r .lastNote <<<"$OUT")" = "${long_note:0:300}" ] || return 1
   # a row and notes longer than one event body
   { printf 'tk-row1 - '; head -c 6000 /dev/zero | tr '\0' x; } > "$d/big-row"
   for _ in $(seq 1 60); do printf '  %s\n' "$(head -c 60 /dev/zero | tr '\0' y)"; done > "$d/big-notes"
@@ -2377,7 +2390,8 @@ mutate 'the gate refuses a task the record does not hold' gate '  if (!fold(even
 mutate 'rows --surface user-visible writes only the Tester rows' rows_visible "surface === 'all' || want.surface === surface" 'true'
 mutate 'rows of another surface are left as they are' rows_visible "|| (surface !== 'all' && row.surface !== surface)) continue;" ') continue;'
 mutate 'a deployed task needs a deployed head to approve' approve_deployed "&& lastHeadEvent(events)?.kind !== 'deploy') {" '&& false) {'
-mutate 'a row longer than one event body travels in a document child' row 'if (set.row === undefined || JSON.stringify({ v: 1, note, set, ...extra }).length <= 8000 - ROW_STAGE_BUDGET) return' 'if (true) return'
+mutate 'a row longer than one event body travels in a document child' row 'if (set.row === undefined || JSON.stringify({ v: 1, note, set, ...extra }).length <= 8000 - EVENT_STAGE_BUDGET) return' 'if (true) return'
+mutate 'long comments travel in documents' row 'if (JSON.stringify({ v: 1, note: spec.note, set: {}, ...spec.extra }).length > 8000 - EVENT_STAGE_BUDGET)' 'if (false)'
 mutate 'the projection reads a long row from its document' row 'return events.map((e) => (e === carrier ? { ...e, rowText } : e));' 'return events;'
 mutate 'a row must be the header of its own task' row "if (ROW_LINE.exec(\`- [ ] \${row}\`)?.[1] !== taskId) throw rule" 'if (false) throw rule'
 mutate 'notes cannot hold a row or a section' row 'if (ROW_LINE.test(line) || SECTION_LINE.test(line)) throw rule' 'if (false) throw rule'
