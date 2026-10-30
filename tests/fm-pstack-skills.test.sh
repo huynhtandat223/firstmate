@@ -43,8 +43,11 @@ test_arena_keeps_its_phases_and_rules() {
     "Write the rubric before fan-out" \
     "The judge is never from the parent firstmate session's model family." \
     'A seat is a worker started by `bin/fm-spawn.sh`' \
-    "Read the usage meters before fan-out and record each reading in the backlog note"
-  pass "arena keeps its six phases, the rubric, the judge, the seats and the meter read"
+    "Read the usage meters before fan-out and record each reading in the backlog note" \
+    'Each writes its plan as its scout report, `data/<id>/report.md` (the report is the plan)'
+  assert_no_grep "plan.md" "$ARENA/SKILL.md" \
+    "arena skill has a plan seat write a file its scout brief does not allow: plan.md"
+  pass "arena keeps its six phases, the rubric, the judge, the seats, the meter read and the plan-as-report rule"
 }
 
 test_swarm_keeps_its_phases_and_rules() {

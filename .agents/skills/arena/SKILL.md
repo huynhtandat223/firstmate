@@ -25,12 +25,12 @@ Every seat gets the same task text, so the task text is the contract.
 4. Pick the seats from `data/captain.md` "Workers and models", from at least two model families, never Fable or `cx/gpt-6-astra`.
    A seat is a worker started by `bin/fm-spawn.sh`, with its own worktree, pane and `state/<id>.meta`.
    - For a plan, the seats are two scouts briefed with the Planner charter: claude `claude-opus-5-5` high on Claude3 or Claude4, and Pi `9route/cx/gpt-6.1-sol` high.
-     Each writes `data/<id>/plan.md` and files nothing: no issue, PR or comment.
+     Each writes its plan as its scout report, `data/<id>/report.md` (the report is the plan), and files nothing: no issue, PR or comment.
    - For code, each seat is a scout that commits its candidate on the local branch of its own worktree and names that commit in `data/<id>/report.md`; no seat opens a PR.
    - Add seats when the arena covers several design directions.
      Use the same model several times when the work is generation-bound rather than judgment-sensitive.
 5. Scaffold each seat's brief with `bin/fm-brief.sh <id> <project> --scout`.
-   `## Captain's intent` holds the task text; `## Firstmate spec` names the seat's output path and asks for a short rationale naming the alternatives it considered and what it rejected.
+   `## Captain's intent` holds the task text; `## Firstmate spec` names the seat's output (its report, or for code its commit) and asks for a short rationale naming the alternatives it considered and what it rejected.
 
 ## Phase B: Fan out
 
@@ -64,7 +64,7 @@ When two candidates tie, prefer the cleaner boundary or the smaller API.
 Walk each other candidate once more for what is worth porting into the base, usually one or two things per candidate.
 Graft by hand so the result stays coherent under one mental model; pasting sections side by side is not a graft.
 
-- For a plan, the plan's own spawned Planner grafts and files: a fresh `bin/fm-spawn.sh --scout` with the Planner charter, briefed with the base, the chosen grafts and the rubric.
+- For a plan, the plan's own spawned Planner grafts and files: a fresh `bin/fm-spawn.sh --scout` with the Planner charter, briefed with the base seat's report, the chosen grafts with their source reports, and the rubric.
   It closes after filing, with `bin/fm-teardown.sh`.
 - For code, one ship worker folds the base and the grafts into the feature's one PR.
 
@@ -84,7 +84,7 @@ One grafted artifact and one synthesis note at `data/<arena-id>/synthesis.md`, w
 The synthesis note names:
 
 - the usage readings and the rubric, both as written before fan-out;
-- each seat's harness, model, effort and account, and its output path;
+- each seat's harness, model, effort and account, and its report path;
 - the base and why;
 - the judge's verdict and whether it agrees with firstmate's pick, or that the judge was skipped;
 - each graft with its source seat, and what was rejected and why;
