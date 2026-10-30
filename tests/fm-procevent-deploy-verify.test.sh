@@ -768,7 +768,7 @@ scenario_rows_ask() {
   [ "$CYCLE_AUTO" = 0 ] || { unset FM_TASK_SHADOW_WRITER; echo "held: autohandle=$CYCLE_AUTO"; return 1; }
   [ -z "$(asked)" ] || { unset FM_TASK_SHADOW_WRITER; echo "a held ask was sent: $(asked)"; return 1; }
   [ "$(cat "$LAB/recover.log" 2>/dev/null)" = ran ] || { unset FM_TASK_SHADOW_WRITER; echo "the recover step did not run once: $(cat "$LAB/recover.log" 2>&1)"; return 1; }
-  grep -q "^event alpha wait --next-actor tester --clears-on rows --rows A1@1440,A2@1440 --note .*company.*4 GB.*floor 6 GB.* --key deploy-verify:rows:alpha:[^ ]*:wait --actor deploy-verify --role system$" "$LAB/writer.calls" \
+  grep -q "^event alpha wait --next-actor tester --clears-on rows --rows A1@1440,A2@1440 --note .*company.*4 GB.*floor 6 GB.* --key deploy-verify:rows:alpha:[^ ]*:hold --actor deploy-verify --role system$" "$LAB/writer.calls" \
     || { unset FM_TASK_SHADOW_WRITER; echo "no wait names the floor: $(cat "$LAB/writer.calls")"; return 1; }
   [ "$(ledger_count '.type == "ask"')" = 0 ] || { unset FM_TASK_SHADOW_WRITER; echo "a held ask is in the ledger: $(ledger)"; return 1; }
   # the next poll finds 4 GB, recovers to 8 GB and sends the ask
@@ -783,10 +783,17 @@ scenario_rows_ask() {
     and (.check | startswith("bin/fm-task.sh check alpha "))' >/dev/null \
     || { unset FM_TASK_SHADOW_WRITER; echo "rows ask: $(asked)"; return 1; }
   [ "$(ledger_count '.type == "ask" and .round == "rows" and .task == "alpha"')" = 1 ] || { unset FM_TASK_SHADOW_WRITER; echo "ledger: $(ledger)"; return 1; }
-  # a row asked on a head is not asked again on that head
+  grep -q "^event alpha wait --next-actor tester --clears-on rows --rows A1@1440,A2@1440 --note Tester asked for these rows on $(sha h1) --key deploy-verify:rows:alpha:[^ ]*:wait --actor deploy-verify --role system$" "$LAB/writer.calls" \
+    || { unset FM_TASK_SHADOW_WRITER; echo "the sent ask wrote no wait: $(cat "$LAB/writer.calls")"; return 1; }
+  # a row asked on a head is not asked again on that head: when A3 is pending on h1 too, the next ask holds A3 alone
+  cycle
+  [ "$(asked | wc -l | tr -d ' ')" = 1 ] || { unset FM_TASK_SHADOW_WRITER; echo "the rows were asked again: $(asked)"; return 1; }
+  jq -c --arg h "$(sha h1)" '(.rows[] | select(.key == "A3@1440") | .head) = $h' "$LAB/checks.json" > "$LAB/checks.next" && mv "$LAB/checks.next" "$LAB/checks.json"
   cycle
   unset FM_TASK_SHADOW_WRITER FM_DEPLOY_VERIFY_HOLD_SECONDS
-  [ "$(asked | wc -l | tr -d ' ')" = 1 ] || { echo "the rows were asked again: $(asked)"; return 1; }
+  if [ "$(asked | wc -l | tr -d ' ')" != 2 ] || ! asked | jq -e 'select(.round == "rows" and .lines == ["A3"]) | [.rows[] | split(" | ")[0]] == ["- A3@1440"]' >/dev/null; then
+    echo "a new row on the same head: $(asked)"; return 1
+  fi
 }
 
 run_scenarios() {  # <bin-dir>
@@ -930,4 +937,24 @@ mutate 'the dry run reads the record as deployed' carry \
   's/checks "\$task" --as-deployed "\$sha" --touched "\$touched"/checks "\$task"/'
 mutate 'the dry run ignores the ledger' carry \
   's/PLAN_IGNORE_LEDGER=1/PLAN_IGNORE_LEDGER=0/'
+mutate 'a rows ask holds only rows pending for the Tester' rows_ask \
+  's/select\(\.surface == "user-visible" and \.status == "pending" and \.nextActor == "tester" and \.head == \$h\)/select(.head == \$h)/'
+mutate 'a row asked on a head is not asked again' rows_ask \
+  's/<\(\[ ! -f "\$LEDGER" \] \|\| jq -Rr --arg t/<(true || jq -Rr --arg t/'
+mutate 'the poll plans the rows asks' rows_ask \
+  's/^[^\n]*plan_rows \|\| \{[^\n]*\n//m'
+mutate 'a rows ask names each row env' rows_ask \
+  's/env: \(\$envs \| with_entries\(select\(\.key as \$id \| \$lines \| index\(\$id\)\)\)\)/env: \$envs/'
+mutate 'an env gate applies to the env the rows name' rows_ask \
+  's/jq -e --arg n "\$name" .any\(/jq -e --arg n "\$name" '"'"'false and any(/'
+mutate 'below the floor the recover step runs' rows_ask \
+  's/if below "\$free" "\$floor" && \[ -n "\$recover" \]; then/if false; then/'
+mutate 'still below the floor the ask is held' rows_ask \
+  's/! below "\$\{after:-\$free\}" "\$floor" \|\| GATE_HELD=/true || GATE_HELD=/'
+mutate 'a held ask is planned again after its hold' rows_ask \
+  's/\[ -z "\$held_at" \] \|\| \[ \$\(\(now - held_at\)\) -ge "\$\{FM_DEPLOY_VERIFY_HOLD_SECONDS:-600\}" \] \|\| continue/[ -z "\$held_at" ] || continue/'
+mutate 'a sent rows ask writes its wait' rows_ask \
+  's/^[^\n]*rows_wait "\$ask" wait [^\n]*\n//m'
+mutate 'ask-rows --dry-run sends nothing' rows_ask \
+  's/if \[ "\$dry" = 0 \] && ! deliver_ask "\$ask"; then/if ! deliver_ask "\$ask"; then/'
 pass 'every guarded behavior has a red mutation proof'
