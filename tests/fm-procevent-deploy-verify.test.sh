@@ -730,9 +730,68 @@ scenario_carry() {
     || { echo "gamma at s3: $(asked | jq -c 'select(.task == "gamma")')"; return 1; }
 }
 
+# HG4 (firstmate#176 Step 4): a worker records rows pending with next actor tester on a head, and the Tester gets one
+# ask built from the record with exactly those rows and each row's env. For an env with a config/env/<name> file the
+# builder reads free RAM, runs the recover command once below the floor and reads again; still below, the ask is held
+# with a wait and not sent, and a later poll sends it with the reads, the floor, the recover step and the processes
+# never to touch. A row asked on a head is not asked again on that head, and `ask-rows <task> --dry-run` prints the
+# ask and writes nothing.
+tpl_scenario_env() {  # <id> <env> <widths>
+  printf -- '- [ ] %s WHEN a user acts, THE page SHALL answer.\n' "$1"
+  printf '  - page: p\n  - widths: %s\n  - controls: button "Go"\n  - env: %s\n  - proof: click Go\n  - data: the probe\n  - mock: none\n  - surface: user-visible\n' "$3" "$2"
+}
+scenario_rows_ask() {
+  new_lab "$1"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s/writer.calls"\ncase "$1" in checks) cat "%s/checks.json" ;; esac\n' "$LAB" "$LAB" > "$LAB/writer"
+  chmod +x "$LAB/writer"
+  : > "$H/config/task-shadow"
+  printf 'kind=ship\n' > "$H/state/alpha.meta"
+  mkdir -p "$H/data/alpha" "$H/config/env"
+  printf 'surface: user-visible\nissue: https://github.com/%s/issues/500\nrecord: rows\n' "$REPO" > "$H/data/alpha/verify.md"
+  fx_issue_raw 500 "$(tpl_issue_body "$(tpl_scenario_env A1 'Dev 5001; DMS env `company`' 1440; tpl_scenario_env A2 'Dev 5001' 1440,390; tpl_scenario_env A3 'Dev 5001' 1440)")"
+  # A1@1440 and A2@1440 are pending for the Tester on head h1; A3 is pending with no head (a rows call); A2@390 passed
+  printf '{"task":"alpha","state":"running","nextActor":"worker","issueUrl":"https://github.com/%s/issues/500","head":null,"rows":[{"key":"A1@1440","scenarioId":"A1","width":"1440","surface":"user-visible","status":"pending","nextActor":"tester","head":"%s","carried":false,"due":true},{"key":"A2@1440","scenarioId":"A2","width":"1440","surface":"user-visible","status":"pending","nextActor":"tester","head":"%s","carried":false,"due":true},{"key":"A2@390","scenarioId":"A2","width":"390","surface":"user-visible","status":"pass","nextActor":"firstmate","head":"%s","carried":false,"due":false},{"key":"A3@1440","scenarioId":"A3","width":"1440","surface":"user-visible","status":"pending","nextActor":"tester","head":null,"carried":false,"due":true}]}\n' "$REPO" "$(sha h1)" "$(sha h1)" "$(sha h1)" > "$LAB/checks.json"
+  printf '3.5\n' > "$LAB/ram"
+  printf '# company: the admin PC that runs Titan\nram-read=cat %s/ram\nfloor-gb=6\nrecover=echo ran >> %s/recover.log; echo 4 > %s/ram\nnever-touch=Titan.exe, vsdbg\n' "$LAB" "$LAB" "$LAB" > "$H/config/env/company"
+  fx_runs "1:completed:success:s0"
+  set_cursor 1 s0
+  export FM_TASK_SHADOW_WRITER="$LAB/writer" FM_DEPLOY_VERIFY_HOLD_SECONDS=0
+  local dry
+  dry=$("$BIN/fm-procevent-deploy-verify.sh" ask-rows alpha --dry-run) || { unset FM_TASK_SHADOW_WRITER; echo "ask-rows --dry-run failed: $dry"; return 1; }
+  jq -e --arg h "$(sha h1)" '.round == "rows" and .sha == $h and ([.rows[] | split(" | ")[0]] == ["- A1@1440", "- A2@1440"])' <<<"$dry" >/dev/null \
+    || { unset FM_TASK_SHADOW_WRITER; echo "dry ask: $dry"; return 1; }
+  if [ -n "$(ledger)" ] || [ -e "$LAB/recover.log" ] || grep -q '^event ' "$LAB/writer.calls"; then
+    unset FM_TASK_SHADOW_WRITER; echo "the dry run wrote: $(ledger) $(cat "$LAB/writer.calls")"; return 1
+  fi
+  # below the floor after the recover step: held with a wait, not sent
+  cycle
+  [ "$CYCLE_AUTO" = 0 ] || { unset FM_TASK_SHADOW_WRITER; echo "held: autohandle=$CYCLE_AUTO"; return 1; }
+  [ -z "$(asked)" ] || { unset FM_TASK_SHADOW_WRITER; echo "a held ask was sent: $(asked)"; return 1; }
+  [ "$(cat "$LAB/recover.log" 2>/dev/null)" = ran ] || { unset FM_TASK_SHADOW_WRITER; echo "the recover step did not run once: $(cat "$LAB/recover.log" 2>&1)"; return 1; }
+  grep -q "^event alpha wait --next-actor tester --clears-on rows --rows A1@1440,A2@1440 --note .*company.*4 GB.*floor 6 GB.* --key deploy-verify:rows:alpha:[^ ]*:wait --actor deploy-verify --role system$" "$LAB/writer.calls" \
+    || { unset FM_TASK_SHADOW_WRITER; echo "no wait names the floor: $(cat "$LAB/writer.calls")"; return 1; }
+  [ "$(ledger_count '.type == "ask"')" = 0 ] || { unset FM_TASK_SHADOW_WRITER; echo "a held ask is in the ledger: $(ledger)"; return 1; }
+  # the next poll finds 4 GB, recovers to 8 GB and sends the ask
+  printf 'recover=echo ran >> %s/recover.log; echo 8 > %s/ram\n' "$LAB" "$LAB" > "$LAB/recover.line"
+  sed -i "s|^recover=.*|$(sed 's/[|&]/\\&/g' "$LAB/recover.line")|" "$H/config/env/company"
+  cycle
+  [ "$CYCLE_AUTO" = 0 ] || { unset FM_TASK_SHADOW_WRITER; echo "sent: autohandle=$CYCLE_AUTO"; return 1; }
+  asked | jq -e --arg h "$(sha h1)" 'select(.round == "rows" and .task == "alpha" and .sha == $h)
+    | ([.rows[] | split(" | ")[0]] == ["- A1@1440", "- A2@1440"]) and .lines == ["A1", "A2"]
+    and .env == {A1: "Dev 5001; DMS env `company`", A2: "Dev 5001"}
+    and .envs == [{name: "company", free_gb: 4, floor_gb: 6, recovered: true, free_after_gb: 8, never_touch: ["Titan.exe", "vsdbg"]}]
+    and (.check | startswith("bin/fm-task.sh check alpha "))' >/dev/null \
+    || { unset FM_TASK_SHADOW_WRITER; echo "rows ask: $(asked)"; return 1; }
+  [ "$(ledger_count '.type == "ask" and .round == "rows" and .task == "alpha"')" = 1 ] || { unset FM_TASK_SHADOW_WRITER; echo "ledger: $(ledger)"; return 1; }
+  # a row asked on a head is not asked again on that head
+  cycle
+  unset FM_TASK_SHADOW_WRITER FM_DEPLOY_VERIFY_HOLD_SECONDS
+  [ "$(asked | wc -l | tr -d ' ')" = 1 ] || { echo "the rows were asked again: $(asked)"; return 1; }
+}
+
 run_scenarios() {  # <bin-dir>
   local s rc=0
-  for s in ledger skips not_deployed draft record failures runner skip_catchup rows refused replay replay_refused shadow rows_record carry; do
+  for s in ledger skips not_deployed draft record failures runner skip_catchup rows refused replay replay_refused shadow rows_record carry rows_ask; do
     out=$(scenario_"$s" "$1" 2>&1) || { printf 'scenario %s: %s\n' "$s" "$out"; rc=1; }
   done
   return $rc
@@ -740,7 +799,7 @@ run_scenarios() {  # <bin-dir>
 
 # ---- real adapter -----------------------------------------------------------
 
-for s in ledger skips not_deployed draft record failures runner skip_catchup rows refused replay replay_refused shadow rows_record carry; do
+for s in ledger skips not_deployed draft record failures runner skip_catchup rows refused replay replay_refused shadow rows_record carry rows_ask; do
   out=$(scenario_"$s" "$ROOT/bin" 2>&1) || fail "scenario $s failed on the real adapter: $out"
   pass "deploy-verify $s"
 done
