@@ -86,7 +86,7 @@ log_of() {  # <case> <check>
 }
 
 selftest_line() {  # <sha>
-  printf 'Self-test: verify-cfw run board-task-detail --target storybook:fm/board-fix head=%s PASS\n' "$1"
+  printf 'Self-test: verify-cfw run board-task-detail --target url:http://127.0.0.1:6123 head=%s PASS\n' "$1"
 }
 
 # write_receipt <case> <head> <actor> <result> [failed-check]: a receipt shaped as
@@ -96,7 +96,7 @@ write_receipt() {
   local dir=$1 head=$2 actor=$3 result=$4 failed=${5:-pass}
   jq -n --arg head "$head" --arg actor "$actor" --arg result "$result" --arg failed "$failed" \
     --argjson features "${RECEIPT_FEATURES:-[\"board-task-detail\"]}" \
-    --arg target "${RECEIPT_TARGET:-storybook:fm/board-fix}" \
+    --arg target "${RECEIPT_TARGET:-url:http://127.0.0.1:6123}" \
     --argjson widths "${RECEIPT_WIDTHS:-[1440, 390]}" '
     {tool: "verify-cfw", head: $head, target: $target, features: $features,
      widths: $widths, actor: $actor, result: $result,
@@ -176,6 +176,14 @@ test_sg2_each_missing_piece_hits_its_own_code() {
 
   dir=$(make_case sg2-no-line user-visible)
   body_file "$dir" 'Moves the sheet.'
+  run_gate "$dir" "$CFW_URL"
+  assert_receipt_hit "$dir" no-selftest-line
+  assert_contains "$ERR" '--target url:<base>' "sg2: the printed command runs against a url: target"
+
+  # Storybook 5010 is the owner's UI/UX review, not a self-test target: a storybook: line is no Self-test line.
+  dir=$(make_case sg2-storybook-target user-visible)
+  body_file "$dir" "Self-test: verify-cfw run board-task-detail --target storybook:fm/board-fix head=${HEAD:0:12} PASS"
+  RECEIPT_TARGET='storybook:fm/board-fix' write_receipt "$dir" "$HEAD" tester PASS
   run_gate "$dir" "$CFW_URL"
   assert_receipt_hit "$dir" no-selftest-line
 
@@ -586,11 +594,11 @@ test_sg2_a_receipt_for_another_run_hits_receipt_fail() {
 
   dir=$(make_case sg2-target user-visible)
   body_file "$dir" "$(selftest_line "${HEAD:0:12}")"
-  RECEIPT_TARGET='storybook:fm/other' write_receipt "$dir" "$HEAD" tester PASS
+  RECEIPT_TARGET='url:http://127.0.0.1:6999' write_receipt "$dir" "$HEAD" tester PASS
   run_gate "$dir" "$CFW_URL"
   assert_receipt_hit "$dir" receipt-fail
-  assert_contains "$ERR" "target storybook:fm/other" "sg2: the receipt's target is named"
-  assert_contains "$ERR" "storybook:fm/board-fix" "sg2: and the Self-test line's target"
+  assert_contains "$ERR" "target url:http://127.0.0.1:6999" "sg2: the receipt's target is named"
+  assert_contains "$ERR" "names url:http://127.0.0.1:6123" "sg2: and the Self-test line's target"
 
   dir=$(make_case sg2-target-5001 user-visible)
   body_file "$dir" "$(selftest_line "${HEAD:0:12}")"
@@ -622,7 +630,7 @@ test_sg2_a_receipt_for_another_run_hits_receipt_fail() {
 
   # The same run in another order, with an extra width, is the same run.
   dir=$(make_case sg2-same-run user-visible)
-  body_file "$dir" "Self-test: verify-cfw run screens-debug-steps,board-task-detail --target storybook:fm/board-fix head=${HEAD:0:12} PASS"
+  body_file "$dir" "Self-test: verify-cfw run screens-debug-steps,board-task-detail --target url:http://127.0.0.1:6123 head=${HEAD:0:12} PASS"
   RECEIPT_FEATURES='["board-task-detail","screens-debug-steps"]' RECEIPT_WIDTHS='[768,390,1440]' write_receipt "$dir" "$HEAD" tester PASS
   run_gate "$dir" "$CFW_URL"
   assert_equals '' "$ERR" "sg2: feature order and an extra width do not matter"
