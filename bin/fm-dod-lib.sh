@@ -581,6 +581,7 @@ Before you report done, read the PR back from the forge and confirm it is not a 
 A draft cannot be merged, so a done report on one leaves the merge unasked.
 Link the task's issue in the PR body with \`Closes #n\` when it finishes the issue, or \`Part of #n\` for an earlier step.
 The PR body must contain a \`## Review brief\` section with 3-5 sentences in ASD-STE100 Simplified Technical English, using the repository's own terms: what changed, why, where to check it, and the risk.
+The PR body must also hold one line \`Scenarios touched: <ids>\`: the issue's scenario ids whose behavior the PR changes, comma-separated, or \`none\`; after the deploy, the Tester checks again only those rows and the rows not yet passed.
 ${ci_wait}The harness receipt is the PR's own completed green CI run on the exact head; report its run URL and head SHA.
 Locally run only tests that cover your change and its real-path proof; run the full owner gate locally only to debug a red CI case.
 Before you append \`done:\`, run \`review-rulesets\` on your own exact head as part of finishing the work, in parallel with CI and never gated on it - the review reads the diff, not the run.
@@ -628,6 +629,7 @@ Firstmate will then instruct you to run /no-mistakes to validate and ship a PR.
 That first \`done:\` is the handoff that starts the pipeline, which owns the push; it is not a request to push from this copy.
 Link the task's issue in the PR body with \`Closes #n\` when it finishes the issue, or \`Part of #n\` for an earlier step.
 The PR body must contain a \`## Review brief\` section with 3-5 sentences in ASD-STE100 Simplified Technical English, using the repository's own terms: what changed, why, where to check it, and the risk.
+The PR body must also hold one line \`Scenarios touched: <ids>\`: the issue's scenario ids whose behavior the PR changes, comma-separated, or \`none\`; after the deploy, the Tester checks again only those rows and the rows not yet passed.
 ${ci_wait}The harness receipt is the PR's own completed green CI run on the exact head; report its run URL and head SHA.
 Locally run only tests that cover your change and its real-path proof; run the full owner gate locally only to debug a red CI case.
 ${nm_base}

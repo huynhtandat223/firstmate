@@ -3469,6 +3469,31 @@ fm_backend_herdr_composer_clear() {  # <target> <text>
   return 1
 }
 
+# fm_backend_herdr_submit_recheck: after a positive verdict on a Claude pane, a re-read
+# FM_BACKEND_HERDR_RECHECK_SECONDS (default 2) later that still shows <text> in the composer presses Enter once more
+# (firstmate#176 G3: a Tester doorbell stayed in the composer after a positive verdict). A payload still shown after
+# that Enter reads pending, so the caller escalates; an unreadable composer keeps the positive verdict.
+fm_backend_herdr_submit_recheck() {  # <target> <text> -> empty|pending
+  local target=$1 text=$2 content
+  sleep "${FM_BACKEND_HERDR_RECHECK_SECONDS:-2}"
+  if ! content=$(fm_backend_herdr_composer_content "$target") || ! fm_backend_herdr_composer_payload_shown "$text" "$content"; then
+    printf 'empty'
+    return 0
+  fi
+  fm_backend_herdr_send_key "$target" Enter || { printf 'pending'; return 0; }
+  sleep "${FM_BACKEND_HERDR_RECHECK_SECONDS:-2}"
+  if content=$(fm_backend_herdr_composer_content "$target") && fm_backend_herdr_composer_payload_shown "$text" "$content"; then
+    printf 'pending'
+  else
+    printf 'empty'
+  fi
+}
+
+# A positive submit verdict: a Claude pane (proof=1) gets the recheck above, every other pane reads empty.
+fm_backend_herdr_submitted() {  # <proof 0|1> <target> <text>
+  if [ "$1" = 1 ]; then fm_backend_herdr_submit_recheck "$2" "$3"; else printf 'empty'; fi
+}
+
 fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep> <settle>
   local target=$1 text=$2 retries=$3 sleep_s=$4 settle=$5 i=0 verdict baseline confirm_sleep
   local raw_status footer_baseline='' allow_rendered=0 enter_sent=0 identity proof=0 content busy_harness=''
@@ -3524,7 +3549,7 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
       verdict=$(fm_backend_herdr_wait_for_working "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE" \
         "$confirm_sleep" "$FM_BACKEND_HERDR_SUBMIT_POLLS")
       case "$verdict" in
-        busy) printf 'empty'; return 0 ;;
+        busy) fm_backend_herdr_submitted "$proof" "$target" "$text"; return 0 ;;
         unknown) printf 'unknown'; return 0 ;;
       esac
       # Native stayed idle. Composer empty is positive delivery (a landed
@@ -3536,7 +3561,7 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
         return 0
       fi
       case "$verdict" in
-        empty) printf 'empty'; return 0 ;;
+        empty) fm_backend_herdr_submitted "$proof" "$target" "$text"; return 0 ;;
         pending|pending-unproven) ;;
         *) printf '%s' "$verdict"; return 0 ;;
       esac
@@ -3553,8 +3578,8 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
         verdict=busy
       fi
       case "$verdict" in
-        busy) printf 'empty'; return 0 ;;
-        empty) printf 'empty'; return 0 ;;
+        busy) fm_backend_herdr_submitted "$proof" "$target" "$text"; return 0 ;;
+        empty) fm_backend_herdr_submitted "$proof" "$target" "$text"; return 0 ;;
         unknown) printf 'unknown'; return 0 ;;
       esac
     fi

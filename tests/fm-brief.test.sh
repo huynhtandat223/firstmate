@@ -39,9 +39,11 @@ test_review_brief_requirement() {
     case "$mode" in
       direct-PR|no-mistakes)
         grep -q '## Review brief.*3-5 sentences.*ASD-STE100' "$file" || fail "$mode lacks Review brief requirement"
-        grep -q 'Closes #n.*Part of #n' "$file" || fail "$mode lacks issue link requirement" ;;
+        grep -q 'Closes #n.*Part of #n' "$file" || fail "$mode lacks issue link requirement"
+        # shellcheck disable=SC2016 # literal backticks of the brief text
+        grep -q 'one line `Scenarios touched: <ids>`.*or `none`' "$file" || fail "$mode lacks the Scenarios touched line (HG2)" ;;
       *)
-        if grep -Eq '## Review brief|Closes #n|Part of #n' "$file"; then fail "$mode requires PR body content"; fi ;;
+        if grep -Eq '## Review brief|Closes #n|Part of #n|Scenarios touched:' "$file"; then fail "$mode requires PR body content"; fi ;;
     esac
   done
   pass 'Review brief required only for PR-producing ships'
@@ -1969,6 +1971,23 @@ test_crewmate_scaffolds_forbid_pool_administration() {
   pass "fm-brief.sh: every crewmate scaffold forbids administering the shared worktree pool"
 }
 
+# HG5 (firstmate#176 G5): a home with config/env/<name> files tells a ship worker to hold the env lease around its own
+# proof there; a home without them adds nothing.
+test_env_lease_line() {
+  local home="$TMP_ROOT/env-lease-home" file
+  mkdir -p "$home/data"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" env-none firstmate --mode direct-PR >/dev/null
+  assert_no_grep 'env:<name>' "$home/data/env-none/brief.md" "a home without config/env named an env lease"
+  mkdir -p "$home/config/env"
+  printf 'floor-gb=6\n' > "$home/config/env/company"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" env-one firstmate --mode direct-PR >/dev/null
+  file="$home/data/env-one/brief.md"
+  assert_grep 'claim env:<name> --holder env-one' "$file" "the brief does not tell the worker to claim the env lease"
+  assert_grep 'release env:<name> --holder env-one' "$file" "the brief does not tell the worker to release the env lease"
+  assert_grep 'Shared environments in this home: company.' "$file" "the brief does not name the home's envs"
+  pass "a home with config/env names its env leases in the ship brief"
+}
+
 test_script_parses
 test_no_heredoc_in_command_substitution
 test_help_includes_entire_header
@@ -2018,3 +2037,4 @@ test_surface_user_visible_adds_done_gate_wording
 test_issue_names_the_parser_command
 test_check_refuses_acceptance_id_ranges
 test_issue_and_check_guards_are_needed
+test_env_lease_line

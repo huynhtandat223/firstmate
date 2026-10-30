@@ -50,7 +50,7 @@
 #                    unknown invalidation fm-control writes after a Devin interrupt
 #   fm-recovery      a documented recovery reset after relaunch
 # Classifier-only sources (never written into a record):
-#   endpoint-gone, herdr-native, grok-regex, rovo-regex, agy-regex, muse-session-log,
+#   endpoint-gone, herdr-native, herdr-composer, grok-regex, rovo-regex, agy-regex, muse-session-log,
 #   cursor-transcript, missing, malformed, gen-mismatch, source-mismatch,
 #   kimi-unverified, codex-unverified, capture-failed, no-target, launch-prompt
 #
@@ -72,7 +72,14 @@
 #      keeps its ordinary busy verdict and the general BUSY_TURN_MAX_SECS
 #      bound is unchanged.
 #   4. no record at all: herdr's native busy verdict is trusted as busy
-#      (generation state is sufficient for busy, not for idle), then the
+#      (generation state is sufficient for busy, not for idle), except that a
+#      claude* pane at its prompt with an empty composer
+#      (fm_backend_herdr_composer_state) and no rendered busy footer by Claude's
+#      own signature (fm_backend_herdr_rendered_busy_state <target> claude,
+#      which matches its spinner) reads idle herdr-composer:
+#      herdr kept reporting working for an idle Claude Tester pane, so due
+#      doorbells escalated stuck-busy instead of ringing (firstmate#176 G3);
+#      both reads must agree, then the
 #      muse session-log and cursor transcript pull sources, then the
 #      Grok/Rovo/AGY temporary regex fallbacks classify a grok, rovo, or agy
 #      task from its rendered tail, then unknown missing
@@ -1089,6 +1096,16 @@ fm_busy_classify() {  # <backend> <target> <harness> <id> <state-dir> [tail40]
   if [ "$backend" = herdr ] && command -v fm_backend_busy_state >/dev/null 2>&1; then
     native=$(fm_backend_busy_state "$backend" "$target" 2>/dev/null || true)
     if [ "$native" = busy ]; then
+      case "$harness" in
+        claude*)
+          if command -v fm_backend_herdr_composer_state >/dev/null 2>&1 \
+            && [ "$(fm_backend_herdr_composer_state "$target" 2>/dev/null)" = empty ] \
+            && [ "$(fm_backend_herdr_rendered_busy_state "$target" claude 2>/dev/null)" = idle ]; then
+            printf 'idle herdr-composer'
+            return 0
+          fi
+          ;;
+      esac
       printf 'busy herdr-native'
       return 0
     fi

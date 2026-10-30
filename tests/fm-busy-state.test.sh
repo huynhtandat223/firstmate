@@ -532,6 +532,62 @@ test_herdr_native_busy_only() {
   pass "herdr's native verdict is trusted for busy only, and records outrank it"
 }
 
+# HG3 (firstmate#176 G3): a Claude pane with no hook record that herdr reports as working while it sits at its prompt
+# with an empty composer and no rendered busy footer reads idle, so a due doorbell rings instead of escalating. Both
+# reads must agree, the record still outranks them, and no other harness is read this way.
+test_herdr_native_busy_claude_idle_prompt() {
+  local state out gen
+  state=$(new_state_dir herdr-composer)
+  # shellcheck disable=SC2329 # invoked indirectly through fm_busy_classify
+  fm_backend_busy_state() { printf busy; }
+  # shellcheck disable=SC2329 # invoked indirectly through fm_busy_classify
+  fm_backend_herdr_composer_state() { printf '%s' "$FAKE_COMPOSER"; }
+  # shellcheck disable=SC2329 # invoked indirectly through fm_busy_classify
+  fm_backend_herdr_rendered_busy_state() { printf '%s' "$FAKE_RENDERED"; }
+  FAKE_COMPOSER=empty FAKE_RENDERED=idle
+  out=$(fm_busy_classify herdr s:p claude t1 "$state")
+  [ "$out" = "idle herdr-composer" ] || fail "an idle Claude prompt under native busy must classify idle, got '$out'"
+  FAKE_COMPOSER=empty FAKE_RENDERED=busy
+  out=$(fm_busy_classify herdr s:p claude t1 "$state")
+  [ "$out" = "busy herdr-native" ] || fail "a rendered busy footer must keep native busy, got '$out'"
+  FAKE_COMPOSER=pending FAKE_RENDERED=idle
+  out=$(fm_busy_classify herdr s:p claude t1 "$state")
+  [ "$out" = "busy herdr-native" ] || fail "a composer holding text must keep native busy, got '$out'"
+  FAKE_COMPOSER=empty FAKE_RENDERED=idle
+  out=$(fm_busy_classify herdr s:p pi t1 "$state")
+  [ "$out" = "busy herdr-native" ] || fail "only a Claude pane is read from its prompt, got '$out' for pi"
+  gen=$("$EV" arm "$state" t1)
+  "$EV" apply "$state" t1 busy --gen "$gen" --source claude-hook --event prompt
+  out=$(fm_busy_classify herdr s:p claude t1 "$state")
+  [ "$out" = "busy claude-hook" ] || fail "a hook record must outrank the prompt read, got '$out'"
+  unset -f fm_backend_busy_state fm_backend_herdr_composer_state fm_backend_herdr_rendered_busy_state
+  pass "an idle Claude prompt with no hook record overrides herdr's native busy only when both reads agree"
+}
+
+# PR 223 review: the rendered read of a Claude pane must use Claude's own busy
+# signature. Claude's spinner footer ("✢ Onioning… (1m 40s ...") does not match
+# the generic default, so without the harness a working Claude pane under native
+# busy read idle. The capture is the only stub; the real rendered read runs.
+test_herdr_native_busy_claude_spinner_stays_busy() {
+  local state out
+  state=$(new_state_dir herdr-claude-spinner)
+  out=$(
+    # shellcheck source=/dev/null
+    . "$ROOT/bin/backends/herdr.sh"
+    # shellcheck disable=SC2329 # invoked indirectly through fm_busy_classify
+    fm_backend_busy_state() { printf busy; }
+    # shellcheck disable=SC2329 # invoked indirectly through fm_busy_classify
+    fm_backend_herdr_composer_state() { printf empty; }
+    # shellcheck disable=SC2329 # invoked indirectly through fm_backend_herdr_rendered_busy_state
+    fm_backend_herdr_capture() {
+      printf '%s\n' '● Reading the brief' '' '✢ Onioning… (1m 40s · ↓ 2.1k tokens)' '' '╭──────────╮' '│ >        │' '╰──────────╯'
+    }
+    fm_busy_classify herdr s:p claude t1 "$state"
+  )
+  [ "$out" = "busy herdr-native" ] || fail "a working Claude pane (spinner footer, empty composer) must stay busy, got '$out'"
+  pass "a Claude spinner footer keeps native busy: the rendered read uses Claude's busy signature"
+}
+
 # The record parser runs inside sourcing callers (the watcher, the daemon, the
 # crew-state reader), so it must not disturb their shell: no clobbered
 # positional parameters and no changed glob setting.
@@ -644,6 +700,8 @@ test_kimi_unverified_gate
 test_cursor_ignores_rendered_and_native_signals
 test_dead_endpoint_overrides
 test_herdr_native_busy_only
+test_herdr_native_busy_claude_idle_prompt
+test_herdr_native_busy_claude_spinner_stays_busy
 test_record_read_leaves_caller_shell_intact
 test_boolean_view_never_promotes_unknown
 

@@ -4,6 +4,8 @@
 # Usage:
 #   fm-procevent-deploy-verify.sh arm
 #   fm-procevent-deploy-verify.sh replay-skips [--dry-run]
+#   fm-procevent-deploy-verify.sh deploy --dry-run --sha <sha> [--base <sha>]
+#   fm-procevent-deploy-verify.sh ask-rows <task> [--dry-run]
 #   fm-procevent-deploy-verify.sh wait
 #   fm-procevent-deploy-verify.sh autohandle <source-id> <sequence> <result-file>
 #   fm-procevent-deploy-verify.sh classify <result-file>
@@ -45,6 +47,14 @@
 #              User-visible no-issue, no-user-visible-line and template-refused skips
 #              leave one result unacknowledged to wake firstmate; internal/no-task
 #              stay quiet.
+# deploy --dry-run
+#              Plan the deploy of <sha> (the merged PRs since <base>, default the
+#              cursor's last_green_sha) as the deploy round would, with the ledger
+#              ignored, narrow each ask as below, and print {"asks": [...],
+#              "skips": [...]}. It writes nothing: a task begun after T5 is read
+#              with `checks <task> --as-deployed <sha> --touched <ids>`.
+# ask-rows     Build and send the rows asks of one task now (see the rows round
+#              below); --dry-run prints them before any env gate and writes nothing.
 # Issues are read only through bin/fm-acceptance.mjs. Visible mode asks for the
 # user-visible scenarios, draft mode for the scenarios on a draft page. Each ask
 # carries `lines` (the scenario ids) and `rows` (the parser's `rows` output: one
@@ -55,6 +65,39 @@
 # bin/fm-task.sh call that records each row's result; a refused record write
 # fails the delivery, so the next poll retries it. FM_TASK_SHADOW_WRITER replaces
 # bin/fm-task.sh, and config/task-shadow holds its settings.
+# A deploy round asks only for the rows the Tester checks on the deployed head
+# (firstmate#176 G2). Each merged PR names the scenarios it changes in one PR-body
+# line `Scenarios touched: <ids>|none|all`; only an explicit `none` names none, and
+# a PR with no line, or a line with neither ids nor `none`, touches all. A pass on
+# an earlier deployed head carries while no PR of the deploy names its id: the ask
+# drops that row, drops an id with no row left from `lines`, and lists the row under
+# `carried` with the head it passed on. Only a task begun after T5 carries: it reads
+# its rows with `checks <task>` after its deploy event, which records `--touched`. A
+# task begun before T5 keeps the old path (no migration): nothing of it carries, and
+# its ask holds every row. An ask with no row left is not sent; the ledger gets a
+# carry line instead. A draft round and a replay ask are never narrowed.
+# The rows round (firstmate#176 G4) asks the Tester from the record: each poll reads
+# `checks <task>` for every task with state/<task>.meta and 'record: rows', and
+# plans one ask per head for its user-visible rows that are pending with next actor
+# tester on an explicit head (a worker's `check <task> <id>@<width> pending
+# --next-actor tester --head <sha>`). A row already asked on that head is not asked
+# again. The ask holds exactly those rows, `env` (each scenario's env text), and
+# `envs`: for each config/env/<name> whose name the env text holds as `<name>` or
+# "env <name>", the file's free-RAM read and floor, the recover step when it ran,
+# and the processes never to touch. A config/env/<name> file holds lines
+# `ram-read=<command printing the free RAM in GB>`, `floor-gb=<number>`, an optional
+# `recover=<command>` and `never-touch=<process>, ...` (# starts a comment). Below
+# the floor the builder runs the recover command once and reads again; still below,
+# the ask is held: the record gets a wait naming the floor, the ledger a hold line,
+# and the ask is planned again after FM_DEPLOY_VERIFY_HOLD_SECONDS (default 600).
+# Each such env is also a lease `env:<name>` (bin/fm-lease.sh, G5): while another
+# holder's lease is live the ask is held the same way, naming the holder, before any
+# RAM read, and planned again at every poll; a sent ask claims the lease for the
+# Tester (FM_DEPLOY_VERIFY_ASSISTANCE) first. Every ask naming the lease since its
+# last release holds it; each poll releases it once each row of every such ask has
+# a result that is not pending, on that ask's head, and a failed send gives back
+# only a lease no other ask holds.
+# Before a sent ask, the record gets a wait on the Tester that clears on those rows.
 # An issue the parser refuses is a `template-refused` skip naming its problems; it
 # wakes firstmate once like a visible skip below, and a refused draft round is only
 # a draft-skip, because the deploy round of the same issue refuses and wakes.
@@ -65,7 +108,11 @@
 #              the runner keeps polling after a fully handled result.
 #
 # Ledger lines (data/deploy-verify/ledger.jsonl):
-#   {type:"ask", round:"deploy"|"draft", key, task, issue, prs, sha, run, lines, rows, record}
+#   {type:"ask", round:"deploy"|"draft", key, task, issue, prs, sha, run, lines, rows, touched?, carried?, record}
+#   {type:"carry", round:"deploy", key, task, prs, sha, carried}
+#   {type:"ask", round:"rows", key, task, issue, prs, sha, head, lines, rows, env, envs, record}
+#   {type:"hold", round:"rows", key, task, sha, envs, held, lease?}
+#   {type:"release", lease, task, key}
 #   {type:"skip", pr, task, reason:"no-task"|"internal"|"no-issue"|"no-user-visible-line"|"template-refused", detail?}
 #   {type:"draft-skip", key, reason, detail?}
 # Needs node (bin/fm-acceptance.mjs) and jq.
@@ -113,12 +160,14 @@ ACCEPTANCE="$SCRIPT_DIR/fm-acceptance.mjs"
 # ---- ledger and cursor (ledger_test, ledger_append: bin/fm-procevent-ask-lib.sh) ----
 
 # shellcheck disable=SC2016 # jq variables, not shell
-ledger_has_key() { ledger_test '(.type == "ask" or .type == "draft-skip") and .key == $k' --arg k "$1"; }
+ledger_has_key() { ledger_test '(.type == "ask" or .type == "carry" or .type == "draft-skip") and .key == $k' --arg k "$1"; }
 # shellcheck disable=SC2016 # jq variables, not shell
-ledger_pr_final() {  # <pr-url> <task>: asked in a deploy round or skipped already
-  ledger_test '.task == $t and ((.type == "ask" and .round == "deploy" and (.prs | index($p))) or (.type == "skip" and .pr == $p))' \
+ledger_pr_final() {  # <pr-url> <task>: asked or carried in a deploy round, or skipped already
+  [ "$PLAN_IGNORE_LEDGER" = 0 ] || return 1
+  ledger_test '.task == $t and (((.type == "ask" or .type == "carry") and .round == "deploy" and (.prs | index($p))) or (.type == "skip" and .pr == $p))' \
     --arg p "$1" --arg t "$2"
 }
+PLAN_IGNORE_LEDGER=0
 
 state_put() {  # <cursor-run> <last-green-sha>
   jq -cn --argjson r "$1" --arg s "$2" '{cursor_run: $r, last_green_sha: $s}' > "$CURSOR.tmp" \
@@ -170,13 +219,14 @@ resolve_issue() {  # <pr-body> <backlog-hint>: the issue number, or nothing
 
 # Read an issue body through the one acceptance parser, bin/fm-acceptance.mjs.
 # Sets ISSUE_LINES (scenario ids, one per line), ISSUE_ROWS (a JSON array of the
-# parser's record rows) and ISSUE_PROBLEMS. Visible mode takes the user-visible
+# parser's record rows), ISSUE_ENVS (a JSON object: scenario id -> env text) and ISSUE_PROBLEMS. Visible mode takes the user-visible
 # scenarios, draft mode the scenarios on a draft page. Exit 0: read. Exit 1: the
 # parser refused the issue. Exit 2: the parser did not run (READ_ERROR_FILE says so).
 read_acceptance() {  # <visible|draft> <issue-body>
   local mode=$1 body=$2 parsed rows_out rc flag=
   ISSUE_LINES=
   ISSUE_ROWS='[]'
+  ISSUE_ENVS='{}'
   ISSUE_PROBLEMS=
   parsed=$(printf '%s\n' "$body" | node "$ACCEPTANCE" parse - 2>/dev/null)
   rc=$?
@@ -196,6 +246,7 @@ read_acceptance() {  # <visible|draft> <issue-body>
   }
   ISSUE_ROWS=$(printf '%s' "$rows_out" | jq -R . | jq -sc 'map(select(. != ""))')
   ISSUE_LINES=$(jq -r --arg m "$mode" '.scenarios[] | select(if $m == "draft" then .draft else .surface == "user-visible" end) | .id' <<<"$parsed")
+  ISSUE_ENVS=$(jq -c '[.scenarios[] | {key: .id, value: (.env // "")}] | from_entries' <<<"$parsed")
 }
 
 # ---- planning --------------------------------------------------------------
@@ -218,11 +269,29 @@ keep_pending_result() { attention_skip "$1"; }
 
 issue_ref() { printf '%s#%s\n' "${REPO##*/}" "$1"; }
 
+# The PR body's `Scenarios touched:` line: all, none, or its ids, comma-separated. Only an explicit `none` names none;
+# a body with no line, or a line with neither ids nor `none`, touches all, so its deploy carries nothing.
+pr_touched() {  # <pr-body>
+  printf '%s\n' "$1" | tr -d '\r`' | awk '
+    tolower($0) ~ /^[ \t]*([-*][ \t]*)?scenarios touched:/ {
+      sub(/^[^:]*:/, ""); gsub(/[ \t,;]+/, " ")
+      n = split($0, ids, " "); o = ""; z = 0
+      for (i = 1; i <= n; i++) {
+        id = ids[i]; sub(/\.$/, "", id); t = tolower(id)
+        if (t == "all") { print "all"; found = 1; exit }
+        if (t == "none") z = 1
+        else if (id ~ /^[A-Za-z0-9_.-]+$/) o = o (o == "" ? "" : ",") id
+      }
+      print (o != "" ? o : (z ? "none" : "all")); found = 1; exit
+    }
+    END { if (!found) print "all" }'
+}
+
 # Plan the deploy of <sha>: every merged PR in the commits since <base> maps to
 # its tasks. A PR already asked about or skipped for a task is left alone.
 plan_deploy() {  # <base-sha> <sha> <run-url> <completed-at> <workdir>
   local base=$1 sha=$2 run=$3 completed=$4 w=$5 commits c pulls
-  local url body task surface hint issue n rows tasks arrival issue_json lines
+  local url body task surface hint issue n rows tasks arrival issue_json lines touched
   : > "$w/prs.jsonl"
   if [ -n "$base" ] && [ "$base" != "$sha" ]; then
     pulls=$(gh_read "repos/$REPO/compare/$base...$sha") || return 1
@@ -247,7 +316,7 @@ plan_deploy() {  # <base-sha> <sha> <run-url> <completed-at> <workdir>
     while IFS='|' read -r _ task surface hint _; do
       ledger_pr_final "$url" "$task" && continue
       issue=$(resolve_issue "$body" "$hint")
-      printf '%s|%s|%s|%s\n' "$task" "$surface" "$url" "$issue" >> "$w/rows.psv"
+      printf '%s|%s|%s|%s|%s\n' "$task" "$surface" "$url" "$issue" "$(pr_touched "$body")" >> "$w/rows.psv"
     done < <(awk -F'|' -v p="$url" '$1 == p' "$w/map.psv")
   done < <(jq -sc 'unique_by(.url) | .[]' "$w/prs.jsonl")
   tasks=$(cut -d'|' -f1 "$w/rows.psv" | sort -u)
@@ -279,11 +348,16 @@ plan_deploy() {  # <base-sha> <sha> <run-url> <completed-at> <workdir>
       continue
     fi
     arrival=$(jq -n --arg d "$completed" '$d | fromdateiso8601')
+    # The scenarios the task's PRs in this deploy touch: all when one PR says all, else the union of their ids.
+    touched=$(printf '%s\n' "$rows" | cut -d'|' -f5 | awk -F, '
+      $0 == "all" { a = 1 }
+      $0 != "all" && $0 != "none" { for (i = 1; i <= NF; i++) if (!s[$i]++) o = o (o == "" ? "" : ",") $i }
+      END { print a ? "all" : (o == "" ? "none" : o) }')
     add_ask "$(jq -cn --arg key "deploy:$task:$sha" --arg task "$task" --arg issue "$(issue_ref "$n")" \
       --arg issue_url "https://github.com/$REPO/issues/$n" --arg sha "$sha" --arg run "$run" --argjson arrival "$arrival" \
       --argjson prs "$(printf '%s\n' "$rows" | cut -d'|' -f3 | jq -R . | jq -sc .)" \
-      --argjson lines "$(printf '%s\n' "$lines" | jq -R . | jq -sc .)" --argjson rows "$ISSUE_ROWS" \
-      '{round: "deploy", key: $key, task: $task, issue: $issue, issue_url: $issue_url, prs: $prs, sha: $sha, run: $run, lines: $lines, rows: $rows, arrival: $arrival}')"
+      --argjson lines "$(printf '%s\n' "$lines" | jq -R . | jq -sc .)" --argjson rows "$ISSUE_ROWS" --arg touched "$touched" \
+      '{round: "deploy", key: $key, task: $task, issue: $issue, issue_url: $issue_url, prs: $prs, sha: $sha, run: $run, lines: $lines, rows: $rows, touched: $touched, arrival: $arrival}')"
   done
 }
 
@@ -332,6 +406,100 @@ plan_drafts() {  # <workdir>
       --argjson lines "$(printf '%s\n' "$lines" | jq -R . | jq -sc .)" --argjson rows "$ISSUE_ROWS" \
       '{round: "draft", key: $key, task: $task, issue: $issue, issue_url: $issue_url, prs: [$pr], sha: $head, head: $head, pushed: $pushed, run: null, lines: $lines, rows: $rows, arrival: $arrival}')"
   done < "$w/map.psv"
+}
+
+# The rows asks of one task begun after T5 (see the header): one per head of its rows pending for the Tester on an
+# explicit head, without the rows already asked on that head, and without a held ask until its hold is old enough.
+# Returns 1 with READ_ERROR_FILE set when the record or GitHub cannot be read.
+plan_rows_task() {  # <task>
+  local task=$1 json issue_url repo n issue_json head keys key rows lines held_at now
+  json=$(task_writer checks "$task" 2>&1)
+  # shellcheck disable=SC2181 # the status of the assignment above
+  if [ "$?" -ne 0 ] || ! jq -e '.rows | type == "array"' <<<"$json" >/dev/null 2>&1; then
+    printf 'the task record of %s could not be read: %s\n' "$task" "$(printf '%s' "$json" | sed -n '1p')" > "$READ_ERROR_FILE"
+    return 1
+  fi
+  jq -e 'any(.rows[]; .surface == "user-visible" and .status == "pending" and .nextActor == "tester" and .head != null)' <<<"$json" >/dev/null || return 0
+  issue_url=$(jq -r '.issueUrl // empty' <<<"$json")
+  [ -n "$issue_url" ] || issue_url=$(sed -n 's/^issue: //p' "$FM_HOME/data/$task/verify.md" | tail -n 1)
+  case "$issue_url" in https://github.com/*/*/issues/[0-9]*) ;; *) return 0 ;; esac
+  repo=${issue_url#https://github.com/}
+  repo=${repo%/issues/*}
+  n=${issue_url##*/}
+  issue_json=$(gh_read "repos/$repo/issues/$n") || return 1
+  read_acceptance visible "$(jq -r '.body // ""' <<<"$issue_json")"
+  case $? in 0) ;; 1) return 0 ;; *) return 1 ;; esac
+  now=$(date +%s)
+  while IFS= read -r head; do
+    [ -n "$head" ] || continue
+    # shellcheck disable=SC2016 # jq variables, not shell
+    keys=$(comm -23 \
+      <(jq -r --arg h "$head" '.rows[] | select(.surface == "user-visible" and .status == "pending" and .nextActor == "tester" and .head == $h) | .key' <<<"$json" | sort -u) \
+      <([ ! -f "$LEDGER" ] || jq -Rr --arg t "$task" --arg h "$head" 'fromjson? | select(.type == "ask" and .task == $t and .sha == $h) | .rows[] | ltrimstr("- ") | split(" | ")[0]' "$LEDGER" | sort -u))
+    [ -n "$keys" ] || continue
+    rows=$(jq -c --argjson k "$(printf '%s\n' "$keys" | jq -R . | jq -sc .)" 'map(select((ltrimstr("- ") | split(" | ")[0]) as $r | $k | index($r)))' <<<"$ISSUE_ROWS")
+    [ "$rows" != '[]' ] || continue
+    lines=$(jq -c 'reduce (.[] | ltrimstr("- ") | split(" | ")[0] | split("@")[0]) as $i ([]; if index([$i]) then . else . + [$i] end)' <<<"$rows")
+    key="rows:$task:$head:$(jq -r '.[]' <<<"$rows" | sha256sum | cut -c1-12)"
+    # shellcheck disable=SC2016 # jq variables, not shell
+    held_at=$([ ! -f "$LEDGER" ] || jq -Rr --arg k "$key" 'fromjson? | select(.type == "hold" and .key == $k and (.lease | not)) | .at' "$LEDGER" | tail -n 1)
+    [ -z "$held_at" ] || [ $((now - held_at)) -ge "${FM_DEPLOY_VERIFY_HOLD_SECONDS:-600}" ] || continue
+    add_ask "$(jq -cn --arg key "$key" --arg task "$task" --arg issue "${repo##*/}#$n" --arg issue_url "$issue_url" --arg head "$head" \
+      --argjson rows "$rows" --argjson lines "$lines" --argjson envs "$ISSUE_ENVS" --argjson arrival "$now" \
+      '{round: "rows", key: $key, task: $task, issue: $issue, issue_url: $issue_url, prs: [], sha: $head, head: $head, run: null,
+        lines: $lines, rows: $rows, env: ($envs | with_entries(select(.key as $id | $lines | index($id)))), arrival: $arrival}')"
+  done < <(jq -r '[.rows[] | select(.surface == "user-visible" and .status == "pending" and .nextActor == "tester" and .head != null) | .head] | unique[]' <<<"$json")
+}
+
+# The rows asks of every live task begun after T5.
+plan_rows() {
+  local f task
+  for f in "$STATE"/*.meta; do
+    [ -f "$f" ] && [ ! -L "$f" ] || continue
+    task=$(basename "$f" .meta)
+    rows_task "$task" || continue
+    plan_rows_task "$task" || return 1
+  done
+}
+
+env_lease() {  # <fm-lease.sh args>...
+  FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE "$SCRIPT_DIR/fm-lease.sh" "$@"
+}
+
+# The asks that hold the Tester's lease <env:name>: a JSON array of the ledger's ask lines naming it after its last
+# release line. A later claim by the Tester refreshes the same lease, so every one of them holds it.
+lease_asks() {  # <env:name>
+  [ -f "$LEDGER" ] || { printf '[]\n'; return 0; }
+  # shellcheck disable=SC2016 # jq variables, not shell
+  jq -Rsc --arg l "$1" '[split("\n")[] | fromjson? | objects] as $all
+    | ([range(0; $all | length) | select($all[.].type == "release" and $all[.].lease == $l)] | last // -1) as $r
+    | [$all[$r + 1:][] | select(.type == "ask" and ((.leases // []) | index($l)))]' "$LEDGER"
+}
+
+# The Tester's env lease ends when every ask that holds it (lease_asks) has a result that is not pending, on the ask's
+# own head, on each of its rows.
+release_landed_leases() {
+  local f name asks ask task json landed
+  for f in "$STATE"/.envlease-*; do
+    [ -e "$f" ] && [ -f "$LEDGER" ] || continue
+    name=${f##*/.envlease-}
+    [ "$(cut -f1 "$f" 2>/dev/null)" = "$ASSISTANCE" ] || continue
+    asks=$(lease_asks "env:$name")
+    [ "$(jq length <<<"$asks")" -gt 0 ] || continue
+    landed=1
+    while IFS= read -r ask; do
+      task=$(jq -r .task <<<"$ask")
+      json=$(task_writer checks "$task" 2>/dev/null) || { landed=0; break; }
+      # shellcheck disable=SC2016 # jq variables, not shell
+      jq -e --argjson k "$(jq -c '[.rows[] | ltrimstr("- ") | split(" | ")[0]]' <<<"$ask")" --arg h "$(jq -r '.head // .sha' <<<"$ask")" \
+        '(.rows | type == "array") and all(.rows[] | select(.key as $r | $k | index($r)); .status != "pending" and .head == $h)' <<<"$json" >/dev/null 2>&1 \
+        || { landed=0; break; }
+    done < <(jq -c '.[]' <<<"$asks")
+    [ "$landed" = 1 ] || continue
+    env_lease release "env:$name" --holder "$ASSISTANCE" >/dev/null 2>&1 || continue
+    ledger_append "$(jq -c --arg l "env:$name" --argjson at "$(date +%s)" \
+      'last as $n | {type: "release", lease: $l, task: $n.task, key: $n.key, tasks: (map(.task) | unique), keys: map(.key), at: $at}' <<<"$asks")"
+  done
 }
 
 CURSOR_RUN=
@@ -385,6 +553,8 @@ poll_once() {
       || state_put "$CURSOR_RUN" "$CURSOR_SHA"
   fi
   plan_drafts "$w" || { rm -rf "$w"; return 2; }
+  release_landed_leases
+  plan_rows || { rm -rf "$w"; return 2; }
   rm -rf "$w"
   [ "$ASKS" != '[]' ] || [ "$SKIPS" != '[]' ]
 }
@@ -498,40 +668,217 @@ cmd_wait() {
 
 # ---- delivery --------------------------------------------------------------
 
+# bin/fm-task.sh (FM_TASK_SHADOW_WRITER replaces it) with the settings of config/task-shadow, bounded to 120 s.
+task_writer() {  # <args>...
+  local -a writer=("${FM_TASK_SHADOW_WRITER:-$SCRIPT_DIR/fm-task.sh}")
+  ! command -v timeout >/dev/null 2>&1 || writer=(timeout 120 "${writer[@]}")
+  (
+    # shellcheck source=bin/fm-task-shadow-config-lib.sh
+    . "$SCRIPT_DIR/fm-task-shadow-config-lib.sh"
+    fm_task_shadow_config "$CONFIG/task-shadow"
+    "${writer[@]}" "$@" </dev/null
+  )
+}
+
+rows_task() { grep -qx 'record: rows' "$FM_HOME/data/$1/verify.md" 2>/dev/null; }
+
 # The task record of a task begun after T5, written before its ask: the issue's user-visible check rows, then a deploy
-# event that names the deployed head on a deploy round (a draft round's PR head is not deployed, so it names none).
-# Both are keyed by the ask, so a retry stores nothing twice. Returns 1 with DELIVER_ERROR set when either is refused.
+# event that names the deployed head and the scenarios its PRs touch on a deploy round (a draft round's PR head is not
+# deployed, so it names none). Both are keyed by the ask, so a retry stores nothing twice. Returns 1 with DELIVER_ERROR
+# set when either is refused.
 record_rows() {  # <ask-json>
   local ask=$1 task key note err
-  local -a head=() writer=("${FM_TASK_SHADOW_WRITER:-$SCRIPT_DIR/fm-task.sh}")
+  local -a head=()
   task=$(jq -r .task <<<"$ask")
   key="deploy-verify:$(jq -r .key <<<"$ask")"
   note="deploy $(jq -r .round <<<"$ask") at $(jq -r .sha <<<"$ask"): verify ask sent ($(jq -r .issue <<<"$ask"))"
   [ "$(jq -r .round <<<"$ask")" != deploy ] || head=(--head "$(jq -r .sha <<<"$ask")")
-  ! command -v timeout >/dev/null 2>&1 || writer=(timeout 120 "${writer[@]}")
+  [ "${#head[@]}" -eq 0 ] || ! jq -e 'has("touched")' <<<"$ask" >/dev/null || head+=(--touched "$(jq -r .touched <<<"$ask")")
   if ! err=$(
-    # shellcheck source=bin/fm-task-shadow-config-lib.sh
-    . "$SCRIPT_DIR/fm-task-shadow-config-lib.sh"
-    fm_task_shadow_config "$CONFIG/task-shadow"
-    "${writer[@]}" rows "$task" "$(jq -r .issue_url <<<"$ask")" --surface user-visible --key "$key:rows" --actor deploy-verify --role system 2>&1 >/dev/null </dev/null &&
-      "${writer[@]}" event "$task" deploy --note "$note" ${head[@]+"${head[@]}"} --key "$key:deploy" --actor deploy-verify --role system 2>&1 >/dev/null </dev/null
+    task_writer rows "$task" "$(jq -r .issue_url <<<"$ask")" --surface user-visible --key "$key:rows" --actor deploy-verify --role system 2>&1 >/dev/null &&
+      task_writer event "$task" deploy --note "$note" ${head[@]+"${head[@]}"} --key "$key:deploy" --actor deploy-verify --role system 2>&1 >/dev/null
   ); then
     DELIVER_ERROR="Tester ask not delivered: the task record of $task refused its check rows: $(printf '%s' "$err" | sed -n '1p')"
     return 1
   fi
 }
 
+# The rows of a deploy ask that carry (G2, see the header): a JSON array of {key, head}. Returns 1 with DELIVER_ERROR
+# set when the task record cannot be read.
+carried_rows() {  # <ask-json> <dry 0|1>
+  local ask=$1 dry=$2 task sha touched json
+  task=$(jq -r .task <<<"$ask")
+  sha=$(jq -r .sha <<<"$ask")
+  touched=$(jq -r '.touched // "all"' <<<"$ask")
+  if rows_task "$task"; then
+    if [ "$dry" = 1 ]; then
+      json=$(task_writer checks "$task" --as-deployed "$sha" --touched "$touched" 2>&1)
+    else
+      json=$(task_writer checks "$task" 2>&1)
+    fi
+    # shellcheck disable=SC2181 # the status of the assignment above
+    if [ "$?" -ne 0 ] || ! jq -e '.rows | type == "array"' <<<"$json" >/dev/null 2>&1; then
+      DELIVER_ERROR="Tester ask not delivered: the task record of $task could not be read: $(printf '%s' "$json" | sed -n '1p')"
+      return 1
+    fi
+    jq -c '[.rows[] | select(.status == "pass" and (.due | not)) | {key, head}]' <<<"$json"
+    return 0
+  fi
+  # A task begun before T5 keeps the old path: nothing carries, the Tester is asked for every row.
+  printf '[]\n'
+}
+
+# A deploy ask without its carried rows: the rows and lines left, plus `carried`. A draft round passes unchanged.
+narrow_ask() {  # <ask-json> <dry 0|1>
+  local ask=$1 carried
+  if [ "$(jq -r .round <<<"$ask")" != deploy ] || ! jq -e 'has("touched")' <<<"$ask" >/dev/null; then
+    printf '%s\n' "$ask"
+    return 0
+  fi
+  carried=$(carried_rows "$ask" "$2") || return 1
+  jq -c --argjson c "$carried" '($c | map(.key)) as $k
+    | .rows |= map(select((ltrimstr("- ") | split(" | ")[0]) as $r | $k | index($r) | not))
+    | (.rows | map(ltrimstr("- ") | split(" | ")[0] | split("@")[0])) as $left
+    | .lines |= map(select(. as $l | $left | index($l)))
+    | .carried = $c' <<<"$ask"
+}
+
+env_field() {  # <file> <name>: the value of the last `<name>=` line
+  sed -n "s/^$2=//p" "$1" | tail -n 1
+}
+
+ram_read() {  # <command>: the first number its output holds (free RAM in GB)
+  local out
+  out=$(timeout 60 bash -c "$1" 2>/dev/null </dev/null) || return 1
+  out=$(printf '%s\n' "$out" | grep -oE '[0-9]+([.][0-9]+)?' | head -n 1)
+  [ -n "$out" ] || return 1
+  printf '%s\n' "$out"
+}
+
+below() { awk -v a="$1" -v b="$2" 'BEGIN { exit !(a + 0 < b + 0) }'; }
+
+# The gate of one env (config/env/<name>, see the header). Sets GATE_JSON (the ask's envs entry) and GATE_HELD (why the
+# ask is held, or nothing). Returns 1 with DELIVER_ERROR set when a RAM read fails.
+GATE_JSON=
+GATE_HELD=
+env_gate() {  # <name> <file>
+  local name=$1 file=$2 cmd floor recover never free after='' recovered=false
+  GATE_HELD=
+  cmd=$(env_field "$file" ram-read)
+  floor=$(env_field "$file" floor-gb)
+  recover=$(env_field "$file" recover)
+  never=$(env_field "$file" never-touch | jq -Rc 'split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(. != ""))')
+  if [ -z "$cmd" ] || ! [[ "$floor" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+    GATE_JSON=$(jq -cn --arg n "$name" --argjson never "$never" '{name: $n, never_touch: $never}')
+    return 0
+  fi
+  free=$(ram_read "$cmd") || { DELIVER_ERROR="Tester ask not delivered: the free RAM read of env $name failed"; return 1; }
+  if below "$free" "$floor" && [ -n "$recover" ]; then
+    timeout 300 bash -c "$recover" >/dev/null 2>&1 </dev/null || true
+    recovered=true
+    after=$(ram_read "$cmd") || { DELIVER_ERROR="Tester ask not delivered: the free RAM read of env $name failed after its recover step"; return 1; }
+  fi
+  ! below "${after:-$free}" "$floor" || GATE_HELD="env $name free RAM ${after:-$free} GB below floor $floor GB"
+  GATE_JSON=$(jq -cn --arg n "$name" --argjson free "$free" --argjson floor "$floor" --argjson rec "$recovered" --arg after "$after" --argjson never "$never" \
+    '{name: $n, free_gb: $free, floor_gb: $floor, recovered: $rec} + (if $after == "" then {} else {free_after_gb: ($after | tonumber)} end) + {never_touch: $never}')
+}
+
+# A wait on the Tester for the ask's rows (G1), keyed by the ask and <suffix>.
+rows_wait() {  # <ask-json> <suffix> <note>
+  local err
+  if ! err=$(task_writer event "$(jq -r .task <<<"$1")" wait --next-actor tester --clears-on rows \
+    --rows "$(jq -r '[.rows[] | ltrimstr("- ") | split(" | ")[0]] | join(",")' <<<"$1")" --note "$3" \
+    --key "deploy-verify:$(jq -r .key <<<"$1"):$2" --actor deploy-verify --role system 2>&1 >/dev/null); then
+    DELIVER_ERROR="Tester ask not delivered: the task record of $(jq -r .task <<<"$1") refused its wait: $(printf '%s' "$err" | sed -n '1p')"
+    return 1
+  fi
+}
+
+# A rows-round ask: another holder's env lease, then the env gates, then the Tester's env leases; a held ask gets its wait
+# and hold line, a sent ask its wait, record and ledger line (a failed send gives back the leases no other ask holds).
+deliver_rows_ask() {  # <ask-json>
+  local ask=$1 file name envs='[]' held='' content record out lease_hold=0
+  local -a names=() claimed=()
+  for file in "$CONFIG"/env/*; do
+    [ -f "$file" ] || continue
+    name=${file##*/}
+    [[ "$name" =~ ^[A-Za-z0-9_-]+$ ]] || continue
+    # shellcheck disable=SC2016 # jq variables, not shell
+    jq -e --arg n "$name" 'any(.env[]; contains("`" + $n + "`") or test("\\benv " + $n + "\\b"; "i"))' <<<"$ask" >/dev/null || continue
+    names+=("$name")
+  done
+  # Another holder's live lease holds the ask before any RAM read.
+  for name in ${names[@]+"${names[@]}"}; do
+    out=$(env_lease check "env:$name" 2>/dev/null) || continue
+    [ "${out##* }" = live ] && [ "${out%% *}" != "$ASSISTANCE" ] || continue
+    held="$held${held:+; }env:$name is leased to ${out%% *}"
+    lease_hold=1
+  done
+  if [ "$lease_hold" = 0 ]; then
+    for name in ${names[@]+"${names[@]}"}; do
+      env_gate "$name" "$CONFIG/env/$name" || return 1
+      envs=$(jq -c --argjson g "$GATE_JSON" '. + [$g]' <<<"$envs")
+      [ -z "$GATE_HELD" ] || held="$held${held:+; }$GATE_HELD"
+    done
+  fi
+  if [ -z "$held" ]; then
+    for name in ${names[@]+"${names[@]}"}; do
+      if ! out=$(env_lease claim "env:$name" --holder "$ASSISTANCE" 2>&1); then
+        held="env:$name is leased: $(printf '%s' "$out" | sed -n '1p')"
+        lease_hold=1
+        break
+      fi
+      claimed+=("env:$name")
+    done
+  fi
+  ask=$(jq -c --argjson e "$envs" --argjson l "$(printf '%s\n' ${claimed[@]+"${claimed[@]}"} | jq -R . | jq -sc 'map(select(. != ""))')" '. + {envs: $e, leases: $l}' <<<"$ask")
+  if [ -n "$held" ]; then
+    release_claimed ${claimed[@]+"${claimed[@]}"}
+    rows_wait "$ask" hold "Tester ask held, not sent: $held" || return 1
+    # A held lease is planned again at every poll: one hold line while the reason stays the same.
+    # shellcheck disable=SC2016 # jq variables, not shell
+    [ "$lease_hold" = 1 ] && ledger_test '.type == "hold" and .key == $k and .held == $h' --arg k "$(jq -r .key <<<"$ask")" --arg h "$held" && return 0
+    ledger_append "$(jq -c --arg h "$held" --argjson lease "$lease_hold" --argjson at "$(date +%s)" \
+      '{type: "hold", round, key, task, sha, envs, held: $h, at: $at} + (if $lease == 1 then {lease: true} else {} end)' <<<"$ask")"
+    return 0
+  fi
+  rows_wait "$ask" wait "Tester asked for these rows on $(jq -r .sha <<<"$ask")" || { release_claimed ${claimed[@]+"${claimed[@]}"}; return 1; }
+  content=$(jq -c '{schema: "fm-tester-verify.v1", round, task, issue, issue_url, prs, sha, head, lines, rows, env, envs,
+    check: "bin/fm-task.sh check \(.task) <id>@<width> pass|fail --evidence <path|url> --head \(.sha)"}' <<<"$ask")
+  record=$(jq -cn --arg id "$(jq -r .key <<<"$ask")" --argjson at "$(jq -r .arrival <<<"$ask")" --arg c "$content" \
+    '{schema: "fm-assistance-mentions.v1", messages: [{id: $id, arrival: $at, content: $c}]}')
+  deliver_record Tester "$ASSISTANCE" "$record" || { release_claimed ${claimed[@]+"${claimed[@]}"}; return 1; }
+  ledger_append "$(jq -c --arg r "$DELIVER_BASE" --argjson at "$(date +%s)" 'del(.arrival) + {type: "ask", record: $r, at: $at}' <<<"$ask")"
+}
+
+# Give back the leases this delivery claimed, except one another ask still holds (lease_asks): the delivery's claim only
+# refreshed that lease, and release_landed_leases ends it when those asks land.
+release_claimed() {  # <env:name>...
+  local lease
+  for lease in "$@"; do
+    [ "$(lease_asks "$lease" | jq length)" -eq 0 ] || continue
+    env_lease release "$lease" --holder "$ASSISTANCE" >/dev/null 2>&1 || true
+  done
+}
+
 deliver_ask() {  # <ask-json>
   local ask=$1 content record check='' rows_task=0
+  [ "$(jq -r .round <<<"$ask")" != rows ] || { deliver_rows_ask "$ask"; return; }
   # A task begun after T5 is verified on its check rows in the task record: they are written first, and the ask names
   # the call for each result.
-  if grep -qx 'record: rows' "$FM_HOME/data/$(jq -r .task <<<"$ask")/verify.md" 2>/dev/null; then
+  if rows_task "$(jq -r .task <<<"$ask")"; then
     rows_task=1
     record_rows "$ask" || return 1
     check=$(jq -r '"bin/fm-task.sh check \(.task) <id>@<width> pass|fail --evidence <path|url> --head \(.sha)"' <<<"$ask")
   fi
+  ask=$(narrow_ask "$ask" 0) || return 1
+  # Every row carries: nothing is due on this head, so no ask goes out and the ledger records the carry.
+  if jq -e '.round == "deploy" and (.rows | length) == 0 and (.carried | length) > 0' <<<"$ask" >/dev/null; then
+    ledger_append "$(jq -c --argjson at "$(date +%s)" '{type: "carry", round, key, task, prs, sha, carried, at: $at}' <<<"$ask")"
+    return 0
+  fi
   content=$(jq -c --arg check "$check" 'del(.arrival, .key) + {schema: "fm-tester-verify.v1", check: (if $check == "" then null else $check end)}
-    | {schema, round, task, issue, issue_url, prs, sha, run, head, pushed, lines, rows, check}
+    | {schema, round, task, issue, issue_url, prs, sha, run, head, pushed, lines, rows, touched, carried, check}
     | with_entries(select(.value != null))' <<<"$ask")
   record=$(jq -cn --arg id "$(jq -r .key <<<"$ask")" --argjson at "$(jq -r .arrival <<<"$ask")" --arg c "$content" \
     '{schema: "fm-assistance-mentions.v1", messages: [{id: $id, arrival: $at, content: $c}]}')
@@ -606,12 +953,72 @@ cmd_classify() {  # <result-file>
   fi
 }
 
+cmd_deploy() {  # --dry-run --sha <sha> [--base <sha>]
+  local dry=0 sha='' base='' w ask out='[]'
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --dry-run) dry=1; shift ;;
+      --sha) sha=${2:-}; shift 2 || break ;;
+      --base) base=${2:-}; shift 2 || break ;;
+      *) break ;;
+    esac
+  done
+  [ "$#" -eq 0 ] && [ "$dry" = 1 ] && [ -n "$sha" ] || die 'usage: deploy --dry-run --sha <sha> [--base <sha>]'
+  [ -n "$base" ] || base=$(jq -r '.last_green_sha // ""' "$CURSOR" 2>/dev/null)
+  w=$(mktemp -d "${TMPDIR:-/tmp}/fm-deploy-dry.XXXXXX") || return 1
+  READ_ERROR_FILE="$w/.read-error"
+  build_map "$w/map.psv"
+  PLAN_IGNORE_LEDGER=1
+  if ! plan_deploy "$base" "$sha" '' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$w"; then
+    printf 'error: %s\n' "$(cat "$READ_ERROR_FILE" 2>/dev/null)" >&2
+    rm -rf "$w"
+    return 1
+  fi
+  rm -rf "$w"
+  while IFS= read -r ask; do
+    [ -n "$ask" ] || continue
+    ask=$(narrow_ask "$ask" 1) || { printf 'error: %s\n' "$DELIVER_ERROR" >&2; return 1; }
+    out=$(jq -c --argjson a "$ask" '. + [$a]' <<<"$out")
+  done < <(jq -c '.[]' <<<"$ASKS")
+  jq -cn --argjson asks "$out" --argjson skips "$SKIPS" '{asks: $asks, skips: $skips}'
+}
+
+cmd_ask_rows() {  # <task> [--dry-run]
+  local task=${1:-} dry=0 ask rc=0
+  case "${2:-}" in --dry-run) dry=1 ;; '') ;; *) die 'usage: ask-rows <task> [--dry-run]' ;; esac
+  [ "$#" -le 2 ] && [ -n "$task" ] || die 'usage: ask-rows <task> [--dry-run]'
+  rows_task "$task" || die "$task has no 'record: rows' in $FM_HOME/data/$task/verify.md"
+  if [ "$dry" = 1 ]; then
+    READ_ERROR_FILE=$(mktemp "${TMPDIR:-/tmp}/fm-deploy-rows.XXXXXX") || return 1
+  else
+    mkdir -p "$DATA"
+  fi
+  if ! plan_rows_task "$task"; then
+    printf 'error: %s\n' "$(cat "$READ_ERROR_FILE" 2>/dev/null)" >&2
+    [ "$dry" = 0 ] || rm -f "$READ_ERROR_FILE"
+    return 1
+  fi
+  [ "$dry" = 0 ] || rm -f "$READ_ERROR_FILE"
+  while IFS= read -r ask; do
+    [ -n "$ask" ] || continue
+    if [ "$dry" = 0 ] && ! deliver_ask "$ask"; then
+      printf 'error: %s\n' "$DELIVER_ERROR" >&2
+      rc=1
+      continue
+    fi
+    printf '%s\n' "$ask"
+  done < <(jq -c '.[]' <<<"$ASKS")
+  return "$rc"
+}
+
 cmd_arm() {
   "$SCRIPT_DIR/fm-procevent.sh" register deploy-verify "$SOURCE_ID" -- "$SCRIPT_DIR/fm-procevent-deploy-verify.sh" wait
 }
 
 case "${1:-}" in
   replay-skips) shift; cmd_replay_skips "$@" ;;
+  deploy) shift; cmd_deploy "$@" ;;
+  ask-rows) shift; cmd_ask_rows "$@" ;;
   arm) shift; cmd_arm "$@" ;;
   wait) shift; cmd_wait "$@" ;;
   autohandle) shift; [ "$#" -eq 3 ] || die 'usage: autohandle <source-id> <sequence> <result-file>'; cmd_autohandle "$@" ;;
@@ -619,5 +1026,5 @@ case "${1:-}" in
   silent) shift; cmd_silent "$@" ;;
   terminal) exit 1 ;;
   self-announcing|relisten) exit 0 ;;
-  *) echo 'error: expected replay-skips, arm, wait, autohandle, classify, silent, terminal, self-announcing or relisten' >&2; exit 2 ;;
+  *) echo 'error: expected replay-skips, deploy, ask-rows, arm, wait, autohandle, classify, silent, terminal, self-announcing or relisten' >&2; exit 2 ;;
 esac

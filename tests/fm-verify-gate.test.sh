@@ -512,13 +512,27 @@ case_rows_files_before_t5() {
   refuses "$1" "$home" "missing 'approved: firstmate"
 }
 
+# A carried pass the record prints is no problem: the gate passes, and the line goes to stderr with its head.
+case_rows_carried() {
+  local home err
+  home=$(rows_home)
+  export FAKE_ARGS="$home/fake.args"
+  err="$home/gate.err"
+  RC=0
+  OUT=$(FM_HOME="$home" FAKE_RC=0 FAKE_OUT='A1@1440 carried: pass on head d0, and no later deployed PR names A1' bash -c '. "$1"; fm_verify_gate_problems "$2/data" "$3" "$2"' _ "$1" "$home" "$TASK" 2>"$err") || RC=$?
+  [ "$RC" -eq 0 ] && [ -z "$OUT" ] || { echo "a carried pass became a problem: exit $RC: $OUT"; return 1; }
+  grep -qx 'A1@1440 carried: pass on head d0, and no later deployed PR names A1' "$err" || { echo "the carried pass is not printed: $(cat "$err")"; return 1; }
+  OUT=$(FM_HOME="$home" FAKE_RC=5 FAKE_OUT=$'A1@1440 carried: pass on head d0, and no later deployed PR names A1\nA2@1440 is \'fail\', not pass' bash -c '. "$1"; fm_verify_gate_problems "$2/data" "$3" "$2"' _ "$1" "$home" "$TASK" 2>"$err") || RC=$?
+  [ "$OUT" = "A2@1440 is 'fail', not pass" ] || { echo "problems with a carried pass beside them: $OUT"; return 1; }
+}
+
 CASES="pass_and_read_only firstmate_record_missing tester_record_missing no_tester_home tester_home_override
 firstmate_line_one firstmate_issue_line tester_surface tester_issue_line records_name_different_issues
 issue_cannot_be_parsed issue_cannot_be_read issue_without_user_visible_rows row_absent_from_tester_record
 row_not_pass row_without_evidence_field row_pass_without_evidence row_evidence_path row_id_not_in_issue retired_row
 retired_row_of_a_present_id_at_another_width internal_scenario_row row_text_differs_from_the_issue malformed_tester_row verified_line_closes_the_record acceptance_digest verified_line_missing verified_line_without_head
 deployed_head_is_the_newest_ask a_pr_in_the_watched_repo_needs_an_ask a_pr_in_another_repo_takes_the_deployed_line the_backlog_line_names_the_pr approval home_video
-rows_read_the_record rows_problems rows_record_unreadable rows_deployed_head rows_writer_settings rows_files_before_t5"
+rows_read_the_record rows_problems rows_record_unreadable rows_deployed_head rows_writer_settings rows_files_before_t5 rows_carried"
 
 # ---- real gate ------------------------------------------------------------------------
 
@@ -553,6 +567,7 @@ unsay() {  # <label> <case> <message-prefix>
   P=$3 mutate "$1" "$2" 's/\Qfm_verify_gate_say "$ENV{P}\E/: "$ENV{P}/g'
 }
 
+P="out=\$(printf '%s\\n' \"\$out\" | grep -v ' carried: pass on head ' || :)" mutate 'a carried pass is no problem' rows_carried 's/\Q$ENV{P}\E/:/'
 unsay 'firstmate record is required' firstmate_record_missing 'firstmate verification record missing'
 unsay 'the Tester record is required' tester_record_missing 'Tester record missing: $tfile'
 unsay 'a Tester home is required' no_tester_home 'Tester record missing: no Tester home'

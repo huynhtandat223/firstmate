@@ -611,7 +611,7 @@ scenario_shadow() {
 # the next poll retries it, and the ask tells the Tester the check call that records each result.
 scenario_rows_record() {
   new_lab "$1"
-  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s/writer.calls"\ncase "$*" in *"${FAKE_WRITER_FAIL:-none}"*) exit 3 ;; esac\n' "$LAB" > "$LAB/writer"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s/writer.calls"\ncase "$*" in *"${FAKE_WRITER_FAIL:-@no-fail@}"*) exit 3 ;; esac\ncase "$1" in checks) echo "{\\"rows\\":[]}" ;; esac\n' "$LAB" > "$LAB/writer"
   chmod +x "$LAB/writer"
   : > "$H/config/task-shadow"
   backlog_task alpha 11 500
@@ -639,8 +639,8 @@ scenario_rows_record() {
   [ "$CYCLE_AUTO" = 0 ] || { echo "the retry: autohandle=$CYCLE_AUTO"; return 1; }
   [ "$(sed -n 1p "$LAB/writer.calls")" = "rows alpha https://github.com/$REPO/issues/500 --surface user-visible --key deploy-verify:$(ledger | jq -r 'select(.task == "alpha") | .key'):rows --actor deploy-verify --role system" ] \
     || { echo "the rows were not written first: $(cat "$LAB/writer.calls" 2>&1)"; return 1; }
-  grep -q "^event alpha deploy --note deploy deploy at $(sha s2): verify ask sent (cfw-modules#500) --head $(sha s2) --key deploy-verify:[^ ]*:deploy --actor deploy-verify --role system$" "$LAB/writer.calls" \
-    || { echo "the rows task deploy event names no head: $(cat "$LAB/writer.calls")"; return 1; }
+  grep -q "^event alpha deploy --note deploy deploy at $(sha s2): verify ask sent (cfw-modules#500) --head $(sha s2) --touched all --key deploy-verify:[^ ]*:deploy --actor deploy-verify --role system$" "$LAB/writer.calls" \
+    || { echo "the rows task deploy event names no head, or a PR with no Scenarios touched line did not touch all: $(cat "$LAB/writer.calls")"; return 1; }
   [ "$(grep -c '^event alpha deploy' "$LAB/writer.calls")" = 1 ] || { echo "the deploy event was written twice: $(cat "$LAB/writer.calls")"; return 1; }
   ! grep -q '^rows beta' "$LAB/writer.calls" || { echo "a task begun before T5 got check rows: $(cat "$LAB/writer.calls")"; return 1; }
   asked | jq -e --arg sha "$(sha s2)" 'select(.task == "alpha") | .check == "bin/fm-task.sh check alpha <id>@<width> pass|fail --evidence <path|url> --head \($sha)"' >/dev/null \
@@ -648,9 +648,293 @@ scenario_rows_record() {
   asked | jq -e 'select(.task == "beta") | has("check") | not' >/dev/null || { echo "a task begun before T5 was told to check rows: $(asked | jq -c 'select(.task == "beta")')"; return 1; }
 }
 
+# HG2 (firstmate#176 Step 4): a deploy ask lists only the rows the Tester checks on its head. A pass on an earlier
+# deployed head carries while no PR of the deploy names its id (`Scenarios touched:`; a PR without the line names
+# none): the ask lists it under carried with that head, a task begun after T5 gets the ids on its deploy event, a task
+# with nothing due gets no ask (a carry entry in the ledger instead), a later PR that names the id brings the row back,
+# and `deploy --dry-run` prints the same ask and writes nothing.
+fx_commit_pr_body() {  # <commit-seed> <pr-number> <body>
+  gh_put "repos/$REPO/commits/$(sha "$1")/pulls" "$(jq -cn --arg u "$RURL/pull/$2" --arg b "$3" \
+    '[{html_url: $u, merged_at: "2026-10-20T14:00:00Z", base: {ref: "main"}, body: $b}]')"
+}
+scenario_carry() {
+  new_lab "$1"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s/writer.calls"\ncase "$1" in checks) cat "%s/checks-$2.json" ;; esac\n' "$LAB" "$LAB" > "$LAB/writer"
+  chmod +x "$LAB/writer"
+  : > "$H/config/task-shadow"
+  backlog_task alpha 11 500
+  backlog_task beta 12 600
+  backlog_task gamma 14 700
+  mkdir -p "$H/data/alpha" "$H/data/beta" "$H/data/gamma" "$TH/data/verify"
+  printf 'surface: user-visible\nissue: https://github.com/%s/issues/500\nrecord: rows\n' "$REPO" > "$H/data/alpha/verify.md"
+  printf 'surface: user-visible\nissue: https://github.com/%s/issues/600\n' "$REPO" > "$H/data/beta/verify.md"
+  printf 'surface: user-visible\nissue: https://github.com/%s/issues/700\nrecord: rows\n' "$REPO" > "$H/data/gamma/verify.md"
+  fx_issue_raw 500 "$(tpl_issue_body "$(tpl_scenario A1 user-visible p 1440; tpl_scenario A2 user-visible p 1440)")"
+  fx_issue_raw 600 "$(tpl_issue_body "$(tpl_scenario B1 user-visible p 1440; tpl_scenario B2 user-visible p 1440)")"
+  fx_issue_raw 700 "$(tpl_issue_body "$(tpl_scenario C1 user-visible p 1440)")"
+  # beta begun before T5: its Tester file has B1 passed on head s1, B2 failed. An old task keeps the old path (the owner,
+  # 2026-10-30: no migration), so nothing of it carries and the Tester is asked for every row.
+  printf 'surface: user-visible\nissue: https://github.com/%s/issues/600\n## Scenarios\n- B1@1440 | x | pass | evidence: e\n- B2@1440 | x | fail | evidence: e\nverified: tester 1 head=%s acceptance=d\n' "$REPO" "$(sha s1)" > "$TH/data/verify/beta.md"
+  # alpha's record: A1 passed on s1 and carries, A2 is pending for the Tester; gamma's record: C1 passed on s1 and carries
+  printf '{"task":"alpha","head":"%s","rows":[{"key":"A1@1440","scenarioId":"A1","width":"1440","surface":"user-visible","status":"pass","head":"%s","carried":true,"due":false},{"key":"A2@1440","scenarioId":"A2","width":"1440","surface":"user-visible","status":"pending","head":null,"carried":false,"due":true}]}\n' "$(sha s2)" "$(sha s1)" > "$LAB/checks-alpha.json"
+  printf '{"task":"gamma","head":"%s","rows":[{"key":"C1@1440","scenarioId":"C1","width":"1440","surface":"user-visible","status":"pass","head":"%s","carried":true,"due":false}]}\n' "$(sha s2)" "$(sha s1)" > "$LAB/checks-gamma.json"
+  fx_runs "1:completed:success:s0" "2:completed:success:s2"
+  fx_jobs 2 success
+  fx_compare s0 s2 c1 c2 c4
+  fx_commit_pr_body c1 11 "$(printf 'Closes #500\n\nScenarios touched: ???')"
+  fx_commit_pr_body c2 12 'Closes #600'
+  fx_commit_pr_body c4 14 "$(printf 'Closes #700\nScenarios touched: none')"
+  set_cursor 1 s0
+  export FM_TASK_SHADOW_WRITER="$LAB/writer"
+  local dry
+  dry=$("$BIN/fm-procevent-deploy-verify.sh" deploy --dry-run --sha "$(sha s2)" --base "$(sha s0)") || { unset FM_TASK_SHADOW_WRITER; echo "deploy --dry-run failed"; return 1; }
+  if [ -n "$(ledger)" ] || grep -q '^\(rows\|event\) ' "$LAB/writer.calls" 2>/dev/null; then
+    unset FM_TASK_SHADOW_WRITER; echo "the dry run wrote: $(ledger) $(cat "$LAB/writer.calls" 2>&1)"; return 1
+  fi
+  grep -qx "checks alpha --as-deployed $(sha s2) --touched all" "$LAB/writer.calls" \
+    || { unset FM_TASK_SHADOW_WRITER; echo "the dry run did not read alpha as deployed: $(cat "$LAB/writer.calls" 2>&1)"; return 1; }
+  jq -e '[.asks[] | {task, rows: [.rows[] | split(" | ")[0]], carried: [.carried[].key]}] == [{task: "alpha", rows: ["- A2@1440"], carried: ["A1@1440"]}, {task: "beta", rows: ["- B1@1440", "- B2@1440"], carried: []}, {task: "gamma", rows: [], carried: ["C1@1440"]}]' <<<"$dry" >/dev/null \
+    || { unset FM_TASK_SHADOW_WRITER; echo "dry run asks: $(jq -c '[.asks[] | {task, rows, carried}]' <<<"$dry")"; return 1; }
+  : > "$LAB/writer.calls"
+  cycle
+  [ "$CYCLE_AUTO" = 0 ] || { unset FM_TASK_SHADOW_WRITER; echo "autohandle=$CYCLE_AUTO"; return 1; }
+  grep -q "^event alpha deploy .*--head $(sha s2) --touched all --key " "$LAB/writer.calls" \
+    || { unset FM_TASK_SHADOW_WRITER; echo "alpha's unreadable Scenarios touched line did not touch all: $(cat "$LAB/writer.calls")"; return 1; }
+  grep -q "^event gamma deploy .*--head $(sha s2) --touched none --key " "$LAB/writer.calls" \
+    || { unset FM_TASK_SHADOW_WRITER; echo "gamma's deploy event does not record its PR's none: $(cat "$LAB/writer.calls")"; return 1; }
+  asked | jq -e --arg h "$(sha s1)" 'select(.task == "alpha") | (.rows | map(split(" | ")[0])) == ["- A2@1440"] and .lines == ["A2"] and .carried == [{key: "A1@1440", head: $h}]' >/dev/null \
+    || { unset FM_TASK_SHADOW_WRITER; echo "alpha ask: $(asked | jq -c 'select(.task == "alpha")')"; return 1; }
+  asked | jq -e 'select(.task == "beta") | (.rows | map(split(" | ")[0])) == ["- B1@1440", "- B2@1440"] and .lines == ["B1", "B2"] and .carried == []' >/dev/null \
+    || { unset FM_TASK_SHADOW_WRITER; echo "beta ask: $(asked | jq -c 'select(.task == "beta")')"; return 1; }
+  ! asked | jq -e 'select(.task == "gamma")' >/dev/null || { unset FM_TASK_SHADOW_WRITER; echo 'gamma had nothing due and still got an ask'; return 1; }
+  [ "$(ledger_count '.type == "carry" and .task == "gamma"')" = 1 ] || { unset FM_TASK_SHADOW_WRITER; echo "no carry entry for gamma: $(ledger)"; return 1; }
+  # the same result handled again sends and records nothing more
+  "$BIN/fm-procevent-deploy-verify.sh" autohandle deploy-verify "$SEQ" "$H/state/procevent-inbox/deploy-verify.$SEQ.result" >/dev/null 2>&1
+  [ "$(ledger_count '.type == "carry"')" = 1 ] || { unset FM_TASK_SHADOW_WRITER; echo "a handled carry was recorded again: $(ledger)"; return 1; }
+  # the dry run ignores the ledger: the deploy already asked about plans the same asks again
+  if ! dry=$("$BIN/fm-procevent-deploy-verify.sh" deploy --dry-run --sha "$(sha s2)" --base "$(sha s0)") \
+    || ! jq -e '[.asks[].task] == ["alpha", "beta", "gamma"]' <<<"$dry" >/dev/null; then
+    unset FM_TASK_SHADOW_WRITER; echo "a dry run after the deploy: $dry"; return 1
+  fi
+  # beta is asked for every row again, a PR that names all is recorded on gamma's deploy event and its C1 is due, and
+  # gamma's carried PR 14, still in the compare, is not planned again
+  fx_runs "1:completed:success:s0" "2:completed:success:s2" "3:completed:success:s3"
+  fx_jobs 3 success
+  fx_compare s2 s3 c3 c4 c5
+  fx_commit_pr_body c3 13 "$(printf 'Closes #600\nScenarios touched: B1')"
+  fx_commit_pr_body c5 15 "$(printf 'Closes #700\n- Scenarios touched: `all`')"
+  backlog_task beta 13 600
+  backlog_task gamma 15 700
+  printf '{"task":"gamma","head":"%s","rows":[{"key":"C1@1440","scenarioId":"C1","width":"1440","surface":"user-visible","status":"pass","head":"%s","carried":false,"due":true}]}\n' "$(sha s3)" "$(sha s1)" > "$LAB/checks-gamma.json"
+  cycle
+  unset FM_TASK_SHADOW_WRITER
+  asked | jq -e --arg s "$(sha s3)" 'select(.task == "beta" and .sha == $s) | (.rows | map(split(" | ")[0])) == ["- B1@1440", "- B2@1440"] and .carried == []' >/dev/null \
+    || { echo "beta at s3 was not asked for every row: $(asked | jq -c 'select(.task == "beta")')"; return 1; }
+  grep -q "^event gamma deploy .*--head $(sha s3) --touched all --key " "$LAB/writer.calls" \
+    || { echo "gamma's deploy event does not record all: $(cat "$LAB/writer.calls")"; return 1; }
+  asked | jq -e --arg s "$(sha s3)" --arg p "$RURL/pull/15" 'select(.task == "gamma" and .sha == $s) | (.rows | map(split(" | ")[0])) == ["- C1@1440"] and .carried == [] and .prs == [$p]' >/dev/null \
+    || { echo "gamma at s3: $(asked | jq -c 'select(.task == "gamma")')"; return 1; }
+}
+
+# HG4 (firstmate#176 Step 4): a worker records rows pending with next actor tester on a head, and the Tester gets one
+# ask built from the record with exactly those rows and each row's env. For an env with a config/env/<name> file the
+# builder reads free RAM, runs the recover command once below the floor and reads again; still below, the ask is held
+# with a wait and not sent, and a later poll sends it with the reads, the floor, the recover step and the processes
+# never to touch. A row asked on a head is not asked again on that head, and `ask-rows <task> --dry-run` prints the
+# ask and writes nothing.
+tpl_scenario_env() {  # <id> <env> <widths>
+  printf -- '- [ ] %s WHEN a user acts, THE page SHALL answer.\n' "$1"
+  printf '  - page: p\n  - widths: %s\n  - controls: button "Go"\n  - env: %s\n  - proof: click Go\n  - data: the probe\n  - mock: none\n  - surface: user-visible\n' "$3" "$2"
+}
+scenario_rows_ask() {
+  new_lab "$1"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s/writer.calls"\ncase "$1" in checks) cat "%s/checks.json" ;; esac\n' "$LAB" "$LAB" > "$LAB/writer"
+  chmod +x "$LAB/writer"
+  : > "$H/config/task-shadow"
+  printf 'kind=ship\n' > "$H/state/alpha.meta"
+  mkdir -p "$H/data/alpha" "$H/config/env"
+  printf 'surface: user-visible\nissue: https://github.com/%s/issues/500\nrecord: rows\n' "$REPO" > "$H/data/alpha/verify.md"
+  fx_issue_raw 500 "$(tpl_issue_body "$(tpl_scenario_env A1 'Dev 5001; DMS env `company`' 1440; tpl_scenario_env A2 'Dev 5001' 1440,390; tpl_scenario_env A3 'Dev 5001' 1440)")"
+  # A1@1440 and A2@1440 are pending for the Tester on head h1; A3 is pending with no head (a rows call); A2@390 passed
+  printf '{"task":"alpha","state":"running","nextActor":"worker","issueUrl":"https://github.com/%s/issues/500","head":null,"rows":[{"key":"A1@1440","scenarioId":"A1","width":"1440","surface":"user-visible","status":"pending","nextActor":"tester","head":"%s","carried":false,"due":true},{"key":"A2@1440","scenarioId":"A2","width":"1440","surface":"user-visible","status":"pending","nextActor":"tester","head":"%s","carried":false,"due":true},{"key":"A2@390","scenarioId":"A2","width":"390","surface":"user-visible","status":"pass","nextActor":"firstmate","head":"%s","carried":false,"due":false},{"key":"A3@1440","scenarioId":"A3","width":"1440","surface":"user-visible","status":"pending","nextActor":"tester","head":null,"carried":false,"due":true}]}\n' "$REPO" "$(sha h1)" "$(sha h1)" "$(sha h1)" > "$LAB/checks.json"
+  printf '3.5\n' > "$LAB/ram"
+  printf '# company: the admin PC that runs Titan\nram-read=cat %s/ram\nfloor-gb=6\nrecover=echo ran >> %s/recover.log; echo 4 > %s/ram\nnever-touch=Titan.exe, vsdbg\n' "$LAB" "$LAB" "$LAB" > "$H/config/env/company"
+  fx_runs "1:completed:success:s0"
+  set_cursor 1 s0
+  export FM_TASK_SHADOW_WRITER="$LAB/writer" FM_DEPLOY_VERIFY_HOLD_SECONDS=0
+  local dry
+  dry=$("$BIN/fm-procevent-deploy-verify.sh" ask-rows alpha --dry-run) || { unset FM_TASK_SHADOW_WRITER; echo "ask-rows --dry-run failed: $dry"; return 1; }
+  jq -e --arg h "$(sha h1)" '.round == "rows" and .sha == $h and ([.rows[] | split(" | ")[0]] == ["- A1@1440", "- A2@1440"])' <<<"$dry" >/dev/null \
+    || { unset FM_TASK_SHADOW_WRITER; echo "dry ask: $dry"; return 1; }
+  if [ -n "$(ledger)" ] || [ -e "$LAB/recover.log" ] || grep -q '^event ' "$LAB/writer.calls"; then
+    unset FM_TASK_SHADOW_WRITER; echo "the dry run wrote: $(ledger) $(cat "$LAB/writer.calls")"; return 1
+  fi
+  # below the floor after the recover step: held with a wait, not sent
+  cycle
+  [ "$CYCLE_AUTO" = 0 ] || { unset FM_TASK_SHADOW_WRITER; echo "held: autohandle=$CYCLE_AUTO"; return 1; }
+  [ -z "$(asked)" ] || { unset FM_TASK_SHADOW_WRITER; echo "a held ask was sent: $(asked)"; return 1; }
+  [ "$(cat "$LAB/recover.log" 2>/dev/null)" = ran ] || { unset FM_TASK_SHADOW_WRITER; echo "the recover step did not run once: $(cat "$LAB/recover.log" 2>&1)"; return 1; }
+  grep -q "^event alpha wait --next-actor tester --clears-on rows --rows A1@1440,A2@1440 --note .*company.*4 GB.*floor 6 GB.* --key deploy-verify:rows:alpha:[^ ]*:hold --actor deploy-verify --role system$" "$LAB/writer.calls" \
+    || { unset FM_TASK_SHADOW_WRITER; echo "no wait names the floor: $(cat "$LAB/writer.calls")"; return 1; }
+  [ "$(ledger_count '.type == "ask"')" = 0 ] || { unset FM_TASK_SHADOW_WRITER; echo "a held ask is in the ledger: $(ledger)"; return 1; }
+  # the next poll finds 4 GB, recovers to 8 GB and sends the ask
+  printf 'recover=echo ran >> %s/recover.log; echo 8 > %s/ram\n' "$LAB" "$LAB" > "$LAB/recover.line"
+  sed -i "s|^recover=.*|$(sed 's/[|&]/\\&/g' "$LAB/recover.line")|" "$H/config/env/company"
+  cycle
+  [ "$CYCLE_AUTO" = 0 ] || { unset FM_TASK_SHADOW_WRITER; echo "sent: autohandle=$CYCLE_AUTO"; return 1; }
+  asked | jq -e --arg h "$(sha h1)" 'select(.round == "rows" and .task == "alpha" and .sha == $h)
+    | ([.rows[] | split(" | ")[0]] == ["- A1@1440", "- A2@1440"]) and .lines == ["A1", "A2"]
+    and .env == {A1: "Dev 5001; DMS env `company`", A2: "Dev 5001"}
+    and .envs == [{name: "company", free_gb: 4, floor_gb: 6, recovered: true, free_after_gb: 8, never_touch: ["Titan.exe", "vsdbg"]}]
+    and (.check | startswith("bin/fm-task.sh check alpha "))' >/dev/null \
+    || { unset FM_TASK_SHADOW_WRITER; echo "rows ask: $(asked)"; return 1; }
+  [ "$(ledger_count '.type == "ask" and .round == "rows" and .task == "alpha"')" = 1 ] || { unset FM_TASK_SHADOW_WRITER; echo "ledger: $(ledger)"; return 1; }
+  grep -q "^event alpha wait --next-actor tester --clears-on rows --rows A1@1440,A2@1440 --note Tester asked for these rows on $(sha h1) --key deploy-verify:rows:alpha:[^ ]*:wait --actor deploy-verify --role system$" "$LAB/writer.calls" \
+    || { unset FM_TASK_SHADOW_WRITER; echo "the sent ask wrote no wait: $(cat "$LAB/writer.calls")"; return 1; }
+  # a row asked on a head is not asked again on that head: when A3 is pending on h1 too, the next ask holds A3 alone
+  cycle
+  [ "$(asked | wc -l | tr -d ' ')" = 1 ] || { unset FM_TASK_SHADOW_WRITER; echo "the rows were asked again: $(asked)"; return 1; }
+  jq -c --arg h "$(sha h1)" '(.rows[] | select(.key == "A3@1440") | .head) = $h' "$LAB/checks.json" > "$LAB/checks.next" && mv "$LAB/checks.next" "$LAB/checks.json"
+  cycle
+  unset FM_TASK_SHADOW_WRITER FM_DEPLOY_VERIFY_HOLD_SECONDS
+  if [ "$(asked | wc -l | tr -d ' ')" != 2 ] || ! asked | jq -e 'select(.round == "rows" and .lines == ["A3"]) | [.rows[] | split(" | ")[0]] == ["- A3@1440"]' >/dev/null; then
+    echo "a new row on the same head: $(asked)"; return 1
+  fi
+}
+
+# HG5 (firstmate#176 G5): the rows ask of an env with a config/env/<name> file claims `env:<name>` for the Tester
+# before it is sent. While a worker holds the lease the ask is held with a wait naming the holder (one hold line, no
+# RAM read), it goes out at the first poll after the worker releases, and the poll releases the Tester's lease when
+# the asked rows land.
+scenario_rows_lease() {
+  new_lab "$1"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s/writer.calls"\ncase "$1" in checks) cat "%s/checks.json" ;; esac\n' "$LAB" "$LAB" > "$LAB/writer"
+  chmod +x "$LAB/writer"
+  : > "$H/config/task-shadow"
+  printf 'kind=ship\n' > "$H/state/alpha.meta"
+  printf 'kind=ship\n' > "$H/state/beta.meta"
+  mkdir -p "$H/data/alpha" "$H/config/env"
+  printf 'surface: user-visible\nissue: https://github.com/%s/issues/500\nrecord: rows\n' "$REPO" > "$H/data/alpha/verify.md"
+  fx_issue_raw 500 "$(tpl_issue_body "$(tpl_scenario_env A1 'DMS env `company`' 1440)")"
+  local pending
+  pending='{"task":"alpha","state":"running","nextActor":"worker","issueUrl":"https://github.com/%s/issues/500","head":null,"rows":[{"key":"A1@1440","scenarioId":"A1","width":"1440","surface":"user-visible","status":"%s","nextActor":"tester","head":"%s","carried":false,"due":true}]}\n'
+  # shellcheck disable=SC2059 # the row template above is the format
+  printf "$pending" "$REPO" pending "$(sha h1)" > "$LAB/checks.json"
+  printf '9\n' > "$LAB/ram"
+  printf 'ram-read=echo read >> %s/ram.log; cat %s/ram\nfloor-gb=6\nnever-touch=Titan.exe\n' "$LAB" "$LAB" > "$H/config/env/company"
+  fx_runs "1:completed:success:s0"
+  set_cursor 1 s0
+  export FM_TASK_SHADOW_WRITER="$LAB/writer"
+  "$BIN/fm-lease.sh" claim env:company --holder beta || { unset FM_TASK_SHADOW_WRITER; echo 'the worker could not claim env:company'; return 1; }
+  cycle
+  cycle
+  [ -z "$(asked)" ] || { unset FM_TASK_SHADOW_WRITER; echo "an ask went out while beta held env:company: $(asked)"; return 1; }
+  [ ! -e "$LAB/ram.log" ] || { unset FM_TASK_SHADOW_WRITER; echo 'the RAM was read while the lease was held elsewhere'; return 1; }
+  grep -q "^event alpha wait --next-actor tester --clears-on rows --rows A1@1440 --note .*env:company is leased to beta.* --key deploy-verify:rows:alpha:[^ ]*:hold " "$LAB/writer.calls" \
+    || { unset FM_TASK_SHADOW_WRITER; echo "no wait names the holder: $(cat "$LAB/writer.calls")"; return 1; }
+  [ "$(ledger_count '.type == "hold"')" = 1 ] || { unset FM_TASK_SHADOW_WRITER; echo "hold lines: $(ledger)"; return 1; }
+  # the worker releases: the next poll sends the ask under the Tester's lease
+  "$BIN/fm-lease.sh" release env:company --holder beta
+  cycle
+  asked | jq -e 'select(.round == "rows" and .task == "alpha") | .envs[0].name == "company"' >/dev/null || { unset FM_TASK_SHADOW_WRITER; echo "no ask after the release: $(asked) $(ledger)"; return 1; }
+  [ "$("$BIN/fm-lease.sh" check env:company | cut -d' ' -f1)" = tester ] || { unset FM_TASK_SHADOW_WRITER; echo "the Tester holds no lease: $("$BIN/fm-lease.sh" check env:company 2>&1)"; return 1; }
+  [ "$(ledger_count '.type == "ask" and .leases == ["env:company"]')" = 1 ] || { unset FM_TASK_SHADOW_WRITER; echo "the ask records no lease: $(ledger)"; return 1; }
+  # a poll before the rows land keeps the lease; the poll after releases it
+  cycle
+  "$BIN/fm-lease.sh" check env:company >/dev/null || { unset FM_TASK_SHADOW_WRITER; echo 'the lease was released before the rows landed'; return 1; }
+  # PR 223 reader round 2: a result on another head than the ask's is not the asked row landing
+  # shellcheck disable=SC2059 # the row template above is the format
+  printf "$pending" "$REPO" pass "$(sha h0)" > "$LAB/checks.json"
+  cycle
+  "$BIN/fm-lease.sh" check env:company >/dev/null || { unset FM_TASK_SHADOW_WRITER; echo 'a pass on another head released the lease'; return 1; }
+  # shellcheck disable=SC2059 # the row template above is the format
+  printf "$pending" "$REPO" pass "$(sha h1)" > "$LAB/checks.json"
+  cycle
+  unset FM_TASK_SHADOW_WRITER
+  ! "$BIN/fm-lease.sh" check env:company >/dev/null 2>&1 || { echo "the lease outlived the rows: $("$BIN/fm-lease.sh" check env:company)"; return 1; }
+  [ "$(ledger_count '.type == "release" and .lease == "env:company" and .task == "alpha"')" = 1 ] || { echo "no release line: $(ledger)"; return 1; }
+}
+
+# PR 223 review: two live rows asks hold `env:company` for the Tester (the second claim refreshes the same lease). The
+# newer ask landing first must not release the lease while the older ask still has a pending row; the poll after both
+# land releases it once and names both asks.
+scenario_rows_lease_two() {
+  new_lab "$1"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s/writer.calls"\ncase "$1" in checks) cat "%s/checks-$2.json" ;; esac\n' "$LAB" "$LAB" > "$LAB/writer"
+  chmod +x "$LAB/writer"
+  : > "$H/config/task-shadow"
+  local t row
+  row='{"task":"%s","state":"running","nextActor":"worker","issueUrl":"https://github.com/%s/issues/%s","head":null,"rows":[{"key":"A1@1440","scenarioId":"A1","width":"1440","surface":"user-visible","status":"%s","nextActor":"tester","head":"%s","carried":false,"due":true}]}\n'
+  mkdir -p "$H/config/env"
+  for t in alpha:500:h1 gamma:501:h2; do
+    printf 'kind=ship\n' > "$H/state/${t%%:*}.meta"
+    mkdir -p "$H/data/${t%%:*}"
+    printf 'surface: user-visible\nissue: https://github.com/%s/issues/%s\nrecord: rows\n' "$REPO" "$(cut -d: -f2 <<<"$t")" > "$H/data/${t%%:*}/verify.md"
+    fx_issue_raw "$(cut -d: -f2 <<<"$t")" "$(tpl_issue_body "$(tpl_scenario_env A1 'DMS env `company`' 1440)")"
+    # shellcheck disable=SC2059 # the row template above is the format
+    printf "$row" "${t%%:*}" "$REPO" "$(cut -d: -f2 <<<"$t")" pending "$(sha "${t##*:}")" > "$LAB/checks-${t%%:*}.json"
+  done
+  printf '9\n' > "$LAB/ram"
+  printf 'ram-read=cat %s/ram\nfloor-gb=6\nnever-touch=Titan.exe\n' "$LAB" > "$H/config/env/company"
+  fx_runs "1:completed:success:s0"
+  set_cursor 1 s0
+  export FM_TASK_SHADOW_WRITER="$LAB/writer"
+  cycle
+  [ "$(ledger_count '.type == "ask" and .leases == ["env:company"]')" = 2 ] || { unset FM_TASK_SHADOW_WRITER; echo "two asks do not both hold the lease: $(ledger)"; return 1; }
+  # the newer ask lands first: the older one is still pending, so the lease stays
+  # shellcheck disable=SC2059 # the row template above is the format
+  printf "$row" gamma "$REPO" 501 pass "$(sha h2)" > "$LAB/checks-gamma.json"
+  cycle
+  "$BIN/fm-lease.sh" check env:company >/dev/null || { unset FM_TASK_SHADOW_WRITER; echo "the lease was released while alpha's row was pending: $(ledger)"; return 1; }
+  [ "$(ledger_count '.type == "release"')" = 0 ] || { unset FM_TASK_SHADOW_WRITER; echo "a release line while alpha was pending: $(ledger)"; return 1; }
+  # shellcheck disable=SC2059 # the row template above is the format
+  printf "$row" alpha "$REPO" 500 pass "$(sha h1)" > "$LAB/checks-alpha.json"
+  cycle
+  unset FM_TASK_SHADOW_WRITER
+  ! "$BIN/fm-lease.sh" check env:company >/dev/null 2>&1 || { echo "the lease outlived both asks: $("$BIN/fm-lease.sh" check env:company)"; return 1; }
+  [ "$(ledger_count '.type == "release" and .lease == "env:company" and (.tasks | sort) == ["alpha", "gamma"]')" = 1 ] || { echo "no one release line naming both asks: $(ledger)"; return 1; }
+}
+
+# PR 223 reader round 2: a rows ask whose send fails gives back only a lease no other ask holds. Alpha's ask holds
+# `env:company` for the Tester; gamma's ask on the same env then fails to send (the Tester is unregistered), and the
+# lease alpha's pending row needs stays.
+scenario_rows_lease_failed_send() {
+  new_lab "$1"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s/writer.calls"\ncase "$1" in checks) cat "%s/checks-$2.json" ;; esac\n' "$LAB" "$LAB" > "$LAB/writer"
+  chmod +x "$LAB/writer"
+  : > "$H/config/task-shadow"
+  local t row
+  row='{"task":"%s","state":"running","nextActor":"worker","issueUrl":"https://github.com/%s/issues/%s","head":null,"rows":[{"key":"A1@1440","scenarioId":"A1","width":"1440","surface":"user-visible","status":"%s","nextActor":"tester","head":"%s","carried":false,"due":true}]}\n'
+  mkdir -p "$H/config/env"
+  for t in alpha:500:h1 gamma:501:h2; do
+    mkdir -p "$H/data/${t%%:*}"
+    printf 'surface: user-visible\nissue: https://github.com/%s/issues/%s\nrecord: rows\n' "$REPO" "$(cut -d: -f2 <<<"$t")" > "$H/data/${t%%:*}/verify.md"
+    fx_issue_raw "$(cut -d: -f2 <<<"$t")" "$(tpl_issue_body "$(tpl_scenario_env A1 'DMS env `company`' 1440)")"
+    # shellcheck disable=SC2059 # the row template above is the format
+    printf "$row" "${t%%:*}" "$REPO" "$(cut -d: -f2 <<<"$t")" pending "$(sha "${t##*:}")" > "$LAB/checks-${t%%:*}.json"
+  done
+  printf '9\n' > "$LAB/ram"
+  printf 'ram-read=cat %s/ram\nfloor-gb=6\nnever-touch=Titan.exe\n' "$LAB" > "$H/config/env/company"
+  fx_runs "1:completed:success:s0"
+  set_cursor 1 s0
+  export FM_TASK_SHADOW_WRITER="$LAB/writer"
+  printf 'kind=ship\n' > "$H/state/alpha.meta"
+  cycle
+  [ "$(ledger_count '.type == "ask" and .task == "alpha" and .leases == ["env:company"]')" = 1 ] || { unset FM_TASK_SHADOW_WRITER; echo "alpha's ask does not hold the lease: $(ledger)"; return 1; }
+  # gamma's ask fails to send: the lease alpha's pending row holds stays with the Tester
+  printf 'kind=ship\n' > "$H/state/gamma.meta"
+  unregister_tester
+  cycle
+  [ "$(ledger_count '.type == "ask" and .task == "gamma"')" = 0 ] || { unset FM_TASK_SHADOW_WRITER; echo "gamma's ask went out: $(ledger)"; return 1; }
+  [ "$("$BIN/fm-lease.sh" check env:company 2>/dev/null | cut -d' ' -f1)" = tester ] \
+    || { unset FM_TASK_SHADOW_WRITER; echo "gamma's failed send gave back the lease alpha's ask holds: $("$BIN/fm-lease.sh" check env:company 2>&1)"; return 1; }
+  register_tester
+  unset FM_TASK_SHADOW_WRITER
+}
+
 run_scenarios() {  # <bin-dir>
   local s rc=0
-  for s in ledger skips not_deployed draft record failures runner skip_catchup rows refused replay replay_refused shadow rows_record; do
+  for s in ledger skips not_deployed draft record failures runner skip_catchup rows refused replay replay_refused shadow rows_record carry rows_ask rows_lease rows_lease_two rows_lease_failed_send; do
     out=$(scenario_"$s" "$1" 2>&1) || { printf 'scenario %s: %s\n' "$s" "$out"; rc=1; }
   done
   return $rc
@@ -658,7 +942,7 @@ run_scenarios() {  # <bin-dir>
 
 # ---- real adapter -----------------------------------------------------------
 
-for s in ledger skips not_deployed draft record failures runner skip_catchup rows refused replay replay_refused shadow rows_record; do
+for s in ledger skips not_deployed draft record failures runner skip_catchup rows refused replay replay_refused shadow rows_record carry rows_ask rows_lease rows_lease_two rows_lease_failed_send; do
   out=$(scenario_"$s" "$ROOT/bin" 2>&1) || fail "scenario $s failed on the real adapter: $out"
   pass "deploy-verify $s"
 done
@@ -714,7 +998,7 @@ mutate_parser 'non-A acceptance ids' ledger \
 mutate_parser 'non-A draft ids' draft \
   's/\[A-Z\]\+\[0-9\]\+\)\(\?=/A[0-9]+)(?=/'
 mutate 'the ask carries the rows' rows \
-  's/head, pushed, lines, rows, check\}/head, pushed, lines, check}/'
+  's/head, pushed, lines, rows, touched/head, pushed, lines, touched/'
 mutate 'draft rows are the draft scenarios' rows \
   's/\[ "\$mode" != draft \] \|\| flag=--draft/:/'
 mutate 'a refused issue wakes firstmate' refused \
@@ -756,11 +1040,75 @@ mutate 'an unread GitHub is left for the wake' failures \
 mutate 'a delivered ask reaches the task record' shadow \
   's/^[^\n]*fm-task-shadow\.sh" deploy-verify[^\n]*\n//m'
 mutate 'a rows task ask names the check call' rows_record \
-  's/if grep -qx .record: rows. "\$FM_HOME/if false \&\& grep -qx "x" "\$FM_HOME/'
+  's/if rows_task "\$\(jq -r \.task <<<"\$ask"\)"; then/if false; then/'
 mutate 'a refused record write fails the delivery' rows_record \
   's/record_rows "\$ask" \|\| return 1/record_rows "\$ask" || true/'
 mutate 'the deploy round names the deployed head' rows_record \
   's/head=\(--head "\$\(jq -r \.sha <<<"\$ask"\)"\)/head=()/'
 mutate 'the deploy event is written once, by the rows path' rows_record \
   's/ \|\| \[ "\$rows_task" = 1 \]//'
+mutate 'a PR names the scenarios it touches' carry \
+  's/print \(o != "" \? o : \(z \? "none" : "all"\)\); found = 1; exit/print "all"; found = 1; exit/'
+mutate 'a PR with no Scenarios touched line touches all' rows_record \
+  's/END \{ if \(!found\) print "all" \}/END { if (!found) print "none" }/'
+mutate 'an unreadable Scenarios touched line touches all' carry \
+  's/\(z \? "none" : "all"\)/(z ? "none" : "none")/'
+mutate 'one PR that names all touches every row' carry \
+  's/\$0 == "all" \{ a = 1 \}/$0 == "all" { a = 0 }/'
+mutate 'a deploy ask drops its carried rows' carry \
+  's/carried=\$\(carried_rows "\$ask" "\$2"\) \|\| return 1/carried="[]"/'
+mutate 'a record row carries when it is a pass that is not due' carry \
+  's/select\(\.status == "pass" and \(\.due \| not\)\)/select(false)/'
+mutate 'nothing due sends no ask' carry \
+  's/if jq -e .\.round == "deploy" and \(\.rows \| length\) == 0/if false \&\& jq -e ".round" and (.rows | length) == 0/'
+mutate 'a handled carry is not recorded again' carry \
+  's/\.type == "ask" or \.type == "carry" or \.type == "draft-skip"/.type == "ask" or .type == "draft-skip"/'
+mutate 'a carried PR is final' carry \
+  's/\(\(\.type == "ask" or \.type == "carry"\) and \.round == "deploy"/((.type == "ask") and .round == "deploy"/'
+mutate 'the deploy event records the touched ids' carry \
+  's/^[^\n]*head\+=\(--touched[^\n]*\n//m'
+mutate 'the dry run reads the record as deployed' carry \
+  's/checks "\$task" --as-deployed "\$sha" --touched "\$touched"/checks "\$task"/'
+mutate 'the dry run ignores the ledger' carry \
+  's/PLAN_IGNORE_LEDGER=1/PLAN_IGNORE_LEDGER=0/'
+mutate 'a rows ask holds only rows pending for the Tester' rows_ask \
+  's/select\(\.surface == "user-visible" and \.status == "pending" and \.nextActor == "tester" and \.head == \$h\)/select(.head == \$h)/'
+mutate 'a row asked on a head is not asked again' rows_ask \
+  's/<\(\[ ! -f "\$LEDGER" \] \|\| jq -Rr --arg t/<(true || jq -Rr --arg t/'
+mutate 'the poll plans the rows asks' rows_ask \
+  's/^[^\n]*plan_rows \|\| \{[^\n]*\n//m'
+mutate 'a rows ask names each row env' rows_ask \
+  's/env: \(\$envs \| with_entries\(select\(\.key as \$id \| \$lines \| index\(\$id\)\)\)\)/env: \$envs/'
+mutate 'an env gate applies to the env the rows name' rows_ask \
+  's/jq -e --arg n "\$name" .any\(/jq -e --arg n "\$name" '"'"'false and any(/'
+mutate 'below the floor the recover step runs' rows_ask \
+  's/if below "\$free" "\$floor" && \[ -n "\$recover" \]; then/if false; then/'
+mutate 'still below the floor the ask is held' rows_ask \
+  's/! below "\$\{after:-\$free\}" "\$floor" \|\| GATE_HELD=/true || GATE_HELD=/'
+mutate 'a held ask is planned again after its hold' rows_ask \
+  's/\[ -z "\$held_at" \] \|\| \[ \$\(\(now - held_at\)\) -ge "\$\{FM_DEPLOY_VERIFY_HOLD_SECONDS:-600\}" \] \|\| continue/[ -z "\$held_at" ] || continue/'
+mutate 'a sent rows ask writes its wait' rows_ask \
+  's/^[^\n]*rows_wait "\$ask" wait [^\n]*\n//m'
+mutate 'ask-rows --dry-run sends nothing' rows_ask \
+  's/if \[ "\$dry" = 0 \] && ! deliver_ask "\$ask"; then/if ! deliver_ask "\$ask"; then/'
+mutate 'another holder of the env lease holds the ask' rows_lease \
+  's/\[ "\$\{out##\* \}" = live \] && \[ "\$\{out%% \*\}" != "\$ASSISTANCE" \] \|\| continue/continue/'
+mutate 'a lease hold reads no RAM' rows_lease \
+  's/if \[ "\$lease_hold" = 0 \]; then/if true; then/'
+mutate 'a held lease keeps one hold line' rows_lease \
+  's/\[ "\$lease_hold" = 1 \] && ledger_test/false \&\& ledger_test/'
+mutate 'a lease hold is planned again at every poll' rows_lease \
+  's/ and \(\.lease \| not\)\)/)/'
+mutate 'a sent ask claims the env lease for the Tester' rows_lease \
+  's/if ! out=\$\(env_lease claim/if false \&\& ! out=\$(env_lease claim/'
+mutate 'the poll releases the lease of landed rows' rows_lease \
+  's/^  release_landed_leases\n//m'
+mutate 'pending rows keep the lease' rows_lease \
+  's/; \.status != "pending" and/; true and/'
+mutate 'every ask holding a lease must land before its release' rows_lease_two \
+  's/done < <\(jq -c .\.\[\]. <<<"\$asks"\)/done < <(jq -c "last" <<<"\$asks")/'
+mutate 'a failed send keeps a lease another ask holds' rows_lease_failed_send \
+  's/^[^\n]*lease_asks "\$lease" \| jq length[^\n]*\n//m'
+mutate 'a landed row is a result on the ask'"'"'s head' rows_lease \
+  's/\.status != "pending" and \.head == \$h\)/.status != "pending")/'
 pass 'every guarded behavior has a red mutation proof'

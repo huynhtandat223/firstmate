@@ -546,6 +546,20 @@ STATUS_FILE=$(shell_quote "$STATE/$ID.status")
 # the opt-in fleet ledger (docs/fleet-ledger.md) records it at once, costing one
 # file test when the flag is absent. A host without that flag, such as a remote
 # second mate's, runs only the append; the watcher capture is the backstop.
+# Shared environments (config/env/<name>, bin/fm-procevent-deploy-verify.sh) are leased one holder at a time
+# (bin/fm-lease.sh env:<name>): a ship worker holds the lease around its own proof there.
+ENV_LEASE_BLOCK=
+ENV_NAMES=
+for ENV_FILE in "$CONFIG"/env/*; do
+  [ -f "$ENV_FILE" ] || continue
+  ENV_NAMES="$ENV_NAMES${ENV_NAMES:+, }${ENV_FILE##*/}"
+done
+if [ -n "$ENV_NAMES" ]; then
+  ENV_LEASE_BLOCK="
+Shared environments in this home: $ENV_NAMES.
+Before your own proof on one of them, claim its lease with \`FM_HOME=$(shell_quote "$FM_HOME") $(shell_quote "$FM_ROOT/bin/fm-lease.sh") claim env:<name> --holder $ID\`, and after it run \`release env:<name> --holder $ID\` with the same script; a refused claim names the holder, so wait and claim again.
+"
+fi
 STATUS_APPEND="echo \"{state} [at=<epoch>]: {one short line}\" >> $STATUS_FILE && { [ ! -e $(shell_quote "$CONFIG/fleet-ledger") ] || $(shell_quote "$FM_ROOT/bin/fm-fleet-ledger.sh") appended $(shell_quote "$CONFIG") $STATUS_FILE >/dev/null 2>&1 || true; }"
 # Opt-in task record shadow (bin/fm-task-shadow.sh): the same line reaches the record; the writer never changes the result.
 STATUS_APPEND="$STATUS_APPEND && { [ ! -e $(shell_quote "$CONFIG/task-shadow") ] || $(shell_quote "$FM_ROOT/bin/fm-task-shadow.sh") status $(shell_quote "$CONFIG") $STATUS_FILE >/dev/null 2>&1 || true; }"
@@ -970,7 +984,7 @@ $ASK_USER_BLOCK
 $SHARED_INFRA_RULE
 
 Publish task review URLs and screenshots with \`FM_HOME=$(shell_quote "$FM_HOME") $(shell_quote "$FM_ROOT/bin/fm-task-links.sh") $ID add-url <url> [label]\` or \`add-image <absolute-path> [label]\`; the publisher's \`--help\` owns the record and image limits.
-
+$ENV_LEASE_BLOCK
 $WAIT_BLOCK$INBOX_SECTION
 
 # Project memory
