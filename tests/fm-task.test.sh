@@ -2319,7 +2319,7 @@ mutate 'the result word is the check status' check_word 'oneOf(CHECK_STATUSES, a
 mutate 'a result word and another --status are refused' check_word 'if (args.pos.status !== undefined && f.status !== undefined && args.pos.status !== f.status)' 'if (false)'
 mutate 'a deploy event head is the head passes count on' deploy_head " || (e.kind === 'deploy' && bodyOf(e).head));" ');'
 mutate 'a deploy event head routes a review task again' deploy_head 'head ? () => routeReview(taskId, who) : undefined);' 'undefined);'
-mutate 'only a deploy event takes a head' deploy_head "if (head !== undefined && kind !== 'deploy')" 'if (false)'
+mutate 'only deploy and ci events take a head' deploy_head "if (head !== undefined && !headKind)" 'if (false)'
 mutate 'the gate needs every user-visible row to pass' gate "problems.push(\`\${key} is '\${row.status}', not pass\`);" ';'
 mutate 'the gate checks the evidence path' gate '!fs.existsSync(path.resolve(f['"'"'evidence-root'"'"'] || '"'"'.'"'"', ev))' 'false'
 mutate 'the gate needs the deployed head' gate 'if ((row.head ?? null) !== f.head) problems.push' 'if (false) problems.push'
