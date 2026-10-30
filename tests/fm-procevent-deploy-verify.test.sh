@@ -842,6 +842,11 @@ scenario_rows_lease() {
   # a poll before the rows land keeps the lease; the poll after releases it
   cycle
   "$BIN/fm-lease.sh" check env:company >/dev/null || { unset FM_TASK_SHADOW_WRITER; echo 'the lease was released before the rows landed'; return 1; }
+  # PR 223 reader round 2: a result on another head than the ask's is not the asked row landing
+  # shellcheck disable=SC2059 # the row template above is the format
+  printf "$pending" "$REPO" pass "$(sha h0)" > "$LAB/checks.json"
+  cycle
+  "$BIN/fm-lease.sh" check env:company >/dev/null || { unset FM_TASK_SHADOW_WRITER; echo 'a pass on another head released the lease'; return 1; }
   # shellcheck disable=SC2059 # the row template above is the format
   printf "$pending" "$REPO" pass "$(sha h1)" > "$LAB/checks.json"
   cycle
