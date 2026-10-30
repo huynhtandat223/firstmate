@@ -984,9 +984,11 @@ function rowValues(taskId, section, row, notes) {
 
 // A row event, naming the backlog file whose view holds the row; text over one event body goes in a documents child
 // as `<row>\n<notes>`.
+// Reserve 64 characters for the stage metadata append adds, without duplicating its fold rules.
+const ROW_STAGE_BUDGET = 64;
 function rowSpec(taskId, set, note, file) {
   const extra = { file };
-  if (set.row === undefined || JSON.stringify({ v: 1, note, set, ...extra }).length <= 8000) return { kind: 'row', note, set, extra };
+  if (set.row === undefined || JSON.stringify({ v: 1, note, set, ...extra }).length <= 8000 - ROW_STAGE_BUDGET) return { kind: 'row', note, set, extra };
   const doc = { title: `backlog row ${taskId}`, mediaType: 'text/markdown', content: `${set.row}\n${set.notes}` };
   return { kind: 'row', note, set: { section: set.section, rowDocument: true }, extra, children: { documents: [doc] } };
 }
