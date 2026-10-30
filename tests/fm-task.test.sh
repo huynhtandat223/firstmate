@@ -301,6 +301,10 @@ const server = http.createServer((req, res) => {
         return reply(res, 503, { success: false, errorCode: 'UNAVAILABLE' });
       }
     }
+    if (verb === 'create' && delay.n > 0 && delay.verb === 'create' && delay.table === table) {
+      delay.n--;
+      return setTimeout(() => reply(res, out.status, out.body), delay.ms);
+    }
     return reply(res, out.status, out.body);
   });
 });
@@ -2005,6 +2009,27 @@ case_carry() {
 # cfw-modules#1678 TR52 (change 194): the board's writer operation runs the one writer as the signed-in owner. An
 # answer comments and unblocks, a pass or fail by the owner also sets the row's owner item, and a call without the
 # owner the script row appends writes nothing.
+case_owner_crash() {
+  BIN=$1; reset_db
+  export FM_HOME="$TMP_ROOT/router-crash-$RANDOM"
+  mkdir -p "$FM_HOME/state"
+  ft create tk-crash --title t --kind other >/dev/null || return 1
+  ft comment tk-crash --note recovery --role owner --actor owner:u-1 --key owner-comment:crash >/dev/null || return 1
+  curl -s -X POST "$BASE/__x/delay/fm_task_delivery?ms=3000&n=1&verb=create" >/dev/null
+  node "$BIN/fm-task-lib.mjs" route-owner-comments --consumer owner-comments-crash > "$TMP_ROOT/crash-out" 2>&1 &
+  local pid=$! n
+  for n in $(seq 1 100); do [ "$(count fm_task_delivery)" = 1 ] && break; sleep 0.02; done
+  [ "$(count fm_task_delivery)" = 1 ] || { kill "$pid"; return 1; }
+  kill -KILL "$pid"; wait "$pid" 2>/dev/null || true
+  [ ! -f "$FM_HOME/state/.wake-queue" ] || return 1
+  ft route-owner-comments --consumer owner-comments-crash
+  must 'crash recovery' 0 || return 1
+  grep -q 'Owner comment on tk-crash .*recovery' "$FM_HOME/state/.wake-queue" || { echo 'crash intent did not recover'; return 1; }
+  ft route-owner-comments --consumer owner-comments-crash
+  must 'crash replay' 0 || return 1
+  [ "$(wc -l < "$FM_HOME/state/.wake-queue")" = 1 ] || return 1
+}
+
 case_owner_router() {
   BIN=$1; reset_db
   export FM_HOME="$TMP_ROOT/router-home"
@@ -2202,7 +2227,7 @@ case_stage() {
   return 0
 }
 
-CASES=${FM_TASK_CASES:-"owner_router description_thread terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed row backlog status_view verify_view owner_writer stage wait carry"}
+CASES=${FM_TASK_CASES:-"owner_crash owner_router description_thread terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed row backlog status_view verify_view owner_writer stage wait carry"}
 
 # ---- real command -------------------------------------------------------------------
 
