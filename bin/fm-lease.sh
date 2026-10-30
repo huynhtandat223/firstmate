@@ -29,7 +29,7 @@
 #       Remove every provably stale lease in this home, env leases included.
 #       Run at session start (a lease held by a dead actor is cleared at
 #       session start); safe to run any time - a live lease is never touched.
-#   fm-lease.sh claim|release env:<name> --holder tester|<task>
+#   fm-lease.sh claim|release env:<name> --holder <task-id>
 #   fm-lease.sh check env:<name>
 #       An environment lease (contract: bin/fm-lease-lib.sh). A claim refuses
 #       with exit 6, naming the holder, while another holder's lease is live;
@@ -57,7 +57,7 @@ fm_lock_acquire_wait "$LEASE_COMMAND_LOCK"
 trap 'fm_lock_release "$LEASE_COMMAND_LOCK"' EXIT
 
 usage() {
-  echo "usage: fm-lease.sh claim|release <task> [--actor main|branch] | claim|release env:<name> --holder tester|<task> | release-actor --actor main|branch | check <task>|env:<name> | sweep" >&2
+  echo "usage: fm-lease.sh claim|release <task> [--actor main|branch] | claim|release env:<name> --holder <task-id> | release-actor --actor main|branch | check <task>|env:<name> | sweep" >&2
   exit 2
 }
 

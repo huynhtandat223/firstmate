@@ -16,10 +16,13 @@
 # PR instead of shipping a new one).
 # Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--branch-prefix <prefix>] [--base-branch <branch>] [--forge <none|gerrit|forgejo|external> [--shape squash]] [--surface <user-visible|internal>] [--issue <issue-url>] [--herdr-lab]
 #        fm-brief.sh --check <task-id>
-#        fm-brief.sh <task-id> <repo-name> --scout [--base-branch <branch>] [--herdr-lab]
+#        fm-brief.sh <task-id> <repo-name> --scout [--base-branch <branch>] [--herdr-lab] [--also-write <abs-path>]...
 #        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
 #   --scout writes the scout contract instead: the deliverable is a report at
 #   data/<task-id>/report.md (no branch, no push, no PR) and the worktree is scratch.
+#   --also-write <abs-path> may repeat on a scout brief: each absolute path joins
+#   the report and the status file as a file the scout may write outside its worktree.
+#   It is refused on ship and secondmate briefs and on a relative path.
 #   It offers the Lavish review loop only when `fm-bootstrap.sh lavish-compatible`
 #   confirms the legacy board-compatibility floor; otherwise it asks for a text report.
 #   --secondmate writes a persistent secondmate charter. The project list
@@ -254,6 +257,7 @@ SURFACE_SET=0
 ISSUE_URL=
 ISSUE_SET=0
 CHECK=0
+ALSO_WRITE=()
 POS=()
 want_value=
 for a in "$@"; do
@@ -271,6 +275,7 @@ for a in "$@"; do
       project) PROJECT_DIR=$a; PROJECT_DIR_SET=1 ;;
       surface) SURFACE=$a; SURFACE_SET=1 ;;
       issue) ISSUE_URL=$a; ISSUE_SET=1 ;;
+      also-write) ALSO_WRITE+=("$a") ;;
       *) echo "error: internal parser state for --$want_value" >&2; exit 1 ;;
     esac
     want_value=
@@ -299,6 +304,8 @@ for a in "$@"; do
     --surface=*) SURFACE=${a#--surface=}; SURFACE_SET=1 ;;
     --issue) want_value=issue ;;
     --issue=*) ISSUE_URL=${a#--issue=}; ISSUE_SET=1 ;;
+    --also-write) want_value="also-write" ;;
+    --also-write=*) ALSO_WRITE+=("${a#--also-write=}") ;;
     --check) CHECK=1 ;;
     # yolo never reaches the worker: it is firstmate's merge authority, not a
     # brief input. Refuse it loudly so it is never silently dropped here and then
@@ -393,6 +400,21 @@ elif [ "$SURFACE_SET" -eq 1 ]; then
 elif [ "$MODE_SET" -eq 1 ]; then
   echo "error: --mode applies only to ship briefs; a scout delivers a report and a secondmate charter is not a delivery contract" >&2
   exit 1
+fi
+
+# A scout's extra write paths are exact absolute paths, so a typo cannot silently
+# grant a relative path that resolves somewhere else under the worktree.
+if [ "${#ALSO_WRITE[@]}" -gt 0 ]; then
+  [ "$KIND" = scout ] || {
+    echo "error: --also-write applies only to scout briefs; a ship and a secondmate charter name no extra write path" >&2
+    exit 1
+  }
+  for ALSO_WRITE_PATH in "${ALSO_WRITE[@]}"; do
+    case "$ALSO_WRITE_PATH" in
+      /*) ;;
+      *) echo "error: --also-write requires an absolute path (got '$ALSO_WRITE_PATH')" >&2; exit 1 ;;
+    esac
+  done
 fi
 
 # A ship branch's prefix is optional per-project cosmetics, not a delivery
@@ -840,6 +862,10 @@ else
 fi
 
 if [ "$KIND" = scout ]; then
+SCOUT_WRITE_PATHS='the report and the status file below'
+if [ "${#ALSO_WRITE[@]}" -gt 0 ]; then
+  SCOUT_WRITE_PATHS="the report, the status file below, and these exact paths: $(IFS=', '; printf '%s' "${ALSO_WRITE[*]}")"
+fi
 if "$SCRIPT_DIR/fm-bootstrap.sh" lavish-compatible >/dev/null 2>&1; then
   LAVISH_LINE='If your deliverable is a visual artifact the captain will review and iterate on, use the lavish-axi rule: arm your board with bin/fm-procevent-lavish.sh arm <artifact.html> --for <task-id>; never run lavish-axi poll yourself. Re-arm with the reply after each nonterminal round to acknowledge it, route the board feedback through your steering inbox, write needs-decision [key=board-review] with the live board URL when the captain owes a decision, and stop at session_ended or an empty End without re-arming - acknowledge that final round with bin/fm-procevent.sh handled <source-id> <sequence> to conclude and retire your board.'
 else
@@ -867,7 +893,7 @@ Read \`$FM_ROOT/bin/fm-task.sh resume $ID\` first when starting or resuming this
 Use \`heartbeat $ID --note <activity>\` for activity and \`block transient $ID --reason <wait> --next-actor worker --until <ISO>\` for a wait.
 The terminal call also writes your status line.
 1. Never push to any remote and never open a PR.
-2. Stay inside this worktree; the only files you may write outside it are the report and the status file below.
+2. Stay inside this worktree; the only files you may write outside it are $SCOUT_WRITE_PATHS.
 3. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
 4. Report status by appending one line:
    \`$STATUS_APPEND\`

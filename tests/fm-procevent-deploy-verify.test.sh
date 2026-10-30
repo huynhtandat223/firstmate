@@ -2,11 +2,12 @@
 # Behavior tests for bin/fm-procevent-deploy-verify.sh.
 #
 # GitHub is a fake `gh` that serves recorded API answers from files, so every
-# case is deterministic and no network is used. The Tester is a real assistance
-# home reached through the real `fm-assistance.sh source-event`. Issues are read by
-# the real bin/fm-acceptance.mjs. Each scenario runs against an adapter copy, so
-# the mutation proofs at the end remove one guard at a time (in the adapter or the
-# parser) and show the scenario that guards it go red.
+# case is deterministic and no network is used. A new Tester is a fake spawn that
+# leaves a state/<id>.meta record, a live Tester receives the ask through a fake
+# fm-send that writes its steering inbox, and the Tester role template and pin live
+# in the lab home. Issues are read by the real bin/fm-acceptance.mjs. Each scenario
+# runs against an adapter copy, so the mutation proofs at the end remove one guard
+# at a time (in the adapter or the parser) and show the scenario that guards it go red.
 # shellcheck disable=SC2016 # mutation proofs pass literal source patterns to perl
 set -u
 # shellcheck source=tests/lib.sh
@@ -36,26 +37,53 @@ export PATH="$TMP_ROOT/fakebin:$PATH"
 
 # ---- lab ------------------------------------------------------------------
 
-new_lab() {  # <bin-dir>: a firstmate home with a registered Tester
+new_lab() {  # <bin-dir>: a firstmate home with a Tester role and fake spawn, tasks and send
   LAB=$(mktemp -d "$TMP_ROOT/lab.XXXXXX")
   H="$LAB/home"
   TH="$LAB/tester"
   GHD="$LAB/gh"
   BIN=$1
   SEQ=0
-  mkdir -p "$H"/{state,data,config} "$TH/data/pending-mentions" "$GHD"
-  printf 'tester\n' > "$TH/.fm-assistance-home"
-  printf 'schema=fm-secondmate-parent.v1\nroute=local\nparent_home=%s\n' "$H" > "$TH/.fm-assistance-parent"
-  register_tester
+  mkdir -p "$H"/{state,data,config/roles} "$TH/data/pending-mentions" "$GHD"
   : > "$H/data/backlog.md"
+  register_tester
+  cat > "$LAB/spawn" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$LAB/spawn.calls"
+id=\$1
+[ ! -f "$H/state/\$id.meta" ] || exit 1
+printf 'kind=scout\n' > "$H/state/\$id.meta"
+if [ -f "$LAB/claim-race" ]; then
+  printf 'kind=ship\n' > "$H/state/racer.meta"
+  printf 'racer\\t%s\\n' "\$(date +%s)" > "$H/state/.envlease-company"
+  rm "$LAB/claim-race"
+fi
+SH
+  cat > "$LAB/tasks" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$LAB/tasks.calls"
+case "\$1" in show) exit 1 ;; esac
+exit 0
+SH
+  cat > "$LAB/send" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$LAB/send.calls"
+[ ! -e "$LAB/send-fail" ] || exit 1
+id=\$1; shift
+mkdir -p "$H/state/\$id.inbox"
+n=\$(find "$H/state/\$id.inbox" -maxdepth 1 -name '*.msg' | wc -l)
+printf '%s\n' "\$*" > "$H/state/\$id.inbox/\$(printf '%03d' \$((n + 1))).msg"
+SH
+  chmod +x "$LAB/spawn" "$LAB/tasks" "$LAB/send"
   export FM_HOME="$H" FAKE_GH_DIR="$GHD" FM_DEPLOY_VERIFY_POLL_SECONDS=0 FM_DEPLOY_VERIFY_ONCE=1
-  unset FAKE_GH_FAIL
+  export FM_DEPLOY_VERIFY_SPAWN="$LAB/spawn" FM_DEPLOY_VERIFY_TASKS="$LAB/tasks" FM_DEPLOY_VERIFY_SEND="$LAB/send"
+  unset FAKE_GH_FAIL FM_DEPLOY_VERIFY_MAX_TESTERS
 }
 register_tester() {
-  printf -- '- tester - Tester (home: %s; scope: observe; projects: ; added 2026-10-20)\n' "$TH" > "$H/data/assistances.md"
-  printf 'kind=assistance\nharness=claude\nbackend=tmux\nwindow=fm-deploy-verify-test-absent:0\nhome=%s\n' "$TH" > "$H/state/tester.meta"
+  printf '# Tester template\n\nCheck each row and record its evidence.\n' > "$H/config/roles/tester.md"
+  printf '{"harness":"claude","model":"claude-sonnet","effort":"high"}\n' > "$H/config/roles/tester.json"
 }
-unregister_tester() { rm -f "$H/data/assistances.md" "$H/state/tester.meta"; }
+unregister_tester() { rm -f "$H/config/roles/tester.md" "$H/config/roles/tester.json"; }
 
 # ---- recorded GitHub answers -----------------------------------------------
 
@@ -152,10 +180,18 @@ ledger_count() {  # <jq-filter>
   [ -s "$H/data/deploy-verify/ledger.jsonl" ] || { echo 0; return; }
   jq -sc "[.[] | select($1)] | length" "$H/data/deploy-verify/ledger.jsonl"
 }
-inbox_count() { find "$H/state/tester.inbox" -maxdepth 1 -name '*.msg' 2>/dev/null | wc -l | tr -d ' '; }
-asked() {  # the content of every pending ask, one JSON per line
+inbox_count() { find "$H/state" -mindepth 2 -maxdepth 2 -path '*.inbox/*.msg' -type f 2>/dev/null | wc -l | tr -d ' '; }
+spawn_count() { wc -l < "$LAB/spawn.calls" 2>/dev/null | tr -d ' '; }
+asked() {  # Read the delivered payload, not the ledger's copy of the planned ask.
   local f
-  for f in "$TH"/data/pending-mentions/*.json; do [ -f "$f" ] && jq -c '.messages[0].content | fromjson' "$f"; done
+  for f in "$H"/data/verify-*/brief.md; do
+    [ -f "$f" ] || continue
+    awk '/^### The ask$/{f=1;next} f && /^```json$/{j=1;next} j && /^```$/{exit} j{print}' "$f"
+  done
+  for f in "$H"/state/verify-*.inbox/*.msg; do
+    [ -f "$f" ] || continue
+    grep '^{' "$f"
+  done
 }
 
 # ---- scenarios: each returns 0 when the behavior holds ------------------------
@@ -175,7 +211,7 @@ scenario_ledger() {
   [ "$CYCLE_AUTO" = 0 ] || { echo "autohandle=$CYCLE_AUTO"; return 1; }
   jq -e '(.asks | length) == 2' <<<"$LAST_RESULT" >/dev/null || { echo 'the deploy result is not one ask per task'; return 1; }
   [ "$(ledger_count '.type == "ask"')" = 2 ] || { echo "asks: $(ledger_count '.type == "ask"')"; return 1; }
-  [ "$(inbox_count)" = 2 ] || { echo "inbox: $(inbox_count)"; return 1; }
+  [ "$(spawn_count)" = 2 ] || { echo "spawns: $(spawn_count)"; return 1; }
   [ "$(ledger_count '.type == "ask" and .task == "alpha" and (.prs | length) == 2 and .lines == ["V1"] and .issue == "cfw-modules#500"')" = 1 ] \
     || { echo 'task alpha ask is not one ask with both PRs and its one user-visible line'; return 1; }
   # A later green deploy whose range returns PR 11 again.
@@ -185,7 +221,7 @@ scenario_ledger() {
   fx_commit_prs c4 11:500
   cycle
   [ "$(ledger_count '.type == "ask"')" = 2 ] || { echo "repeat ask recorded: $(ledger_count '.type == "ask"')"; return 1; }
-  [ "$(inbox_count)" = 2 ] || { echo "repeat reached the Tester: $(inbox_count)"; return 1; }
+  [ "$(spawn_count)" = 2 ] || { echo "repeat reached the Tester: $(spawn_count)"; return 1; }
 }
 
 # Skips: internal task, no user-visible line, and no task each send nothing and
@@ -206,7 +242,7 @@ scenario_skips() {
   [ "$CYCLE_AUTO" = 1 ] || { echo "skip did not request attention: $CYCLE_AUTO"; return 1; }
   [ "$(jq -r .cursor_run "$H/data/deploy-verify/state.json")" = 2 ] || return 1
   "$BIN/fm-procevent-deploy-verify.sh" silent "$H/state/procevent-inbox/deploy-verify.$SEQ.result" && return 1
-  [ "$(inbox_count)" = 0 ] || { echo "an ask was sent: $(inbox_count)"; ledger; ls "$H/state/tester.inbox"; return 1; }
+  [ "$(inbox_count)" = 0 ] || { echo "an ask was sent: $(inbox_count)"; ledger; return 1; }
   [ "$(ledger_count '.type == "ask"')" = 0 ] || return 1
   local reason
   for reason in internal no-user-visible-line no-task no-issue; do
@@ -259,23 +295,26 @@ scenario_draft() {
   cycle
   [ "$(ledger_count '.type == "ask" and .round == "draft"')" = 2 ] || { echo 'the new head was not asked'; return 1; }
   [ "$(ledger_count ".type == \"ask\" and .head == \"$(sha h2)\"")" = 1 ] || return 1
-  [ "$(inbox_count)" = 2 ] || { echo "inbox: $(inbox_count)"; return 1; }
+  [ "$(inbox_count)" = 1 ] || { echo "the live Tester got no steer: $(inbox_count)"; return 1; }
+  [ "$(spawn_count)" = 1 ] || { echo "a second Tester was spawned for one task: $(spawn_count)"; return 1; }
   # An issue with no draft line asks nothing, and is remembered for that head.
   live_task delta 42
   fx_issue 901 A1:user-visible
   fx_pr 42 open h3 901
   cycle
-  [ "$(inbox_count)" = 2 ] || { echo 'a PR without draft lines was asked'; return 1; }
+  [ "$(spawn_count)" = 1 ] || { echo "a PR without draft lines was asked: $(spawn_count)"; return 1; }
   [ "$(ledger_count '.type == "draft-skip" and .reason == "no-draft-lines"')" = 1 ] || return 1
   # A closed PR is not asked.
   live_task eps 43
   fx_pr 43 closed h4 900
   cycle
-  [ "$(inbox_count)" = 2 ] || { echo 'a closed PR was asked'; return 1; }
+  [ "$(spawn_count)" = 1 ] || { echo 'a closed PR was asked'; return 1; }
 }
 
-# The ask is a source record the Tester can read and acknowledge.
-scenario_record() {
+# A new Tester is spawned as a scout `verify-<task>-<sha7>`: the backlog item is
+# filed, the role pin names the harness, the ask is written into the brief, and the
+# brief may write the evidence directory and, before T5, the task's Tester record.
+scenario_spawn_brief() {
   new_lab "$1"
   backlog_task alpha 51 500
   fx_issue 500 A1:user-visible
@@ -285,21 +324,38 @@ scenario_record() {
   fx_commit_prs c1 51:500
   set_cursor 1 s0
   cycle
-  local f base content
-  f=$(find "$TH/data/pending-mentions" -name '*.json' | head -1)
-  [ -n "$f" ] || { echo 'no pending record'; return 1; }
-  base=$(basename "$f")
-  jq -e '.schema == "fm-assistance-mentions.v1" and (.messages | length) == 1' "$f" >/dev/null || { echo 'record shape'; return 1; }
-  [ "$(jq -c '.messages | map([.id,.arrival])' "$f" | sha256sum | cut -d' ' -f1).json" = "$base" ] || { echo 'basename is not the content digest'; return 1; }
-  content=$(jq -r '.messages[0].content' "$f")
+  local id brief content
+  id=$(ledger | jq -r 'select(.type == "ask" and .task == "alpha") | .tester')
+  [ "$id" = "verify-alpha-$(sha s2 | cut -c1-7)" ] || { echo "tester id: $id"; return 1; }
+  [ -f "$H/state/$id.meta" ] || { echo 'the spawn left no task record'; return 1; }
+  [ -d "$H/data/verify/alpha/$id" ] || { echo 'no evidence directory'; return 1; }
+  grep -qx -- "verify-alpha-$(sha s2 | cut -c1-7) $ROOT --scout --harness claude --model claude-sonnet --effort high" "$LAB/spawn.calls" \
+    || { echo "spawn args: $(cat "$LAB/spawn.calls")"; return 1; }
+  grep -q -- "add $id Verify alpha on $(sha s2) for https://github.com/$REPO/issues/500 --kind scout" "$LAB/tasks.calls" \
+    || { echo "no backlog item: $(cat "$LAB/tasks.calls")"; return 1; }
+  brief="$H/data/$id/brief.md"
+  [ -f "$brief" ] || { echo 'no brief'; return 1; }
+  grep -q "these exact paths: $H/data/verify/alpha/$id" "$brief" || { echo 'the brief names no evidence path'; return 1; }
+  content=$(awk '/^### The ask$/{f=1;next} f && /^```json$/{j=1;next} j && /^```$/{exit} j{print}' "$brief")
   jq -e --arg sha "$(sha s2)" '.schema == "fm-tester-verify.v1" and .round == "deploy" and .task == "alpha" and .issue == "cfw-modules#500" and .sha == $sha and (.prs == ["'"$RURL"'/pull/51"]) and .run == "https://example.test/runs/2"' <<<"$content" >/dev/null \
     || { echo "ask content: $content"; return 1; }
-  grep -q "$base" "$H/state/tester.inbox/001.msg" || { echo 'inbox message does not name the record'; return 1; }
-  # After the Tester handles the inbox message, it acknowledges the record.
-  mkdir -p "$H/state/tester.inbox/handled"
-  mv "$H/state/tester.inbox/001.msg" "$H/state/tester.inbox/handled/001.msg"
-  FM_HOME="$TH" "$BIN/fm-assistance.sh" acknowledge-source "$base" >/dev/null 2>&1 || { echo 'acknowledge-source refused'; return 1; }
-  [ ! -e "$f" ] || { echo 'record still pending'; return 1; }
+  grep -q 'Check each row and record its evidence.' "$brief" || { echo 'the Tester template did not reach the brief'; return 1; }
+  # A pre-T5 task's Tester record also joins the write paths when the old home names it.
+  new_lab "$1"
+  backlog_task alpha 52 501
+  mkdir -p "$TH/data/verify"
+  printf 'surface: user-visible\n' > "$TH/data/verify/alpha.md"
+  printf 'kind=assistance\nhome=%s\n' "$TH" > "$H/state/tester.meta"
+  fx_issue 501 A1:user-visible
+  fx_runs "1:completed:success:s0" "2:completed:success:s2"
+  fx_jobs 2 success
+  fx_compare s0 s2 c2
+  fx_commit_prs c2 52:501
+  set_cursor 1 s0
+  cycle
+  id=$(ledger | jq -r 'select(.type == "ask" and .task == "alpha") | .tester')
+  grep -q -- "$TH/data/verify/alpha.md" "$H/data/$id/brief.md" \
+    || { echo "the pre-T5 record is not writable: $(cat "$H/data/$id/brief.md")"; return 1; }
 }
 
 # An undeliverable ask and an unreadable GitHub each leave one result for the
@@ -325,11 +381,11 @@ scenario_failures() {
   cycle
   [ "$CYCLE_AUTO" = 0 ] || { echo "recovery autohandle=$CYCLE_AUTO"; return 1; }
   [ "$(ledger_count '.type == "ask"')" = 1 ] || { echo "asks after recovery: $(ledger_count '.type == "ask"')"; return 1; }
-  [ "$(inbox_count)" = 1 ] || { echo "inbox after recovery: $(inbox_count)"; return 1; }
+  [ "$(spawn_count)" = 1 ] || { echo "spawns after recovery: $(spawn_count)"; return 1; }
   [ "$(jq -r .cursor_run "$H/data/deploy-verify/state.json")" = 2 ] || { echo 'cursor did not advance after delivery'; return 1; }
   [ -e "$H/state/procevent-inbox/deploy-verify.1.handled" ] || { echo 'the old failed result stayed open after recovery'; return 1; }
   cycle
-  [ "$(inbox_count)" = 1 ] || { echo 'a further poll sent the ask again'; return 1; }
+  [ "$(spawn_count)" = 1 ] || { echo 'a further poll sent the ask again'; return 1; }
   # GitHub unreadable: one result for the wake, then quiet, then a recovery record.
   fx_runs "1:completed:success:s0" "2:completed:success:s2" "3:completed:success:s3"
   fx_jobs 3 success
@@ -363,7 +419,8 @@ scenario_runner() {
   local out
   out=$("$BIN/fm-procevent.sh" start deploy-verify 2>&1)
   case "$out" in *'autohandled: deploy-verify'*) ;; *) echo "runner: $out"; return 1 ;; esac
-  [ "$(inbox_count)" = 1 ] || { echo "inbox: $(inbox_count)"; return 1; }
+  [ "$(spawn_count)" = 1 ] || { echo "spawns: $(spawn_count)"; return 1; }
+  [ "$(ledger_count '.type == "ask"')" = 1 ] || { echo "asks: $(ledger_count '.type == "ask"')"; return 1; }
   if [ -s "$H/state/.wake-queue" ]; then echo 'a delivered ask woke firstmate'; return 1; fi
   # A visible skip advances the cursor but publishes one real runner wake.
   fx_runs "1:completed:success:s0" "2:completed:success:s2" "3:completed:success:s3"
@@ -399,6 +456,8 @@ scenario_runner() {
 # and width, for a template issue, a legacy issue, the draft round and a replay.
 scenario_rows() {
   new_lab "$1"
+  # This parser scenario needs three concurrent tasks; the default cap has its own case.
+  export FM_DEPLOY_VERIFY_MAX_TESTERS=3
   backlog_task alpha 101 500; backlog_task beta 102 501
   fx_issue_raw 500 "$(tpl_issue_body "$(tpl_scenario V1 user-visible home.video '1440, 390'; tpl_scenario V2 user-visible 'home.video (draft)' 1440; tpl_scenario K3 internal - -)")"
   fx_issue 501 E10:user-visible A2:internal
@@ -428,7 +487,7 @@ scenario_rows() {
   jq -e --arg l "$line" '.lines == ["E10","C14"] and .rows == [
       "- E10@1440 | \($l) | pending | evidence: -",
       "- E10@390 | \($l) | pending | evidence: -",
-      "- C14@- | \($l) | pending | evidence: -"]' <<<"$content" >/dev/null || { echo "draft ask: $content"; return 1; }
+      "- C14@- | \($l) | pending | evidence: -"]' <<<"$content" >/dev/null || { echo "draft ask: $content ledger=$(ledger) spawns=$(cat "$LAB/spawn.calls" 2>/dev/null)"; return 1; }
 }
 
 # An issue the parser refuses is a template-refused skip naming the problems. It
@@ -507,7 +566,7 @@ scenario_replay_refused() {
   dry=$("$BIN/fm-procevent-deploy-verify.sh" replay-skips --dry-run) || return 1
   jq -se 'length == 1 and .[0].task == "alpha" and .[0].lines == ["V1"] and (.[0].rows | length) == 2' <<<"$dry" >/dev/null || { echo "corrected issue was not replayed: $dry"; return 1; }
   "$BIN/fm-procevent-deploy-verify.sh" replay-skips >/dev/null || return 1
-  [ "$(inbox_count)" = 1 ] || { echo "inbox: $(inbox_count)"; return 1; }
+  [ "$(spawn_count)" = 1 ] || { echo "spawns: $(spawn_count)"; return 1; }
 }
 
 scenario_replay() {
@@ -531,10 +590,10 @@ scenario_replay() {
   [ "$before" = "$(ledger)" ] && [ "$(inbox_count)" = 0 ] || return 1
   jq -se 'length == 1 and .[0].lines == ["V1"] and (.[0].prs | length) == 2 and (.[0].rows | length) == 2' <<<"$dry" >/dev/null || { echo "bad replay plan: $dry"; return 1; }
   "$BIN/fm-procevent-deploy-verify.sh" replay-skips >/dev/null || return 1
-  [ "$(inbox_count)" = 1 ] || return 1
+  [ "$(spawn_count)" = 1 ] || return 1
   before=$(ledger)
   [ -z "$("$BIN/fm-procevent-deploy-verify.sh" replay-skips)" ] || return 1
-  [ "$before" = "$(ledger)" ] && [ "$(inbox_count)" = 1 ] || return 1
+  [ "$before" = "$(ledger)" ] && [ "$(spawn_count)" = 1 ] || return 1
 }
 
 # A visible skip is left unhandled so one wake reaches firstmate. A later
@@ -566,7 +625,7 @@ scenario_skip_catchup() {
   fx_issue 504 A1:user-visible
   out=$("$BIN/fm-procevent.sh" start deploy-verify 2>&1)
   case "$out" in *'autohandled: deploy-verify'*) ;; *) echo "later runner: $out"; return 1 ;; esac
-  [ "$(inbox_count)" = 1 ] || { echo "the later ask was not delivered: $(inbox_count)"; return 1; }
+  [ "$(ledger_count '.type == "ask"')" = 1 ] || { echo "the later ask was not delivered: $(ledger_count '.type == "ask"')"; return 1; }
   [ ! -e "$H/state/procevent-inbox/deploy-verify.1.handled" ] || { echo 'the catch-up closed the visible skip'; return 1; }
   # The second runner start announces the still-pending skip again, so one row or more.
   [ "$(grep -c 'procevent:deploy-verify:1' "$H/state/.wake-queue" 2>/dev/null || echo 0)" -ge 1 ] \
@@ -659,6 +718,7 @@ fx_commit_pr_body() {  # <commit-seed> <pr-number> <body>
 }
 scenario_carry() {
   new_lab "$1"
+  export FM_DEPLOY_VERIFY_MAX_TESTERS=3
   printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s/writer.calls"\ncase "$1" in checks) cat "%s/checks-$2.json" ;; esac\n' "$LAB" "$LAB" > "$LAB/writer"
   chmod +x "$LAB/writer"
   : > "$H/config/task-shadow"
@@ -835,9 +895,17 @@ scenario_rows_lease() {
   [ "$(ledger_count '.type == "hold"')" = 1 ] || { unset FM_TASK_SHADOW_WRITER; echo "hold lines: $(ledger)"; return 1; }
   # the worker releases: the next poll sends the ask under the Tester's lease
   "$BIN/fm-lease.sh" release env:company --holder beta
+  : > "$LAB/claim-race"
   cycle
+  [ "$(spawn_count)" = 1 ] || { unset FM_TASK_SHADOW_WRITER; echo 'race did not spawn its first Tester'; return 1; }
+  [ "$(ledger_count '.type == "ask"')" = 0 ] || { unset FM_TASK_SHADOW_WRITER; echo 'failed claim recorded an ask'; return 1; }
+  "$BIN/fm-lease.sh" release env:company --holder racer
+  cycle
+  [ "$(spawn_count)" = 1 ] || { unset FM_TASK_SHADOW_WRITER; echo 'claim retry spawned twice instead of steering'; return 1; }
   asked | jq -e 'select(.round == "rows" and .task == "alpha") | .envs[0].name == "company"' >/dev/null || { unset FM_TASK_SHADOW_WRITER; echo "no ask after the release: $(asked) $(ledger)"; return 1; }
-  [ "$("$BIN/fm-lease.sh" check env:company | cut -d' ' -f1)" = tester ] || { unset FM_TASK_SHADOW_WRITER; echo "the Tester holds no lease: $("$BIN/fm-lease.sh" check env:company 2>&1)"; return 1; }
+  local tid
+  tid="verify-alpha-$(sha h1 | cut -c1-7)"
+  [ "$("$BIN/fm-lease.sh" check env:company | cut -d' ' -f1)" = "$tid" ] || { unset FM_TASK_SHADOW_WRITER; echo "the Tester holds no lease: $("$BIN/fm-lease.sh" check env:company 2>&1)"; return 1; }
   [ "$(ledger_count '.type == "ask" and .leases == ["env:company"]')" = 1 ] || { unset FM_TASK_SHADOW_WRITER; echo "the ask records no lease: $(ledger)"; return 1; }
   # a poll before the rows land keeps the lease; the poll after releases it
   cycle
@@ -847,6 +915,10 @@ scenario_rows_lease() {
   printf "$pending" "$REPO" pass "$(sha h0)" > "$LAB/checks.json"
   cycle
   "$BIN/fm-lease.sh" check env:company >/dev/null || { unset FM_TASK_SHADOW_WRITER; echo 'a pass on another head released the lease'; return 1; }
+  # Also retain release compatibility for asks sent by the old persistent Tester.
+  "$BIN/fm-lease.sh" release env:company --holder "$tid"
+  printf 'kind=assistance\n' > "$H/state/tester.meta"
+  "$BIN/fm-lease.sh" claim env:company --holder tester
   # shellcheck disable=SC2059 # the row template above is the format
   printf "$pending" "$REPO" pass "$(sha h1)" > "$LAB/checks.json"
   cycle
@@ -855,15 +927,15 @@ scenario_rows_lease() {
   [ "$(ledger_count '.type == "release" and .lease == "env:company" and .task == "alpha"')" = 1 ] || { echo "no release line: $(ledger)"; return 1; }
 }
 
-# PR 223 review: two live rows asks hold `env:company` for the Tester (the second claim refreshes the same lease). The
-# newer ask landing first must not release the lease while the older ask still has a pending row; the poll after both
-# land releases it once and names both asks.
+# Each Tester holds an env lease under its own id, so two rows asks on one env cannot share it. The first Tester's
+# ask takes the lease; the second task's ask is held with a wait naming that Tester's id, reads no RAM, and goes out
+# under its own Tester after the first task's rows land and release the lease.
 scenario_rows_lease_two() {
   new_lab "$1"
   printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s/writer.calls"\ncase "$1" in checks) cat "%s/checks-$2.json" ;; esac\n' "$LAB" "$LAB" > "$LAB/writer"
   chmod +x "$LAB/writer"
   : > "$H/config/task-shadow"
-  local t row
+  local t row first second
   row='{"task":"%s","state":"running","nextActor":"worker","issueUrl":"https://github.com/%s/issues/%s","head":null,"rows":[{"key":"A1@1440","scenarioId":"A1","width":"1440","surface":"user-visible","status":"%s","nextActor":"tester","head":"%s","carried":false,"due":true}]}\n'
   mkdir -p "$H/config/env"
   for t in alpha:500:h1 gamma:501:h2; do
@@ -875,66 +947,169 @@ scenario_rows_lease_two() {
     printf "$row" "${t%%:*}" "$REPO" "$(cut -d: -f2 <<<"$t")" pending "$(sha "${t##*:}")" > "$LAB/checks-${t%%:*}.json"
   done
   printf '9\n' > "$LAB/ram"
-  printf 'ram-read=cat %s/ram\nfloor-gb=6\nnever-touch=Titan.exe\n' "$LAB" > "$H/config/env/company"
+  printf 'ram-read=echo read >> %s/ram.log; cat %s/ram\nfloor-gb=6\nnever-touch=Titan.exe\n' "$LAB" "$LAB" > "$H/config/env/company"
   fx_runs "1:completed:success:s0"
   set_cursor 1 s0
   export FM_TASK_SHADOW_WRITER="$LAB/writer"
   cycle
-  [ "$(ledger_count '.type == "ask" and .leases == ["env:company"]')" = 2 ] || { unset FM_TASK_SHADOW_WRITER; echo "two asks do not both hold the lease: $(ledger)"; return 1; }
-  # the newer ask lands first: the older one is still pending, so the lease stays
-  # shellcheck disable=SC2059 # the row template above is the format
-  printf "$row" gamma "$REPO" 501 pass "$(sha h2)" > "$LAB/checks-gamma.json"
-  cycle
-  "$BIN/fm-lease.sh" check env:company >/dev/null || { unset FM_TASK_SHADOW_WRITER; echo "the lease was released while alpha's row was pending: $(ledger)"; return 1; }
+  first="verify-alpha-$(sha h1 | cut -c1-7)"
+  [ "$(ledger_count '.type == "ask" and .task == "alpha" and .leases == ["env:company"]')" = 1 ] || { unset FM_TASK_SHADOW_WRITER; echo "alpha's ask does not hold the lease: $(ledger)"; return 1; }
+  [ "$(ledger_count '.type == "ask" and .task == "gamma"')" = 0 ] || { unset FM_TASK_SHADOW_WRITER; echo "gamma's ask went out while alpha held the env: $(ledger)"; return 1; }
+  [ "$(grep -c '^read' "$LAB/ram.log")" = 1 ] || { unset FM_TASK_SHADOW_WRITER; echo "gamma read the RAM under another Tester's lease: $(cat "$LAB/ram.log")"; return 1; }
+  grep -q "^event gamma wait --next-actor tester --clears-on rows --rows A1@1440 --note .*env:company is leased to $first.* --key deploy-verify:rows:gamma:[^ ]*:hold " "$LAB/writer.calls" \
+    || { unset FM_TASK_SHADOW_WRITER; echo "gamma's wait does not name alpha's Tester: $(cat "$LAB/writer.calls")"; return 1; }
   [ "$(ledger_count '.type == "release"')" = 0 ] || { unset FM_TASK_SHADOW_WRITER; echo "a release line while alpha was pending: $(ledger)"; return 1; }
+  # alpha's row lands: the lease releases, and gamma's ask spawns its own Tester and claims it.
   # shellcheck disable=SC2059 # the row template above is the format
   printf "$row" alpha "$REPO" 500 pass "$(sha h1)" > "$LAB/checks-alpha.json"
   cycle
+  second="verify-gamma-$(sha h2 | cut -c1-7)"
+  [ "$(ledger_count '.type == "release" and .lease == "env:company" and (.tasks | sort) == ["alpha"]')" = 1 ] || { unset FM_TASK_SHADOW_WRITER; echo "alpha's landed ask did not release its lease: $(ledger)"; return 1; }
+  [ "$(ledger_count '.type == "ask" and .task == "gamma" and .leases == ["env:company"]')" = 1 ] || { unset FM_TASK_SHADOW_WRITER; echo "gamma's ask did not take the released lease: $(ledger)"; return 1; }
+  [ "$("$BIN/fm-lease.sh" check env:company | cut -d' ' -f1)" = "$second" ] || { unset FM_TASK_SHADOW_WRITER; echo "gamma's Tester holds no lease: $("$BIN/fm-lease.sh" check env:company 2>&1)"; return 1; }
   unset FM_TASK_SHADOW_WRITER
-  ! "$BIN/fm-lease.sh" check env:company >/dev/null 2>&1 || { echo "the lease outlived both asks: $("$BIN/fm-lease.sh" check env:company)"; return 1; }
-  [ "$(ledger_count '.type == "release" and .lease == "env:company" and (.tasks | sort) == ["alpha", "gamma"]')" = 1 ] || { echo "no one release line naming both asks: $(ledger)"; return 1; }
 }
 
-# PR 223 reader round 2: a rows ask whose send fails gives back only a lease no other ask holds. Alpha's ask holds
-# `env:company` for the Tester; gamma's ask on the same env then fails to send (the Tester is unregistered), and the
-# lease alpha's pending row needs stays.
+# A rows ask whose send fails gives back only a lease no other ask holds: the first ask of one task holds
+# `env:company` for its Tester, the second ask on another head of the same task fails to send, and the lease the
+# first ask's pending row needs stays.
 scenario_rows_lease_failed_send() {
   new_lab "$1"
-  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s/writer.calls"\ncase "$1" in checks) cat "%s/checks-$2.json" ;; esac\n' "$LAB" "$LAB" > "$LAB/writer"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s/writer.calls"\ncase "$1" in checks) cat "%s/checks.json" ;; esac\n' "$LAB" "$LAB" > "$LAB/writer"
   chmod +x "$LAB/writer"
   : > "$H/config/task-shadow"
-  local t row
-  row='{"task":"%s","state":"running","nextActor":"worker","issueUrl":"https://github.com/%s/issues/%s","head":null,"rows":[{"key":"A1@1440","scenarioId":"A1","width":"1440","surface":"user-visible","status":"%s","nextActor":"tester","head":"%s","carried":false,"due":true}]}\n'
-  mkdir -p "$H/config/env"
-  for t in alpha:500:h1 gamma:501:h2; do
-    mkdir -p "$H/data/${t%%:*}"
-    printf 'surface: user-visible\nissue: https://github.com/%s/issues/%s\nrecord: rows\n' "$REPO" "$(cut -d: -f2 <<<"$t")" > "$H/data/${t%%:*}/verify.md"
-    fx_issue_raw "$(cut -d: -f2 <<<"$t")" "$(tpl_issue_body "$(tpl_scenario_env A1 'DMS env `company`' 1440)")"
-    # shellcheck disable=SC2059 # the row template above is the format
-    printf "$row" "${t%%:*}" "$REPO" "$(cut -d: -f2 <<<"$t")" pending "$(sha "${t##*:}")" > "$LAB/checks-${t%%:*}.json"
-  done
+  local id row
+  row='{"task":"alpha","state":"running","nextActor":"worker","issueUrl":"https://github.com/%s/issues/500","head":null,"rows":[{"key":"A1@1440","scenarioId":"A1","width":"1440","surface":"user-visible","status":"%s","nextActor":"tester","head":"%s","carried":false,"due":true},{"key":"A1@390","scenarioId":"A1","width":"390","surface":"user-visible","status":"%s","nextActor":"tester","head":"%s","carried":false,"due":true}]}\n'
+  printf 'kind=ship\n' > "$H/state/alpha.meta"
+  mkdir -p "$H/data/alpha" "$H/config/env"
+  printf 'surface: user-visible\nissue: https://github.com/%s/issues/500\nrecord: rows\n' "$REPO" > "$H/data/alpha/verify.md"
+  fx_issue_raw 500 "$(tpl_issue_body "$(tpl_scenario_env A1 'DMS env `company`' 1440,390)")"
+  # shellcheck disable=SC2059 # the row template above is the format
+  printf "$row" "$REPO" pending "$(sha h1)" pending "$(sha h2)" > "$LAB/checks.json"
   printf '9\n' > "$LAB/ram"
   printf 'ram-read=cat %s/ram\nfloor-gb=6\nnever-touch=Titan.exe\n' "$LAB" > "$H/config/env/company"
   fx_runs "1:completed:success:s0"
   set_cursor 1 s0
   export FM_TASK_SHADOW_WRITER="$LAB/writer"
-  printf 'kind=ship\n' > "$H/state/alpha.meta"
+  : > "$LAB/send-fail"
   cycle
-  [ "$(ledger_count '.type == "ask" and .task == "alpha" and .leases == ["env:company"]')" = 1 ] || { unset FM_TASK_SHADOW_WRITER; echo "alpha's ask does not hold the lease: $(ledger)"; return 1; }
-  # gamma's ask fails to send: the lease alpha's pending row holds stays with the Tester
-  printf 'kind=ship\n' > "$H/state/gamma.meta"
-  unregister_tester
+  id="verify-alpha-$(sha h1 | cut -c1-7)"
+  [ "$(ledger_count '.type == "ask" and .task == "alpha" and .leases == ["env:company"]')" = 1 ] || { unset FM_TASK_SHADOW_WRITER; echo "alpha's first ask does not hold the lease: $(ledger)"; return 1; }
+  [ "$("$BIN/fm-lease.sh" check env:company 2>/dev/null | cut -d' ' -f1)" = "$id" ] \
+    || { unset FM_TASK_SHADOW_WRITER; echo "the failed second send gave back the lease the first ask holds: $("$BIN/fm-lease.sh" check env:company 2>&1)"; return 1; }
+  [ "$(ledger_count '.type == "ask"')" = 1 ] || { unset FM_TASK_SHADOW_WRITER; echo "the failed ask was recorded: $(ledger)"; return 1; }
+  rm -f "$LAB/send-fail"
   cycle
-  [ "$(ledger_count '.type == "ask" and .task == "gamma"')" = 0 ] || { unset FM_TASK_SHADOW_WRITER; echo "gamma's ask went out: $(ledger)"; return 1; }
-  [ "$("$BIN/fm-lease.sh" check env:company 2>/dev/null | cut -d' ' -f1)" = tester ] \
-    || { unset FM_TASK_SHADOW_WRITER; echo "gamma's failed send gave back the lease alpha's ask holds: $("$BIN/fm-lease.sh" check env:company 2>&1)"; return 1; }
-  register_tester
+  [ "$(ledger_count '.type == "ask" and .task == "alpha"')" = 2 ] || { unset FM_TASK_SHADOW_WRITER; echo "the retried ask was not delivered: $(ledger)"; return 1; }
+  [ "$(inbox_count)" = 1 ] || { unset FM_TASK_SHADOW_WRITER; echo "the live Tester got no steer: $(inbox_count)"; return 1; }
+  # Both asks now hold the lease under one Tester: one landing keeps it, both release it once.
+  # shellcheck disable=SC2059 # the row template above is the format
+  printf "$row" "$REPO" pass "$(sha h1)" pending "$(sha h2)" > "$LAB/checks.json"
+  cycle
+  "$BIN/fm-lease.sh" check env:company >/dev/null || { unset FM_TASK_SHADOW_WRITER; echo "one landing released the lease another ask holds: $(ledger)"; return 1; }
+  # shellcheck disable=SC2059 # the row template above is the format
+  printf "$row" "$REPO" pass "$(sha h1)" pass "$(sha h2)" > "$LAB/checks.json"
+  cycle
   unset FM_TASK_SHADOW_WRITER
+  ! "$BIN/fm-lease.sh" check env:company >/dev/null 2>&1 || { echo "the lease outlived both asks: $("$BIN/fm-lease.sh" check env:company)"; return 1; }
+  [ "$(ledger_count '.type == "release" and .lease == "env:company" and (.keys | length) == 2')" = 1 ] || { echo "no one release line naming both asks: $(ledger)"; return 1; }
+}
+
+# A later ask for the same task goes to its live Tester through the steering inbox,
+# not to a second spawn, and the ledger names the same tester.
+scenario_live_tester() {
+  new_lab "$1"
+  backlog_task alpha 51 500
+  fx_issue 500 A1:user-visible
+  fx_runs "1:completed:success:s0" "2:completed:success:s2"
+  fx_jobs 2 success
+  fx_compare s0 s2 c1
+  fx_commit_prs c1 51:500
+  set_cursor 1 s0
+  cycle
+  local id
+  id=$(ledger | jq -r 'select(.type == "ask" and .task == "alpha") | .tester')
+  [ -f "$H/state/$id.meta" ] || { echo 'the first ask spawned no Tester'; return 1; }
+  [ "$(spawn_count)" = 1 ] || { echo "spawns: $(spawn_count)"; return 1; }
+  # A second deploy of the same task on a new head.
+  fx_runs "1:completed:success:s0" "2:completed:success:s2" "3:completed:success:s3"
+  fx_jobs 3 success
+  fx_compare s2 s3 c2
+  fx_commit_prs c2 52:500
+  backlog_task alpha 52 500
+  cycle
+  [ "$CYCLE_AUTO" = 0 ] || { echo "autohandle=$CYCLE_AUTO"; return 1; }
+  [ "$(spawn_count)" = 1 ] || { echo "a second Tester was spawned for one task: $(spawn_count)"; return 1; }
+  [ "$(inbox_count)" = 1 ] || { echo "the live Tester got no steer: $(inbox_count)"; return 1; }
+  [ "$(ledger_count '.type == "ask" and .task == "alpha"')" = 2 ] || { echo "asks: $(ledger)"; return 1; }
+  [ "$(ledger | jq -r 'select(.type == "ask" and .task == "alpha") | .tester' | sort -u)" = "$id" ] \
+    || { echo 'the second ask names another tester'; return 1; }
+  grep -q -- "\"sha\":\"$(sha s3)\"" "$H/state/$id.inbox/001.msg" || { echo 'the steer does not carry the new ask'; return 1; }
+  # A new ask on the same head after cleanup needs a fresh, dispatchable id.
+  rm "$H/state/$id.meta"
+  jq '.asks |= map(.key += ":again")' "$H/state/procevent-inbox/deploy-verify.$SEQ.result" > "$LAB/again.result"
+  "$BIN/fm-procevent-deploy-verify.sh" autohandle deploy-verify 99 "$LAB/again.result" >/dev/null 2>&1
+  [ -f "$H/state/verify-alpha-$(sha s3 | cut -c1-7).meta" ] || { echo 'new head did not get its own Tester id'; return 1; }
+  rm "$H/state/verify-alpha-$(sha s3 | cut -c1-7).meta"
+  jq '.asks |= map(.key += ":third")' "$LAB/again.result" > "$LAB/third.result"
+  "$BIN/fm-procevent-deploy-verify.sh" autohandle deploy-verify 100 "$LAB/third.result" >/dev/null 2>&1
+  [ -f "$H/state/verify-alpha-$(sha s3 | cut -c1-7)-2.meta" ] || { echo 'same-head re-ask reused the closed Tester id'; return 1; }
+}
+
+# The live Tester cap holds a further new Tester's ask: the task gets a wait naming
+# the cap, the ledger a cap hold, the poll does not advance its cursor, and the ask
+# goes out once a Tester is gone.
+scenario_cap() {
+  new_lab "$1"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s/writer.calls"\n' "$LAB" > "$LAB/writer"
+  chmod +x "$LAB/writer"
+  export FM_TASK_SHADOW_WRITER="$LAB/writer"
+  backlog_task alpha 11 500; backlog_task beta 12 501; backlog_task gamma 13 502
+  fx_issue 500 A1:user-visible; fx_issue 501 A1:user-visible; fx_issue 502 A1:user-visible
+  mkdir -p "$H/data/gamma"
+  printf 'record: rows\n' > "$H/data/gamma/verify.md"
+  printf '\ncase "$1" in checks) echo '\''{"rows":[]}'\'' ;; esac\n' >> "$LAB/writer"
+  printf 'kind=ship\n' > "$H/state/verify-not-a-tester.meta"
+  fx_runs "1:completed:success:s0" "2:completed:success:s2"
+  fx_jobs 2 success
+  fx_compare s0 s2 c1 c2 c3
+  fx_commit_prs c1 11:500; fx_commit_prs c2 12:501; fx_commit_prs c3 13:502
+  set_cursor 1 s0
+  cycle
+  [ "$CYCLE_AUTO" = 0 ] || { unset FM_TASK_SHADOW_WRITER; echo "autohandle=$CYCLE_AUTO"; return 1; }
+  [ "$(spawn_count)" = 2 ] || { unset FM_TASK_SHADOW_WRITER; echo "spawns: $(spawn_count)"; return 1; }
+  [ "$(ledger_count '.type == "ask"')" = 2 ] || { unset FM_TASK_SHADOW_WRITER; echo "asks: $(ledger)"; return 1; }
+  [ "$(ledger_count '.type == "hold" and .cap == 2')" = 1 ] || { unset FM_TASK_SHADOW_WRITER; echo "cap holds: $(ledger)"; return 1; }
+  grep -q "^event gamma wait --next-actor tester --clears-on rows .*--note .*live Tester cap 2 reached" "$LAB/writer.calls" \
+    || { unset FM_TASK_SHADOW_WRITER; echo "no wait names the cap: $(cat "$LAB/writer.calls")"; return 1; }
+  [ "$(jq -r .cursor_run "$H/data/deploy-verify/state.json")" = 1 ] || { unset FM_TASK_SHADOW_WRITER; echo 'the cursor advanced past a held ask'; return 1; }
+  cycle
+  [ "$(ledger_count '.type == "hold" and .cap == 2')" = 1 ] || { unset FM_TASK_SHADOW_WRITER; echo 'the repeated cap hold duplicated its ledger line'; return 1; }
+  # A legacy task has no task-record rows: a cap hold must not call its writer.
+  rm "$H/data/gamma/verify.md"
+  printf '#!/usr/bin/env bash\nexit 5\n' > "$LAB/writer"
+  cycle
+  [ "$CYCLE_AUTO" = 0 ] || { unset FM_TASK_SHADOW_WRITER; echo 'legacy cap hold called the task writer'; return 1; }
+  # A historical hold cannot hide a failed delivery after capacity clears.
+  unregister_tester
+  rm -f "$H/state/$(ledger | jq -r 'select(.type == "ask") | .tester' | head -1).meta"
+  cycle
+  if "$BIN/fm-procevent-deploy-verify.sh" silent "$H/state/procevent-inbox/deploy-verify.$SEQ.result"; then
+    unset FM_TASK_SHADOW_WRITER; echo 'historical hold hid the missing role failure'; return 1
+  fi
+  register_tester
+  # One Tester's record goes away: the next poll spawns the held task's Tester.
+  rm -f "$H/state/$(ledger | jq -r 'select(.type == "ask") | .tester' | head -1).meta"
+  cycle
+  unset FM_TASK_SHADOW_WRITER
+  [ "$(spawn_count)" = 3 ] || { echo "the held ask did not spawn after the cap freed: $(spawn_count)"; return 1; }
+  [ "$(ledger_count '.type == "ask"')" = 3 ] || { echo "asks: $(ledger)"; return 1; }
+  [ "$(jq -r .cursor_run "$H/data/deploy-verify/state.json")" = 2 ] || { echo 'the cursor did not advance after delivery'; return 1; }
 }
 
 run_scenarios() {  # <bin-dir>
   local s rc=0
-  for s in ledger skips not_deployed draft record failures runner skip_catchup rows refused replay replay_refused shadow rows_record carry rows_ask rows_lease rows_lease_two rows_lease_failed_send; do
+  for s in ledger skips not_deployed draft spawn_brief failures runner live_tester cap skip_catchup rows refused replay replay_refused shadow rows_record carry rows_ask rows_lease rows_lease_two rows_lease_failed_send; do
     out=$(scenario_"$s" "$1" 2>&1) || { printf 'scenario %s: %s\n' "$s" "$out"; rc=1; }
   done
   return $rc
@@ -942,7 +1117,7 @@ run_scenarios() {  # <bin-dir>
 
 # ---- real adapter -----------------------------------------------------------
 
-for s in ledger skips not_deployed draft record failures runner skip_catchup rows refused replay replay_refused shadow rows_record carry rows_ask rows_lease rows_lease_two rows_lease_failed_send; do
+for s in ledger skips not_deployed draft spawn_brief failures runner live_tester cap skip_catchup rows refused replay replay_refused shadow rows_record carry rows_ask rows_lease rows_lease_two rows_lease_failed_send; do
   out=$(scenario_"$s" "$ROOT/bin" 2>&1) || fail "scenario $s failed on the real adapter: $out"
   pass "deploy-verify $s"
 done
@@ -1040,7 +1215,7 @@ mutate 'an unread GitHub is left for the wake' failures \
 mutate 'a delivered ask reaches the task record' shadow \
   's/^[^\n]*fm-task-shadow\.sh" deploy-verify[^\n]*\n//m'
 mutate 'a rows task ask names the check call' rows_record \
-  's/if rows_task "\$\(jq -r \.task <<<"\$ask"\)"; then/if false; then/'
+  's/if rows_task "\$task"; then/if false; then/g'
 mutate 'a refused record write fails the delivery' rows_record \
   's/record_rows "\$ask" \|\| return 1/record_rows "\$ask" || true/'
 mutate 'the deploy round names the deployed head' rows_record \
@@ -1092,23 +1267,51 @@ mutate 'a sent rows ask writes its wait' rows_ask \
 mutate 'ask-rows --dry-run sends nothing' rows_ask \
   's/if \[ "\$dry" = 0 \] && ! deliver_ask "\$ask"; then/if ! deliver_ask "\$ask"; then/'
 mutate 'another holder of the env lease holds the ask' rows_lease \
-  's/\[ "\$\{out##\* \}" = live \] && \[ "\$\{out%% \*\}" != "\$ASSISTANCE" \] \|\| continue/continue/'
+  's/\[ "\$\{out##\* \}" = live \] && \[ "\$\{out%% \*\}" != "\$tester" \] \|\| continue/continue/'
 mutate 'a lease hold reads no RAM' rows_lease \
   's/if \[ "\$lease_hold" = 0 \]; then/if true; then/'
 mutate 'a held lease keeps one hold line' rows_lease \
   's/\[ "\$lease_hold" = 1 \] && ledger_test/false \&\& ledger_test/'
 mutate 'a lease hold is planned again at every poll' rows_lease \
-  's/ and \(\.lease \| not\)\)/)/'
+  's/ and \(\.lease \| not\)//'
 mutate 'a sent ask claims the env lease for the Tester' rows_lease \
   's/if ! out=\$\(env_lease claim/if false \&\& ! out=\$(env_lease claim/'
 mutate 'the poll releases the lease of landed rows' rows_lease \
   's/^  release_landed_leases\n//m'
 mutate 'pending rows keep the lease' rows_lease \
   's/; \.status != "pending" and/; true and/'
-mutate 'every ask holding a lease must land before its release' rows_lease_two \
-  's/done < <\(jq -c .\.\[\]. <<<"\$asks"\)/done < <(jq -c "last" <<<"\$asks")/'
+mutate 'every ask holding a lease must land before its release' rows_lease_failed_send \
+  's/done < <\(jq -c .\.\[\]. <<<"\$asks"\)/done < <(jq -c "first" <<<"\$asks")/'
 mutate 'a failed send keeps a lease another ask holds' rows_lease_failed_send \
   's/^[^\n]*lease_asks "\$lease" \| jq length[^\n]*\n//m'
 mutate 'a landed row is a result on the ask'"'"'s head' rows_lease \
   's/\.status != "pending" and \.head == \$h\)/.status != "pending")/'
+mutate 'a live Tester receives the ask instead of a second spawn' live_tester \
+  's/\[ -n "\$id" \] && \[ -f "\$STATE\/\$id\.meta" \] \|\| return 1/return 1/'
+mutate 'a live Tester gets the ask in its inbox' live_tester \
+  's/if ! FM_HOME=\$FM_HOME "\$SEND_CMD" "\$id" "\$text" >\/dev\/null 2>&1; then/if false; then/'
+mutate 'the live Tester cap holds a further ask' cap \
+  's/-ge "\$MAX_TESTERS"/-ge 0/g'
+mutate 'a held ask keeps the cursor' cap \
+  's/\[ "\$held" -eq 0 \] && jq -e/true \&\& jq -e/'
+mutate 'a new Tester id names the task and head' spawn_brief \
+  's/base="verify-\$task-\$\{sha:0:7\}"/base="verify"/'
+mutate 'a missing role refuses the spawn' failures \
+  's/if \[ ! -f "\$role_md" \] \|\| \[ ! -f "\$role_json" \]; then/if false; then/; s/if \[ -z "\$harness" \]; then/if false; then/'
+mutate 'the spawn brief carries the ask' spawn_brief \
+  's/fill_brief "\$brief" "\$intent" "\$spec"/true/'
+mutate 'the spawn names the evidence directory' spawn_brief \
+  's/args=\( "\$id" firstmate --scout --also-write "\$evidence" \)/args=( "$id" firstmate --scout )/'
+mutate 'legacy cap holds do not require a task record' cap \
+  's/if rows_task "\$\(jq -r \.task <<<"\$1"\)"; then/if true; then/'
+mutate 'historical holds cannot hide a delivery failure' cap \
+  's/grep -Fxq -- "\$\(jq -r \.key <<<"\$ask"\)" "\$result.holds" 2>\/dev\/null/ledger_test '\''.type == "hold"'\''/'
+mutate 'only Tester scouts consume the cap' cap \
+  's/ && grep -qx '\''kind=scout'\'' "\$f"//'
+mutate 'legacy Tester leases still release' rows_lease \
+  's/tester\|verify-\*/verify-*/'
+mutate 'a claimed-race retry finds its live Tester' rows_lease \
+  's/id=\$\(tester_id_for_ask "\$2"\)/id=missing/'
+mutate 'a used closed Tester id gets a suffix' live_tester \
+  's/if ! ledger_test '\''.type == "ask" and .tester == \$id'\'' --arg id "\$id"/if true/'
 pass 'every guarded behavior has a red mutation proof'

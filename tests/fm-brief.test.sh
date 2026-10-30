@@ -26,6 +26,24 @@ mkdir -p "$BRIEF_HOME/data"
 # CI and locally, where the issue #958/#1069 parser bug does not fire, so this
 # is a weak guard on its own; test_no_heredoc_in_command_substitution and the
 # macos-stock-bash CI job carry the real cross-version enforcement.
+test_scout_also_write() {
+  local file out
+  FM_HOME="$BRIEF_HOME" "$ROOT/bin/fm-brief.sh" also-write firstmate --scout \
+    --also-write "$BRIEF_HOME/data/verify/task/tester" \
+    --also-write "$BRIEF_HOME/old-tester/data/verify/task.md" >/dev/null || fail 'scout extra paths refused'
+  file="$BRIEF_HOME/data/also-write/brief.md"
+  grep -F '2. Stay inside this worktree;' "$file" | grep -F "$BRIEF_HOME/data/verify/task/tester" | grep -F "$BRIEF_HOME/old-tester/data/verify/task.md" >/dev/null \
+    || fail 'scout write rule lost an exact extra path'
+  if out=$(FM_HOME="$BRIEF_HOME" "$ROOT/bin/fm-brief.sh" bad-write firstmate --scout --also-write relative 2>&1); then
+    fail "relative scout path accepted: $out"
+  fi
+  if out=$(FM_HOME="$BRIEF_HOME" "$ROOT/bin/fm-brief.sh" ship-write firstmate --mode direct-PR --also-write /tmp/evidence 2>&1); then
+    fail "ship extra path accepted: $out"
+  fi
+  pass 'scout also-write renders repeated absolute paths and refuses relative or ship paths'
+}
+test_scout_also_write
+
 test_review_brief_requirement() {
   local mode id file
   for mode in direct-PR no-mistakes local-only scout; do

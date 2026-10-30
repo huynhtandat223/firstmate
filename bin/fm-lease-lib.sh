@@ -96,14 +96,14 @@
 #     backlog lease guard in this scope.
 #   - Environment leases (firstmate#176 G5) are a separate kind: a resource
 #     `env:<name>` (a shared environment such as the company DMS env) held by
-#     one holder, `tester` (the Tester assistance) or a task id, never by a
-#     supervision actor. File $STATE/.envlease-<name>, one line
+#     one holder, a task id such as a Tester scout's `verify-*` or a worker's
+#     own, never by a supervision actor. File $STATE/.envlease-<name>, one line
 #     "<holder>\t<epoch>". The holder names a state/<holder>.meta; the lease is
 #     stale when that meta is gone (a gone task) or its recorded backend target
 #     no longer exists (a dead pane); a meta with no window counts as live.
 #     A claim replaces a stale lease, sweep removes it, and only the holder
-#     releases. bin/fm-procevent-deploy-verify.sh claims one for the Tester
-#     around a rows ask; a worker claims one around its own proof there.
+#     releases. bin/fm-procevent-deploy-verify.sh claims one under the Tester's
+#     own task id around a rows ask; a worker claims one around its own proof there.
 #
 # Sourced by bin/fm-send.sh, bin/fm-control.sh, bin/fm-teardown.sh,
 # bin/fm-pr-merge.sh, bin/fm-merge-local.sh, bin/fm-spawn.sh, bin/fm-lock.sh,
