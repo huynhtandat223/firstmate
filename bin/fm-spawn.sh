@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Spawn a direct report: a crewmate in a treehouse or Orca worktree, or a
 # secondmate in its isolated firstmate home.
-# Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--surface <user-visible|internal>] [--branch-prefix <prefix>] [--base-branch <branch>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] [--herdr-resume-lock-wait]
-#        fm-spawn.sh <task-id> <project-dir> --scout [--base-branch <branch>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] [--herdr-resume-lock-wait]
+# Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--surface <user-visible|internal>] [--branch-prefix <prefix>] [--base-branch <branch>] [--also-repo <project>]... [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] [--herdr-resume-lock-wait]
+#        fm-spawn.sh <task-id> <project-dir> --scout [--base-branch <branch>] [--also-repo <project>]... [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] [--herdr-resume-lock-wait]
 #        fm-spawn.sh <task-id> [<firstmate-home>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] --secondmate
 #        fm-spawn.sh <id> <assistance-home> --assistance --harness claude --backend herdr [--workdir <abs-dir>]
 #   --assistance shares persistent launch mechanics but records kind=assistance,
@@ -70,6 +70,19 @@
 #   base_branch= in state/<id>.meta, which a relaunch reuses and later review and
 #   cleanup read; it is refused on secondmates and relaunches, and without it
 #   nothing changes.
+#   --also-repo <project> (repeatable, ship or scout, not on relaunch) gives the
+#   task a second repository copy: <project> must be a clone under this home's
+#   projects/, other than the spawning project, or the spawn refuses before
+#   anything is created. After the main copy is claimed, each one is leased with
+#   `treehouse get --lease --lease-holder <task-id>` run in that clone (the
+#   durable lease bin/fm-home-seed.sh uses) and must be an isolated worktree of
+#   it, else the spawn returns it and refuses. The spawn records each copy as
+#   also_worktree=<path> in state/<id>.meta (a relaunch keeps those lines), lists
+#   it under "# Second repository copies" in data/<id>/brief.md and the launch
+#   brief, and the task record names it when config/task-shadow is on. A spawn
+#   that aborts before its record is published returns each copy with
+#   `treehouse return --force <path> --if-lease-holder <task-id>`;
+#   bin/fm-teardown.sh returns them at cleanup.
 #   Ship/scout launches always put fm-dod-lib.sh's current worker role scope
 #   first in the private launch-brief overlay, including the exact task-owned
 #   steering inbox. This never rewrites a project's instruction files or a
@@ -881,6 +894,9 @@ PLAN_EXCEPTION=
 PLAN_EXCEPTION_SET=0
 ALLOW_THIRD_SPEC=
 ALLOW_THIRD_SPEC_SET=0
+ALSO_REPOS=()
+ALSO_LEASES=()
+ALSO_WORKTREES=()
 PLAN_SPEC=
 PLAN_ISSUE=
 # Opt-in only: exact-resume presentation-order lock waits instead of refusing.
@@ -953,6 +969,7 @@ for a in "$@"; do
       WORKDIR_ARG=$a
       WORKDIR_SET=1
       ;;
+    also-repo) ALSO_REPOS+=("$a") ;;
     *)
       echo "error: internal parser state for --$want_value" >&2
       exit 1
@@ -1042,6 +1059,8 @@ for a in "$@"; do
     WORKDIR_ARG=${a#--workdir=}
     WORKDIR_SET=1
     ;;
+  --also-repo) want_value=also-repo ;;
+  --also-repo=*) ALSO_REPOS+=("${a#--also-repo=}") ;;
   *) POS+=("$a") ;;
   esac
 done
@@ -1088,6 +1107,16 @@ done
 if [ "$ASSISTANCE" -eq 1 ] && [ "$KIND" != secondmate ]; then
   echo 'error: --assistance cannot be combined with --scout' >&2
   exit 1
+fi
+if [ "${#ALSO_REPOS[@]}" -gt 0 ]; then
+  [ "$KIND" = ship ] || [ "$KIND" = scout ] || {
+    echo 'error: --also-repo applies only to ship and scout spawns' >&2
+    exit 1
+  }
+  [ "$RELAUNCH" -eq 0 ] || {
+    echo 'error: --also-repo is refused on --relaunch; a relaunch keeps the also_worktree= copies its task record names' >&2
+    exit 1
+  }
 fi
 if [ "$WORKDIR_SET" -eq 1 ]; then
   [ "$ASSISTANCE" -eq 1 ] || {
@@ -1804,6 +1833,12 @@ spawn_abort_cleanup() {
     else
       echo "warning: leaving task $ID's slot claim on $WT in place; the Treehouse project lock is no longer held, so the next spawn's claim replaces it" >&2
     fi
+  fi
+  # A second repository copy leased before the record was published belongs to
+  # no task yet, so it goes back; once the record names it, teardown owns it.
+  if [ "${#ALSO_LEASES[@]}" -gt 0 ] &&
+    [ ! -e "$STATE/$ID.meta" ] && [ ! -L "$STATE/$ID.meta" ]; then
+    spawn_return_also_leases
   fi
   if [ "$SPAWN_TREEHOUSE_PROJECT_LOCK_HELD" = 1 ]; then
     SPAWN_TREEHOUSE_PROJECT_LOCK_HELD=0
@@ -3751,6 +3786,29 @@ else
   WT=""
   BRIEF="$DATA/$ID/brief.md"
 fi
+# Each --also-repo names a clone in this home, checked before anything is
+# created; the copy itself is leased after the main copy is claimed.
+for also_repo in "${ALSO_REPOS[@]}"; do
+  also_dir="$PROJECTS/$also_repo"
+  case "$also_repo" in
+  '' | . | .. | */*) also_dir= ;;
+  esac
+  also_top=
+  [ -z "$also_dir" ] || also_top=$(git -C "$also_dir" rev-parse --show-toplevel 2>/dev/null) || also_top=
+  if [ -z "$also_top" ] || [ "$(cd "$also_top" && pwd -P)" != "$(cd "$also_dir" && pwd -P)" ]; then
+    echo "error: --also-repo $also_repo: this home has no clone of that project at $PROJECTS/$also_repo" >&2
+    exit 1
+  fi
+  if [ "$(cd "$also_dir" && pwd -P)" = "$(cd "$PROJ_ABS" && pwd -P)" ]; then
+    echo "error: --also-repo $also_repo is the spawning project itself; its copy is the task's main copy" >&2
+    exit 1
+  fi
+done
+if [ "${#ALSO_REPOS[@]}" -gt 0 ] &&
+  [ "$(printf '%s\n' "${ALSO_REPOS[@]}" | sort | uniq -d)" != "" ]; then
+  echo 'error: --also-repo names one project twice' >&2
+  exit 1
+fi
 if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ] &&
   git -C "$PROJ_ABS" rev-parse --git-dir >/dev/null 2>&1 &&
   ! git -C "$PROJ_ABS" rev-parse --verify --quiet HEAD >/dev/null 2>&1; then
@@ -5419,6 +5477,7 @@ fi
 if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ]; then
   freshen_spawn_worktree_base "$WT" "$BASE_BRANCH" || exit 1
 fi
+[ "${#ALSO_REPOS[@]}" -eq 0 ] || spawn_lease_also_repos
 
 # Re-assert the durable task copy after either treehouse acquisition or endpoint
 # adoption. This also updates Herdr's restored pane shell before any harness is
@@ -6216,6 +6275,7 @@ preserve_relaunch_meta() {
   [ -z "$SURFACE" ] || echo "surface=$SURFACE"
   echo "tasktmp=$TASK_TMP"
   [ -z "$BASE_BRANCH" ] || echo "base_branch=$BASE_BRANCH"
+  for also_wt in "${ALSO_WORKTREES[@]}"; do echo "also_worktree=$also_wt"; done
   [ -z "$UPSTREAM_CONSENT" ] || echo "upstream_consent=$UPSTREAM_CONSENT"
   # Read by bin/fm-dod-lib.sh's ready-report gate; absent on every other forge.
   [ "$EXTERNAL_REVIEW" = 0 ] || echo "forge=external"

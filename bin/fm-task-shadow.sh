@@ -11,7 +11,8 @@
 # FM_TASK_BASE_URL=..., FM_TASK_AUTH=... and FM_TASK_TOKEN_FILE=... for the writer; nothing else in it is read.
 #
 # Usage (the first word is the hook event):
-#   fm-task-shadow.sh dispatched <task> <kind> <repo> <harness>      create, assign, start         (bin/fm-spawn.sh)
+#   fm-task-shadow.sh dispatched <task> <kind> <repo> <harness>      create, assign, start; a      (bin/fm-spawn.sh)
+#                                                                    comment per also_worktree= line of the task meta
 #   fm-task-shadow.sh status <config> <state>/<task>.status          the last status line          (the worker's status command)
 #   fm-task-shadow.sh cleaned-up <task>                              a comment event               (bin/fm-teardown.sh)
 #   fm-task-shadow.sh verified <task>                                a comment event               (bin/fm-verify-close.sh)
@@ -241,6 +242,10 @@ case "$EVENT" in
     w create create "$TASK" --title "$(title_of)" --kind "$kind" ${repo:+--repo "$repo"}
     w assign assign "$TASK" --to "$TASK"
     w start start "$TASK"
+    # each second repository copy the spawn leased (fm-spawn.sh --also-repo)
+    while IFS= read -r also; do
+      [ -z "$also" ] || w "also-$(short "$also")" event "$TASK" comment --note "second repository copy: also_worktree=$also"
+    done < <(sed -n 's/^also_worktree=//p' "$STATE/$TASK.meta" 2>/dev/null)
     ;;
   status) status_event "$@" ;;
   started) w "manual-start-${2:?start occurrence required}" start "$TASK" ;;
