@@ -21,6 +21,7 @@
 # and data/<task>/selftest-<head>.json, written by the cfw-modules verify-cfw
 # tool, must read PASS at the live head:
 #   no-selftest-line  the body has no such line
+#   review-storybook  <base> is on port 5010, the owner's UI/UX review Storybook
 #   stale-head        <sha> is not a prefix of the live head (9 or more hex)
 #   no-receipt        no receipt file for that head
 #   receipt-fail      the receipt is not PASS, holds a failed check, names
@@ -143,6 +144,13 @@ fm_selftest_receipt_rule() {
   if [ -z "$found" ]; then
     fm_selftest_hit merge-selftest no-selftest-line \
       "the PR body has no \"Self-test: verify-cfw run <features> --target url:<base> head=<sha> PASS\" line; run: $cmd"
+    return 0
+  fi
+  # Port 5010 is the owner's UI/UX review Storybook, never a self-test target.
+  if [[ "$base" =~ ^([A-Za-z][A-Za-z0-9+.-]*://)?[^/:]+:5010(/.*)?$ ]]; then
+    cmd="npm run verify-cfw -- run $features --target url:<base> --head $head --widths 1440,390 --json --out $out_dir/"
+    fm_selftest_hit merge-selftest review-storybook \
+      "the Self-test line names url:$base, but port 5010 is the owner's UI/UX review Storybook, not a self-test target: serve a Storybook from the task's own copy on another port and run: $cmd"
     return 0
   fi
   sha=${sha,,}
