@@ -104,7 +104,7 @@
 # Tester's own id first. Every ask naming the lease since its last release holds it;
 # each poll releases it once each row of every such ask has a result that is not
 # pending, on that ask's head, and a failed send gives back only a lease no other ask
-# holds. The poll releases only a lease whose holder is a `verify-*` Tester id.
+# holds. The poll also releases outstanding legacy `tester` leases by the same rule.
 # Before a sent ask, the record gets a wait on the Tester that clears on those rows.
 # An issue the parser refuses is a `template-refused` skip naming its problems; it
 # wakes firstmate once like a visible skip below, and a refused draft round is only
@@ -502,7 +502,7 @@ release_landed_leases() {
     [ -e "$f" ] && [ -f "$LEDGER" ] || continue
     name=${f##*/.envlease-}
     holder=$(cut -f1 "$f" 2>/dev/null)
-    case "$holder" in verify-*) ;; *) continue ;; esac
+    case "$holder" in tester|verify-*) ;; *) continue ;; esac
     asks=$(lease_asks "env:$name")
     [ "$(jq length <<<"$asks")" -gt 0 ] || continue
     landed=1
@@ -721,11 +721,11 @@ tester_for_task() {  # <task>
   printf '%s\n' "$id"
 }
 
-# Live Testers, by the task records the spawn leaves behind.
+# Live Testers, by scout task records the spawn leaves behind.
 live_tester_count() {
   local f n=0
   for f in "$STATE"/verify-*.meta; do
-    [ -f "$f" ] && [ ! -L "$f" ] && n=$((n + 1))
+    [ -f "$f" ] && [ ! -L "$f" ] && grep -qx 'kind=scout' "$f" && n=$((n + 1))
   done
   printf '%s\n' "$n"
 }
@@ -736,7 +736,9 @@ DELIVER_HELD=0
 hold_for_cap() {  # <ask-json>
   local reason
   reason="live Tester cap $MAX_TESTERS reached"
-  rows_wait "$1" cap "Tester ask held, not sent: $reason" || return 1
+  if rows_task "$(jq -r .task <<<"$1")"; then
+    rows_wait "$1" cap "Tester ask held, not sent: $reason" || return 1
+  fi
   # shellcheck disable=SC2016 # jq variables
   if ! ledger_test '.type == "hold" and .key == $k and .cap == $cap' --arg k "$(jq -r .key <<<"$1")" --argjson cap "$MAX_TESTERS"; then
     ledger_append "$(jq -c --arg h "$reason" --argjson cap "$MAX_TESTERS" --argjson at "$(date +%s)" \
@@ -995,6 +997,7 @@ deliver_rows_ask() {  # <ask-json>
   fi
   ask=$(jq -c --argjson e "$envs" '. + {envs: $e}' <<<"$ask")
   if [ -n "$held" ]; then
+    DELIVER_HELD=1
     rows_wait "$ask" hold "Tester ask held, not sent: $held" || return 1
     # A held lease is planned again at every poll: one hold line while the reason stays the same.
     # shellcheck disable=SC2016 # jq variables, not shell
@@ -1091,6 +1094,8 @@ cmd_autohandle() {  # <source-id> <sequence> <result-file>
   # A GitHub failure is left unacknowledged on purpose: that is the one wake.
   jq -e '.error == null' "$result" >/dev/null 2>&1 || return 1
   mkdir -p "$DATA"
+  # This receipt belongs to this result only, never to a historical ledger hold.
+  rm -f "$result.holds"
   while IFS= read -r skip; do
     [ -n "$skip" ] || continue
     pr=$(jq -r .pr <<<"$skip")
@@ -1106,7 +1111,10 @@ cmd_autohandle() {  # <source-id> <sequence> <result-file>
       failed=1
       [ -n "$reason" ] || reason=$DELIVER_ERROR
     fi
-    [ "$DELIVER_HELD" = 1 ] && held=1
+    if [ "$DELIVER_HELD" = 1 ] && [ "$failed" = 0 ]; then
+      held=1
+      jq -r .key <<<"$ask" >> "$result.holds"
+    fi
   done < <(jq -c '.asks[]' "$result")
   if [ "$failed" -eq 1 ]; then
     [ ! -f "$LAST_ERROR" ] || previous=$(<"$LAST_ERROR")
@@ -1130,10 +1138,9 @@ cmd_silent() {  # <result-file>
   attention_skip "$result" && return 1
   jq -e '.schema == "fm-deploy-verify-result.v1" and .error == null' "$result" >/dev/null 2>&1 || return 1
   while IFS= read -r ask; do
-    # A cap- or lease-held ask is handled: it has a hold line and is planned again next poll.
-    # shellcheck disable=SC2016 # jq variable
+    # Only this result's successful hold receipt can silence a hold; old ledger holds cannot.
     ledger_has_key "$(jq -r .key <<<"$ask")" \
-      || ledger_test '.type == "hold" and .key == $k' --arg k "$(jq -r .key <<<"$ask")" \
+      || grep -Fxq -- "$(jq -r .key <<<"$ask")" "$result.holds" 2>/dev/null \
       || return 1
   done < <(jq -c '.asks[]' "$result")
   while IFS='|' read -r pr task; do

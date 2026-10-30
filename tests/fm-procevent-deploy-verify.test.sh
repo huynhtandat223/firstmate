@@ -903,6 +903,10 @@ scenario_rows_lease() {
   printf "$pending" "$REPO" pass "$(sha h0)" > "$LAB/checks.json"
   cycle
   "$BIN/fm-lease.sh" check env:company >/dev/null || { unset FM_TASK_SHADOW_WRITER; echo 'a pass on another head released the lease'; return 1; }
+  # Also retain release compatibility for asks sent by the old persistent Tester.
+  "$BIN/fm-lease.sh" release env:company --holder "$tid"
+  printf 'kind=assistance\n' > "$H/state/tester.meta"
+  "$BIN/fm-lease.sh" claim env:company --holder tester
   # shellcheck disable=SC2059 # the row template above is the format
   printf "$pending" "$REPO" pass "$(sha h1)" > "$LAB/checks.json"
   cycle
@@ -1041,6 +1045,10 @@ scenario_cap() {
   export FM_TASK_SHADOW_WRITER="$LAB/writer"
   backlog_task alpha 11 500; backlog_task beta 12 501; backlog_task gamma 13 502
   fx_issue 500 A1:user-visible; fx_issue 501 A1:user-visible; fx_issue 502 A1:user-visible
+  mkdir -p "$H/data/gamma"
+  printf 'record: rows\n' > "$H/data/gamma/verify.md"
+  printf '\ncase "$1" in checks) echo '\''{"rows":[]}'\'' ;; esac\n' >> "$LAB/writer"
+  printf 'kind=ship\n' > "$H/state/verify-not-a-tester.meta"
   fx_runs "1:completed:success:s0" "2:completed:success:s2"
   fx_jobs 2 success
   fx_compare s0 s2 c1 c2 c3
@@ -1056,6 +1064,19 @@ scenario_cap() {
   [ "$(jq -r .cursor_run "$H/data/deploy-verify/state.json")" = 1 ] || { unset FM_TASK_SHADOW_WRITER; echo 'the cursor advanced past a held ask'; return 1; }
   cycle
   [ "$(ledger_count '.type == "hold" and .cap == 2')" = 1 ] || { unset FM_TASK_SHADOW_WRITER; echo 'the repeated cap hold duplicated its ledger line'; return 1; }
+  # A legacy task has no task-record rows: a cap hold must not call its writer.
+  rm "$H/data/gamma/verify.md"
+  printf '#!/usr/bin/env bash\nexit 5\n' > "$LAB/writer"
+  cycle
+  [ "$CYCLE_AUTO" = 0 ] || { unset FM_TASK_SHADOW_WRITER; echo 'legacy cap hold called the task writer'; return 1; }
+  # A historical hold cannot hide a failed delivery after capacity clears.
+  unregister_tester
+  rm -f "$H/state/$(ledger | jq -r 'select(.type == "ask") | .tester' | head -1).meta"
+  cycle
+  if "$BIN/fm-procevent-deploy-verify.sh" silent "$H/state/procevent-inbox/deploy-verify.$SEQ.result"; then
+    unset FM_TASK_SHADOW_WRITER; echo 'historical hold hid the missing role failure'; return 1
+  fi
+  register_tester
   # One Tester's record goes away: the next poll spawns the held task's Tester.
   rm -f "$H/state/$(ledger | jq -r 'select(.type == "ask") | .tester' | head -1).meta"
   cycle
@@ -1260,4 +1281,12 @@ mutate 'the spawn brief carries the ask' spawn_brief \
   's/fill_brief "\$brief" "\$intent" "\$spec"/true/'
 mutate 'the spawn names the evidence directory' spawn_brief \
   's/args=\( "\$id" firstmate --scout --also-write "\$evidence" \)/args=( "$id" firstmate --scout )/'
+mutate 'legacy cap holds do not require a task record' cap \
+  's/if rows_task "\$\(jq -r \.task <<<"\$1"\)"; then/if true; then/'
+mutate 'historical holds cannot hide a delivery failure' cap \
+  's/grep -Fxq -- "\$\(jq -r \.key <<<"\$ask"\)" "\$result.holds" 2>\/dev\/null/ledger_test '\''.type == "hold"'\''/'
+mutate 'only Tester scouts consume the cap' cap \
+  's/ && grep -qx '\''kind=scout'\'' "\$f"//'
+mutate 'legacy Tester leases still release' rows_lease \
+  's/tester\|verify-\*/verify-*/'
 pass 'every guarded behavior has a red mutation proof'
