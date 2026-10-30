@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
-# Built-in process-event adapter that starts a review round for each new head of an open
-# fm/<task> pull request: it asks the Reviewer assistance and the ChatGPT reader about that
-# exact head, labels every finding by whether the PR's diff caused it, and wakes firstmate
-# once per round with both results. Firstmate still verifies each finding and gives the verdict.
+# Built-in process-event adapter that starts a review round for each new head of an open pull
+# request, asks the Reviewer assistance and the ChatGPT reader about that exact head, labels
+# every finding by whether the PR's diff caused it, and hands the round to the worker that owns
+# the head: the in-scope findings go straight into the worker's inbox and firstmate is not woken
+# for that round. A round with no in-scope finding, or with no live worker, wakes firstmate as
+# before. Firstmate reads every round, delivered or not, at the worker's done (see "What firstmate
+# keeps" below) and still verifies each finding and gives the verdict.
 #
 # Usage:
 #   fm-procevent-pr-review.sh arm
@@ -20,10 +23,15 @@
 # wait         The blocking child. Every poll_seconds it reads config/pr-review.json and, when
 #              the file says enabled, the open PRs of each configured repository. A missing
 #              file or enabled:false means no GitHub read, no ask and no ledger line.
-#              A round is a new head of an open PR whose head branch is fm/<task>, once the
-#              head has stayed the head for settle_seconds. The first poll of a repository
-#              records each open PR's head as a baseline, so history is never backfilled.
-#              A PR whose branch is not fm/<task> is recorded once as skipped (no-task).
+#              A round is a new head of an open PR of a live task, once the head has stayed the
+#              head for settle_seconds. The first poll of a repository records each open PR's head
+#              as a baseline, so history is never backfilled. A PR no live task owns is recorded
+#              once as skipped (no-task).
+# Worker       The live task that owns a PR head is, in this order, the task whose worktree is on
+#              the PR's head branch (`git -C <worktree> branch --show-current` for each
+#              state/*.meta with a worktree), the task whose meta records `pr=` as that PR, else
+#              the task the fm/<task> branch names. A task is live when state/<task>.meta exists.
+#              No match: nothing is delivered and firstmate is woken as before.
 #              A round asks the Reviewer (one fm-assistance-mentions.v1 record through
 #              `fm-assistance.sh source-event`) and the reader (config reader.command, one at a
 #              time) about that head. It returns one fm-pr-review-result.v1 JSON when both have
@@ -49,11 +57,30 @@
 #              Lines after a PRE-EXISTING heading are kept apart as pre_existing text.
 # summary      Print, per PR and reviewer, the rounds, findings by label, time from push to each
 #              answer, timeouts and failures, from the ledger. --since keeps rounds from that time.
+# What firstmate keeps
+#              A delivered round appends its ledger line with delivered:true and the lines the worker
+#              did not get under retained (out-of-scope, pre-existing, unlocated, unchecked), so
+#              firstmate reads every round at the worker's done with
+#                jq -r 'select(.type=="round" and .task=="<task>") | .delivered, .retained[]?' data/pr-review/ledger.jsonl
+#              The reader answer and the Reviewer report stay in the ledger's reader.answer and
+#              reviewer.report paths.
+# CI result to the worker
+#              The same poll reads the checks of an open PR's current head (repos/<repo>/commits/
+#              <head>/check-runs). Once every check has finished on that head and the head was not
+#              read before, it writes one `ci` event on the worker's task record, which clears a
+#              declared `wait --next-actor ci --clears-on ci`. A head with a failed check also sends
+#              the worker one message naming each failed check, its URL, and the `gate FAILED` lines
+#              of that check's log with the line after each. A green head, and a head replaced before
+#              its checks finished, send the worker nothing.
+#              state.json holds the head each PR's checks were last read on (.ci).
+#              Legacy commit-status contexts are not read; this source handles check runs only.
 # autohandle   Apply a captured result after the runner has captured it: write its ledger line and
-#              close its round. A round, late or cap result stays unacknowledged: that is the wake.
-#              An error result stays unacknowledged too. A recovery result clears the error and
-#              acknowledges itself and the older error results, never a round. Firstmate acknowledges the rest with
-#              `fm-procevent.sh handled pr-review <sequence>` after it has verified the findings.
+#              close its round. A round or late result whose in-scope findings reached a live worker's
+#              inbox acknowledges itself, so that round wakes nobody. A round, late or cap result that
+#              delivered nothing, and every error result, stays unacknowledged: that is the wake.
+#              A recovery result clears the error and acknowledges itself and the older error results,
+#              never a round. Firstmate acknowledges the rest with `fm-procevent.sh handled pr-review
+#              <sequence>` after it has verified the findings.
 # silent       Exit 0 for a recovery result only.
 # self-announcing, relisten
 #              Exit 0: autohandle runs before the wake is published, and the runner keeps polling.
@@ -61,15 +88,18 @@
 # Ledger lines (data/pr-review/ledger.jsonl):
 #   {type:"baseline", repo, pr, head, at}
 #   {type:"skip", repo, pr, reason:"no-task", at}
-#   {type:"round", repo, pr, task, head, round, at, committed,
+#   {type:"round", repo, pr, task, head, round, at, committed, delivered, retained,
 #      reviewer:{record, status, report, at, labels}, reader:{status, answer, at, labels}}
 #   {type:"late", repo, pr, head, round, at, report, labels}
 #   {type:"cap", repo, pr, head, at}
-# Other files under data/pr-review/: state.json (first-poll marks and the settle clock of each
-# head), open/ (the rounds still waiting), last-error, last-poll.
+# Other files under data/pr-review/: state.json (first-poll marks, the settle clock of each head,
+# and the head each PR's checks were last read on), open/ (the rounds still waiting), last-error,
+# last-poll.
 # Config: config/pr-review.json (docs/configuration.md "PR review rounds").
 # Environment: FM_PR_REVIEW_GH (the gh command), _ONCE=1 (poll once and exit 1 when nothing is
-# due), _NOW (the clock, epoch seconds, for tests), _IDLE_SECONDS (the wait while the source is off).
+# due), _NOW (the clock, epoch seconds, for tests), _IDLE_SECONDS (the wait while the source is off),
+# FM_PR_REVIEW_TASK (the task record writer, default bin/fm-task.sh beside this script),
+# FM_PR_REVIEW_SEND (the steer command, default bin/fm-send.sh beside this script).
 # shellcheck disable=SC2016 # jq filters and awk programs use $variables that must not expand in the shell
 set -uo pipefail
 
@@ -87,6 +117,8 @@ READ_ERROR_FILE="$DATA/.read-error"
 CONFIG="$FM_HOME/config/pr-review.json"
 
 GH="${FM_PR_REVIEW_GH:-gh}"
+TASK_WRITER="${FM_PR_REVIEW_TASK:-$SCRIPT_DIR/fm-task.sh}"
+SEND="${FM_PR_REVIEW_SEND:-$SCRIPT_DIR/fm-send.sh}"
 POLL_SECONDS=60
 SOURCE_ID=pr-review
 
@@ -176,6 +208,172 @@ open_update() {  # <open-file> <jq-filter> [jq args...]
   jq -c "$@" "$filter" "$f" > "$f.tmp" && mv -f "$f.tmp" "$f"
 }
 
+# ---- the worker that owns a PR head ------------------------------------------
+
+meta_field() { grep "^$2=" "$1" 2>/dev/null | tail -1 | cut -d= -f2- || true; }
+# A task is live when its metadata exists: that is the record a spawn writes and a teardown removes.
+live_task() { [ -f "$STATE/$1.meta" ] && [ ! -L "$STATE/$1.meta" ]; }
+
+# The live task that owns a PR head, in this order: the task whose worktree is on the head branch,
+# the task whose metadata records this PR, else the task the fm/<task> branch names. Prints nothing
+# when no task matches, which is the one case that delivers nothing and keeps firstmate's wake.
+resolve_worker_task() {  # <pr-url> <head-ref>
+  local url=$1 ref=$2 meta id wt branch origin repo
+  for meta in "$STATE"/*.meta; do
+    [ -f "$meta" ] && [ ! -L "$meta" ] || continue
+    id=${meta##*/}; id=${id%.meta}
+    wt=$(meta_field "$meta" worktree)
+    [ -n "$wt" ] && [ -d "$wt" ] || continue
+    origin=$(git -C "$wt" remote get-url origin 2>/dev/null) || continue
+    origin=${origin%.git}; origin=${origin%/}
+    repo=${url#https://github.com/}; repo=${repo%/pull/*}
+    case "$origin" in "https://github.com/$repo"|"git@github.com:$repo"|"ssh://git@github.com/$repo") ;; *) continue ;; esac
+    branch=$(git -C "$wt" branch --show-current 2>/dev/null) || continue
+    [ "$branch" = "$ref" ] || continue
+    printf '%s\n' "$id"
+    return 0
+  done
+  for meta in "$STATE"/*.meta; do
+    [ -f "$meta" ] && [ ! -L "$meta" ] || continue
+    id=${meta##*/}; id=${id%.meta}
+    [ "$(meta_field "$meta" pr)" = "$url" ] || continue
+    printf '%s\n' "$id"
+    return 0
+  done
+  case "$ref" in fm/*) id=${ref#fm/} ;; *) return 1 ;; esac
+  case "$id" in ''|*[!A-Za-z0-9._-]*|.*|*..*) return 1 ;; esac
+  printf '%s\n' "$id"
+}
+
+# Send one message to a live task's steering inbox. The durable inbox record is the delivery
+# (bin/fm-send.sh), so an untyped doorbell still counts, and an exact repeat is dropped: a replayed
+# autohandle sends nothing twice.
+steer_worker() {  # <task> <text-file>
+  local task=$1 text=$2
+  live_task "$task" || return 1
+  [ -s "$text" ] || return 1
+  FM_SEND_IDEMPOTENT=1 "$SEND" "$task" "$(cat "$text")" >/dev/null 2>&1
+}
+
+# The message a worker gets for one round: the in-scope findings verbatim, in the order the answers
+# give them, then the instruction to check each one in source.
+findings_message() {  # <result-file> <out-file> <headline>
+  local f=$1 out=$2 headline=$3 lines
+  lines=$(jq -r --arg l "$LABEL_IN" '[.reviewer.findings[]?, .reader.findings[]?] | map(select(.label == $l)) | .[].source' "$f" 2>/dev/null) || return 1
+  [ -n "$lines" ] || return 1
+  {
+    printf '%s\n\n' "$headline"
+    printf '%s\n' "$lines"
+    printf '\nverify each in source; fix it, or answer with the evidence that it does not hold.\n'
+  } > "$out"
+}
+
+# Deliver one round's in-scope findings to the worker that owns the head. Exit 0 when a live
+# worker's inbox got the message; that is what lets the round go unacknowledged and wake nobody.
+deliver_round() {  # <result-file> <task>
+  local f=$1 task=$2 repo n head round count tmp rc=1
+  repo=$(jq -r '.repo // ""' "$f"); n=$(jq -r '.pr // 0' "$f")
+  head=$(jq -r '.head // ""' "$f"); round=$(jq -r '.round // 0' "$f")
+  [ -n "$repo" ] && [ -n "$head" ] || return 1
+  count=$(jq -r --arg l "$LABEL_IN" '[.reviewer.findings[]?, .reader.findings[]?] | map(select(.label == $l)) | length' "$f" 2>/dev/null) || return 1
+  [ "${count:-0}" -gt 0 ] || return 1
+  tmp=$(mktemp "${TMPDIR:-/tmp}/fm-pr-review-msg.XXXXXX") || return 1
+  if findings_message "$f" "$tmp" "Review round $round on https://github.com/$repo/pull/$n at head $head has these in-scope findings:"; then
+    steer_worker "$task" "$tmp" && rc=0
+  fi
+  rm -f "$tmp"
+  return "$rc"
+}
+
+# ---- the CI result on the current head ----------------------------------------
+
+# A GitHub read that never announces itself: a check or log read that fails is retried by the next
+# poll instead of becoming a "GitHub could not be read" wake.
+gh_quiet() { "$GH" api "$1" 2>/dev/null; }
+
+# The lines of a failed job's log that say `gate FAILED`, each with the line after it. GitHub puts an
+# ISO timestamp in front of a log line; that is dropped. A log that cannot be read adds nothing.
+gate_failed_lines() {  # <repo> <job-id>
+  local repo=$1 id=$2 log
+  case "$id" in ''|*[!0-9]*) return 0 ;; esac
+  log=$(gh_quiet "repos/$repo/actions/jobs/$id/logs") || return 0
+  [ -n "$log" ] || return 0
+  printf '%s\n' "$log" | awk '
+    { line = $0; sub(/^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9:.]+Z /, "", line) }
+    line ~ /gate FAILED/ { print line; want = 1; next }
+    want { print line; want = 0 }'
+}
+
+# The checks that did not pass on a head, one record per check: severity-free, the name, the job URL
+# and the job id whose log carries the gate's own reasons.
+failed_checks() {  # <check-runs-json>
+  jq -r '.check_runs[]? | select(.status == "completed") | select(.conclusion | IN("failure", "timed_out", "cancelled", "action_required", "startup_failure")) | (.details_url // .html_url // "") as $url | [.name, $url, (try ($url | capture("/job/(?<id>[0-9]+)").id) catch "-")] | @tsv' "$1" 2>/dev/null
+}
+
+# One CI result for one PR's current head, once every check on it has finished. The result is one ci
+# event on the worker's task record, which clears a declared `wait --next-actor ci --clears-on ci`,
+# and for a failed head one message naming each failed check and its gate lines. A green head sends
+# the worker nothing, and a head replaced before its checks finished is never read.
+handle_ci() {  # <repo> <pr-row> <task>
+  local repo=$1 row=$2 task=$3 n url head key runs total current page=1 part count
+  n=$(jq -r .number <<<"$row"); url=$(jq -r .html_url <<<"$row"); head=$(jq -r .head.sha <<<"$row")
+  key="$repo#$n"
+  [ "$(state_json | jq -r --arg k "$key" '.ci[$k].head // ""')" != "$head" ] || return 0
+  runs=$(gh_quiet "repos/$repo/commits/$head/check-runs?per_page=100") || return 0
+  [ -n "$runs" ] || return 0
+  count=$(jq '.check_runs | length' <<<"$runs")
+  while [ "$count" -lt "$(jq '.total_count // 0' <<<"$runs")" ]; do
+    page=$((page + 1))
+    part=$(gh_quiet "repos/$repo/commits/$head/check-runs?per_page=100&page=$page") || return 0
+    [ "$(jq '.check_runs | length' <<<"$part")" -gt 0 ] || return 0
+    runs=$(jq -cn --argjson a "$runs" --argjson b "$part" '$a | .check_runs += $b.check_runs') || return 0
+    count=$(jq '.check_runs | length' <<<"$runs")
+  done
+  total=$(jq -r '.total_count // 0' <<<"$runs" 2>/dev/null) || return 0
+  [ "${total:-0}" -gt 0 ] || return 0
+  [ "$(jq -r '.check_runs | length' <<<"$runs")" = "$total" ] || return 0
+  [ "$(jq -r '[.check_runs[]? | select(.status != "completed")] | length' <<<"$runs" 2>/dev/null)" = 0 ] || return 0
+  current=$(gh_quiet "repos/$repo/pulls/$n") || return 0
+  [ "$(jq -r '.head.sha // ""' <<<"$current")" = "$head" ] || return 0
+  ci_result "$repo" "$n" "$url" "$head" "$runs" "$task" || return 0
+  state_edit '.ci[$k] = {head: $h, at: $t}' --arg k "$key" --arg h "$head" --argjson t "$(now)"
+}
+
+# Record one finished head: the ci event, then the worker's message when a check failed.
+ci_result() {  # <repo> <pr> <pr-url> <head> <check-runs-json> <task>
+  local repo=$1 n=$2 url=$3 head=$4 runs=$5 task=$6 tmp probe state_note name link job lines block='' failing=0
+  tmp=$(mktemp "${TMPDIR:-/tmp}/fm-pr-review-ci.XXXXXX") || return 1
+  printf '%s\n' "$runs" > "$tmp.runs"
+  while IFS=$'\t' read -r name link job; do
+    [ -n "$name" ] || continue
+    failing=$((failing + 1))
+    lines=$(gate_failed_lines "$repo" "$job")
+    block+="FAILED $name"$'\n'
+    [ -z "$link" ] || block+="$link"$'\n'
+    [ -z "$lines" ] || block+="$lines"$'
+'
+  done < <(failed_checks "$tmp.runs")
+  rm -f "$tmp" "$tmp.runs"
+  if live_task "$task"; then
+    state_note="CI green on $url at head $head"
+    [ "$failing" -eq 0 ] || state_note="CI failed on $url at head $head: $failing check(s) did not pass"
+    if [ "$failing" -gt 0 ]; then
+      probe=$(mktemp "${TMPDIR:-/tmp}/fm-pr-review-cimsg.XXXXXX") || return 0
+      {
+        printf 'CI on %s at head %s failed: %s check(s) did not pass.\n\n' "$url" "$head" "$failing"
+        printf '%s' "$block"
+        printf '\nFix each failure in source and push, or answer firstmate with the evidence that it is not yours.\n'
+      } > "$probe"
+      if ! steer_worker "$task" "$probe"; then rm -f "$probe"; return 1; fi
+      rm -f "$probe"
+    fi
+    "$TASK_WRITER" event "$task" ci --head "$head" --note "$state_note" --key "pr-review:ci:$repo:$n:$head" --actor pr-review --role system >/dev/null 2>&1 || return 1
+  else
+    return 1
+  fi
+  return 0
+}
+
 # ---- findings and the scope check --------------------------------------------
 
 # The reader's answer text. reader-round.sh saves "chat: <url>", a blank line, then
@@ -224,7 +422,7 @@ extract_rows() {
           if (range ~ /(-|–)/) { le = range; sub(/^[0-9]+(-|–)/, "", le) }
           rest = trim(substr(rest, length(tok) + 1))
         }
-        printf "F\037%s\037%s\037%s\037%s\037%s\n", sev, path, ls, le, rest
+        printf "F\037%s\037%s\037%s\037%s\037%s\037%s\n", sev, path, ls, le, rest, line
         next
       }
       if (line ~ /^PRE-EXISTING/) { pre = 1; next }
@@ -273,14 +471,14 @@ label_for() {  # <compare-file> <path> <first-line> <last-line>
 
 # {findings:[...], pre_existing:[...], labels:{...}} for an answer text.
 scan_findings() {  # <text-file> <compare-file>
-  local text=$1 cmpf=$2 kind sev path ls le rest label findings='[]' pre='[]'
-  while IFS=$'\037' read -r kind sev path ls le rest; do
+  local text=$1 cmpf=$2 kind sev path ls le rest src label findings='[]' pre='[]'
+  while IFS=$'\037' read -r kind sev path ls le rest src; do
     case "$kind" in
       F)
         label=$(label_for "$cmpf" "$path" "$ls" "$le")
-        findings=$(jq -c --arg sev "$sev" --arg path "$path" --arg ls "$ls" --arg le "$le" --arg text "$rest" --arg label "$label" \
+        findings=$(jq -c --arg sev "$sev" --arg path "$path" --arg ls "$ls" --arg le "$le" --arg text "$rest" --arg src "$src" --arg label "$label" \
           '. + [{severity: $sev, path: (if $path == "" then null else $path end), line: (if $ls == "" then null else ($ls | tonumber) end),
-                 line_end: (if $le == "" then null else ($le | tonumber) end), text: $text, label: $label}]' <<<"$findings")
+                 line_end: (if $le == "" then null else ($le | tonumber) end), text: $text, source: $src, label: $label}]' <<<"$findings")
         ;;
       P) pre=$(jq -c --arg t "$sev" '. + [$t]' <<<"$pre") ;;
     esac
@@ -462,15 +660,12 @@ EMIT=
 emit_error() { EMIT=$(jq -cn --arg e "$1" '{schema: "fm-pr-review-result.v1", kind: "error", error: $e, recovered: false}'); }
 emit_recovery() { EMIT='{"schema":"fm-pr-review-result.v1","kind":"recovery","error":null,"recovered":true}'; }
 
-# A new head of an open fm/<task> PR: baseline, wait for it to settle, then cap or start a round.
+# A new head of an open PR of a live task: baseline, wait for it to settle, then cap or start a round.
 # Exit 0: carry on. Exit 2: GitHub unreadable. Exit 10: EMIT holds a cap result.
-handle_pr() {  # <repo> <pr-json> <first-poll-epoch-or-empty>
-  local repo=$1 row=$2 first=$3 n url head ref base task hkey tracked since count
+handle_pr() {  # <repo> <pr-json> <first-poll-epoch-or-empty> <task>
+  local repo=$1 row=$2 first=$3 task=$4 n url head base hkey tracked since count
   n=$(jq -r .number <<<"$row"); url=$(jq -r .html_url <<<"$row"); head=$(jq -r .head.sha <<<"$row")
-  ref=$(jq -r .head.ref <<<"$row"); base=$(jq -r .base.ref <<<"$row")
-  task=
-  case "$ref" in fm/*) task=${ref#fm/} ;; esac
-  case "$task" in ''|*[!A-Za-z0-9._-]*|.*|*..*) task= ;; esac
+  base=$(jq -r .base.ref <<<"$row")
   if [ -z "$task" ]; then
     ledger_pr_has skip "$repo" "$n" \
       || ledger_append "$(jq -cn --arg r "$repo" --argjson n "$n" --argjson at "$(now)" '{type: "skip", repo: $r, pr: $n, reason: "no-task", at: $at}')"
@@ -508,13 +703,18 @@ handle_pr() {  # <repo> <pr-json> <first-poll-epoch-or-empty>
 }
 
 poll_prs() {
-  local repo prs row first rc
+  local repo prs row first rc task
   while IFS= read -r repo; do
     [ -n "$repo" ] || continue
     prs=$(gh_read "repos/$repo/pulls?state=open&per_page=100") || return 2
     first=$(state_json | jq -r --arg r "$repo" '.started[$r] // empty')
     while IFS= read -r row; do
-      handle_pr "$repo" "$row" "$first"
+      task=
+      task=$(resolve_worker_task "$(jq -r .html_url <<<"$row")" "$(jq -r .head.ref <<<"$row")") || task=
+      # The first poll of a repository is a baseline, so a head that was there before the source was
+      # enabled gets no CI result either; an existing CI failure is not news a worker must act on.
+      [ -z "$first" ] || handle_ci "$repo" "$row" "$task"
+      handle_pr "$repo" "$row" "$first" "$task"
       rc=$?
       [ "$rc" -eq 0 ] || return "$rc"
     done < <(jq -c '.[] | {number, html_url, head: {sha: .head.sha, ref: .head.ref}, base: {ref: .base.ref}}' <<<"$prs")
@@ -666,13 +866,19 @@ mark_errors_handled() {  # <sequence>
 }
 
 cmd_autohandle() {  # <source-id> <sequence> <result-file>
-  local sid=${1:-} seq=${2:-} result=${3:-} kind key repo n head
+  local sid=${1:-} seq=${2:-} result=${3:-} kind key repo n head task delivered=0 retained
   [ "$sid" = "$SOURCE_ID" ] && [ -f "$result" ] || return 1
   case "$seq" in ''|*[!0-9]*) return 1 ;; esac
   jq -e '.schema == "fm-pr-review-result.v1"' "$result" >/dev/null 2>&1 || return 1
   kind=$(jq -r .kind "$result")
   mkdir -p "$DATA"
   repo=$(jq -r '.repo // ""' "$result"); n=$(jq -r '.pr // 0' "$result"); head=$(jq -r '.head // ""' "$result")
+  task=$(jq -r '.task // ""' "$result")
+  # A round whose in-scope findings reach a live worker's inbox wakes nobody: the worker is the one that
+  # changes the code, so firstmate hears about that round at the worker's done instead.
+  case "$kind" in
+    round|late) deliver_round "$result" "$task" && delivered=1 ;;
+  esac
   case "$kind" in
     recovery)
       rm -f "$LAST_ERROR"
@@ -680,8 +886,11 @@ cmd_autohandle() {  # <source-id> <sequence> <result-file>
       return 0
       ;;
     round)
-            ledger_test '.type == "round" and .repo == $r and .pr == $n and .head == $h' --arg r "$repo" --argjson n "$n" --arg h "$head" \
-        || ledger_append "$(jq -c --argjson at "$(now)" '{type: "round", repo, pr, task, head, round, at: $at, committed,
+      # What the worker did not get stays with firstmate (the script header owns how it is read).
+      retained=$(jq -c --arg l "$LABEL_IN" '([.reviewer.findings[]?, .reader.findings[]?] | map(select(.label != $l)) | map(.source)) + [.reviewer.pre_existing[]?, .reader.pre_existing[]?]' "$result" 2>/dev/null) || retained='[]'
+      ledger_test '.type == "round" and .repo == $r and .pr == $n and .head == $h' --arg r "$repo" --argjson n "$n" --arg h "$head" \
+        || ledger_append "$(jq -c --argjson at "$(now)" --argjson delivered "$delivered" --argjson retained "$retained" '{type: "round", repo, pr, task, head, round, at: $at, committed,
+             delivered: ($delivered == 1), retained: $retained,
              reviewer: {record: .reviewer.record, status: .reviewer.status, report: .reviewer.report, at: .reviewer.at, labels: .reviewer.labels},
              reader: {status: .reader.status, answer: .reader.answer, at: .reader.at, labels: .reader.labels}}' "$result")"
       key=$(key_of "$repo" "$n" "$head")
@@ -689,8 +898,8 @@ cmd_autohandle() {  # <source-id> <sequence> <result-file>
       [ "$(jq -r .reviewer.status "$result")" = timeout ] || rm -f "$OPEN/$key.compare.json"
       ;;
     late)
-            ledger_test '.type == "late" and .repo == $r and .pr == $n and .head == $h' --arg r "$repo" --argjson n "$n" --arg h "$head" \
-        || ledger_append "$(jq -c --argjson at "$(now)" '{type: "late", repo, pr, head, round, at: $at, report: .reviewer.report, labels: .reviewer.labels}' "$result")"
+      ledger_test '.type == "late" and .repo == $r and .pr == $n and .head == $h' --arg r "$repo" --argjson n "$n" --arg h "$head" \
+        || ledger_append "$(jq -c --argjson at "$(now)" --argjson delivered "$delivered" '{type: "late", repo, pr, head, round, at: $at, delivered: ($delivered == 1), report: .reviewer.report, labels: .reviewer.labels}' "$result")"
       rm -f "$OPEN/$(key_of "$repo" "$n" "$head").compare.json"
       ;;
     cap)
@@ -698,6 +907,10 @@ cmd_autohandle() {  # <source-id> <sequence> <result-file>
         || ledger_append "$(jq -c --argjson at "$(now)" '{type: "cap", repo, pr, head, at: $at}' "$result")"
       ;;
   esac
+  if [ "$delivered" -eq 1 ]; then
+    "$SCRIPT_DIR/fm-procevent.sh" handled "$SOURCE_ID" "$seq" >/dev/null 2>&1 || return 1
+    return 0
+  fi
   return 1
 }
 

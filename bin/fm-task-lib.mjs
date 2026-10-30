@@ -24,7 +24,10 @@
 //            [--document D] [--next-actor firstmate|owner]                  running -> blocked (needs-decision)
 //   block    <kind> <task> --reason R --next-actor A [--until ISO] [--on PARENT]
 //            kind: transient|dependency|external|credential|failure; running -> blocked,
-//            a dependency waits in todo on --on PARENT; a third block of one kind goes to triage
+//            a dependency waits in todo on --on PARENT; a third block of one kind goes to triage.
+//            A transient block is refused while the task's PR still runs checks on its current head,
+//            naming the wait below: a blocked record only firstmate clears, so a CI wait is declared instead.
+//            An unreadable forge never refuses, because blocking is what a worker needs then.
 //   unblock  <task>                          blocked|triage -> ready
 //   approve  <task>                          review -> done (refused while a check row is pending or failed, and
 //            on a task with a deploy event until its user-visible rows pass on a deployed head)
@@ -34,13 +37,16 @@
 //   describe <task> --document FILE.md [--document-title T]              any state; default title Description
 //   thread   <task> [--since SEQ]                                       full comments, oldest first
 //   comment  <task> --note T [--image PATH --image-label L]...             any state
-//   event    <task> <kind> [--note N] [--pr-url U] [--head H]   kinds: steer comment pr deploy protocol_violation
-//            divergence; --head only on deploy: the deployed head, which user-visible passes count on from then
-//   event    <task> wait --next-actor tester|owner|merge --clears-on rows|answer|merge --note WHY [--rows ID@W,...]
+//   event    <task> <kind> [--note N] [--pr-url U] [--head H]   kinds: steer comment pr deploy ci protocol_violation
+//            divergence; --head on deploy (the deployed head, which user-visible passes count on from then) or on ci
+//            (the head the CI result read); no other kind takes it
+//   event    <task> wait --next-actor tester|owner|merge|ci --clears-on rows|answer|merge|ci --note WHY [--rows ID@W,...]
 //            a declared wait (G1); `ask --next-actor owner` (answer) and `done --pr-url` (rows on the Tester, else merge)
 //            write one too. Its status line is `paused [at=E] [key=wait-<seq>]: waiting on <actor>: WHY (clears on X)`; the
 //            clearing event (the asked rows each with a newer result that is not pending, an unblocked event, a pr event whose
-//            note says merged, or an approved or archived event) adds `resolved` with that key, in the home holding the line.
+//            note says merged, a ci event, or an approved or archived event) adds `resolved` with that key, in the home
+//            holding the line. `wait --next-actor ci --clears-on ci` is how a worker waits for its PR's checks: the
+//            pr-review source writes the ci event for the current head, green or failed, and delivers a failure to the inbox.
 //            deploy --touched none|all|ID,...: the scenarios the deployed PRs name (`Scenarios touched:`); a user-visible pass
 //            on an earlier deployed head carries to later deployed heads while no later deploy names its id (all, or no
 //            flag, names every id). approve, routing and gate accept a carried pass; gate prints each with its head.
@@ -125,9 +131,9 @@ const ACTORS = ['worker', 'tester', 'firstmate', 'owner'];
 const ROLES = ['worker', 'firstmate', 'tester', 'planner', 'owner', 'assistance', 'system'];
 const BLOCK_KINDS = ['transient', 'dependency', 'external', 'credential', 'failure'];
 const CHECK_STATUSES = ['pending', 'pass', 'fail'];
-const FREE_KINDS = ['steer', 'comment', 'pr', 'deploy', 'protocol_violation', 'divergence'];
-const WAIT_ACTORS = ['tester', 'owner', 'merge'];
-const WAIT_CLEARS = ['rows', 'answer', 'merge'];
+const FREE_KINDS = ['steer', 'comment', 'pr', 'deploy', 'ci', 'protocol_violation', 'divergence'];
+const WAIT_ACTORS = ['tester', 'owner', 'merge', 'ci'];
+const WAIT_CLEARS = ['rows', 'answer', 'merge', 'ci'];
 const CLOSED = ['done', 'archived'];
 
 // command -> the states it may run from (the Hermes transitions)
@@ -674,6 +680,25 @@ function clearingEvent(wait, events) {
   const closing = later.find((e) => e.kind === 'approved' || e.kind === 'archived');
   if (clearsOn === 'answer') return later.find((e) => e.kind === 'unblocked') ?? closing;
   if (clearsOn === 'merge') return later.find((e) => e.kind === 'pr' && /\bmerged\b/i.test(bodyOf(e).note ?? '')) ?? closing;
+  // The pr-review source writes one ci event for the PR's current head once its checks finish, green or failed,
+  // so the delivered CI result is that event whatever head the worker was waiting on.
+  if (clearsOn === 'ci') {
+    const newer = later.find((e) => e.kind === 'ci');
+    if (newer) return newer;
+    const results = events.filter((e) => e.kind === 'ci' && bodyOf(e).head);
+    const prUrl = fold(events)?.prUrl;
+    if (results.length && prUrl) {
+      const read = spawnSync(process.env.FM_TASK_GH || 'gh', ['pr', 'view', prUrl, '--json', 'headRefOid'], { encoding: 'utf8', timeout: 20000 });
+      try {
+        const head = JSON.parse(read.stdout).headRefOid;
+        if (!read.error && read.status === 0 && head) {
+          const matching = results.findLast((e) => bodyOf(e).head === head);
+          if (matching) return matching;
+        }
+      } catch { /* An unreadable current head cannot clear an earlier result. */ }
+    }
+    return closing;
+  }
   const rowEvents = later.filter((e) => (e.kind === 'check' || e.kind === 'owner-check') && bodyOf(e).row && bodyOf(e).values);
   const newest = (key) => rowEvents.filter((e) => bodyOf(e).row === key).at(-1);
   const asked = rows.length ? rows : [...new Set(rowEvents.map((e) => bodyOf(e).row))];
@@ -1235,7 +1260,8 @@ async function cmdEvent(args) {
   const kind = oneOf([...FREE_KINDS, 'wait'], args.pos.kind, 'event kind');
   const prUrl = args.flags['pr-url'];
   const head = args.flags.head;
-  if (head !== undefined && kind !== 'deploy') throw usage('--head names a deployed head: give it only on a deploy event');
+  const headKind = kind === 'deploy' || kind === 'ci';
+  if (head !== undefined && !headKind) throw usage('--head names a head a deploy or a ci event reports: give it only on one of those');
   if (args.flags.touched !== undefined && !(kind === 'deploy' && head)) throw usage('--touched names the scenarios a deploy touched: give it only on a deploy event with --head');
   const touched = touchedOf(args.flags.touched);
   if (kind === 'wait') {
@@ -1253,7 +1279,7 @@ async function cmdEvent(args) {
   return write(taskId, who, async ({ task }) => {
     if (!task) throw rule('no such task');
     return { kind, note: noteOf(args), set: kind === 'pr' && prUrl ? { prUrl } : {}, ...(head ? { extra: { head, ...(touched ? { touched } : {}) } } : {}) };
-  }, head ? () => routeReview(taskId, who) : undefined);
+  }, kind === 'deploy' && head ? () => routeReview(taskId, who) : undefined);
 }
 
 function documentOf(f) {
@@ -1299,6 +1325,28 @@ async function cmdDone(args) {
   } : undefined);
 }
 
+// The wait a worker declares instead of blocking for its PR's checks. bin/fm-brief.sh gives the worker the same
+// command, and bin/fm-procevent-pr-review.sh writes the ci event that clears it.
+const ciWaitCommand = (taskId) => `bin/fm-task.sh event ${taskId} wait --next-actor ci --clears-on ci --note '<why you wait>'`;
+// The check states that mean the run has not finished yet (`gh pr checks --json state`).
+const RUNNING_CHECK_STATES = ['pending', 'queued', 'in_progress', 'waiting', 'requested', 'expected'];
+const GH = process.env.FM_TASK_GH || 'gh';
+// Whether the pull request still runs checks on its current head. Anything unreadable, including a missing gh or a
+// URL that is not a GitHub pull request, is not proof of a running check, so it never refuses the block.
+function prChecksRunning(prUrl) {
+  if (!/^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+/.test(prUrl)) return false;
+  const run = spawnSync(GH, ['pr', 'checks', prUrl, '--json', 'name,state'], { encoding: 'utf8', timeout: 20000 });
+  if (run.error || typeof run.stdout !== 'string' || !run.stdout.trim()) return false;
+  let rows;
+  try {
+    rows = JSON.parse(run.stdout);
+  } catch {
+    return false;
+  }
+  if (!Array.isArray(rows)) return false;
+  return rows.some((row) => RUNNING_CHECK_STATES.includes(String(row?.state ?? '').toLowerCase()));
+}
+
 // Count a block of `kind` against the task: the third in a row of one kind goes to triage.
 function blockSet(task, kind, reason, nextActor, until) {
   const repeats = task.blockKind === kind ? task.blockRepeats + 1 : 1;
@@ -1331,6 +1379,15 @@ async function cmdBlock(args) {
   const until = f.until === undefined ? null : isoOf(f.until, '--until');
   const images = imagesOf(args);
   if (kind === 'dependency' && !f.on) throw rule('a dependency block needs --on PARENT');
+  if (kind === 'transient') {
+    const known = fold(await taskEvents(taskId));
+    const prUrl = known?.state === 'running' ? known.prUrl : null;
+    if (prUrl && prChecksRunning(prUrl)) {
+      throw rule(
+        `a transient block is refused: ${prUrl} still runs checks on its current head, and a blocked task is cleared only by firstmate - declare the wait with \`${ciWaitCommand(taskId)}\`, and the delivered CI result clears it`,
+      );
+    }
+  }
   return write(
     taskId,
     who,

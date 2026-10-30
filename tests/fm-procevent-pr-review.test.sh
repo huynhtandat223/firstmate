@@ -63,8 +63,17 @@ outer=$(printf '%s' "$inner" | jq -Rs .)
 printf 'chat: %s\n\nresult: %s\n' "${FAKE_READER_CHAT:-$1}" "$outer" > "$3"
 SH
   chmod +x "$LAB/reader.sh"
+  cat > "$LAB/writer.sh" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$LAB/writer.calls"
+printf 'seq=1 task=\$3 event=ci state=running next=worker\n'
+exit 0
+SH
+  chmod +x "$LAB/writer.sh"
+  : > "$LAB/writer.calls"
   default_reader_answer
   export FAKE_READER_LOG="$LAB/reader.log" FAKE_READER_ANSWER="$LAB/reader-answer.txt"
+  export FM_PR_REVIEW_TASK="$LAB/writer.sh"
   : > "$FAKE_READER_LOG"
   unset FAKE_READER_FAIL FAKE_READER_CHAT FAKE_READER_SLEEP FAKE_READER_WAIT FAKE_GH_FAIL FAKE_GH_FORBID
   write_config
@@ -96,6 +105,7 @@ fx_pulls() {  # <number:ref:head-seed>...: the open PRs
       '. + [{number: $n, html_url: $u, head: {sha: $h, ref: $ref}, base: {ref: "main"}}]' <<<"$json")
   done
   gh_put "repos/$REPO/pulls?state=open&per_page=100" "$json"
+  while IFS= read -r row; do gh_put "repos/$REPO/pulls/$(jq -r .number <<<"$row")" "$row"; done < <(jq -c '.[]' <<<"$json")
 }
 fx_compare() {  # <head-seed> [<files-json>]: the merge-base..head diff
   local files=${2:-}
@@ -170,6 +180,40 @@ baseline() {  # <number> <ref> <head-seed>
   fx_pulls "$1:$2:$3"
   fx_compare "$3"
   cycle
+}
+
+# ---- live tasks, the task writer and the CI answers -------------------------
+
+# A live task: the metadata a spawn writes, with a worktree whose current branch is <branch>. This is
+# how the adapter finds the worker that owns a PR head.
+register_task() {  # <id> <branch> [<pr-url>]
+  local id=$1 branch=$2 wt
+  wt="$LAB/wt-$id"
+  mkdir -p "$wt"
+  git -C "$wt" init -q || return 1
+  git -C "$wt" symbolic-ref HEAD "refs/heads/$branch" || return 1
+  git -C "$wt" remote add origin "https://github.com/$REPO.git" || return 1
+  {
+    printf 'kind=ship\nharness=claude\nbackend=tmux\nwindow=fm-%s-absent:0\n' "$id"
+    printf 'worktree=%s\nbranch=%s\n' "$wt" "$branch"
+    [ -z "${3:-}" ] || printf 'pr=%s\n' "$3"
+  } > "$H/state/$id.meta"
+}
+task_messages() { find "$H/state/$1.inbox" -maxdepth 1 -name '*.msg' 2>/dev/null | sort -V; }
+task_message_count() { task_messages "$1" | grep -c . ; }
+task_text() { local f; for f in $(task_messages "$1"); do sed -n '/^--$/,$p' "$f" | tail -n +2; done; }
+writer_calls() { cat "$LAB/writer.calls" 2>/dev/null; }
+# A recorded check-runs answer for one head: <state> is in_progress or completed, with <conclusion>.
+fx_checks() {  # <head-seed> <in_progress|completed> [<job-id>] [<conclusion>]
+  gh_put "repos/$REPO/commits/$(sha "$1")/check-runs?per_page=100" "$(jq -cn --arg s "$2" --arg id "${3:-7000}" --arg c "${4:-}" \
+    '{total_count: 1, check_runs: [{id: ($id | tonumber), name: "build", status: $s,
+      conclusion: (if $c == "" then null else $c end), html_url: ("https://github.com/" + "'"$REPO"'" + "/actions/runs/1/job/" + $id)}]}')"
+}
+fx_job_log() {  # <job-id> <log text>
+  gh_put "repos/$REPO/actions/jobs/$1/logs" "$2"
+}
+ci_head() {  # <number>: the head the poll last read the PR's checks on
+  jq -r --arg k "$REPO#$1" '.ci[$k].head // ""' "$H/data/pr-review/state.json" 2>/dev/null
 }
 
 # ---- scenarios: each returns 0 when the behavior holds ------------------------
@@ -545,7 +589,105 @@ scenario_runner() {
     || { echo 'want exactly one wake row'; cat "$H/state/.wake-queue" 2>&1; return 1; }
 }
 
-SCENARIOS=${FM_PR_REVIEW_TEST_SCENARIOS:-rounds scope eof ask failures pollfail recovery disabled reenable readertimeout readerconcurrency rearm summary runner}
+# WF1: a round on the head of a PR whose branch is not fm/<task> reaches the task whose worktree is on
+# that branch, and that round wakes nobody. The lines the worker did not get stay with firstmate.
+scenario_wf1() {
+  new_lab "$1"
+  register_task decoy fm/decoy "$RURL/pull/7" || return 1
+  register_task kanban-task-chat fm/kanban-task-header || { echo 'could not register the worker task'; return 1; }
+  printf 'ChatGPT said:\nFINDING note a.txt:11 reader sees a stale value | fix: refresh it\nFINDING note old.txt:3 an old helper leaks | fix: close it\n' > "$LAB/reader-answer.txt"
+  baseline 7 fm/kanban-task-header h0
+  start_round 7 fm/kanban-task-header h1
+  finish_round h1 $'FINDING blocking a.txt:11 the added branch never resets | fix: reset it\nFINDING note gone.txt:4 the old path is still called | fix: drop it' || return 1
+  [ "$CYCLE_AUTO" = 0 ] || { echo "a delivered round autohandle=$CYCLE_AUTO (want 0: nobody is woken)"; return 1; }
+  [ "$(jq -r .task <<<"$LAST_RESULT")" = kanban-task-chat ] || { echo "round task: $(jq -r .task <<<"$LAST_RESULT")"; return 1; }
+  [ "$(task_message_count kanban-task-chat)" = 1 ] || { echo "worker messages: $(task_message_count kanban-task-chat)"; return 1; }
+  local text
+  text=$(task_text kanban-task-chat)
+  printf '%s\n' "$text" | grep -q 'FINDING blocking a.txt:11 the added branch never resets | fix: reset it' \
+    || { echo "the Reviewer's in-scope finding is missing: $text"; return 1; }
+  printf '%s\n' "$text" | grep -q 'FINDING note a.txt:11 reader sees a stale value | fix: refresh it' \
+    || { echo "the reader's in-scope finding is missing: $text"; return 1; }
+  printf '%s\n' "$text" | grep -q 'verify each in source; fix it, or answer with the evidence that it does not hold.' \
+    || { echo "no instruction to verify: $text"; return 1; }
+  if printf '%s\n' "$text" | grep -q 'old.txt\|gone.txt'; then
+    echo "an out-of-scope line reached the worker: $text"
+    return 1
+  fi
+  [ "$(ledger_count '.type == "round" and .delivered == true')" = 1 ] || { echo 'the ledger does not record the delivery'; ledger; return 1; }
+  [ "$(ledger_count '.type == "round" and (.retained | length) == 2')" = 1 ] || { echo 'the retained lines are not kept for firstmate'; ledger; return 1; }
+  [ "$(ledger_count '.type == "round" and (.retained | join(" ") | test("old.txt")) and (.retained | join(" ") | test("gone.txt"))')" = 1 ] \
+    || { echo 'the retained lines do not name the out-of-scope ones'; ledger; return 1; }
+  [ -s "$H/data/kanban-task-chat/reader-gpt-$(sha h1 | cut -c1-8).md" ] || { echo 'the round did not work under the resolved task'; return 1; }
+}
+
+# WF2: no live task owns a PR, so nothing is delivered and firstmate is woken as today; a PR that is on
+# no task's branch and not fm/<task> is skipped, so nothing is read or sent.
+scenario_wf2() {
+  new_lab "$1"
+  baseline 7 fm/nobody h0
+  start_round 7 fm/nobody h1
+  finish_round h1 || return 1
+  [ "$CYCLE_AUTO" = 1 ] || { echo "an unowned round autohandle=$CYCLE_AUTO (want 1: the wake)"; return 1; }
+  [ ! -e "$H/state/nobody.inbox" ] || { echo 'a message went to the inbox of a task that does not exist'; return 1; }
+  [ "$(ledger_count '.type == "round" and .delivered == false')" = 1 ] || { echo 'the ledger claims a delivery that never happened'; ledger; return 1; }
+  local before
+  before=$(reader_calls)
+  fx_pulls 7:fm/nobody:h1 9:feature/x:k1
+  fx_compare k1
+  cycle
+  advance 130
+  cycle
+  [ "$(ledger_count '.type == "skip" and .reason == "no-task" and .pr == 9')" = 1 ] || { echo 'feature/x was not skipped once'; ledger; return 1; }
+  [ "$(reader_calls)" = "$before" ] || { echo 'a PR no task owns asked the reader'; return 1; }
+  [ ! -e "$H/state/x.inbox" ] || { echo 'a message went to a branch-derived task id'; return 1; }
+}
+
+# WF3: a failed head sends the worker exactly one message naming each failed check, its URL and the
+# gate's own lines; a green head and a head replaced before its checks finished send nothing, and every
+# finished head writes the ci event that clears a declared wait.
+scenario_wf3() {
+  new_lab "$1"
+  register_task alpha fm/alpha || { echo 'could not register the worker task'; return 1; }
+  baseline 7 fm/alpha h0
+  fx_checks h1 in_progress
+  start_round 7 fm/alpha h1
+  finish_round h1 || return 1
+  [ "$(task_message_count alpha)" = 1 ] || { echo "before CI: $(task_message_count alpha) messages (want 1: the round)"; return 1; }
+  [ -z "$(ci_head 7)" ] || { echo "a head with checks still running was recorded: $(ci_head 7)"; return 1; }
+  fx_checks h1 completed 555 failure
+  fx_job_log 555 $'2026-10-30T10:00:00.1234567Z built the site\n2026-10-30T10:00:01.1234567Z gate FAILED lint: 3 problems\n2026-10-30T10:00:02.1234567Z   src/a.ts:4 no-unused-vars\n2026-10-30T10:00:03.1234567Z done\n'
+  cycle
+  [ "$CYCLE_AUTO" = none ] || { echo "a CI result woke firstmate: autohandle=$CYCLE_AUTO"; return 1; }
+  [ "$(task_message_count alpha)" = 2 ] || { echo "after a failed head: $(task_message_count alpha) messages (want 2)"; return 1; }
+  local text
+  text=$(task_text alpha)
+  printf '%s\n' "$text" | grep -q 'FAILED build' || { echo "the failed check is not named: $text"; return 1; }
+  printf '%s\n' "$text" | grep -q "https://github.com/$REPO/actions/runs/1/job/555" || { echo "the run URL is missing: $text"; return 1; }
+  printf '%s\n' "$text" | grep -q 'gate FAILED lint: 3 problems' || { echo "the gate line is missing or keeps its timestamp: $text"; return 1; }
+  printf '%s\n' "$text" | grep -q 'src/a.ts:4 no-unused-vars' || { echo "the line after the gate line is missing: $text"; return 1; }
+  if printf '%s\n' "$text" | grep -qx 'done'; then echo 'the CI message runs past the line after the gate line'; return 1; fi
+  [ "$(ci_head 7)" = "$(sha h1)" ] || { echo "the read head is $(ci_head 7), want $(sha h1)"; return 1; }
+  grep -q "event alpha ci --head $(sha h1) .*CI failed" "$LAB/writer.calls" || { echo "no ci event for the failed head: $(writer_calls)"; return 1; }
+  cycle
+  [ "$(task_message_count alpha)" = 2 ] || { echo 'the same head sent a second message'; return 1; }
+  [ "$(grep -c "event alpha ci --head $(sha h1) " "$LAB/writer.calls")" = 1 ] || { echo 'the same head wrote a second ci event'; return 1; }
+  # A green head sends nothing and still writes the ci event that clears a declared wait.
+  fx_checks h2 completed 556 success
+  start_round 7 fm/alpha h2
+  [ "$(task_message_count alpha)" = 2 ] || { echo 'a green head sent the worker a message'; return 1; }
+  grep -q "event alpha ci --head $(sha h2) .*CI green" "$LAB/writer.calls" || { echo "no ci event for the green head: $(writer_calls)"; return 1; }
+  [ "$(ci_head 7)" = "$(sha h2)" ] || { echo "the green head was not recorded: $(ci_head 7)"; return 1; }
+  # A head replaced before its checks finished sends nothing.
+  fx_checks h3 in_progress 557
+  start_round 7 fm/alpha h3
+  fx_checks h4 in_progress 558
+  start_round 7 fm/alpha h4
+  [ "$(task_message_count alpha)" = 2 ] || { echo 'a head whose checks never finished sent a message'; return 1; }
+  if grep -q -- "--head $(sha h3) " "$LAB/writer.calls"; then echo 'the replaced head wrote a ci event'; return 1; fi
+}
+
+SCENARIOS=${FM_PR_REVIEW_TEST_SCENARIOS:-rounds scope eof ask failures pollfail recovery disabled reenable readertimeout readerconcurrency rearm summary runner wf1 wf2 wf3}
 
 # ---- real adapter -----------------------------------------------------------
 
@@ -583,7 +725,7 @@ mutate 'the first poll is a baseline' disabled \
 mutate 'enabled false reads nothing' disabled \
   's/jq -e .\.enabled == true. "\$CONFIG" >\/dev\/null 2>&1 \|\| return 1/:/'
 mutate 'a branch that is not fm/<task> is skipped' rounds \
-  's/case "\$ref" in fm\/\*\) task=\$\{ref#fm\/\} ;; esac/task=\${ref##*\/}/'
+  's/case "\$ref" in fm\/\*\) id=\$\{ref#fm\/\} ;; \*\) return 1 ;; esac/id=\${ref##*\/}/'
 mutate 'a pure deletion counts as a changed line' scope \
   's/\/\^-\/ \{ if \(h >= a \+ 0 && h <= b \+ 0\) hit = 1; lastminus = 1; next \}/\/^-\/ { lastminus = 1; next }/'
 mutate 'a context line is not a changed line' scope \
