@@ -2022,6 +2022,14 @@ case_owner_router() {
   must 'router replay' 0 || return 1
   [ "$(wc -l < "$FM_HOME/state/.wake-queue")" = "$before" ] || return 1
   [ "$(count fm_task_delivery)" = 1 ] || return 1
+  ft comment tk-router --note newer --role owner --actor owner:u-1 --key owner-comment:router-new >/dev/null || return 1
+  ft route-owner-comments --consumer owner-comments-test
+  must 'new comment after cursor' 0 || return 1
+  grep -q 'Owner comment on tk-router (seq .*): newer' "$FM_HOME/state/.wake-queue" || return 1
+  [ "$(count fm_task_delivery)" = 2 ] || return 1
+  ft route-owner-comments --consumer owner-comments-test
+  must 'new cursor replay' 0 || return 1
+  [ "$(count fm_task_delivery)" = 2 ] || return 1
 }
 
 case_description_thread() {
@@ -2359,7 +2367,7 @@ mutate_owner() {  # <label> <exact wrapper text> <replacement>: the owner_writer
   pass "guard '$1' is needed: case owner_writer goes red without it"
 }
 mutate 'owner comments route to firstmate without a worker' owner_router "if (sent.status !== 0) {" "if (false) {"
-mutate 'owner comment replay is claimed once' owner_router 'if (seen.has(event.seq) ||' 'if (false ||'
+mutate 'owner comments retain the newest event after a claim' owner_router 'const after = latest?.seq ?? 0;' 'const after = Number.MAX_SAFE_INTEGER;'
 mutate 'thread prints full comments' description_thread "bodyOf(event).note ?? ''}" "''}"
 mutate_owner 'the writer operation needs the owner the row appends' "case \"\$OWNER\" in ''|" "case \"\$OWNER\" in x|"
 mutate_owner 'the writer runs as the owner' 'FM_TASK_ROLE=owner' 'FM_TASK_ROLE=worker'

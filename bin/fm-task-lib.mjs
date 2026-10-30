@@ -1833,12 +1833,12 @@ async function cmdTurnEnd(args) {
 async function cmdRouteOwnerComments(args) {
   const consumer = args.flags.consumer;
   if (!process.env.FM_HOME || !consumer || consumer.length > 64) throw usage('route-owner-comments needs FM_HOME and --consumer (up to 64 characters)');
-  const events = await listAll('fm_task_event', { filter: "kind eq 'comment' and actorRole eq 'owner'", orderby: 'seq' });
-  const claims = await listAll('fm_task_delivery', { filter: `consumer eq ${lit(consumer)}` });
-  const seen = new Set(claims.map(r => r.seq));
+  const latest = await firstRow('fm_task_delivery', `consumer eq ${lit(consumer)}`, 'seq desc');
+  const after = latest?.seq ?? 0;
+  const events = await listAll('fm_task_event', { filter: `kind eq 'comment' and actorRole eq 'owner' and seq gt ${after}`, orderby: 'seq' });
   const state = process.env.FM_STATE_OVERRIDE || path.join(process.env.FM_HOME, 'state');
   for (const event of events) {
-    if (seen.has(event.seq) || !event.idempotencyKey?.startsWith('owner-comment:')) continue;
+    if (!event.idempotencyKey?.startsWith('owner-comment:')) continue;
     const task = await firstRow('fm_task', `taskId eq ${lit(event.taskId)}`);
     if (!task || CLOSED.includes(task.state)) continue;
     const claim = await http('POST', '/api/fm_task_delivery', { consumer, seq: event.seq });
