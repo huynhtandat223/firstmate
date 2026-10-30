@@ -1102,7 +1102,11 @@ mutate 'a sent ask claims the env lease for the Tester' rows_lease \
 mutate 'the poll releases the lease of landed rows' rows_lease \
   's/^  release_landed_leases\n//m'
 mutate 'pending rows keep the lease' rows_lease \
-  's/; \.status != "pending"\)/; true)/'
+  's/; \.status != "pending" and/; true and/'
 mutate 'every ask holding a lease must land before its release' rows_lease_two \
   's/done < <\(jq -c .\.\[\]. <<<"\$asks"\)/done < <(jq -c "last" <<<"\$asks")/'
+mutate 'a failed send keeps a lease another ask holds' rows_lease_failed_send \
+  's/^[^\n]*lease_asks "\$lease" \| jq length[^\n]*\n//m'
+mutate 'a landed row is a result on the ask'"'"'s head' rows_lease \
+  's/\.status != "pending" and \.head == \$h\)/.status != "pending")/'
 pass 'every guarded behavior has a red mutation proof'
