@@ -2005,6 +2005,31 @@ case_carry() {
 # cfw-modules#1678 TR52 (change 194): the board's writer operation runs the one writer as the signed-in owner. An
 # answer comments and unblocks, a pass or fail by the owner also sets the row's owner item, and a call without the
 # owner the script row appends writes nothing.
+case_description_thread() {
+  BIN=$1; reset_db
+  local t=tk-description before
+  ft create "$t" --title t --kind other >/dev/null || return 1
+  printf '# Probe\n\nFull description.\n' > "$TMP_ROOT/description.md"
+  before=$(task_state "$t")
+  ft describe "$t" --document "$TMP_ROOT/description.md"
+  must 'description' 0 || return 1
+  [ "$(task_state "$t")" = "$before" ] || return 1
+  db fm_event_document | jq -e --rawfile content "$TMP_ROOT/description.md" '.[] | .title == "Description" and .content == $content and .mediaType == "text/markdown"' >/dev/null || return 1
+  ft comment "$t" --note 'first full comment' --actor owner:u-1 --role owner >/dev/null || return 1
+  local seq
+  seq=$(db fm_task_event | jq '[.[] | select(.kind == "comment")][0].seq')
+  ft comment "$t" --note $'second\nfull comment' --actor worker-1 --role worker >/dev/null || return 1
+  ft thread "$t"
+  must 'thread' 0 || return 1
+  [[ "$OUT" == *'owner:u-1'* && "$OUT" == *'owner'* && "$OUT" == *'first full comment'* && "$OUT" == *$'second\nfull comment'* ]] || return 1
+  [[ "$OUT" != *'Full description.'* ]] || return 1
+  ft thread "$t" --since "$seq"
+  must 'thread since' 0 || return 1
+  [[ "$OUT" != *'first full comment'* && "$OUT" == *$'second\nfull comment'* ]] || return 1
+  ft describe "$t" --document "$TMP_ROOT/missing.md"
+  must 'missing description' 2 || return 1
+}
+
 case_owner_writer() {
   BIN=$1; reset_db
   export FM_HOME="$TMP_ROOT/owner-writer-home"
@@ -2138,7 +2163,7 @@ case_stage() {
   return 0
 }
 
-CASES=${FM_TASK_CASES:-"terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed row backlog status_view verify_view owner_writer stage wait carry"}
+CASES=${FM_TASK_CASES:-"description_thread terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed row backlog status_view verify_view owner_writer stage wait carry"}
 
 # ---- real command -------------------------------------------------------------------
 

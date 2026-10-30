@@ -31,6 +31,8 @@
 //   changes  <task> --note WHY               review -> ready
 //   reopen   <task> --reason WHY             done -> ready, next actor firstmate; archived stays final
 //   archive  <task>                          triage|todo|ready|blocked|review|done -> archived
+//   describe <task> --document FILE.md [--document-title T]              any state; default title Description
+//   thread   <task> [--since SEQ]                                       full comments, oldest first
 //   comment  <task> --note T [--image PATH --image-label L]...             any state
 //   event    <task> <kind> [--note N] [--pr-url U] [--head H]   kinds: steer comment pr deploy protocol_violation
 //            divergence; --head only on deploy: the deployed head, which user-visible passes count on from then
@@ -365,6 +367,8 @@ const SPECS = {
   reopen: { pos: ['task'], flags: { reason: 's' } },
   reassign: { pos: ['task'], flags: { to: 's', reason: 's' } },
   archive: { pos: ['task'], flags: {} },
+  describe: { pos: ['task'], flags: { document: 's', 'document-title': 's' } },
+  thread: { pos: ['task'], flags: { since: 's' } },
   comment: { pos: ['task'], flags: { image: 'm', 'image-label': 'm' } },
   event: { pos: ['task', 'kind'], flags: { 'pr-url': 's', head: 's', touched: 's', 'next-actor': 's', 'clears-on': 's', rows: 's' } },
   checks: { pos: ['task'], flags: { 'as-deployed': 's', touched: 's' } },
@@ -1196,6 +1200,24 @@ async function syncBacklog(file, who, { absorbOnly = false, skip = null } = {}) 
   return `backlog: ${rows.length} rows, ${written} written, file ${state}`;
 }
 
+async function cmdDescribe(args) {
+  const f = args.flags;
+  if (!f.document || !['.md', '.markdown'].includes(path.extname(f.document).toLowerCase())) throw usage('describe needs --document FILE.md');
+  const document = documentOf({ ...f, 'document-title': f['document-title'] ?? 'Description' });
+  return write(taskIdOf(args), identity(args, 'firstmate'), async ({ task }) => {
+    if (!task) throw rule('no such task');
+    return { kind: 'description', children: { documents: [document] } };
+  });
+}
+
+async function cmdThread(args) {
+  const since = args.flags.since ?? '0';
+  if (!/^\d+$/.test(since) || !Number.isSafeInteger(Number(since))) throw usage('--since must be a nonnegative integer');
+  for (const event of await taskEvents(taskIdOf(args))) {
+    if (event.kind === 'comment' && event.seq > Number(since)) out(`#${event.seq} ${event.createdAt} ${event.actor} ${event.actorRole}\n${bodyOf(event).note ?? ''}`);
+  }
+}
+
 async function cmdComment(args) {
   const taskId = taskIdOf(args);
   const who = identity(args, 'worker');
@@ -1842,7 +1864,7 @@ async function cmdDeliver(args) {
 }
 
 const COMMANDS = {
-  'turn-end': cmdTurnEnd, deliver: cmdDeliver,
+  'turn-end': cmdTurnEnd, deliver: cmdDeliver, describe: cmdDescribe, thread: cmdThread,
   create: cmdCreate, import: cmdImport, assign: cmdAssign, start: cmdStart, heartbeat: cmdHeartbeat, done: cmdDone, ask: cmdAsk, block: cmdBlock,
   unblock: cmdUnblock, approve: cmdApprove, changes: cmdChanges, reopen: cmdReopen, reassign: cmdReassign, archive: cmdArchive, comment: cmdComment, event: cmdEvent,
   link: cmdLink, rows: cmdRows, check: cmdCheck, 'owner-check': cmdOwnerCheck, gate: cmdGate, show: cmdShow, list: cmdList, resume: cmdResume, reproject: cmdReproject,
