@@ -2032,7 +2032,7 @@ case_owner_crash() {
 
 case_owner_router() {
   BIN=$1; reset_db
-  export FM_HOME="$TMP_ROOT/router-home"
+  export FM_HOME="$TMP_ROOT/router-home-$RANDOM"
   mkdir -p "$FM_HOME/state"
   ft create tk-router --title t --kind other >/dev/null || return 1
   ft comment tk-router --note ok --role owner --actor owner:u-1 --key owner-comment:router-ok >/dev/null || return 1
@@ -2209,6 +2209,10 @@ case_stage() {
   ft comment $t --note "$stamp"; must 'real comment with stamp JSON' 0 || return 1
   task_row $t | jq -e --arg note "$stamp" '.lastNote == $note' >/dev/null \
     || { echo "a real comment shaped like a stamp did not become lastNote: $(task_row $t)"; return 1; }
+  ft comment $t --note 'different prior note'; must 'different prior note' 0 || return 1
+  ft comment $t --note "$stamp" --key 'backfill:another-task:backlog:0123abcd'; must 'stamp under another task key' 0 || return 1
+  task_row $t | jq -e --arg note "$stamp" '.lastNote == $note' >/dev/null \
+    || { echo 'a foreign task key hid a real note'; return 1; }
   ft comment $t --note 'real note'; must 'real note again' 0 || return 1  # the note SG2 expects reproject to restore
   # a reconcile divergence ({"field","oldSource","record"} under a reconcile:<task>: key, fm-task-reconcile-lib.mjs) is a
   # comparison record, not a note: lastNote stays
@@ -2250,7 +2254,7 @@ cp "$TMP_ROOT/fm-task-owner.sh.orig" "$MBIN/fm-task-owner.sh"; chmod +x "$MBIN/f
 cp "$TMP_ROOT/fm-acceptance.mjs.orig" "$MBIN/fm-acceptance.mjs"
 cp "$TMP_ROOT/fm-task.sh.orig" "$MBIN/fm-task.sh"
 cp "$ROOT/bin/fm-task-sources-lib.mjs" "$MBIN/fm-task-sources-lib.mjs"
-cp "$ROOT/bin/fm-backend.sh" "$ROOT/bin/fm-wake-lib.sh" "$ROOT/bin/fm-state-dir.sh" "$MBIN/"
+cp "$ROOT/bin/fm-backend.sh" "$ROOT/bin/fm-wake-lib.sh" "$ROOT/bin/fm-path-lib.sh" "$MBIN/"
 chmod +x "$MBIN/fm-task.sh"
 LIB="$MBIN/fm-task-lib.mjs"
 
@@ -2265,6 +2269,9 @@ mutate() {  # <label> <case> <exact source text> <replacement>
   pass "guard '$1' is needed: case $2 goes red without it"
 }
 
+mutate 'owner comments route to firstmate without a worker' owner_router "if (sent.status !== 0) {" "if (false) {"
+mutate 'owner comments retain the newest event after a claim' owner_router 'const after = latest?.seq ?? 0;' 'const after = Number.MAX_SAFE_INTEGER;'
+mutate 'thread prints full comments' description_thread "bodyOf(event).note ?? ''}" "''}"
 mutate 'the event and its child travel in one request' terminal 'Object.assign(body, spec.children || {});' ';'
 mutate 'an empty value is refused' terminal "if (value === '') throw usage" 'if (false) throw usage'
 mutate 'the option count is checked' terminal 'if (options.length < 2 || options.length > 6)' 'if (false)'
@@ -2406,9 +2413,6 @@ mutate_owner() {  # <label> <exact wrapper text> <replacement>: the owner_writer
   cp "$TMP_ROOT/fm-task-owner.sh.orig" "$MBIN/fm-task-owner.sh"
   pass "guard '$1' is needed: case owner_writer goes red without it"
 }
-mutate 'owner comments route to firstmate without a worker' owner_router "if (sent.status !== 0) {" "if (false) {"
-mutate 'owner comments retain the newest event after a claim' owner_router 'const after = latest?.seq ?? 0;' 'const after = Number.MAX_SAFE_INTEGER;'
-mutate 'thread prints full comments' description_thread "bodyOf(event).note ?? ''}" "''}"
 mutate_owner 'the writer operation needs the owner the row appends' "case \"\$OWNER\" in ''|" "case \"\$OWNER\" in x|"
 mutate_owner 'the writer runs as the owner' 'FM_TASK_ROLE=owner' 'FM_TASK_ROLE=worker'
 mutate_owner 'an answer unblocks after its comment' 'run comment "$TASK" --note "$text" && run unblock "$TASK" || RC=$?' 'run comment "$TASK" --note "$text" || RC=$?'
