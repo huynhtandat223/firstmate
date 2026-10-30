@@ -6,7 +6,7 @@
 # a page value. Each action runs bin/fm-task.sh, the one writer, with that owner as actor (`owner:<id>`, role
 # owner); the writer keeps seq, the transitions and the projection, and this file adds no rule of its own.
 #
-# Usage: fm-task-owner.sh --action ACTION --task TASK [--option O] [--row ID@W] [--note N] [--to RECIPIENT] --owner ID
+# Usage: fm-task-owner.sh --action ACTION --task TASK [--option O] [--row ID@W] [--note N] [--to RECIPIENT] [--ask why|how|wait-what] --owner ID
 #   comment  a task comment: store the note once per owner, note and minute              needs --note
 #   answer   a question:     comment "answer: <option>" (and " - <note>"), then unblock    needs --option
 #   unblock  a block:        comment "<note>", then unblock                                needs --note
@@ -14,6 +14,7 @@
 #   fail     an owner row:   check TASK ROW fail --evidence "<note>"                        needs --row and --note
 #   comment delivers a new event in this call: --to firstmate uses fm-inbox note; a live task uses fm-send.
 #   Without --to, the task's live worker is selected, else firstmate. Invalid recipients write nothing.
+#   --ask on comment stores the skill name and delivers its invocation and the exact --reply-to command.
 #   Replayed comment keys do not deliver again.
 #   A pass or fail by role owner also sets the row's owner item (bin/fm-task-lib.mjs, check).
 #
@@ -29,7 +30,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export FM_HOME="${FM_HOME:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 WRITER="${FM_TASK_OWNER_WRITER:-$SCRIPT_DIR/fm-task.sh}"
 
-ACTION='' TASK='' OPTION='' ROW='' NOTE='' OWNER='' TO=''
+ACTION='' TASK='' OPTION='' ROW='' NOTE='' OWNER='' TO='' ASK=''
 WRITES='[]'
 
 reply() {  # <ok> [error]: the one JSON line, then exit with the code in RC
@@ -49,6 +50,7 @@ while [ "$#" -gt 0 ]; do
     --note) NOTE=$2 ;;
     --owner) OWNER=$2 ;;
     --to) TO=$2 ;;
+    --ask) ASK=$2 ;;
     *) usage "unknown argument $1" ;;
   esac
   shift 2
@@ -57,6 +59,10 @@ done
 case "$OWNER" in ''|*[!A-Za-z0-9-]*) usage 'no signed-in owner: the script row must append --owner' ;; esac
 [ "${#OWNER}" -le 56 ] || usage 'the owner id is longer than 56 characters'
 [ -n "$TASK" ] || usage '--task is required'
+if [ -n "$ASK" ]; then
+  [ "$ACTION" = comment ] || usage '--ask is only allowed for comment'
+  case "$ASK" in why|how|wait-what) ;; *) usage '--ask must be why, how or wait-what' ;; esac
+fi
 export FM_TASK_ACTOR="owner:$OWNER" FM_TASK_ROLE=owner
 unset FM_TASK_ID
 
@@ -93,16 +99,21 @@ case "$ACTION" in
       if worker_live "$TASK"; then TO=$TASK; else TO=firstmate; fi
     fi
     [ "$TO" = firstmate ] || worker_live "$TO" || usage 'recipient must be firstmate or a live worker'
-    digest=$(printf '%s\0%s\0%s' "$OWNER" "$NOTE" "$(date -u +%Y-%m-%dT%H:%M)" | sha256sum) || usage 'comment digest failed'
+    digest=$(printf '%s\0%s\0%s\0%s' "$OWNER" "$NOTE" "$ASK" "$(date -u +%Y-%m-%dT%H:%M)" | sha256sum) || usage 'comment digest failed'
     digest=${digest%% *}
     [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || usage 'comment digest is empty or invalid'
-    run comment "$TASK" --note "$NOTE" --key "owner-comment:$TASK:$digest" || RC=$?
+    ask_args=()
+    [ -z "$ASK" ] || ask_args=(--ask "$ASK")
+    run comment "$TASK" --note "$NOTE" "${ask_args[@]}" --key "owner-comment:$TASK:$digest" || RC=$?
     if [ "$RC" -eq 0 ] && ! [[ "$WRITES" == *'(already recorded)'* ]]; then
       seq=$(jq -r '.[0]' <<<"$WRITES")
       seq=${seq#seq=}; seq=${seq%% *}
       [[ "$seq" =~ ^[0-9]+$ ]] || { ERROR='writer returned no comment sequence'; RC=3; }
       if [ "$RC" -eq 0 ]; then
         message="Owner comment on $TASK (seq $seq): $NOTE"
+        if [ -n "$ASK" ]; then
+          message+=$'\n'"Run the $ASK skill on task $TASK. Reply with: bin/fm-task.sh comment $TASK --reply-to $seq --note <output>"
+        fi
         if [ "$TO" = firstmate ]; then
           "$SCRIPT_DIR/fm-inbox.sh" note --request-id "owner-comment-$seq" -- "$message" >/dev/null || { RC=$?; ERROR='comment stored but firstmate delivery failed'; }
         else

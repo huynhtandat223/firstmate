@@ -2094,7 +2094,31 @@ case_owner_writer() {
   must 'owner comment replay' 0 || return 1
   [ "$(count fm_task_event)" = "$((before + 1))" ] || return 1
   db fm_task_event | jq -e '.[] | select(.kind == "comment") | .actor == "owner:u-1" and .actorRole == "owner" and (.idempotencyKey | startswith("owner-comment:")) and (.body | fromjson | .note == "KO1 owner comment")' >/dev/null || return 1
+  local question reply_seq skill
+  for skill in why how wait-what; do
+    ow --action comment --task $t --note 'Explain task' --ask "$skill" --owner u-1 --to firstmate
+    must "question $skill" 0 || return 1
+    question=$(db fm_task_event | jq -r --arg skill "$skill" '.[] | select((.body | fromjson | .ask) == $skill) | .seq')
+    [ -n "$question" ] || return 1
+    grep -R -F -- "Run the $skill skill on task $t. Reply with: bin/fm-task.sh comment $t --reply-to $question --note <output>" "$FM_HOME/state/inbox" >/dev/null || { echo 'missing skill delivery'; return 1; }
+    ft comment $t --reply-to "$question" --note 'Skill output'; must 'linked reply' 0 || return 1
+    reply_seq=$(seq_of)
+    db fm_task_event | jq -e --argjson seq "$reply_seq" --argjson q "$question" '.[] | select(.seq == $seq) | (.body | fromjson | .replyTo) == $q' >/dev/null || return 1
+  done
   before=$(count fm_task_event)
+  ft comment $t --reply-to 1 --note 'not a comment'; must 'noncomment target' 5 || return 1
+  ft comment $t --reply-to 999999 --note 'missing'; must 'missing target' 5 || return 1
+  ft comment $t --reply-to 1.5 --note 'fraction'; must 'invalid sequence' 2 || return 1
+  ft create tk-foreign --title foreign --kind ship; must 'foreign setup' 0 || return 1
+  ft comment tk-foreign --note foreign; must 'foreign comment' 0 || return 1
+  question=$(seq_of)
+  ft comment $t --reply-to "$question" --note 'foreign target'; must 'foreign task target' 5 || return 1
+  before=$((before + 2))
+  ow --action comment --task $t --note bad --ask unknown --owner u-1
+  must 'unknown skill' 2 || return 1
+  ow --action answer --task $t --option 'Option A' --ask why --owner u-1
+  must 'ask on answer' 2 || return 1
+  [ "$(count fm_task_event)" = "$before" ] || return 1
   ow --action answer --task $t --option 'Option A'
   must 'no owner' 2 || return 1
   jq -e '.ok == false and (.error | test("owner"))' <<<"$OUT" >/dev/null || { echo "no-owner answer: $OUT"; return 1; }
@@ -2107,7 +2131,7 @@ case_owner_writer() {
   must 'answer' 0 || return 1
   jq -e '.ok and .action == "answer" and (.writes | length) == 2' <<<"$OUT" >/dev/null || { echo "answer reply: $OUT"; return 1; }
   [ "$(task_state $t)" = ready ] || { echo "the answer did not unblock: $(task_state $t)"; return 1; }
-  db fm_task_event | jq -e --arg t $t '[.[] | select(.taskId == $t and (.kind == "comment" or .kind == "unblocked") and ((.idempotencyKey // "") | startswith("owner-comment:") | not))] | length == 2 and all(.actor == "owner:u-1" and .actorRole == "owner") and (map(select(.kind == "comment"))[0].body | fromjson | .note == "answer: Option A - go")' >/dev/null \
+  db fm_task_event | jq -e --arg t $t '[.[] | select(.taskId == $t and (.kind == "comment" or .kind == "unblocked") and (.body | fromjson | has("replyTo") | not) and ((.idempotencyKey // "") | startswith("owner-comment:") | not))] | length == 2 and all(.actor == "owner:u-1" and .actorRole == "owner") and (map(select(.kind == "comment"))[0].body | fromjson | .note == "answer: Option A - go")' >/dev/null \
     || { echo "the answer events: $(db fm_task_event | jq -c --arg t $t '[.[] | select(.taskId == $t) | {kind, actor, actorRole}]')"; return 1; }
   tail -n 1 "$FM_HOME/state/$t.status" | grep -q '^resolved ' || { echo "the answer wrote no resolved line: $(tail -n 2 "$FM_HOME/state/$t.status")"; return 1; }
   ow --action answer --task $t --option 'Option A' --owner u-1
@@ -2140,6 +2164,7 @@ case_stage() {
   step() {  # <label> <want stage> <stageSince: same|new>: the row after the last ft call
     must "$1" 0 || return 1
     row=$(task_row $t); local seq; seq=$(seq_of)
+    db fm_task_event | jq -e --argjson seq "$seq" --arg stage "$2" '.[] | select(.seq == $seq) | (.body | fromjson | .stage) == $stage' >/dev/null || { echo "$1: event stage differs from projection"; return 1; }
     [ "$(jq -r .stage <<<"$row")" = "$2" ] || { echo "$1: stage $(jq -r .stage <<<"$row"), want $2: $row"; return 1; }
     [ "$(jq -r .lastEventAt <<<"$row")" = "$(at_of $t "$seq")" ] || { echo "$1: lastEventAt is not the newest event's time: $row"; return 1; }
     since=$(jq -r .stageSince <<<"$row")
