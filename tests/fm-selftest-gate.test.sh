@@ -187,6 +187,22 @@ test_sg2_each_missing_piece_hits_its_own_code() {
   run_gate "$dir" "$CFW_URL"
   assert_receipt_hit "$dir" no-selftest-line
 
+  # A url: target on port 5010 is the owner's review Storybook again: the gate names the rule.
+  for base in http://127.0.0.1:5010 http://100.88.10.58:5010/ 127.0.0.1:5010; do
+    dir=$(make_case "sg2-review-port-${base//[^0-9a-z]/-}" user-visible)
+    body_file "$dir" "Self-test: verify-cfw run board-task-detail --target url:$base head=${HEAD:0:12} PASS"
+    RECEIPT_TARGET="url:$base" write_receipt "$dir" "$HEAD" tester PASS
+    run_gate "$dir" "$CFW_URL"
+    assert_receipt_hit "$dir" review-storybook
+    assert_contains "$ERR" "port 5010 is the owner's UI/UX review Storybook" "sg2: the review-port hit names the rule"
+  done
+  # Another port that only contains 5010 is not the review Storybook.
+  dir=$(make_case sg2-port-50100 user-visible)
+  body_file "$dir" "Self-test: verify-cfw run board-task-detail --target url:http://127.0.0.1:50100 head=${HEAD:0:12} PASS"
+  RECEIPT_TARGET='url:http://127.0.0.1:50100' write_receipt "$dir" "$HEAD" tester PASS
+  run_gate "$dir" "$CFW_URL"
+  assert_equals '' "$ERR" "sg2: port 50100 is not the review Storybook"
+
   dir=$(make_case sg2-stale user-visible)
   body_file "$dir" "$(selftest_line fedcba987)"
   write_receipt "$dir" "$HEAD" tester PASS
