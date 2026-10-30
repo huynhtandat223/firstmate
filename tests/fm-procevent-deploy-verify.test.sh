@@ -639,8 +639,8 @@ scenario_rows_record() {
   [ "$CYCLE_AUTO" = 0 ] || { echo "the retry: autohandle=$CYCLE_AUTO"; return 1; }
   [ "$(sed -n 1p "$LAB/writer.calls")" = "rows alpha https://github.com/$REPO/issues/500 --surface user-visible --key deploy-verify:$(ledger | jq -r 'select(.task == "alpha") | .key'):rows --actor deploy-verify --role system" ] \
     || { echo "the rows were not written first: $(cat "$LAB/writer.calls" 2>&1)"; return 1; }
-  grep -q "^event alpha deploy --note deploy deploy at $(sha s2): verify ask sent (cfw-modules#500) --head $(sha s2) --touched none --key deploy-verify:[^ ]*:deploy --actor deploy-verify --role system$" "$LAB/writer.calls" \
-    || { echo "the rows task deploy event names no head: $(cat "$LAB/writer.calls")"; return 1; }
+  grep -q "^event alpha deploy --note deploy deploy at $(sha s2): verify ask sent (cfw-modules#500) --head $(sha s2) --touched all --key deploy-verify:[^ ]*:deploy --actor deploy-verify --role system$" "$LAB/writer.calls" \
+    || { echo "the rows task deploy event names no head, or a PR with no Scenarios touched line did not touch all: $(cat "$LAB/writer.calls")"; return 1; }
   [ "$(grep -c '^event alpha deploy' "$LAB/writer.calls")" = 1 ] || { echo "the deploy event was written twice: $(cat "$LAB/writer.calls")"; return 1; }
   ! grep -q '^rows beta' "$LAB/writer.calls" || { echo "a task begun before T5 got check rows: $(cat "$LAB/writer.calls")"; return 1; }
   asked | jq -e --arg sha "$(sha s2)" 'select(.task == "alpha") | .check == "bin/fm-task.sh check alpha <id>@<width> pass|fail --evidence <path|url> --head \($sha)"' >/dev/null \
@@ -681,7 +681,7 @@ scenario_carry() {
   fx_runs "1:completed:success:s0" "2:completed:success:s2"
   fx_jobs 2 success
   fx_compare s0 s2 c1 c2 c4
-  fx_commit_pr_body c1 11 'Closes #500'
+  fx_commit_pr_body c1 11 "$(printf 'Closes #500\n\nScenarios touched: ???')"
   fx_commit_pr_body c2 12 'Closes #600'
   fx_commit_pr_body c4 14 "$(printf 'Closes #700\nScenarios touched: none')"
   set_cursor 1 s0
@@ -691,15 +691,15 @@ scenario_carry() {
   if [ -n "$(ledger)" ] || grep -q '^\(rows\|event\) ' "$LAB/writer.calls" 2>/dev/null; then
     unset FM_TASK_SHADOW_WRITER; echo "the dry run wrote: $(ledger) $(cat "$LAB/writer.calls" 2>&1)"; return 1
   fi
-  grep -qx "checks alpha --as-deployed $(sha s2) --touched none" "$LAB/writer.calls" \
+  grep -qx "checks alpha --as-deployed $(sha s2) --touched all" "$LAB/writer.calls" \
     || { unset FM_TASK_SHADOW_WRITER; echo "the dry run did not read alpha as deployed: $(cat "$LAB/writer.calls" 2>&1)"; return 1; }
   jq -e '[.asks[] | {task, rows: [.rows[] | split(" | ")[0]], carried: [.carried[].key]}] == [{task: "alpha", rows: ["- A2@1440"], carried: ["A1@1440"]}, {task: "beta", rows: ["- B1@1440", "- B2@1440"], carried: []}, {task: "gamma", rows: [], carried: ["C1@1440"]}]' <<<"$dry" >/dev/null \
     || { unset FM_TASK_SHADOW_WRITER; echo "dry run asks: $(jq -c '[.asks[] | {task, rows, carried}]' <<<"$dry")"; return 1; }
   : > "$LAB/writer.calls"
   cycle
   [ "$CYCLE_AUTO" = 0 ] || { unset FM_TASK_SHADOW_WRITER; echo "autohandle=$CYCLE_AUTO"; return 1; }
-  grep -q "^event alpha deploy .*--head $(sha s2) --touched none --key " "$LAB/writer.calls" \
-    || { unset FM_TASK_SHADOW_WRITER; echo "alpha's deploy event names no touched ids: $(cat "$LAB/writer.calls")"; return 1; }
+  grep -q "^event alpha deploy .*--head $(sha s2) --touched all --key " "$LAB/writer.calls" \
+    || { unset FM_TASK_SHADOW_WRITER; echo "alpha's unreadable Scenarios touched line did not touch all: $(cat "$LAB/writer.calls")"; return 1; }
   grep -q "^event gamma deploy .*--head $(sha s2) --touched none --key " "$LAB/writer.calls" \
     || { unset FM_TASK_SHADOW_WRITER; echo "gamma's deploy event does not record its PR's none: $(cat "$LAB/writer.calls")"; return 1; }
   asked | jq -e --arg h "$(sha s1)" 'select(.task == "alpha") | (.rows | map(split(" | ")[0])) == ["- A2@1440"] and .lines == ["A2"] and .carried == [{key: "A1@1440", head: $h}]' >/dev/null \
@@ -1048,9 +1048,11 @@ mutate 'the deploy round names the deployed head' rows_record \
 mutate 'the deploy event is written once, by the rows path' rows_record \
   's/ \|\| \[ "\$rows_task" = 1 \]//'
 mutate 'a PR names the scenarios it touches' carry \
-  's/print \(o == "" \? "none" : o\); found = 1; exit/print "all"; found = 1; exit/'
-mutate 'a PR with no Scenarios touched line names none' carry \
-  's/END \{ if \(!found\) print "none" \}/END { if (!found) print "all" }/'
+  's/print \(o != "" \? o : \(z \? "none" : "all"\)\); found = 1; exit/print "all"; found = 1; exit/'
+mutate 'a PR with no Scenarios touched line touches all' rows_record \
+  's/END \{ if \(!found\) print "all" \}/END { if (!found) print "none" }/'
+mutate 'an unreadable Scenarios touched line touches all' carry \
+  's/\(z \? "none" : "all"\)/(z ? "none" : "none")/'
 mutate 'one PR that names all touches every row' carry \
   's/\$0 == "all" \{ a = 1 \}/$0 == "all" { a = 0 }/'
 mutate 'a deploy ask drops its carried rows' carry \
