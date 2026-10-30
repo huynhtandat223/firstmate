@@ -2005,6 +2005,25 @@ case_carry() {
 # cfw-modules#1678 TR52 (change 194): the board's writer operation runs the one writer as the signed-in owner. An
 # answer comments and unblocks, a pass or fail by the owner also sets the row's owner item, and a call without the
 # owner the script row appends writes nothing.
+case_owner_router() {
+  BIN=$1; reset_db
+  export FM_HOME="$TMP_ROOT/router-home"
+  mkdir -p "$FM_HOME/state"
+  ft create tk-router --title t --kind other >/dev/null || return 1
+  ft comment tk-router --note ok --role owner --actor owner:u-1 --key owner-comment:router-ok >/dev/null || return 1
+  ft comment tk-router --note agent --role worker >/dev/null || return 1
+  ft route-owner-comments --consumer owner-comments-test
+  must 'route no worker' 0 || return 1
+  grep -q 'Owner comment on tk-router (seq .*): ok' "$FM_HOME/state/.wake-queue" || return 1
+  [ "$(count fm_task_delivery)" = 1 ] || return 1
+  local before
+  before=$(wc -l < "$FM_HOME/state/.wake-queue")
+  ft route-owner-comments --consumer owner-comments-test
+  must 'router replay' 0 || return 1
+  [ "$(wc -l < "$FM_HOME/state/.wake-queue")" = "$before" ] || return 1
+  [ "$(count fm_task_delivery)" = 1 ] || return 1
+}
+
 case_description_thread() {
   BIN=$1; reset_db
   local t=tk-description before
@@ -2163,7 +2182,7 @@ case_stage() {
   return 0
 }
 
-CASES=${FM_TASK_CASES:-"description_thread terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed row backlog status_view verify_view owner_writer stage wait carry"}
+CASES=${FM_TASK_CASES:-"owner_router description_thread terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed row backlog status_view verify_view owner_writer stage wait carry"}
 
 # ---- real command -------------------------------------------------------------------
 
@@ -2339,6 +2358,9 @@ mutate_owner() {  # <label> <exact wrapper text> <replacement>: the owner_writer
   cp "$TMP_ROOT/fm-task-owner.sh.orig" "$MBIN/fm-task-owner.sh"
   pass "guard '$1' is needed: case owner_writer goes red without it"
 }
+mutate 'owner comments route to firstmate without a worker' owner_router "if (sent.status !== 0) {" "if (false) {"
+mutate 'owner comment replay is claimed once' owner_router 'if (seen.has(event.seq) ||' 'if (false ||'
+mutate 'thread prints full comments' description_thread "bodyOf(event).note ?? ''}" "''}"
 mutate_owner 'the writer operation needs the owner the row appends' "case \"\$OWNER\" in ''|" "case \"\$OWNER\" in x|"
 mutate_owner 'the writer runs as the owner' 'FM_TASK_ROLE=owner' 'FM_TASK_ROLE=worker'
 mutate_owner 'an answer unblocks after its comment' 'run comment "$TASK" --note "$text" && run unblock "$TASK" || RC=$?' 'run comment "$TASK" --note "$text" || RC=$?'
