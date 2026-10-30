@@ -58,9 +58,9 @@ test_swarm_keeps_its_phases_and_rules() {
     "## Phase D: Report" \
     'Reports use `PASS`, `ISSUES` or `BLOCKED` with evidence.' \
     "lists every issue it can prove, not only the first" \
-    'relaunch that worker once with `bin/fm-control.sh <id> relaunch`' \
+    'relaunch that worker once with `bin/fm-control.sh <id> relaunch --note "<what happened>"`' \
     "After a second miss, record a gap; a gap is not a pass." \
-    'verify-cfw --target url:<base>' \
+    "\`verify-cfw\` skill (its \`SKILL.md\` owns the invocation) with target \`url:<base>\`" \
     "Port 5010 is the captain's UI/UX review Storybook; a slice never serves on it or measures against it." \
     'takes its environment lease first, with `bin/fm-lease.sh claim env:<name> --holder <id>`' \
     "Read the usage meters before fan-out and record each reading in the backlog note"

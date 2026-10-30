@@ -35,7 +35,7 @@ Every seat gets the same task text, so the task text is the contract.
 ## Phase B: Fan out
 
 Start every seat in the same turn, one `bin/fm-spawn.sh <id> <project> --scout --harness <h> --model <m> --effort <e>` per seat, and supervise each like any other worker.
-A seat that stops without its output is relaunched once with `bin/fm-control.sh <id> relaunch`.
+A seat that stops without its output is relaunched once with `bin/fm-control.sh <id> relaunch --note "<what happened>"`.
 After a second miss it is dropped: the arena proceeds with the remaining seats and the note records the dropout.
 
 ## Phase C: Cross-judge
@@ -64,7 +64,7 @@ When two candidates tie, prefer the cleaner boundary or the smaller API.
 Walk each other candidate once more for what is worth porting into the base, usually one or two things per candidate.
 Graft by hand so the result stays coherent under one mental model; pasting sections side by side is not a graft.
 
-- For a plan, the plan's own spawned Planner grafts and files: a fresh `bin/fm-spawn.sh --scout` with the Planner charter, briefed with the base seat's report, the chosen grafts with their source reports, and the rubric.
+- For a plan, the plan's own spawned Planner grafts and files: a fresh scout with the Planner charter, started with `bin/fm-spawn.sh <id> <project> --scout` after its brief is scaffolded, briefed with the base seat's report, the chosen grafts with their source reports, and the rubric.
   It closes after filing, with `bin/fm-teardown.sh`.
 - For code, one ship worker folds the base and the grafts into the feature's one PR.
 

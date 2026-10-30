@@ -13,9 +13,9 @@ The four phases (Frame, Fan out, Aggregate, Report), the partition, race and mix
 - A worker is started by `bin/fm-spawn.sh` in its own local worktree (`--scout` when it writes no PR) and briefed through `bin/fm-brief.sh`, in place of a Cursor cloud or local background subagent; it reports in `data/<id>/report.md` plus a `done:` line.
 - Worker models come from `data/captain.md` "Workers and models" in place of the upstream model rule file.
 - Firstmate reads and records the usage meters before fan-out.
-- A respawn is `bin/fm-control.sh <id> relaunch`, and a redirect is `bin/fm-send.sh`.
+- A respawn is `bin/fm-control.sh <id> relaunch --note`, and a redirect is `bin/fm-send.sh`.
 - A slice that touches company, 5001 or a Titan takes its `env:<name>` lease first (`bin/fm-lease.sh`).
-- A UI slice serves its own Storybook and measures with `verify-cfw --target url:<base>`, never on port 5010.
+- A UI slice serves its own Storybook and measures with cfw-modules' `verify-cfw` skill on target `url:<base>`, never on port 5010.
 - Workers are torn down with `bin/fm-teardown.sh` after aggregation.
 - The consolidated report goes to the backlog note, and to the captain when asked, in place of an in-chat report.
 - The reference to the poteto-mode skill is dropped.

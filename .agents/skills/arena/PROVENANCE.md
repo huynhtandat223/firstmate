@@ -13,7 +13,7 @@ The six phases (Frame, Fan out, Cross-judge, Pick, Graft, Verify), the 3-6 crite
 - A seat is a worker started by `bin/fm-spawn.sh` in its own worktree and pane, in place of a Cursor background subagent; seats come from `data/captain.md` "Workers and models" in place of the upstream model rule file.
 - A plan's seats are two Planner-charter scouts (claude `claude-opus-5-5` high, Pi `9route/cx/gpt-6.1-sol` high) that write their plan as their scout report and file nothing; a code seat commits on its own worktree branch and opens no PR.
 - Firstmate reads and records the usage meters before fan-out.
-- A dropout is relaunched once with `bin/fm-control.sh`, then dropped and noted.
+- A dropout is relaunched once with `bin/fm-control.sh <id> relaunch --note`, then dropped and noted.
 - The judge is the ChatGPT reader (`chatgpt` skill) on a Claude firstmate, or a claude scout on a GPT firstmate.
 - The graft for a plan is done by the plan's own spawned Planner, which files and then closes; the graft for code is folded by one ship worker into the feature's one PR.
 - The synthesis note also records the usage readings, the rubric and each seat's model, and the seats are torn down with `bin/fm-teardown.sh`.

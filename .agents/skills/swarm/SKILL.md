@@ -26,7 +26,7 @@ Before launching anything, write one entry per phase in that note (Frame, Fan ou
 6. When workers verify or measure commits, each brief names the exact SHAs and the method (sample count, what one sample is, order).
    The worker records both in its result.
 7. A slice that touches company, 5001 or a Titan takes its environment lease first, with `bin/fm-lease.sh claim env:<name> --holder <id>` (contract in `bin/fm-lease-lib.sh`), and releases it when it finishes.
-8. A UI slice serves its own Storybook from its own worktree on its own port and measures with `verify-cfw --target url:<base>`, where `<base>` is that Storybook.
+8. A UI slice serves its own Storybook from its own worktree on its own port and measures with cfw-modules' `verify-cfw` skill (its `SKILL.md` owns the invocation) with target `url:<base>`, where `<base>` is that Storybook.
    Port 5010 is the captain's UI/UX review Storybook; a slice never serves on it or measures against it.
 
 ## Phase B: Fan out
@@ -41,7 +41,7 @@ Redirect a running worker with `bin/fm-send.sh`.
 ## Phase C: Aggregate
 
 Read each terminal result in `data/<id>/report.md`.
-Drop a result that does not record the SHAs and method its brief names, and relaunch that worker once with `bin/fm-control.sh <id> relaunch`.
+Drop a result that does not record the SHAs and method its brief names, and relaunch that worker once with `bin/fm-control.sh <id> relaunch --note "<what happened>"`.
 A worker that stops without a result gets the same single relaunch.
 After a second miss, record a gap; a gap is not a pass.
 For coverage, every required slice needs a result.
