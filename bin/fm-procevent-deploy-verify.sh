@@ -92,8 +92,10 @@
 # Each such env is also a lease `env:<name>` (bin/fm-lease.sh, G5): while another
 # holder's lease is live the ask is held the same way, naming the holder, before any
 # RAM read, and planned again at every poll; a sent ask claims the lease for the
-# Tester (FM_DEPLOY_VERIFY_ASSISTANCE) first, and each poll releases the Tester's
-# lease once every row of the ask that claimed it has a result that is not pending.
+# Tester (FM_DEPLOY_VERIFY_ASSISTANCE) first. Every ask naming the lease since its
+# last release holds it; each poll releases it once each row of every such ask has
+# a result that is not pending, on that ask's head, and a failed send gives back
+# only a lease no other ask holds.
 # Before a sent ask, the record gets a wait on the Tester that clears on those rows.
 # An issue the parser refuses is a `template-refused` skip naming its problems; it
 # wakes firstmate once like a visible skip below, and a refused draft round is only
@@ -471,8 +473,8 @@ lease_asks() {  # <env:name>
     | [$all[$r + 1:][] | select(.type == "ask" and ((.leases // []) | index($l)))]' "$LEDGER"
 }
 
-# The Tester's env lease ends when every ask that holds it (lease_asks) has a result that is not pending on each of
-# its rows.
+# The Tester's env lease ends when every ask that holds it (lease_asks) has a result that is not pending, on the ask's
+# own head, on each of its rows.
 release_landed_leases() {
   local f name asks ask task json landed
   for f in "$STATE"/.envlease-*; do
@@ -485,8 +487,9 @@ release_landed_leases() {
     while IFS= read -r ask; do
       task=$(jq -r .task <<<"$ask")
       json=$(task_writer checks "$task" 2>/dev/null) || { landed=0; break; }
-      jq -e --argjson k "$(jq -c '[.rows[] | ltrimstr("- ") | split(" | ")[0]]' <<<"$ask")" \
-        '(.rows | type == "array") and all(.rows[] | select(.key as $r | $k | index($r)); .status != "pending")' <<<"$json" >/dev/null 2>&1 \
+      # shellcheck disable=SC2016 # jq variables, not shell
+      jq -e --argjson k "$(jq -c '[.rows[] | ltrimstr("- ") | split(" | ")[0]]' <<<"$ask")" --arg h "$(jq -r '.head // .sha' <<<"$ask")" \
+        '(.rows | type == "array") and all(.rows[] | select(.key as $r | $k | index($r)); .status != "pending" and .head == $h)' <<<"$json" >/dev/null 2>&1 \
         || { landed=0; break; }
     done < <(jq -c '.[]' <<<"$asks")
     [ "$landed" = 1 ] || continue
