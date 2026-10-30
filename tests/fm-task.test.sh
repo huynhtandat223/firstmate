@@ -2249,6 +2249,8 @@ for f in fm-task.sh fm-task-lib.mjs fm-acceptance.mjs fm-task-owner.sh; do cp "$
 cp "$TMP_ROOT/fm-task-owner.sh.orig" "$MBIN/fm-task-owner.sh"; chmod +x "$MBIN/fm-task-owner.sh"
 cp "$TMP_ROOT/fm-acceptance.mjs.orig" "$MBIN/fm-acceptance.mjs"
 cp "$TMP_ROOT/fm-task.sh.orig" "$MBIN/fm-task.sh"
+cp "$ROOT/bin/fm-task-sources-lib.mjs" "$MBIN/fm-task-sources-lib.mjs"
+cp "$ROOT/bin/fm-backend.sh" "$ROOT/bin/fm-wake-lib.sh" "$ROOT/bin/fm-state-dir.sh" "$MBIN/"
 chmod +x "$MBIN/fm-task.sh"
 LIB="$MBIN/fm-task-lib.mjs"
 
@@ -2259,6 +2261,7 @@ mutate() {  # <label> <case> <exact source text> <replacement>
   if out=$(case_"$2" "$MBIN" 2>&1); then
     fail "removing the guard '$1' left case $2 green"
   fi
+  case "$out" in *ERR_MODULE_NOT_FOUND*|*'Cannot find module'*) fail "mutation '$1' failed to load: $out" ;; esac
   pass "guard '$1' is needed: case $2 goes red without it"
 }
 
