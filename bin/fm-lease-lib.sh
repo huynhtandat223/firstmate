@@ -94,6 +94,16 @@
 #     prompt around its own data/backlog.md writes. This is deliberately
 #     branch-side containment only; main's tasks-axi path has no executable
 #     backlog lease guard in this scope.
+#   - Environment leases (firstmate#176 G5) are a separate kind: a resource
+#     `env:<name>` (a shared environment such as the company DMS env) held by
+#     one holder, `tester` (the Tester assistance) or a task id, never by a
+#     supervision actor. File $STATE/.envlease-<name>, one line
+#     "<holder>\t<epoch>". The holder names a state/<holder>.meta; the lease is
+#     stale when that meta is gone (a gone task) or its recorded backend target
+#     no longer exists (a dead pane); a meta with no window counts as live.
+#     A claim replaces a stale lease, sweep removes it, and only the holder
+#     releases. bin/fm-procevent-deploy-verify.sh claims one for the Tester
+#     around a rows ask; a worker claims one around its own proof there.
 #
 # Sourced by bin/fm-send.sh, bin/fm-control.sh, bin/fm-teardown.sh,
 # bin/fm-pr-merge.sh, bin/fm-merge-local.sh, bin/fm-spawn.sh, bin/fm-lock.sh,
@@ -258,6 +268,51 @@ fm_lease_guard() {
     echo "error: $action refused - task '$task' is leased to the $lease_actor supervision actor (state/.lease-$task), which is handling that task right now; leave the lease alone (never remove or clear it) and retry after that actor releases it, which it does when its handling ends" >&2
     exit "$FM_LEASE_REFUSE_EXIT"
   fi
+}
+
+# fm_lease_env_name <resource>: print <name> for a valid `env:<name>` resource; return 1 for any other.
+fm_lease_env_name() {
+  case "${1:-}" in
+    env:*) fm_lease_valid_id "${1#env:}" && printf '%s\n' "${1#env:}" ;;
+    *) return 1 ;;
+  esac
+}
+
+fm_lease_env_path() {
+  printf '%s/.envlease-%s\n' "$STATE" "$1"
+}
+
+# fm_lease_env_read <name>: read the env lease into FM_LEASE_HOLDER/FM_LEASE_EPOCH. Returns 1 when none exists; a
+# torn record reads as holder "".
+fm_lease_env_read() {
+  local line
+  FM_LEASE_HOLDER=
+  FM_LEASE_EPOCH=
+  [ -e "$(fm_lease_env_path "$1")" ] || return 1
+  IFS= read -r line < "$(fm_lease_env_path "$1")" 2>/dev/null || line=
+  FM_LEASE_HOLDER=$(printf '%s' "$line" | cut -f1)
+  FM_LEASE_EPOCH=$(printf '%s' "$line" | cut -f2)
+  fm_lease_valid_id "$FM_LEASE_HOLDER" || FM_LEASE_HOLDER=
+  case "$FM_LEASE_EPOCH" in '' | *[!0-9]*) FM_LEASE_EPOCH=0 ;; esac
+  return 0
+}
+
+# fm_lease_env_live <name>: 0 iff the env lease exists, its holder has a state/<holder>.meta, and the backend target
+# that meta records (if any) still exists.
+fm_lease_env_live() {
+  local meta backend window
+  fm_lease_env_read "$1" || return 1
+  [ -n "$FM_LEASE_HOLDER" ] || return 1
+  meta="$STATE/$FM_LEASE_HOLDER.meta"
+  [ -f "$meta" ] || return 1
+  window=$(sed -n 's/^window=//p' "$meta" | tail -n 1)
+  [ -n "$window" ] || return 0
+  backend=$(sed -n 's/^backend=//p' "$meta" | tail -n 1)
+  if ! command -v fm_backend_target_exists >/dev/null 2>&1; then
+    # shellcheck source=bin/fm-backend.sh
+    . "$FM_LEASE_LIB_DIR/fm-backend.sh"
+  fi
+  fm_backend_target_exists "${backend:-tmux}" "$window"
 }
 
 # Release the claim/guard serialization lock retained by fm_lease_guard.

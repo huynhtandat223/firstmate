@@ -1005,4 +1005,18 @@ mutate 'a sent rows ask writes its wait' rows_ask \
   's/^[^\n]*rows_wait "\$ask" wait [^\n]*\n//m'
 mutate 'ask-rows --dry-run sends nothing' rows_ask \
   's/if \[ "\$dry" = 0 \] && ! deliver_ask "\$ask"; then/if ! deliver_ask "\$ask"; then/'
+mutate 'another holder of the env lease holds the ask' rows_lease \
+  's/\[ "\$\{out##\* \}" = live \] && \[ "\$\{out%% \*\}" != "\$ASSISTANCE" \] \|\| continue/continue/'
+mutate 'a lease hold reads no RAM' rows_lease \
+  's/if \[ "\$lease_hold" = 0 \]; then/if true; then/'
+mutate 'a held lease keeps one hold line' rows_lease \
+  's/\[ "\$lease_hold" = 1 \] && ledger_test/false \&\& ledger_test/'
+mutate 'a lease hold is planned again at every poll' rows_lease \
+  's/ and \(\.lease \| not\)\)/)/'
+mutate 'a sent ask claims the env lease for the Tester' rows_lease \
+  's/if ! out=\$\(env_lease claim/if false \&\& ! out=\$(env_lease claim/'
+mutate 'the poll releases the lease of landed rows' rows_lease \
+  's/^  release_landed_leases\n//m'
+mutate 'pending rows keep the lease' rows_lease \
+  's/; \.status != "pending"\)/; true)/'
 pass 'every guarded behavior has a red mutation proof'

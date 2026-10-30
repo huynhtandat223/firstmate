@@ -90,6 +90,11 @@
 # the floor the builder runs the recover command once and reads again; still below,
 # the ask is held: the record gets a wait naming the floor, the ledger a hold line,
 # and the ask is planned again after FM_DEPLOY_VERIFY_HOLD_SECONDS (default 600).
+# Each such env is also a lease `env:<name>` (bin/fm-lease.sh, G5): while another
+# holder's lease is live the ask is held the same way, naming the holder, before any
+# RAM read, and planned again at every poll; a sent ask claims the lease for the
+# Tester (FM_DEPLOY_VERIFY_ASSISTANCE) first, and each poll releases the Tester's
+# lease once every row of the ask that claimed it has a result that is not pending.
 # Before a sent ask, the record gets a wait on the Tester that clears on those rows.
 # An issue the parser refuses is a `template-refused` skip naming its problems; it
 # wakes firstmate once like a visible skip below, and a refused draft round is only
@@ -104,7 +109,8 @@
 #   {type:"ask", round:"deploy"|"draft", key, task, issue, prs, sha, run, lines, rows, touched?, carried?, record}
 #   {type:"carry", round:"deploy", key, task, prs, sha, carried}
 #   {type:"ask", round:"rows", key, task, issue, prs, sha, head, lines, rows, env, envs, record}
-#   {type:"hold", round:"rows", key, task, sha, envs, held}
+#   {type:"hold", round:"rows", key, task, sha, envs, held, lease?}
+#   {type:"release", lease, task, key}
 #   {type:"skip", pr, task, reason:"no-task"|"internal"|"no-issue"|"no-user-visible-line"|"template-refused", detail?}
 #   {type:"draft-skip", key, reason, detail?}
 # Needs node (bin/fm-acceptance.mjs) and jq.
@@ -432,7 +438,7 @@ plan_rows_task() {  # <task>
     lines=$(jq -c 'reduce (.[] | ltrimstr("- ") | split(" | ")[0] | split("@")[0]) as $i ([]; if index([$i]) then . else . + [$i] end)' <<<"$rows")
     key="rows:$task:$head:$(jq -r '.[]' <<<"$rows" | sha256sum | cut -c1-12)"
     # shellcheck disable=SC2016 # jq variables, not shell
-    held_at=$([ ! -f "$LEDGER" ] || jq -Rr --arg k "$key" 'fromjson? | select(.type == "hold" and .key == $k) | .at' "$LEDGER" | tail -n 1)
+    held_at=$([ ! -f "$LEDGER" ] || jq -Rr --arg k "$key" 'fromjson? | select(.type == "hold" and .key == $k and (.lease | not)) | .at' "$LEDGER" | tail -n 1)
     [ -z "$held_at" ] || [ $((now - held_at)) -ge "${FM_DEPLOY_VERIFY_HOLD_SECONDS:-600}" ] || continue
     add_ask "$(jq -cn --arg key "$key" --arg task "$task" --arg issue "${repo##*/}#$n" --arg issue_url "$issue_url" --arg head "$head" \
       --argjson rows "$rows" --argjson lines "$lines" --argjson envs "$ISSUE_ENVS" --argjson arrival "$now" \
@@ -449,6 +455,29 @@ plan_rows() {
     task=$(basename "$f" .meta)
     rows_task "$task" || continue
     plan_rows_task "$task" || return 1
+  done
+}
+
+env_lease() {  # <fm-lease.sh args>...
+  FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE "$SCRIPT_DIR/fm-lease.sh" "$@"
+}
+
+# The Tester's env leases end when every row of the ask that claimed them has a result that is not pending.
+release_landed_leases() {
+  local f name ask task json
+  for f in "$STATE"/.envlease-*; do
+    [ -e "$f" ] && [ -f "$LEDGER" ] || continue
+    name=${f##*/.envlease-}
+    [ "$(cut -f1 "$f" 2>/dev/null)" = "$ASSISTANCE" ] || continue
+    # shellcheck disable=SC2016 # jq variables, not shell
+    ask=$(jq -Rc --arg l "env:$name" 'fromjson? | select(.type == "ask" and ((.leases // []) | index($l)))' "$LEDGER" | tail -n 1)
+    [ -n "$ask" ] || continue
+    task=$(jq -r .task <<<"$ask")
+    json=$(task_writer checks "$task" 2>/dev/null) || continue
+    jq -e --argjson k "$(jq -c '[.rows[] | ltrimstr("- ") | split(" | ")[0]]' <<<"$ask")" \
+      '(.rows | type == "array") and all(.rows[] | select(.key as $r | $k | index($r)); .status != "pending")' <<<"$json" >/dev/null 2>&1 || continue
+    env_lease release "env:$name" --holder "$ASSISTANCE" >/dev/null 2>&1 || continue
+    ledger_append "$(jq -c --arg l "env:$name" --argjson at "$(date +%s)" '{type: "release", lease: $l, task, key, at: $at}' <<<"$ask")"
   done
 }
 
@@ -503,6 +532,7 @@ poll_once() {
       || state_put "$CURSOR_RUN" "$CURSOR_SHA"
   fi
   plan_drafts "$w" || { rm -rf "$w"; return 2; }
+  release_landed_leases
   plan_rows || { rm -rf "$w"; return 2; }
   rm -rf "$w"
   [ "$ASKS" != '[]' ] || [ "$SKIPS" != '[]' ]
@@ -753,32 +783,66 @@ rows_wait() {  # <ask-json> <suffix> <note>
   fi
 }
 
-# A rows-round ask: the env gates first, then a held ask's wait and hold line, or a sent ask's wait, record and ledger line.
+# A rows-round ask: another holder's env lease, then the env gates, then the Tester's env leases; a held ask gets its wait
+# and hold line, a sent ask its wait, record and ledger line (a failed send gives its leases back).
 deliver_rows_ask() {  # <ask-json>
-  local ask=$1 file name envs='[]' held='' content record
+  local ask=$1 file name envs='[]' held='' content record out lease_hold=0
+  local -a names=() claimed=()
   for file in "$CONFIG"/env/*; do
     [ -f "$file" ] || continue
     name=${file##*/}
     [[ "$name" =~ ^[A-Za-z0-9_-]+$ ]] || continue
     # shellcheck disable=SC2016 # jq variables, not shell
     jq -e --arg n "$name" 'any(.env[]; contains("`" + $n + "`") or test("\\benv " + $n + "\\b"; "i"))' <<<"$ask" >/dev/null || continue
-    env_gate "$name" "$file" || return 1
-    envs=$(jq -c --argjson g "$GATE_JSON" '. + [$g]' <<<"$envs")
-    [ -z "$GATE_HELD" ] || held="$held${held:+; }$GATE_HELD"
+    names+=("$name")
   done
-  ask=$(jq -c --argjson e "$envs" '. + {envs: $e}' <<<"$ask")
+  # Another holder's live lease holds the ask before any RAM read.
+  for name in ${names[@]+"${names[@]}"}; do
+    out=$(env_lease check "env:$name" 2>/dev/null) || continue
+    [ "${out##* }" = live ] && [ "${out%% *}" != "$ASSISTANCE" ] || continue
+    held="$held${held:+; }env:$name is leased to ${out%% *}"
+    lease_hold=1
+  done
+  if [ "$lease_hold" = 0 ]; then
+    for name in ${names[@]+"${names[@]}"}; do
+      env_gate "$name" "$CONFIG/env/$name" || return 1
+      envs=$(jq -c --argjson g "$GATE_JSON" '. + [$g]' <<<"$envs")
+      [ -z "$GATE_HELD" ] || held="$held${held:+; }$GATE_HELD"
+    done
+  fi
+  if [ -z "$held" ]; then
+    for name in ${names[@]+"${names[@]}"}; do
+      if ! out=$(env_lease claim "env:$name" --holder "$ASSISTANCE" 2>&1); then
+        held="env:$name is leased: $(printf '%s' "$out" | sed -n '1p')"
+        lease_hold=1
+        break
+      fi
+      claimed+=("env:$name")
+    done
+  fi
+  ask=$(jq -c --argjson e "$envs" --argjson l "$(printf '%s\n' ${claimed[@]+"${claimed[@]}"} | jq -R . | jq -sc 'map(select(. != ""))')" '. + {envs: $e, leases: $l}' <<<"$ask")
   if [ -n "$held" ]; then
+    release_claimed ${claimed[@]+"${claimed[@]}"}
     rows_wait "$ask" hold "Tester ask held, not sent: $held" || return 1
-    ledger_append "$(jq -c --arg h "$held" --argjson at "$(date +%s)" '{type: "hold", round, key, task, sha, envs, held: $h, at: $at}' <<<"$ask")"
+    # A held lease is planned again at every poll: one hold line while the reason stays the same.
+    # shellcheck disable=SC2016 # jq variables, not shell
+    [ "$lease_hold" = 1 ] && ledger_test '.type == "hold" and .key == $k and .held == $h' --arg k "$(jq -r .key <<<"$ask")" --arg h "$held" && return 0
+    ledger_append "$(jq -c --arg h "$held" --argjson lease "$lease_hold" --argjson at "$(date +%s)" \
+      '{type: "hold", round, key, task, sha, envs, held: $h, at: $at} + (if $lease == 1 then {lease: true} else {} end)' <<<"$ask")"
     return 0
   fi
-  rows_wait "$ask" wait "Tester asked for these rows on $(jq -r .sha <<<"$ask")" || return 1
+  rows_wait "$ask" wait "Tester asked for these rows on $(jq -r .sha <<<"$ask")" || { release_claimed ${claimed[@]+"${claimed[@]}"}; return 1; }
   content=$(jq -c '{schema: "fm-tester-verify.v1", round, task, issue, issue_url, prs, sha, head, lines, rows, env, envs,
     check: "bin/fm-task.sh check \(.task) <id>@<width> pass|fail --evidence <path|url> --head \(.sha)"}' <<<"$ask")
   record=$(jq -cn --arg id "$(jq -r .key <<<"$ask")" --argjson at "$(jq -r .arrival <<<"$ask")" --arg c "$content" \
     '{schema: "fm-assistance-mentions.v1", messages: [{id: $id, arrival: $at, content: $c}]}')
-  deliver_record Tester "$ASSISTANCE" "$record" || return 1
+  deliver_record Tester "$ASSISTANCE" "$record" || { release_claimed ${claimed[@]+"${claimed[@]}"}; return 1; }
   ledger_append "$(jq -c --arg r "$DELIVER_BASE" --argjson at "$(date +%s)" 'del(.arrival) + {type: "ask", record: $r, at: $at}' <<<"$ask")"
+}
+
+release_claimed() {  # <env:name>...: give back the leases this delivery claimed
+  local lease
+  for lease in "$@"; do env_lease release "$lease" --holder "$ASSISTANCE" >/dev/null 2>&1 || true; done
 }
 
 deliver_ask() {  # <ask-json>

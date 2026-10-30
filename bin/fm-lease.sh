@@ -26,9 +26,16 @@
 #       this at generation activation so a replaced branch conversation's
 #       leases never outlive it.
 #   fm-lease.sh sweep
-#       Remove every provably stale lease in this home. Run at session start
-#       (a lease held by a dead actor is cleared at session start); safe to
-#       run any time - a live lease is never touched.
+#       Remove every provably stale lease in this home, env leases included.
+#       Run at session start (a lease held by a dead actor is cleared at
+#       session start); safe to run any time - a live lease is never touched.
+#   fm-lease.sh claim|release env:<name> --holder tester|<task>
+#   fm-lease.sh check env:<name>
+#       An environment lease (contract: bin/fm-lease-lib.sh). A claim refuses
+#       with exit 6, naming the holder, while another holder's lease is live;
+#       the holder's own claim refreshes it. A release by another holder of a
+#       live lease refuses with exit 6; releasing a lease nobody holds is a
+#       no-op. check prints "<holder> <epoch> <live|stale>" (exit 1: none).
 #
 # The default actor is $FM_SUPERVISION_ACTOR (else main); when --actor is
 # supplied for a mutation, it must name that calling actor. Exit codes: 0 ok,
@@ -50,12 +57,55 @@ fm_lock_acquire_wait "$LEASE_COMMAND_LOCK"
 trap 'fm_lock_release "$LEASE_COMMAND_LOCK"' EXIT
 
 usage() {
-  echo "usage: fm-lease.sh claim|release <task> [--actor main|branch] | release-actor --actor main|branch | check <task> | sweep" >&2
+  echo "usage: fm-lease.sh claim|release <task> [--actor main|branch] | claim|release env:<name> --holder tester|<task> | release-actor --actor main|branch | check <task>|env:<name> | sweep" >&2
   exit 2
 }
 
 CMD=${1:-}
 shift 2>/dev/null || true
+
+# Environment leases (env:<name>): their own holder, never a supervision actor.
+if ENV_NAME=$(fm_lease_env_name "${1:-}"); then
+  ENV_LEASE=$(fm_lease_env_path "$ENV_NAME")
+  shift
+  HOLDER=
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --holder) HOLDER=${2:-}; shift 2 || usage ;;
+      *) usage ;;
+    esac
+  done
+  case "$CMD" in
+    claim)
+      fm_lease_valid_id "$HOLDER" || usage
+      if fm_lease_env_live "$ENV_NAME" && [ "$FM_LEASE_HOLDER" != "$HOLDER" ]; then
+        echo "error: claim refused - env:$ENV_NAME is held by $FM_LEASE_HOLDER since $(date -u -d "@$FM_LEASE_EPOCH" +%FT%TZ 2>/dev/null || printf '%s' "$FM_LEASE_EPOCH") (state/.envlease-$ENV_NAME); retry after it releases" >&2
+        exit "$FM_LEASE_REFUSE_EXIT"
+      fi
+      TMP=$(mktemp "$STATE/.fm-lease-tmp.XXXXXX")
+      printf '%s\t%s\n' "$HOLDER" "$(date +%s)" > "$TMP"
+      mv -f -- "$TMP" "$ENV_LEASE"
+      ;;
+    release)
+      fm_lease_valid_id "$HOLDER" || usage
+      fm_lease_env_read "$ENV_NAME" || exit 0
+      if [ "$FM_LEASE_HOLDER" != "$HOLDER" ] && fm_lease_env_live "$ENV_NAME"; then
+        echo "error: release refused - env:$ENV_NAME is held by $FM_LEASE_HOLDER, not $HOLDER" >&2
+        exit "$FM_LEASE_REFUSE_EXIT"
+      fi
+      rm -f -- "$ENV_LEASE"
+      ;;
+    check)
+      [ -z "$HOLDER" ] || usage
+      fm_lease_env_read "$ENV_NAME" || exit 1
+      if fm_lease_env_live "$ENV_NAME"; then LIVENESS=live; else LIVENESS=stale; fi
+      printf '%s %s %s\n' "${FM_LEASE_HOLDER:-unreadable}" "$FM_LEASE_EPOCH" "$LIVENESS"
+      ;;
+    *) usage ;;
+  esac
+  exit 0
+fi
+case "${1:-}" in env:*) usage ;; esac
 
 case "$CMD" in
   claim|release)
@@ -191,6 +241,12 @@ case "$CMD" in
       TASK=${LEASE##*/.lease-}
       fm_lease_valid_id "$TASK" || continue
       fm_lease_clear_stale "$TASK"
+    done
+    for LEASE in "$STATE"/.envlease-*; do
+      [ -e "$LEASE" ] || continue
+      ENV_NAME=${LEASE##*/.envlease-}
+      fm_lease_valid_id "$ENV_NAME" || continue
+      fm_lease_env_live "$ENV_NAME" || rm -f -- "$LEASE"
     done
     ;;
 esac
