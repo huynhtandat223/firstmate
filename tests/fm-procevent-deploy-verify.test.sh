@@ -796,9 +796,57 @@ scenario_rows_ask() {
   fi
 }
 
+# HG5 (firstmate#176 G5): the rows ask of an env with a config/env/<name> file claims `env:<name>` for the Tester
+# before it is sent. While a worker holds the lease the ask is held with a wait naming the holder (one hold line, no
+# RAM read), it goes out at the first poll after the worker releases, and the poll releases the Tester's lease when
+# the asked rows land.
+scenario_rows_lease() {
+  new_lab "$1"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s/writer.calls"\ncase "$1" in checks) cat "%s/checks.json" ;; esac\n' "$LAB" "$LAB" > "$LAB/writer"
+  chmod +x "$LAB/writer"
+  : > "$H/config/task-shadow"
+  printf 'kind=ship\n' > "$H/state/alpha.meta"
+  printf 'kind=ship\n' > "$H/state/beta.meta"
+  mkdir -p "$H/data/alpha" "$H/config/env"
+  printf 'surface: user-visible\nissue: https://github.com/%s/issues/500\nrecord: rows\n' "$REPO" > "$H/data/alpha/verify.md"
+  fx_issue_raw 500 "$(tpl_issue_body "$(tpl_scenario_env A1 'DMS env `company`' 1440)")"
+  local pending
+  pending='{"task":"alpha","state":"running","nextActor":"worker","issueUrl":"https://github.com/%s/issues/500","head":null,"rows":[{"key":"A1@1440","scenarioId":"A1","width":"1440","surface":"user-visible","status":"%s","nextActor":"tester","head":"%s","carried":false,"due":true}]}\n'
+  # shellcheck disable=SC2059 # the row template above is the format
+  printf "$pending" "$REPO" pending "$(sha h1)" > "$LAB/checks.json"
+  printf '9\n' > "$LAB/ram"
+  printf 'ram-read=echo read >> %s/ram.log; cat %s/ram\nfloor-gb=6\nnever-touch=Titan.exe\n' "$LAB" "$LAB" > "$H/config/env/company"
+  fx_runs "1:completed:success:s0"
+  set_cursor 1 s0
+  export FM_TASK_SHADOW_WRITER="$LAB/writer"
+  "$BIN/fm-lease.sh" claim env:company --holder beta || { unset FM_TASK_SHADOW_WRITER; echo 'the worker could not claim env:company'; return 1; }
+  cycle
+  cycle
+  [ -z "$(asked)" ] || { unset FM_TASK_SHADOW_WRITER; echo "an ask went out while beta held env:company: $(asked)"; return 1; }
+  [ ! -e "$LAB/ram.log" ] || { unset FM_TASK_SHADOW_WRITER; echo 'the RAM was read while the lease was held elsewhere'; return 1; }
+  grep -q "^event alpha wait --next-actor tester --clears-on rows --rows A1@1440 --note .*env:company is leased to beta.* --key deploy-verify:rows:alpha:[^ ]*:hold " "$LAB/writer.calls" \
+    || { unset FM_TASK_SHADOW_WRITER; echo "no wait names the holder: $(cat "$LAB/writer.calls")"; return 1; }
+  [ "$(ledger_count '.type == "hold"')" = 1 ] || { unset FM_TASK_SHADOW_WRITER; echo "hold lines: $(ledger)"; return 1; }
+  # the worker releases: the next poll sends the ask under the Tester's lease
+  "$BIN/fm-lease.sh" release env:company --holder beta
+  cycle
+  asked | jq -e 'select(.round == "rows" and .task == "alpha") | .envs[0].name == "company"' >/dev/null || { unset FM_TASK_SHADOW_WRITER; echo "no ask after the release: $(asked) $(ledger)"; return 1; }
+  [ "$("$BIN/fm-lease.sh" check env:company | cut -d' ' -f1)" = tester ] || { unset FM_TASK_SHADOW_WRITER; echo "the Tester holds no lease: $("$BIN/fm-lease.sh" check env:company 2>&1)"; return 1; }
+  [ "$(ledger_count '.type == "ask" and .leases == ["env:company"]')" = 1 ] || { unset FM_TASK_SHADOW_WRITER; echo "the ask records no lease: $(ledger)"; return 1; }
+  # a poll before the rows land keeps the lease; the poll after releases it
+  cycle
+  "$BIN/fm-lease.sh" check env:company >/dev/null || { unset FM_TASK_SHADOW_WRITER; echo 'the lease was released before the rows landed'; return 1; }
+  # shellcheck disable=SC2059 # the row template above is the format
+  printf "$pending" "$REPO" pass "$(sha h1)" > "$LAB/checks.json"
+  cycle
+  unset FM_TASK_SHADOW_WRITER
+  ! "$BIN/fm-lease.sh" check env:company >/dev/null 2>&1 || { echo "the lease outlived the rows: $("$BIN/fm-lease.sh" check env:company)"; return 1; }
+  [ "$(ledger_count '.type == "release" and .lease == "env:company" and .task == "alpha"')" = 1 ] || { echo "no release line: $(ledger)"; return 1; }
+}
+
 run_scenarios() {  # <bin-dir>
   local s rc=0
-  for s in ledger skips not_deployed draft record failures runner skip_catchup rows refused replay replay_refused shadow rows_record carry rows_ask; do
+  for s in ledger skips not_deployed draft record failures runner skip_catchup rows refused replay replay_refused shadow rows_record carry rows_ask rows_lease; do
     out=$(scenario_"$s" "$1" 2>&1) || { printf 'scenario %s: %s\n' "$s" "$out"; rc=1; }
   done
   return $rc
@@ -806,7 +854,7 @@ run_scenarios() {  # <bin-dir>
 
 # ---- real adapter -----------------------------------------------------------
 
-for s in ledger skips not_deployed draft record failures runner skip_catchup rows refused replay replay_refused shadow rows_record carry rows_ask; do
+for s in ledger skips not_deployed draft record failures runner skip_catchup rows refused replay replay_refused shadow rows_record carry rows_ask rows_lease; do
   out=$(scenario_"$s" "$ROOT/bin" 2>&1) || fail "scenario $s failed on the real adapter: $out"
   pass "deploy-verify $s"
 done
