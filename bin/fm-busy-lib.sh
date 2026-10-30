@@ -74,8 +74,9 @@
 #   4. no record at all: herdr's native busy verdict is trusted as busy
 #      (generation state is sufficient for busy, not for idle), except that a
 #      claude* pane at its prompt with an empty composer
-#      (fm_backend_herdr_composer_state) and no rendered busy footer
-#      (fm_backend_herdr_rendered_busy_state) reads idle herdr-composer:
+#      (fm_backend_herdr_composer_state) and no rendered busy footer by Claude's
+#      own signature (fm_backend_herdr_rendered_busy_state <target> claude,
+#      which matches its spinner) reads idle herdr-composer:
 #      herdr kept reporting working for an idle Claude Tester pane, so due
 #      doorbells escalated stuck-busy instead of ringing (firstmate#176 G3);
 #      both reads must agree, then the
@@ -1099,7 +1100,7 @@ fm_busy_classify() {  # <backend> <target> <harness> <id> <state-dir> [tail40]
         claude*)
           if command -v fm_backend_herdr_composer_state >/dev/null 2>&1 \
             && [ "$(fm_backend_herdr_composer_state "$target" 2>/dev/null)" = empty ] \
-            && [ "$(fm_backend_herdr_rendered_busy_state "$target" 2>/dev/null)" = idle ]; then
+            && [ "$(fm_backend_herdr_rendered_busy_state "$target" claude 2>/dev/null)" = idle ]; then
             printf 'idle herdr-composer'
             return 0
           fi
