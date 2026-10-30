@@ -192,6 +192,7 @@ register_task() {  # <id> <branch> [<pr-url>]
   mkdir -p "$wt"
   git -C "$wt" init -q || return 1
   git -C "$wt" symbolic-ref HEAD "refs/heads/$branch" || return 1
+  git -C "$wt" remote add origin "https://github.com/$REPO.git" || return 1
   {
     printf 'kind=ship\nharness=claude\nbackend=tmux\nwindow=fm-%s-absent:0\n' "$id"
     printf 'worktree=%s\nbranch=%s\n' "$wt" "$branch"

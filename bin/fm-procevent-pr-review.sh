@@ -73,6 +73,7 @@
 #              of that check's log with the line after each. A green head, and a head replaced before
 #              its checks finished, send the worker nothing.
 #              state.json holds the head each PR's checks were last read on (.ci).
+#              Legacy commit-status contexts are not read; this source handles check runs only.
 # autohandle   Apply a captured result after the runner has captured it: write its ledger line and
 #              close its round. A round or late result whose in-scope findings reached a live worker's
 #              inbox acknowledges itself, so that round wakes nobody. A round, late or cap result that
@@ -217,12 +218,16 @@ live_task() { [ -f "$STATE/$1.meta" ] && [ ! -L "$STATE/$1.meta" ]; }
 # the task whose metadata records this PR, else the task the fm/<task> branch names. Prints nothing
 # when no task matches, which is the one case that delivers nothing and keeps firstmate's wake.
 resolve_worker_task() {  # <pr-url> <head-ref>
-  local url=$1 ref=$2 meta id wt branch
+  local url=$1 ref=$2 meta id wt branch origin repo
   for meta in "$STATE"/*.meta; do
     [ -f "$meta" ] && [ ! -L "$meta" ] || continue
     id=${meta##*/}; id=${id%.meta}
     wt=$(meta_field "$meta" worktree)
     [ -n "$wt" ] && [ -d "$wt" ] || continue
+    origin=$(git -C "$wt" remote get-url origin 2>/dev/null) || continue
+    origin=${origin%.git}; origin=${origin%/}
+    repo=${url#https://github.com/}; repo=${repo%/pull/*}
+    case "$origin" in "https://github.com/$repo"|"git@github.com:$repo"|"ssh://git@github.com/$repo") ;; *) continue ;; esac
     branch=$(git -C "$wt" branch --show-current 2>/dev/null) || continue
     [ "$branch" = "$ref" ] || continue
     printf '%s\n' "$id"
@@ -310,12 +315,20 @@ failed_checks() {  # <check-runs-json>
 # and for a failed head one message naming each failed check and its gate lines. A green head sends
 # the worker nothing, and a head replaced before its checks finished is never read.
 handle_ci() {  # <repo> <pr-row> <task>
-  local repo=$1 row=$2 task=$3 n url head key runs total current
+  local repo=$1 row=$2 task=$3 n url head key runs total current page=1 part count
   n=$(jq -r .number <<<"$row"); url=$(jq -r .html_url <<<"$row"); head=$(jq -r .head.sha <<<"$row")
   key="$repo#$n"
   [ "$(state_json | jq -r --arg k "$key" '.ci[$k].head // ""')" != "$head" ] || return 0
   runs=$(gh_quiet "repos/$repo/commits/$head/check-runs?per_page=100") || return 0
   [ -n "$runs" ] || return 0
+  count=$(jq '.check_runs | length' <<<"$runs")
+  while [ "$count" -lt "$(jq '.total_count // 0' <<<"$runs")" ]; do
+    page=$((page + 1))
+    part=$(gh_quiet "repos/$repo/commits/$head/check-runs?per_page=100&page=$page") || return 0
+    [ "$(jq '.check_runs | length' <<<"$part")" -gt 0 ] || return 0
+    runs=$(jq -cn --argjson a "$runs" --argjson b "$part" '$a | .check_runs += $b.check_runs') || return 0
+    count=$(jq '.check_runs | length' <<<"$runs")
+  done
   total=$(jq -r '.total_count // 0' <<<"$runs" 2>/dev/null) || return 0
   [ "${total:-0}" -gt 0 ] || return 0
   [ "$(jq -r '.check_runs | length' <<<"$runs")" = "$total" ] || return 0
