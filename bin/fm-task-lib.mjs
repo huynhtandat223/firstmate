@@ -58,8 +58,6 @@
 //            complete (exit 5): a user-visible row of the issue not pass on the deployed head with its current
 //            digest and evidence, or no approved event newer than the last row event (bin/fm-verify-gate-lib.sh)
 //   turn-end <task> --turn TOKEN             check a durable turn generation; heartbeat is not terminal
-//   route-owner-comments --consumer NAME   claim owner comments across open tasks; live worker inbox, else wake
-//            Per-consumer intent files recover interrupted delivery after a claim.
 //   deliver  <task> --consumer NAME           claim each event in fm_task_delivery, then append a wake
 //            FM_HOME is required; delivery is scoped to this task, never a whole foreign fleet.
 //            A crash between claim and queue append requires operator reconciliation (no duplicate claim).
@@ -383,7 +381,6 @@ const SPECS = {
   resume: { pos: ['task'], flags: {} },
   reproject: { pos: ['task'], flags: { all: 'b' } },
   'turn-end': { pos: ['task'], flags: { turn: 's' } },
-  'route-owner-comments': { pos: [], flags: { consumer: 's' } },
   deliver: { pos: ['task'], flags: { consumer: 's' } },
   gate: { pos: ['task'], flags: { issue: 's', head: 's', 'evidence-root': 's' } },
   row: { pos: ['task'], flags: { section: 's', 'row-file': 's', 'notes-file': 's', gone: 'b', file: 's' } },
@@ -1830,36 +1827,6 @@ async function cmdTurnEnd(args) {
   out(verdict);
 }
 
-async function cmdRouteOwnerComments(args) {
-  const consumer = args.flags.consumer;
-  if (!process.env.FM_HOME || !consumer || consumer.length > 64) throw usage('route-owner-comments needs FM_HOME and --consumer (up to 64 characters)');
-  const latest = await firstRow('fm_task_delivery', `consumer eq ${lit(consumer)}`, 'seq desc');
-  const after = latest?.seq ?? 0;
-  const events = await listAll('fm_task_event', { filter: `kind eq 'comment' and actorRole eq 'owner' and seq gt ${after}`, orderby: 'seq' });
-  const state = process.env.FM_STATE_OVERRIDE || path.join(process.env.FM_HOME, 'state');
-  const spool = path.join(state, '.owner-comment-outbox', crypto.createHash('sha256').update(consumer).digest('hex'));
-  fs.mkdirSync(spool, { recursive: true });
-  const pending = fs.readdirSync(spool).filter(name => /^\d+\.json$/.test(name)).map(name => JSON.parse(fs.readFileSync(path.join(spool, name), 'utf8')));
-  const stream = [...new Map([...pending, ...events].map(event => [event.seq, event])).values()].sort((a, b) => a.seq - b.seq);
-  for (const event of stream) {
-    if (!event.idempotencyKey?.startsWith('owner-comment:')) continue;
-    const task = await firstRow('fm_task', `taskId eq ${lit(event.taskId)}`);
-    if (!task || CLOSED.includes(task.state)) continue;
-    const receipt = path.join(spool, `${event.seq}.json`);
-    if (!fs.existsSync(receipt)) fs.writeFileSync(receipt, JSON.stringify(event), { flag: 'wx' });
-    const claim = await http('POST', '/api/fm_task_delivery', { consumer, seq: event.seq });
-    if (claim.status !== 409) ok(claim, 'claim owner comment');
-    const text = `Owner comment on ${event.taskId} (seq ${event.seq}): ${bodyOf(event).note ?? ''}`;
-    const sent = spawnSync('bash', ['-c', 'source "$1/fm-backend.sh"; meta="$2/$3.meta"; test -f "$meta" || exit 1; backend=$(fm_backend_of_meta "$meta"); target=$(fm_backend_target_of_meta "$meta"); test "$(fm_backend_agent_alive "$backend" "$target")" = alive || exit 1; exec bash "$1/fm-send.sh" "$3" "$4"', 'owner-comment', HERE, state, event.taskId, text], { encoding: 'utf8', env: process.env });
-    if (sent.status !== 0) {
-      const queued = spawnSync('bash', ['-c', 'source "$1/fm-wake-lib.sh"; fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"; trap \'fm_lock_release "$FM_WAKE_QUEUE_LOCK"\' EXIT; fm_wake_append_locked check "$2" "$3"', 'owner-comment', HERE, `owner-comment-${event.seq}`, text], { encoding: 'utf8', env: process.env });
-      if (queued.status !== 0) throw new Fail(3, `owner comment ${event.seq} claimed but wake failed: ${queued.stderr}`);
-    }
-    fs.unlinkSync(receipt);
-    out(`routed ${consumer} seq=${event.seq}`);
-  }
-}
-
 async function cmdDeliver(args) {
   const consumer = args.flags.consumer;
   if (!consumer || consumer.length > 64) throw usage('deliver needs --consumer (up to 64 characters)');
@@ -1898,7 +1865,7 @@ async function cmdDeliver(args) {
 }
 
 const COMMANDS = {
-  'turn-end': cmdTurnEnd, deliver: cmdDeliver, 'route-owner-comments': cmdRouteOwnerComments, describe: cmdDescribe, thread: cmdThread,
+  'turn-end': cmdTurnEnd, deliver: cmdDeliver, describe: cmdDescribe, thread: cmdThread,
   create: cmdCreate, import: cmdImport, assign: cmdAssign, start: cmdStart, heartbeat: cmdHeartbeat, done: cmdDone, ask: cmdAsk, block: cmdBlock,
   unblock: cmdUnblock, approve: cmdApprove, changes: cmdChanges, reopen: cmdReopen, reassign: cmdReassign, archive: cmdArchive, comment: cmdComment, event: cmdEvent,
   link: cmdLink, rows: cmdRows, check: cmdCheck, 'owner-check': cmdOwnerCheck, gate: cmdGate, show: cmdShow, list: cmdList, resume: cmdResume, reproject: cmdReproject,
