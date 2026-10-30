@@ -1983,6 +1983,18 @@ case_carry() {
   must 'touched on another kind' 2 || return 1
   ft event $t deploy --head D3 --touched 'A1,bad id'
   must 'touched with a bad id' 2 || return 1
+  # PR 223 review: the deploys a pass must outlive are those after its head was deployed, not after the check event.
+  # A late check on D0, written after D1 touched A1, must not carry through a later deploy that touched none.
+  t=tk-carry3
+  mk_running $t >/dev/null || return 1
+  { ft rows $t "$ISSUE" >/dev/null && ft "done" $t "${DONE_FLAGS[@]}" --head b0 >/dev/null && ft event $t deploy --head D0 >/dev/null; } || { echo "setup: $ERR"; return 1; }
+  for r in A2@- A3@-; do ft check $t $r pass --evidence https://e/3 >/dev/null || return 1; done
+  ft event $t deploy --head D1 --touched A1 >/dev/null || return 1
+  ft check $t A1@1440 pass --evidence https://e/1 --head D0 >/dev/null && ft check $t A1@390 pass --evidence https://e/2 --head D0 >/dev/null || return 1
+  ft event $t deploy --head D2 --touched none >/dev/null || return 1
+  [ "$(due)" = 'A1@1440=true/false A1@390=true/false' ] || { echo "a late check on D0 carried past D1, which touched A1: $(due)"; return 1; }
+  ft approve $t --key carry3-approve-probe
+  must 'approve on a late check of a touched head' 5 || return 1
 }
 
 
