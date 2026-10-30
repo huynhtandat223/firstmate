@@ -1068,7 +1068,10 @@ A profile supplies the name, charter, harness/model/effort, source/recipe pairs,
 Event-driven and self-delivery homes skip the cadence hook.
 An event-driven home receives untrusted source records through the assistance command's `source-event` path, which writes the parent home's steering inbox.
 Captain-word steering remains separate from source evidence; a source record grants no owner authority.
-The built-in `deploy-verify` process-event source ([`bin/fm-procevent-deploy-verify.sh`](../bin/fm-procevent-deploy-verify.sh)) delivers a project's verify asks to a named assistance as such source records; its header owns the ask format, the ledger under `data/deploy-verify/`, and its environment.
+The built-in `deploy-verify` process-event source ([`bin/fm-procevent-deploy-verify.sh`](../bin/fm-procevent-deploy-verify.sh)) spawns a Tester scout (`verify-<task>-<sha7>`) for a project's verify asks, or steers a live Tester of the same task through its steering inbox; its header owns the ask format, the ledger under `data/deploy-verify/`, and its environment.
+A spawn reads the Tester template `config/roles/tester.md` and the pin `config/roles/tester.json` (`harness` required; optional `model` and `effort`), files a scout backlog item, and writes the ask into the brief, which may also write the evidence directory `data/verify/<task>/<tester-id>/` and a pre-T5 task's Tester record.
+At most `FM_DEPLOY_VERIFY_MAX_TESTERS` (default 2) Testers may be live; a further ask is held with a task wait naming the cap and is planned again next poll.
+A scout brief takes repeatable `--also-write <abs-path>` for these exact extra write paths.
 
 Assistance profiles support `claude`, `pi`, and `agy` on Herdr.
 Pi and AGY require `trigger_mode: "event-driven"` or `"self"`; cadence, including the default mode, is refused because only Claude arms the cadence hook.

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Built-in process-event adapter that sends the Tester its verify asks.
+# Built-in process-event adapter that spawns or steers a Tester for its verify asks.
 #
 # Usage:
 #   fm-procevent-deploy-verify.sh arm
@@ -30,14 +30,22 @@
 #              deploy carries its commits.
 #              The first poll only sets the cursor to the newest finished run; it never
 #              asks about history.
-# autohandle   Send each ask as an fm-assistance-mentions.v1 record through
-#              `fm-assistance.sh source-event <assistance>`, record it in
-#              data/deploy-verify/ledger.jsonl, then advance the cursor and
-#              acknowledge the result. One ask goes out per task per deploy, and a
+# autohandle   Deliver each ask to a Tester: a live Tester for the same task (its
+#              state/<tester>.meta exists) gets the ask through bin/fm-send.sh,
+#              otherwise a new scout `verify-<task>-<sha7>` is spawned from
+#              config/roles/tester.md and config/roles/tester.json and the ask is
+#              written into its brief. Each delivered ask is recorded in
+#              data/deploy-verify/ledger.jsonl, then the cursor advances and the
+#              result is acknowledged. One ask goes out per task per deploy, and a
 #              PR already asked about is never asked again. A refused delivery or an
 #              unreadable GitHub leaves the result unacknowledged, so the runner
 #              publishes one wake; the next poll retries the same asks, and the same
 #              reason stays quiet until a poll succeeds.
+#              At most FM_DEPLOY_VERIFY_MAX_TESTERS (default 2) Testers may be live;
+#              a further ask is held with a cap hold line and a task wait, and the
+#              poll does not advance its cursor, so the ask is planned again next
+#              poll. A live Tester is the last ledger ask line's `tester` whose
+#              state/<tester>.meta still exists.
 # replay-skips Re-read no-user-visible-line and template-refused skips included in
 #              last_green_sha, so a corrected issue gets its ask.
 #              Plan one deploy ask per task with key replay:<task>:<sha>.
@@ -92,11 +100,11 @@
 # and the ask is planned again after FM_DEPLOY_VERIFY_HOLD_SECONDS (default 600).
 # Each such env is also a lease `env:<name>` (bin/fm-lease.sh, G5): while another
 # holder's lease is live the ask is held the same way, naming the holder, before any
-# RAM read, and planned again at every poll; a sent ask claims the lease for the
-# Tester (FM_DEPLOY_VERIFY_ASSISTANCE) first. Every ask naming the lease since its
-# last release holds it; each poll releases it once each row of every such ask has
-# a result that is not pending, on that ask's head, and a failed send gives back
-# only a lease no other ask holds.
+# RAM read, and planned again at every poll; a sent ask claims the lease under the
+# Tester's own id first. Every ask naming the lease since its last release holds it;
+# each poll releases it once each row of every such ask has a result that is not
+# pending, on that ask's head, and a failed send gives back only a lease no other ask
+# holds. The poll releases only a lease whose holder is a `verify-*` Tester id.
 # Before a sent ask, the record gets a wait on the Tester that clears on those rows.
 # An issue the parser refuses is a `template-refused` skip naming its problems; it
 # wakes firstmate once like a visible skip below, and a refused draft round is only
@@ -108,17 +116,18 @@
 #              the runner keeps polling after a fully handled result.
 #
 # Ledger lines (data/deploy-verify/ledger.jsonl):
-#   {type:"ask", round:"deploy"|"draft", key, task, issue, prs, sha, run, lines, rows, touched?, carried?, record}
+#   {type:"ask", round:"deploy"|"draft", key, task, issue, prs, sha, run, lines, rows, touched?, carried?, check?, tester}
 #   {type:"carry", round:"deploy", key, task, prs, sha, carried}
-#   {type:"ask", round:"rows", key, task, issue, prs, sha, head, lines, rows, env, envs, record}
-#   {type:"hold", round:"rows", key, task, sha, envs, held, lease?}
+#   {type:"ask", round:"rows", key, task, issue, prs, sha, head, lines, rows, env, envs, check?, tester}
+#   {type:"hold", round:"rows"|"deploy"|"draft", key, task, sha, envs, held, lease?, cap?}
 #   {type:"release", lease, task, key}
 #   {type:"skip", pr, task, reason:"no-task"|"internal"|"no-issue"|"no-user-visible-line"|"template-refused", detail?}
 #   {type:"draft-skip", key, reason, detail?}
 # Needs node (bin/fm-acceptance.mjs) and jq.
 # Environment: FM_DEPLOY_VERIFY_REPO (default huynhtandat223/cfw-modules), _JOB,
-# _WORKFLOW, _ASSISTANCE (default tester), _GH (the gh command), _POLL_SECONDS,
-# _ONCE=1 (poll once and exit 1 when nothing is due).
+# _WORKFLOW, _GH (the gh command), _POLL_SECONDS, _MAX_TESTERS (default 2),
+# _SPAWN (bin/fm-spawn.sh), _TASKS (bin/fm-tasks-axi.sh), _BRIEF (bin/fm-brief.sh),
+# _SEND (bin/fm-send.sh), _ONCE=1 (poll once and exit 1 when nothing is due).
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -135,9 +144,13 @@ LAST_POLL="$DATA/last-poll"
 REPO="${FM_DEPLOY_VERIFY_REPO:-huynhtandat223/cfw-modules}"
 JOB="${FM_DEPLOY_VERIFY_JOB:-Deploy Development host (5001)}"
 WORKFLOW="${FM_DEPLOY_VERIFY_WORKFLOW:-CI}"
-ASSISTANCE="${FM_DEPLOY_VERIFY_ASSISTANCE:-tester}"
 GH="${FM_DEPLOY_VERIFY_GH:-gh}"
 POLL_SECONDS="${FM_DEPLOY_VERIFY_POLL_SECONDS:-60}"
+MAX_TESTERS="${FM_DEPLOY_VERIFY_MAX_TESTERS:-2}"
+SPAWN_CMD="${FM_DEPLOY_VERIFY_SPAWN:-$SCRIPT_DIR/fm-spawn.sh}"
+TASKS_CMD="${FM_DEPLOY_VERIFY_TASKS:-$SCRIPT_DIR/fm-tasks-axi.sh}"
+BRIEF_CMD="${FM_DEPLOY_VERIFY_BRIEF:-$SCRIPT_DIR/fm-brief.sh}"
+SEND_CMD="${FM_DEPLOY_VERIFY_SEND:-$SCRIPT_DIR/fm-send.sh}"
 SOURCE_ID=deploy-verify
 
 # shellcheck source=bin/fm-pr-lib.sh
@@ -152,6 +165,11 @@ SOURCE_ID=deploy-verify
 . "$SCRIPT_DIR/fm-procevent-ask-lib.sh"
 
 die() { printf 'error: %s\n' "$*" >&2; exit 2; }
+
+case "$MAX_TESTERS" in
+  ''|*[!0-9]*) die 'FM_DEPLOY_VERIFY_MAX_TESTERS must be a positive integer' ;;
+esac
+[ "$MAX_TESTERS" -gt 0 ] || die 'FM_DEPLOY_VERIFY_MAX_TESTERS must be a positive integer'
 
 READ_ERROR_FILE="$DATA/.read-error"
 READ_ERROR=
@@ -442,7 +460,7 @@ plan_rows_task() {  # <task>
     lines=$(jq -c 'reduce (.[] | ltrimstr("- ") | split(" | ")[0] | split("@")[0]) as $i ([]; if index([$i]) then . else . + [$i] end)' <<<"$rows")
     key="rows:$task:$head:$(jq -r '.[]' <<<"$rows" | sha256sum | cut -c1-12)"
     # shellcheck disable=SC2016 # jq variables, not shell
-    held_at=$([ ! -f "$LEDGER" ] || jq -Rr --arg k "$key" 'fromjson? | select(.type == "hold" and .key == $k and (.lease | not)) | .at' "$LEDGER" | tail -n 1)
+    held_at=$([ ! -f "$LEDGER" ] || jq -Rr --arg k "$key" 'fromjson? | select(.type == "hold" and .key == $k and (.lease | not) and (.cap | not)) | .at' "$LEDGER" | tail -n 1)
     [ -z "$held_at" ] || [ $((now - held_at)) -ge "${FM_DEPLOY_VERIFY_HOLD_SECONDS:-600}" ] || continue
     add_ask "$(jq -cn --arg key "$key" --arg task "$task" --arg issue "${repo##*/}#$n" --arg issue_url "$issue_url" --arg head "$head" \
       --argjson rows "$rows" --argjson lines "$lines" --argjson envs "$ISSUE_ENVS" --argjson arrival "$now" \
@@ -479,11 +497,12 @@ lease_asks() {  # <env:name>
 # The Tester's env lease ends when every ask that holds it (lease_asks) has a result that is not pending, on the ask's
 # own head, on each of its rows.
 release_landed_leases() {
-  local f name asks ask task json landed
+  local f name asks ask task json landed holder
   for f in "$STATE"/.envlease-*; do
     [ -e "$f" ] && [ -f "$LEDGER" ] || continue
     name=${f##*/.envlease-}
-    [ "$(cut -f1 "$f" 2>/dev/null)" = "$ASSISTANCE" ] || continue
+    holder=$(cut -f1 "$f" 2>/dev/null)
+    case "$holder" in verify-*) ;; *) continue ;; esac
     asks=$(lease_asks "env:$name")
     [ "$(jq length <<<"$asks")" -gt 0 ] || continue
     landed=1
@@ -496,7 +515,7 @@ release_landed_leases() {
         || { landed=0; break; }
     done < <(jq -c '.[]' <<<"$asks")
     [ "$landed" = 1 ] || continue
-    env_lease release "env:$name" --holder "$ASSISTANCE" >/dev/null 2>&1 || continue
+    env_lease release "env:$name" --holder "$holder" >/dev/null 2>&1 || continue
     ledger_append "$(jq -c --arg l "env:$name" --argjson at "$(date +%s)" \
       'last as $n | {type: "release", lease: $l, task: $n.task, key: $n.key, tasks: (map(.task) | unique), keys: map(.key), at: $at}' <<<"$asks")"
   done
@@ -682,6 +701,147 @@ task_writer() {  # <args>...
 
 rows_task() { grep -qx 'record: rows' "$FM_HOME/data/$1/verify.md" 2>/dev/null; }
 
+# ---- Tester delivery -------------------------------------------------------
+
+# A new Tester's task id: the task, then the first 7 characters of the deployed head.
+tester_id_for_ask() {  # <ask-json>
+  local task sha
+  task=$(jq -r .task <<<"$1")
+  sha=$(jq -r '.head // .sha // ""' <<<"$1")
+  printf 'verify-%s-%s\n' "$task" "${sha:0:7}"
+}
+
+# The live Tester of a task: the last ledger ask line's `tester` whose task record still exists.
+tester_for_task() {  # <task>
+  local id
+  [ -f "$LEDGER" ] || return 1
+  # shellcheck disable=SC2016 # jq variables, not shell
+  id=$(jq -Rr --arg t "$1" 'fromjson? | select(.type == "ask" and .task == $t and (.tester // "") != "") | .tester' "$LEDGER" | tail -n 1)
+  [ -n "$id" ] && [ -f "$STATE/$id.meta" ] || return 1
+  printf '%s\n' "$id"
+}
+
+# Live Testers, by the task records the spawn leaves behind.
+live_tester_count() {
+  local f n=0
+  for f in "$STATE"/verify-*.meta; do
+    [ -f "$f" ] && [ ! -L "$f" ] && n=$((n + 1))
+  done
+  printf '%s\n' "$n"
+}
+
+# Hold an ask for a new Tester when the cap is reached: a task wait naming the cap and one ledger
+# hold line, and DELIVER_HELD tells the poll not to advance its cursor, so the ask is planned again.
+DELIVER_HELD=0
+hold_for_cap() {  # <ask-json>
+  local reason
+  reason="live Tester cap $MAX_TESTERS reached"
+  rows_wait "$1" cap "Tester ask held, not sent: $reason" || return 1
+  # shellcheck disable=SC2016 # jq variables
+  if ! ledger_test '.type == "hold" and .key == $k and .cap == $cap' --arg k "$(jq -r .key <<<"$1")" --argjson cap "$MAX_TESTERS"; then
+    ledger_append "$(jq -c --arg h "$reason" --argjson cap "$MAX_TESTERS" --argjson at "$(date +%s)" \
+      '{type: "hold", round, key, task, sha, held: $h, cap: $cap, at: $at}' <<<"$1")"
+  fi
+  DELIVER_HELD=1
+}
+
+# Fill a scaffolded brief's two subsections from files, one section at a time.
+fill_brief() {  # <brief> <intent-file> <spec-file>
+  local brief=$1 intent=$2 spec=$3 tmp
+  tmp="$brief.fill"
+  awk -v intent="$intent" -v spec="$spec" '
+    function emit(file,    line) { while ((getline line < file) > 0) print line; close(file) }
+    /^## Captain.s intent$/ { print; print ""; emit(intent); skip = 1; next }
+    /^## Firstmate spec$/ { skip = 0; print; print ""; emit(spec); next }
+    skip { next }
+    { print }
+  ' "$brief" > "$tmp" && mv -f "$tmp" "$brief"
+}
+
+# Spawn a new Tester scout for an ask and write the ask into its brief. Returns 1 with DELIVER_ERROR
+# set when the role files, the backlog item, the brief, or the spawn is refused.
+spawn_tester() {  # <ask-json> <content-json>
+  local ask=$1 content=$2 id task sha issue_url role_md role_json harness model effort
+  local tester_home record brief evidence intent spec
+  local -a args=() sargs=()
+  id=$TESTER_ID
+  task=$(jq -r .task <<<"$ask")
+  sha=$(jq -r '.head // .sha' <<<"$ask")
+  issue_url=$(jq -r .issue_url <<<"$ask")
+  role_md="$CONFIG/roles/tester.md"
+  role_json="$CONFIG/roles/tester.json"
+  if [ ! -f "$role_md" ] || [ ! -f "$role_json" ]; then
+    DELIVER_ERROR="Tester ask not delivered: the Tester template or pin is missing ($role_md, $role_json)"
+    return 1
+  fi
+  harness=$(jq -r '.harness // ""' "$role_json" 2>/dev/null) || harness=
+  if [ -z "$harness" ]; then
+    DELIVER_ERROR="Tester ask not delivered: $role_json names no harness"
+    return 1
+  fi
+  model=$(jq -r '.model // ""' "$role_json" 2>/dev/null) || model=
+  effort=$(jq -r '.effort // ""' "$role_json" 2>/dev/null) || effort=
+  if ! FM_HOME=$FM_HOME "$TASKS_CMD" show "$id" >/dev/null 2>&1; then
+    if ! FM_HOME=$FM_HOME "$TASKS_CMD" add "$id" "Verify $task on $sha for $issue_url" --kind scout >/dev/null 2>&1; then
+      DELIVER_ERROR="Tester ask not delivered: the backlog item $id could not be filed"
+      return 1
+    fi
+  fi
+  evidence="$FM_HOME/data/verify/$task/$id"
+  if ! mkdir -p "$evidence"; then
+    DELIVER_ERROR="Tester ask not delivered: the evidence directory $evidence could not be created"
+    return 1
+  fi
+  args=( "$id" firstmate --scout --also-write "$evidence" )
+  if ! rows_task "$task"; then
+    tester_home=$(sed -n 's/^home=//p' "$STATE/tester.meta" 2>/dev/null | tail -n 1)
+    [ -n "$tester_home" ] || tester_home=${FM_TESTER_HOME:-}
+    record="$tester_home/data/verify/$task.md"
+    [ -n "$tester_home" ] && [ -f "$record" ] && args+=( --also-write "$record" )
+  fi
+  if ! FM_HOME=$FM_HOME "$BRIEF_CMD" "${args[@]}" >/dev/null 2>&1; then
+    DELIVER_ERROR="Tester ask not delivered: the Tester brief could not be scaffolded"
+    return 1
+  fi
+  brief="$FM_HOME/data/$id/brief.md"
+  intent=$(mktemp "${TMPDIR:-/tmp}/fm-tester-intent.XXXXXX") || return 1
+  spec=$(mktemp "${TMPDIR:-/tmp}/fm-tester-spec.XXXXXX") || { rm -f "$intent"; return 1; }
+  printf 'Verify %s on %s for %s.\nThe ask below names every scenario and width to check; record each result and its evidence.\n' \
+    "$task" "$sha" "$issue_url" > "$intent"
+  {
+    cat "$role_md"
+    # shellcheck disable=SC2016 # Markdown fences are literal
+    printf '\n### The ask\n\n```json\n%s\n```\n' "$content"
+  } > "$spec"
+  if ! fill_brief "$brief" "$intent" "$spec"; then
+    rm -f "$intent" "$spec"
+    DELIVER_ERROR="Tester ask not delivered: the Tester brief could not be filled"
+    return 1
+  fi
+  rm -f "$intent" "$spec"
+  sargs=( "$id" "$FM_ROOT" --scout --harness "$harness" )
+  [ -z "$model" ] || sargs+=( --model "$model" )
+  [ -z "$effort" ] || sargs+=( --effort "$effort" )
+  if ! FM_HOME=$FM_HOME "$SPAWN_CMD" "${sargs[@]}" >/dev/null 2>&1; then
+    DELIVER_ERROR="Tester ask not delivered: the Tester spawn was refused"
+    return 1
+  fi
+  if [ ! -f "$STATE/$id.meta" ]; then
+    DELIVER_ERROR="Tester ask not delivered: the Tester spawn left no task record"
+    return 1
+  fi
+}
+
+# Steer an ask to the live Tester of its task. Returns 1 with DELIVER_ERROR set when the send is refused.
+send_tester_ask() {  # <tester-id> <content-json>
+  local id=$1 content=$2 text
+  text=$(printf 'Verify ask for %s:\n%s\n' "$(jq -r .task <<<"$content")" "$content")
+  if ! FM_HOME=$FM_HOME "$SEND_CMD" "$id" "$text" >/dev/null 2>&1; then
+    DELIVER_ERROR="Tester ask not delivered: the steer to $id was refused"
+    return 1
+  fi
+}
+
 # The task record of a task begun after T5, written before its ask: the issue's user-visible check rows, then a deploy
 # event that names the deployed head and the scenarios its PRs touch on a deploy round (a draft round's PR head is not
 # deployed, so it names none). Both are keyed by the ask, so a retry stores nothing twice. Returns 1 with DELIVER_ERROR
@@ -794,11 +954,23 @@ rows_wait() {  # <ask-json> <suffix> <note>
   fi
 }
 
-# A rows-round ask: another holder's env lease, then the env gates, then the Tester's env leases; a held ask gets its wait
-# and hold line, a sent ask its wait, record and ledger line (a failed send gives back the leases no other ask holds).
+# A rows-round ask: the Tester cap, another holder's env lease, then the env gates, then the Tester's env
+# leases; a held ask gets its wait and hold line, a sent ask its wait, brief or steer, and ledger line (a
+# failed send gives back the leases no other ask holds).
 deliver_rows_ask() {  # <ask-json>
-  local ask=$1 file name envs='[]' held='' content record out lease_hold=0
+  local ask=$1 file name envs='[]' held='' content out lease_hold=0 task tester new=0 check
   local -a names=() claimed=()
+  DELIVER_HELD=0
+  task=$(jq -r .task <<<"$ask")
+  tester=$(tester_for_task "$task") || tester=
+  if [ -z "$tester" ]; then
+    tester=$(tester_id_for_ask "$ask")
+    new=1
+    if [ "$(live_tester_count)" -ge "$MAX_TESTERS" ]; then
+      hold_for_cap "$ask" || return 1
+      return 0
+    fi
+  fi
   for file in "$CONFIG"/env/*; do
     [ -f "$file" ] || continue
     name=${file##*/}
@@ -810,7 +982,7 @@ deliver_rows_ask() {  # <ask-json>
   # Another holder's live lease holds the ask before any RAM read.
   for name in ${names[@]+"${names[@]}"}; do
     out=$(env_lease check "env:$name" 2>/dev/null) || continue
-    [ "${out##* }" = live ] && [ "${out%% *}" != "$ASSISTANCE" ] || continue
+    [ "${out##* }" = live ] && [ "${out%% *}" != "$tester" ] || continue
     held="$held${held:+; }env:$name is leased to ${out%% *}"
     lease_hold=1
   done
@@ -821,19 +993,8 @@ deliver_rows_ask() {  # <ask-json>
       [ -z "$GATE_HELD" ] || held="$held${held:+; }$GATE_HELD"
     done
   fi
-  if [ -z "$held" ]; then
-    for name in ${names[@]+"${names[@]}"}; do
-      if ! out=$(env_lease claim "env:$name" --holder "$ASSISTANCE" 2>&1); then
-        held="env:$name is leased: $(printf '%s' "$out" | sed -n '1p')"
-        lease_hold=1
-        break
-      fi
-      claimed+=("env:$name")
-    done
-  fi
-  ask=$(jq -c --argjson e "$envs" --argjson l "$(printf '%s\n' ${claimed[@]+"${claimed[@]}"} | jq -R . | jq -sc 'map(select(. != ""))')" '. + {envs: $e, leases: $l}' <<<"$ask")
+  ask=$(jq -c --argjson e "$envs" '. + {envs: $e}' <<<"$ask")
   if [ -n "$held" ]; then
-    release_claimed ${claimed[@]+"${claimed[@]}"}
     rows_wait "$ask" hold "Tester ask held, not sent: $held" || return 1
     # A held lease is planned again at every poll: one hold line while the reason stays the same.
     # shellcheck disable=SC2016 # jq variables, not shell
@@ -842,34 +1003,53 @@ deliver_rows_ask() {  # <ask-json>
       '{type: "hold", round, key, task, sha, envs, held: $h, at: $at} + (if $lease == 1 then {lease: true} else {} end)' <<<"$ask")"
     return 0
   fi
-  rows_wait "$ask" wait "Tester asked for these rows on $(jq -r .sha <<<"$ask")" || { release_claimed ${claimed[@]+"${claimed[@]}"}; return 1; }
-  content=$(jq -c '{schema: "fm-tester-verify.v1", round, task, issue, issue_url, prs, sha, head, lines, rows, env, envs,
-    check: "bin/fm-task.sh check \(.task) <id>@<width> pass|fail --evidence <path|url> --head \(.sha)"}' <<<"$ask")
-  record=$(jq -cn --arg id "$(jq -r .key <<<"$ask")" --argjson at "$(jq -r .arrival <<<"$ask")" --arg c "$content" \
-    '{schema: "fm-assistance-mentions.v1", messages: [{id: $id, arrival: $at, content: $c}]}')
-  deliver_record Tester "$ASSISTANCE" "$record" || { release_claimed ${claimed[@]+"${claimed[@]}"}; return 1; }
-  ledger_append "$(jq -c --arg r "$DELIVER_BASE" --argjson at "$(date +%s)" 'del(.arrival) + {type: "ask", record: $r, at: $at}' <<<"$ask")"
+  rows_wait "$ask" wait "Tester asked for these rows on $(jq -r .sha <<<"$ask")" || return 1
+  check="bin/fm-task.sh check $task <id>@<width> pass|fail --evidence <path|url> --head $(jq -r .sha <<<"$ask")"
+  content=$(jq -c --arg check "$check" '{schema: "fm-tester-verify.v1", round, task, issue, issue_url, prs, sha, head, lines, rows, env, envs, check: $check}' <<<"$ask")
+  # A new Tester is spawned before its lease is claimed, so a refused spawn never moves the lease from
+  # another ask's holder to a task record that does not exist.
+  if [ "$new" = 1 ]; then
+    TESTER_ID=$tester
+    spawn_tester "$ask" "$content" || return 1
+  fi
+  for name in ${names[@]+"${names[@]}"}; do
+    if ! out=$(env_lease claim "env:$name" --holder "$tester" 2>&1); then
+      release_claimed "$tester" ${claimed[@]+"${claimed[@]}"}
+      DELIVER_ERROR="Tester ask not delivered: env:$name could not be leased to $tester: $(printf '%s' "$out" | sed -n '1p')"
+      return 1
+    fi
+    claimed+=("env:$name")
+  done
+  ask=$(jq -c --argjson l "$(printf '%s\n' ${claimed[@]+"${claimed[@]}"} | jq -R . | jq -sc 'map(select(. != ""))')" '. + {leases: $l}' <<<"$ask")
+  if [ "$new" = 0 ]; then
+    send_tester_ask "$tester" "$content" || { release_claimed "$tester" ${claimed[@]+"${claimed[@]}"}; return 1; }
+  fi
+  ledger_append "$(jq -c --arg t "$tester" --arg c "$check" --argjson at "$(date +%s)" \
+    'del(.arrival) + {type: "ask", tester: $t, check: $c, at: $at}' <<<"$ask")"
 }
 
 # Give back the leases this delivery claimed, except one another ask still holds (lease_asks): the delivery's claim only
 # refreshed that lease, and release_landed_leases ends it when those asks land.
-release_claimed() {  # <env:name>...
-  local lease
+release_claimed() {  # <tester-id> <env:name>...
+  local holder=$1 lease
+  shift
   for lease in "$@"; do
     [ "$(lease_asks "$lease" | jq length)" -eq 0 ] || continue
-    env_lease release "$lease" --holder "$ASSISTANCE" >/dev/null 2>&1 || true
+    env_lease release "$lease" --holder "$holder" >/dev/null 2>&1 || true
   done
 }
 
 deliver_ask() {  # <ask-json>
-  local ask=$1 content record check='' rows_task=0
+  local ask=$1 content check='' rows_task=0 task tester new=0
   [ "$(jq -r .round <<<"$ask")" != rows ] || { deliver_rows_ask "$ask"; return; }
+  DELIVER_HELD=0
+  task=$(jq -r .task <<<"$ask")
   # A task begun after T5 is verified on its check rows in the task record: they are written first, and the ask names
   # the call for each result.
-  if rows_task "$(jq -r .task <<<"$ask")"; then
+  if rows_task "$task"; then
     rows_task=1
     record_rows "$ask" || return 1
-    check=$(jq -r '"bin/fm-task.sh check \(.task) <id>@<width> pass|fail --evidence <path|url> --head \(.sha)"' <<<"$ask")
+    check="bin/fm-task.sh check $task <id>@<width> pass|fail --evidence <path|url> --head $(jq -r .sha <<<"$ask")"
   fi
   ask=$(narrow_ask "$ask" 0) || return 1
   # Every row carries: nothing is due on this head, so no ask goes out and the ledger records the carry.
@@ -877,13 +1057,26 @@ deliver_ask() {  # <ask-json>
     ledger_append "$(jq -c --argjson at "$(date +%s)" '{type: "carry", round, key, task, prs, sha, carried, at: $at}' <<<"$ask")"
     return 0
   fi
+  tester=$(tester_for_task "$task") || tester=
+  if [ -z "$tester" ]; then
+    tester=$(tester_id_for_ask "$ask")
+    new=1
+    if [ "$(live_tester_count)" -ge "$MAX_TESTERS" ]; then
+      hold_for_cap "$ask" || return 1
+      return 0
+    fi
+  fi
   content=$(jq -c --arg check "$check" 'del(.arrival, .key) + {schema: "fm-tester-verify.v1", check: (if $check == "" then null else $check end)}
     | {schema, round, task, issue, issue_url, prs, sha, run, head, pushed, lines, rows, touched, carried, check}
     | with_entries(select(.value != null))' <<<"$ask")
-  record=$(jq -cn --arg id "$(jq -r .key <<<"$ask")" --argjson at "$(jq -r .arrival <<<"$ask")" --arg c "$content" \
-    '{schema: "fm-assistance-mentions.v1", messages: [{id: $id, arrival: $at, content: $c}]}')
-  deliver_record Tester "$ASSISTANCE" "$record" || return 1
-  ledger_append "$(jq -c --arg r "$DELIVER_BASE" --argjson at "$(date +%s)" 'del(.arrival) + {type: "ask", record: $r, at: $at}' <<<"$ask")"
+  if [ "$new" = 1 ]; then
+    TESTER_ID=$tester
+    spawn_tester "$ask" "$content" || return 1
+  else
+    send_tester_ask "$tester" "$content" || return 1
+  fi
+  ledger_append "$(jq -c --arg t "$tester" --arg c "$check" --argjson at "$(date +%s)" \
+    'del(.arrival) + {type: "ask", tester: $t, at: $at} + (if $c == "" then {} else {check: $c} end)' <<<"$ask")"
   # Opt-in task record shadow (bin/fm-task-shadow.sh): the delivered ask is a deploy event of its task; off costs one file test.
   # A task begun after T5 has its deploy event already.
   [ ! -e "$CONFIG/task-shadow" ] || [ "$rows_task" = 1 ] || FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_CONFIG_OVERRIDE=$CONFIG "$SCRIPT_DIR/fm-task-shadow.sh" deploy-verify \
@@ -891,7 +1084,7 @@ deliver_ask() {  # <ask-json>
 }
 
 cmd_autohandle() {  # <source-id> <sequence> <result-file>
-  local sid=${1:-} seq=${2:-} result=${3:-} ask failed=0 reason='' previous='' pr task skip
+  local sid=${1:-} seq=${2:-} result=${3:-} ask failed=0 held=0 reason='' previous='' pr task skip
   [ "$sid" = "$SOURCE_ID" ] && [ -f "$result" ] || return 1
   case "$seq" in ''|*[!0-9]*) return 1 ;; esac
   jq -e '.schema == "fm-deploy-verify-result.v1"' "$result" >/dev/null 2>&1 || return 1
@@ -913,6 +1106,7 @@ cmd_autohandle() {  # <source-id> <sequence> <result-file>
       failed=1
       [ -n "$reason" ] || reason=$DELIVER_ERROR
     fi
+    [ "$DELIVER_HELD" = 1 ] && held=1
   done < <(jq -c '.asks[]' "$result")
   if [ "$failed" -eq 1 ]; then
     [ ! -f "$LAST_ERROR" ] || previous=$(<"$LAST_ERROR")
@@ -922,7 +1116,8 @@ cmd_autohandle() {  # <source-id> <sequence> <result-file>
     "$SCRIPT_DIR/fm-procevent.sh" handled "$SOURCE_ID" "$seq" >/dev/null 2>&1 || true
     return 0
   fi
-  if jq -e '.cursor != null' "$result" >/dev/null 2>&1; then
+  # A held ask is planned again next poll, so the cursor waits for it.
+  if [ "$held" -eq 0 ] && jq -e '.cursor != null' "$result" >/dev/null 2>&1; then
     state_put "$(jq -r .cursor.cursor_run "$result")" "$(jq -r .cursor.last_green_sha "$result")"
   fi
   rm -f "$LAST_ERROR"
@@ -935,7 +1130,11 @@ cmd_silent() {  # <result-file>
   attention_skip "$result" && return 1
   jq -e '.schema == "fm-deploy-verify-result.v1" and .error == null' "$result" >/dev/null 2>&1 || return 1
   while IFS= read -r ask; do
-    ledger_has_key "$(jq -r .key <<<"$ask")" || return 1
+    # A cap- or lease-held ask is handled: it has a hold line and is planned again next poll.
+    # shellcheck disable=SC2016 # jq variable
+    ledger_has_key "$(jq -r .key <<<"$ask")" \
+      || ledger_test '.type == "hold" and .key == $k' --arg k "$(jq -r .key <<<"$ask")" \
+      || return 1
   done < <(jq -c '.asks[]' "$result")
   while IFS='|' read -r pr task; do
     ledger_pr_final "$pr" "$task" || return 1
