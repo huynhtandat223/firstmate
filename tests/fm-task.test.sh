@@ -2014,6 +2014,16 @@ case_owner_writer() {
   mk_running $t >/dev/null || { echo "setup: $ERR"; return 1; }
   ft ask $t "${ASK_FLAGS[@]}" --next-actor owner >/dev/null || { echo "setup ask: $ERR"; return 1; }
   before=$(count fm_task_event)
+  ow --action comment --task $t --note '   ' --owner u-1
+  must 'whitespace comment' 2 || return 1
+  [ "$(count fm_task_event)" = "$before" ] || return 1
+  ow --action comment --task $t --note 'KO1 owner comment' --owner u-1
+  must 'owner comment' 0 || return 1
+  ow --action comment --task $t --note 'KO1 owner comment' --owner u-1
+  must 'owner comment replay' 0 || return 1
+  [ "$(count fm_task_event)" = "$((before + 1))" ] || return 1
+  db fm_task_event | jq -e '.[] | select(.kind == "comment") | .actor == "owner:u-1" and .actorRole == "owner" and (.idempotencyKey | startswith("owner-comment:")) and (.body | fromjson | .note == "KO1 owner comment")' >/dev/null || return 1
+  before=$(count fm_task_event)
   ow --action answer --task $t --option 'Option A'
   must 'no owner' 2 || return 1
   jq -e '.ok == false and (.error | test("owner"))' <<<"$OUT" >/dev/null || { echo "no-owner answer: $OUT"; return 1; }
@@ -2026,7 +2036,7 @@ case_owner_writer() {
   must 'answer' 0 || return 1
   jq -e '.ok and .action == "answer" and (.writes | length) == 2' <<<"$OUT" >/dev/null || { echo "answer reply: $OUT"; return 1; }
   [ "$(task_state $t)" = ready ] || { echo "the answer did not unblock: $(task_state $t)"; return 1; }
-  db fm_task_event | jq -e --arg t $t '[.[] | select(.taskId == $t and (.kind == "comment" or .kind == "unblocked"))] | length == 2 and all(.actor == "owner:u-1" and .actorRole == "owner") and (map(select(.kind == "comment"))[0].body | fromjson | .note == "answer: Option A - go")' >/dev/null \
+  db fm_task_event | jq -e --arg t $t '[.[] | select(.taskId == $t and (.kind == "comment" or .kind == "unblocked") and ((.idempotencyKey // "") | startswith("owner-comment:") | not))] | length == 2 and all(.actor == "owner:u-1" and .actorRole == "owner") and (map(select(.kind == "comment"))[0].body | fromjson | .note == "answer: Option A - go")' >/dev/null \
     || { echo "the answer events: $(db fm_task_event | jq -c --arg t $t '[.[] | select(.taskId == $t) | {kind, actor, actorRole}]')"; return 1; }
   tail -n 1 "$FM_HOME/state/$t.status" | grep -q '^resolved ' || { echo "the answer wrote no resolved line: $(tail -n 2 "$FM_HOME/state/$t.status")"; return 1; }
   ow --action answer --task $t --option 'Option A' --owner u-1
