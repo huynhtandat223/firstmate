@@ -4560,9 +4560,10 @@ test_send_text_submit_refuses_confirming_enter_on_exit_picker() {
 }
 
 # Herdr can report `blocked` for a picker the submitting Enter opened. The
-# submit then reports delivery with no composer read, so the picker is named
-# only by the caller's next composer read, the one fm-control exit takes when
-# its wait for the agent to stop times out.
+# submit then reports delivery after the Claude recheck's one content read,
+# which finds no payload on the picker and presses nothing, so the picker is
+# named only by the caller's next composer read, the one fm-control exit takes
+# when its wait for the agent to stop times out.
 test_blocked_submit_leaves_the_exit_picker_to_the_next_composer_read() {
   local dir log resp fb out enter_count
   dir="$TMP_ROOT/submit-blocked-picker"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
@@ -4577,6 +4578,7 @@ test_blocked_submit_leaves_the_exit_picker_to_the_next_composer_read() {
     '  2. Move to background and exit' \
     '  3. Stay' \
     'Enter to confirm · Esc to cancel' > "$resp/8.out"
+  cp "$resp/8.out" "$resp/9.out"
   herdr_submit_preflight_prefix "$resp"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
