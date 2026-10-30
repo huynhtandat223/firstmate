@@ -705,15 +705,33 @@ rows_task() { grep -qx 'record: rows' "$FM_HOME/data/$1/verify.md" 2>/dev/null; 
 
 # A new Tester's task id: the task, then the first 7 characters of the deployed head.
 tester_id_for_ask() {  # <ask-json>
-  local task sha
+  local task sha base id n=1 item
   task=$(jq -r .task <<<"$1")
   sha=$(jq -r '.head // .sha // ""' <<<"$1")
-  printf 'verify-%s-%s\n' "$task" "${sha:0:7}"
+  base="verify-$task-${sha:0:7}"
+  id=$base
+  while :; do
+    [ ! -f "$STATE/$id.meta" ] || { printf '%s\n' "$id"; return; }
+    item=$(FM_HOME=$FM_HOME "$TASKS_CMD" show "$id" 2>/dev/null) || item=
+    # shellcheck disable=SC2016 # jq variable
+    if ! ledger_test '.type == "ask" and .tester == $id' --arg id "$id" \
+      && ! grep -Eq '^  state: (done|archived|closed)' <<<"$item"; then
+      printf '%s\n' "$id"
+      return
+    fi
+    n=$((n + 1))
+    id="$base-$n"
+  done
 }
 
 # The live Tester of a task: the last ledger ask line's `tester` whose task record still exists.
-tester_for_task() {  # <task>
+tester_for_task() {  # <task> <ask-json>
   local id
+  id=$(tester_id_for_ask "$2")
+  if [ -f "$STATE/$id.meta" ]; then
+    printf '%s\n' "$id"
+    return
+  fi
   [ -f "$LEDGER" ] || return 1
   # shellcheck disable=SC2016 # jq variables, not shell
   id=$(jq -Rr --arg t "$1" 'fromjson? | select(.type == "ask" and .task == $t and (.tester // "") != "") | .tester' "$LEDGER" | tail -n 1)
@@ -964,7 +982,7 @@ deliver_rows_ask() {  # <ask-json>
   local -a names=() claimed=()
   DELIVER_HELD=0
   task=$(jq -r .task <<<"$ask")
-  tester=$(tester_for_task "$task") || tester=
+  tester=$(tester_for_task "$task" "$ask") || tester=
   if [ -z "$tester" ]; then
     tester=$(tester_id_for_ask "$ask")
     new=1
@@ -1060,7 +1078,7 @@ deliver_ask() {  # <ask-json>
     ledger_append "$(jq -c --argjson at "$(date +%s)" '{type: "carry", round, key, task, prs, sha, carried, at: $at}' <<<"$ask")"
     return 0
   fi
-  tester=$(tester_for_task "$task") || tester=
+  tester=$(tester_for_task "$task" "$ask") || tester=
   if [ -z "$tester" ]; then
     tester=$(tester_id_for_ask "$ask")
     new=1

@@ -51,7 +51,13 @@ new_lab() {  # <bin-dir>: a firstmate home with a Tester role and fake spawn, ta
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "$LAB/spawn.calls"
 id=\$1
+[ ! -f "$H/state/\$id.meta" ] || exit 1
 printf 'kind=scout\n' > "$H/state/\$id.meta"
+if [ -f "$LAB/claim-race" ]; then
+  printf 'kind=ship\n' > "$H/state/racer.meta"
+  printf 'racer\\t%s\\n' "\$(date +%s)" > "$H/state/.envlease-company"
+  rm "$LAB/claim-race"
+fi
 SH
   cat > "$LAB/tasks" <<SH
 #!/usr/bin/env bash
@@ -889,7 +895,13 @@ scenario_rows_lease() {
   [ "$(ledger_count '.type == "hold"')" = 1 ] || { unset FM_TASK_SHADOW_WRITER; echo "hold lines: $(ledger)"; return 1; }
   # the worker releases: the next poll sends the ask under the Tester's lease
   "$BIN/fm-lease.sh" release env:company --holder beta
+  : > "$LAB/claim-race"
   cycle
+  [ "$(spawn_count)" = 1 ] || { unset FM_TASK_SHADOW_WRITER; echo 'race did not spawn its first Tester'; return 1; }
+  [ "$(ledger_count '.type == "ask"')" = 0 ] || { unset FM_TASK_SHADOW_WRITER; echo 'failed claim recorded an ask'; return 1; }
+  "$BIN/fm-lease.sh" release env:company --holder racer
+  cycle
+  [ "$(spawn_count)" = 1 ] || { unset FM_TASK_SHADOW_WRITER; echo 'claim retry spawned twice instead of steering'; return 1; }
   asked | jq -e 'select(.round == "rows" and .task == "alpha") | .envs[0].name == "company"' >/dev/null || { unset FM_TASK_SHADOW_WRITER; echo "no ask after the release: $(asked) $(ledger)"; return 1; }
   local tid
   tid="verify-alpha-$(sha h1 | cut -c1-7)"
@@ -1033,6 +1045,15 @@ scenario_live_tester() {
   [ "$(ledger | jq -r 'select(.type == "ask" and .task == "alpha") | .tester' | sort -u)" = "$id" ] \
     || { echo 'the second ask names another tester'; return 1; }
   grep -q -- "\"sha\":\"$(sha s3)\"" "$H/state/$id.inbox/001.msg" || { echo 'the steer does not carry the new ask'; return 1; }
+  # A new ask on the same head after cleanup needs a fresh, dispatchable id.
+  rm "$H/state/$id.meta"
+  jq '.asks |= map(.key += ":again")' "$H/state/procevent-inbox/deploy-verify.$SEQ.result" > "$LAB/again.result"
+  "$BIN/fm-procevent-deploy-verify.sh" autohandle deploy-verify 99 "$LAB/again.result" >/dev/null 2>&1
+  [ -f "$H/state/verify-alpha-$(sha s3 | cut -c1-7).meta" ] || { echo 'new head did not get its own Tester id'; return 1; }
+  rm "$H/state/verify-alpha-$(sha s3 | cut -c1-7).meta"
+  jq '.asks |= map(.key += ":third")' "$LAB/again.result" > "$LAB/third.result"
+  "$BIN/fm-procevent-deploy-verify.sh" autohandle deploy-verify 100 "$LAB/third.result" >/dev/null 2>&1
+  [ -f "$H/state/verify-alpha-$(sha s3 | cut -c1-7)-2.meta" ] || { echo 'same-head re-ask reused the closed Tester id'; return 1; }
 }
 
 # The live Tester cap holds a further new Tester's ask: the task gets a wait naming
@@ -1274,7 +1295,7 @@ mutate 'the live Tester cap holds a further ask' cap \
 mutate 'a held ask keeps the cursor' cap \
   's/\[ "\$held" -eq 0 \] && jq -e/true \&\& jq -e/'
 mutate 'a new Tester id names the task and head' spawn_brief \
-  's/printf .verify-%s-%s\\n. "\$task" "\$\{sha:0:7\}"/printf "verify\\n"/'
+  's/base="verify-\$task-\$\{sha:0:7\}"/base="verify"/'
 mutate 'a missing role refuses the spawn' failures \
   's/if \[ ! -f "\$role_md" \] \|\| \[ ! -f "\$role_json" \]; then/if false; then/; s/if \[ -z "\$harness" \]; then/if false; then/'
 mutate 'the spawn brief carries the ask' spawn_brief \
@@ -1289,4 +1310,8 @@ mutate 'only Tester scouts consume the cap' cap \
   's/ && grep -qx '\''kind=scout'\'' "\$f"//'
 mutate 'legacy Tester leases still release' rows_lease \
   's/tester\|verify-\*/verify-*/'
+mutate 'a claimed-race retry finds its live Tester' rows_lease \
+  's/id=\$\(tester_id_for_ask "\$2"\)/id=missing/'
+mutate 'a used closed Tester id gets a suffix' live_tester \
+  's/if ! ledger_test '\''.type == "ask" and .tester == \$id'\'' --arg id "\$id"/if true/'
 pass 'every guarded behavior has a red mutation proof'
