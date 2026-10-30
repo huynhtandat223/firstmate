@@ -34,6 +34,7 @@ TMP_ROOT=$(fm_test_tmproot fm-backend-herdr-tests)
 mkdir -p "$TMP_ROOT/ambient-home"
 export FM_HOME="$TMP_ROOT/ambient-home"
 export FM_BACKEND_HERDR_SUBMIT_MIN_SLEEP=0
+export FM_BACKEND_HERDR_RECHECK_SECONDS=0
 
 # make_herdr_fakebin: a `herdr` stub that logs every invocation (one line,
 # unit-separated args, to $FM_HERDR_LOG) and returns the canned response for
@@ -4998,6 +4999,31 @@ test_send_text_submit_long_literal_submits_when_composer_holds_every_byte() {
   pass "fm_backend_herdr_send_text_submit: a 1500-character payload a Claude composer still holds is submitted whole"
 }
 
+# HG3 (firstmate#176 G3): after a positive verdict on a Claude pane, a re-read that still shows the payload in the
+# composer presses Enter once more; a payload still shown after that Enter reads pending, so the caller escalates.
+test_send_text_submit_claude_recheck_presses_enter_once_more() {
+  local dir log resp fb out enter_count text=doorbell-ring case
+  for case in cleared stuck; do
+    dir="$TMP_ROOT/submit-recheck-$case"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+    printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/2.out"
+    printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/4.out"
+    herdr_submit_claude_prefix "$resp" "$text"
+    printf '  \xe2\x9d\xaf %s\n' "$text" > "$resp/8.out"
+    if [ "$case" = cleared ]; then printf '  \xe2\x9d\xaf\n' > "$resp/10.out"; else printf '  \xe2\x9d\xaf %s\n' "$text" > "$resp/10.out"; fi
+    fb=$(make_herdr_fakebin "$dir")
+    out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 FM_BACKEND_HERDR_RECHECK_SECONDS=0 \
+      bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "$1" 3 0.01 0.01' "$ROOT" "$text" )
+    enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
+    [ "$enter_count" -eq 2 ] || fail "a payload left in the composer after a positive verdict should get one more Enter ($case), sent $enter_count"
+    if [ "$case" = cleared ]; then
+      [ "$out" = empty ] || fail "the second Enter cleared the composer, so delivery is confirmed, got '$out'"
+    else
+      [ "$out" = pending ] || fail "a payload still shown after the second Enter must read pending, got '$out'"
+    fi
+  done
+  pass "fm_backend_herdr_send_text_submit: a Claude payload still in the composer after a positive verdict gets one more Enter"
+}
+
 test_send_text_submit_refuses_enter_when_composer_holds_only_the_suffix() {
   local dir log resp fb out enter_count text suffix
   dir="$TMP_ROOT/submit-long-suffix"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
@@ -6139,6 +6165,7 @@ test_send_text_submit_send_failed
 test_send_text_submit_unknown_on_capture_failure
 test_send_text_submit_unknown_on_composer_capture_failure
 test_send_text_submit_long_literal_submits_when_composer_holds_every_byte
+test_send_text_submit_claude_recheck_presses_enter_once_more
 test_send_text_submit_refuses_enter_when_composer_holds_only_the_suffix
 test_send_text_submit_refused_suffix_that_will_not_clear_is_unknown
 test_send_text_submit_clears_a_wrapped_suffix_one_row_per_press
