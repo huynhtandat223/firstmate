@@ -2018,8 +2018,10 @@ case_owner_router() {
   [ "$(count fm_task_delivery)" = 1 ] || return 1
   local before
   before=$(wc -l < "$FM_HOME/state/.wake-queue")
+  log_reset
   ft route-owner-comments --consumer owner-comments-test
   must 'router replay' 0 || return 1
+  [ "$(posts POST fm_task_delivery)" = 0 ] || return 1
   [ "$(wc -l < "$FM_HOME/state/.wake-queue")" = "$before" ] || return 1
   [ "$(count fm_task_delivery)" = 1 ] || return 1
   ft comment tk-router --note newer --role owner --actor owner:u-1 --key owner-comment:router-new >/dev/null || return 1
@@ -2066,6 +2068,16 @@ case_owner_writer() {
   mk_running $t >/dev/null || { echo "setup: $ERR"; return 1; }
   ft ask $t "${ASK_FLAGS[@]}" --next-actor owner >/dev/null || { echo "setup ask: $ERR"; return 1; }
   before=$(count fm_task_event)
+  local hashbin="$TMP_ROOT/hashbin" oldpath=$PATH
+  mkdir -p "$hashbin"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$hashbin/sha256sum"
+  chmod +x "$hashbin/sha256sum"
+  PATH="$hashbin:$oldpath" ow --action comment --task $t --note digest --owner u-1
+  must 'failed digest' 2 || return 1
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$hashbin/sha256sum"
+  PATH="$hashbin:$oldpath" ow --action comment --task $t --note digest --owner u-1
+  must 'empty digest' 2 || return 1
+  [ "$(count fm_task_event)" = "$before" ] || return 1
   ow --action comment --task $t --note '   ' --owner u-1
   must 'whitespace comment' 2 || return 1
   [ "$(count fm_task_event)" = "$before" ] || return 1

@@ -73,8 +73,10 @@ RC=0
 case "$ACTION" in
   comment)
     [[ "$NOTE" =~ [^[:space:]] ]] || usage 'comment needs a nonblank --note'
-    digest=$(printf '%s\0%s\0%s' "$OWNER" "$NOTE" "$(date -u +%Y-%m-%dT%H:%M)" | sha256sum)
-    run comment "$TASK" --note "$NOTE" --key "owner-comment:$TASK:${digest%% *}" || RC=$?
+    digest=$(printf '%s\0%s\0%s' "$OWNER" "$NOTE" "$(date -u +%Y-%m-%dT%H:%M)" | sha256sum) || usage 'comment digest failed'
+    digest=${digest%% *}
+    [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || usage 'comment digest is empty or invalid'
+    run comment "$TASK" --note "$NOTE" --key "owner-comment:$TASK:$digest" || RC=$?
     ;;
   answer)
     [ -n "$OPTION" ] || usage 'answer needs --option'
