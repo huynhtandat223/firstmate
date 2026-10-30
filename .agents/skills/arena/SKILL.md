@@ -77,6 +77,7 @@ Verify the grafted artifact like any other output of its kind.
 A problem the arena missed means Phase A was wrong (reframe and re-run) or a candidate caught it and the graft missed it (return to Phase E).
 
 After the synthesis note is written, tear down every seat and judge scout with `bin/fm-teardown.sh`.
+A dropped seat has no report, and teardown refuses a scout without one: firstmate first writes `data/<id>/report.md` recording the dropout and its reason, then runs `bin/fm-captain-hold.sh complete <id> --none`, then tears it down without `--force`.
 
 ## Output
 

@@ -48,6 +48,7 @@ For coverage, every required slice needs a result.
 For a race, apply the selection rule declared in Phase A.
 
 When every result is in or recorded as a gap, stop each slice's Storybook and tear down every worker with `bin/fm-teardown.sh`.
+A gap slice has no report, and teardown refuses a scout without one: firstmate first writes `data/<id>/report.md` recording the gap and its reason, then runs `bin/fm-captain-hold.sh complete <id> --none`, then tears it down without `--force`.
 
 ## Phase D: Report
 

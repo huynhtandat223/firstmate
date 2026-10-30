@@ -23,6 +23,7 @@ The role controls the role-allowed capability set and communication boundary.
 - `firstmate` may use this policy and the ordinary Firstmate lifecycle owners.
 
 A `worker` may also use the verification capability when it verifies expected behavior or claims a task done, and the `how` and `why` capabilities when their trigger is active.
+`firstmate` may use the `why` capability when its trigger is active.
 Any role may use an interview or crystallization capability when the captain asks for it in that session.
 
 A role may use a capability only when its trigger is active.

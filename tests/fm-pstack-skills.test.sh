@@ -44,10 +44,11 @@ test_arena_keeps_its_phases_and_rules() {
     "The judge is never from the parent firstmate session's model family." \
     'A seat is a worker started by `bin/fm-spawn.sh`' \
     "Read the usage meters before fan-out and record each reading in the backlog note" \
-    'Each writes its plan as its scout report, `data/<id>/report.md` (the report is the plan)'
+    'Each writes its plan as its scout report, `data/<id>/report.md` (the report is the plan)' \
+    'firstmate first writes `data/<id>/report.md` recording the dropout and its reason, then runs `bin/fm-captain-hold.sh complete <id> --none`, then tears it down without `--force`.'
   assert_no_grep "plan.md" "$ARENA/SKILL.md" \
     "arena skill has a plan seat write a file its scout brief does not allow: plan.md"
-  pass "arena keeps its six phases, the rubric, the judge, the seats, the meter read and the plan-as-report rule"
+  pass "arena keeps its six phases, the rubric, the judge, the seats, the meter read, the plan-as-report rule and the dropout teardown"
 }
 
 test_swarm_keeps_its_phases_and_rules() {
@@ -63,8 +64,9 @@ test_swarm_keeps_its_phases_and_rules() {
     "\`verify-cfw\` skill (its \`SKILL.md\` owns the invocation) with target \`url:<base>\`" \
     "Port 5010 is the captain's UI/UX review Storybook; a slice never serves on it or measures against it." \
     'takes its environment lease first, with `bin/fm-lease.sh claim env:<name> --holder <id>`' \
-    "Read the usage meters before fan-out and record each reading in the backlog note"
-  pass "swarm keeps its four phases, the verdicts, the relaunch-then-gap rule, url:<base>, the lease and the meter read"
+    "Read the usage meters before fan-out and record each reading in the backlog note" \
+    'firstmate first writes `data/<id>/report.md` recording the gap and its reason, then runs `bin/fm-captain-hold.sh complete <id> --none`, then tears it down without `--force`.'
+  pass "swarm keeps its four phases, the verdicts, the relaunch-then-gap rule, url:<base>, the lease, the meter read and the gap teardown"
 }
 
 test_trigger_index_loads_both_skills() {
@@ -124,11 +126,12 @@ test_policy_holds_the_adapted_skill_edits() {
   local line
   for line in \
     'A `worker` may also use the verification capability when it verifies expected behavior or claims a task done, and the `how` and `why` capabilities when their trigger is active.' \
+    '`firstmate` may use the `why` capability when its trigger is active.' \
     'The vendored bytes under `custom-skills/matt/` are immutable.' \
     'Adapted skills (`how`, `why`, `arena`, `swarm`) are not vendored: each carries a `PROVENANCE.md` naming its upstream commit and what changed.'; do
     [ -n "$(line_equal "$line" "$POLICY")" ] || fail "capability router no longer holds the line: $line"
   done
-  pass "capability router holds the worker grant and the adapted-skill statement"
+  pass "capability router holds the worker grant, the firstmate why grant and the adapted-skill statement"
 }
 
 test_policy_routes_how_then_why_after_diagnosis() {
