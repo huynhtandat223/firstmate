@@ -1908,7 +1908,10 @@ case_wait() {
   [ "$(declared "$f")" = "$line" ] || { echo "the watcher's reader does not take the wait: [$(declared "$f")]"; return 1; }
   ft event tk-w1 wait --next-actor tester --clears-on rows --rows 'A1@1440,A1@390' --note 'A1 on head h1' --key w1-wait
   [ "$(grep -c "key=wait-$n" "$f")" = 1 ] || { echo "a replayed wait wrote a second line"; return 1; }
+  FM_HOME="$TMP_ROOT/wait-other" ft check tk-w1 A1@390 pending --evidence waiting --head h1 >/dev/null || return 1
   FM_HOME="$TMP_ROOT/wait-other" ft check tk-w1 A1@1440 pass --evidence e1 --head h1 >/dev/null || { echo "check: $ERR"; return 1; }
+  ft deliver tk-w1 --consumer wait-test >/dev/null || { echo "deliver partial rows: $ERR"; return 1; }
+  [ "$(declared "$f")" = "$line" ] || { echo 'partial row results cleared the declared wait'; return 1; }
   grep -q '^resolved .*wait-' "$f" && { echo "one of two asked rows resolved the wait"; return 1; }
   FM_HOME="$TMP_ROOT/wait-other" ft check tk-w1 A1@390 pass --evidence e2 --head h1 >/dev/null || { echo "check: $ERR"; return 1; }
   [ -e "$TMP_ROOT/wait-other/state/tk-w1.status" ] && { echo "another home got a status line for the wait"; return 1; }
