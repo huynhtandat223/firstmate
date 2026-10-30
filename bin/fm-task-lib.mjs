@@ -259,7 +259,7 @@ async function taskEvents(taskId) {
   for (const event of events) {
     const body = bodyOf(event);
     if (!body.noteDocument) continue;
-    const doc = await firstRow('fm_event_document', `fmTaskEventId eq ${event.id}`);
+    const doc = await firstRow('fm_event_document', `fmTaskEventId eq ${event.id} and title eq 'Event note'`);
     if (!doc) throw new Fail(3, `the note document of event ${event.seq} is missing`);
     event.body = JSON.stringify({ ...body, note: doc.content });
   }
@@ -491,6 +491,11 @@ async function append(taskId, who, build) {
     const events = await taskEvents(taskId);
     const spec = await build({ task: fold(events), events });
     checkSet(spec.set || {});
+    if (spec.note && JSON.stringify({ v: 1, note: spec.note, set: spec.set || {}, ...spec.extra }).length > 8000 - EVENT_STAGE_BUDGET) {
+      spec.children = { ...spec.children, documents: [...(spec.children?.documents || []), { title: 'Event note', mediaType: 'text/plain', content: spec.note }] };
+      spec.note = '';
+      spec.extra = { ...spec.extra, noteDocument: true };
+    }
     const body = { seq: high + 1, taskId, kind: spec.kind, actorRole: who.role, actor: who.actor, body: wireBody(spec), idempotencyKey: who.key };
     const stage = fold([...events, body])?.stage;
     body.body = wireBody({ ...spec, extra: { ...spec.extra, stage } });
@@ -1272,11 +1277,6 @@ async function cmdComment(args) {
     guard('comment', task);
     if (reply !== undefined && !events.some((event) => event.seq === Number(reply) && event.kind === 'comment')) throw rule('--reply-to must name an existing comment of this task');
     const spec = { kind: 'comment', note: noteOf(args), extra: { ...(ask ? { ask } : {}), ...(reply !== undefined ? { replyTo: Number(reply) } : {}) }, children: withImages({}, images) };
-    if (JSON.stringify({ v: 1, note: spec.note, set: {}, ...spec.extra }).length > 8000 - EVENT_STAGE_BUDGET) {
-      spec.children.documents = [{ title: 'Comment', mediaType: 'text/plain', content: spec.note }];
-      spec.note = '';
-      spec.extra.noteDocument = true;
-    }
     return spec;
   });
 }

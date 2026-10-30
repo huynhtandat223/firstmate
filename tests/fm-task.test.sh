@@ -1680,6 +1680,9 @@ case_row() {
   long_note=$(head -c 7958 /dev/zero | tr '\0' c)
   ft comment tk-row1 --note "$long_note"; must '7958-character comment' 0 || return 1
   question_seq=$(seq_of)
+  ft event tk-row1 steer --note "$long_note"; must '7958-character steer' 0 || return 1
+  ft show tk-row1 --json; must 'read long steer' 0 || return 1
+  [ "$(jq -r .lastNote <<<"$OUT")" = "${long_note:0:300}" ] || return 1
   ft thread tk-row1; must 'read long comment' 0 || return 1
   grep -Fx "$long_note" <<<"$OUT" >/dev/null || return 1
   long_note=$(head -c 20000 /dev/zero | tr '\0' r)
@@ -2396,7 +2399,7 @@ mutate 'rows --surface user-visible writes only the Tester rows' rows_visible "s
 mutate 'rows of another surface are left as they are' rows_visible "|| (surface !== 'all' && row.surface !== surface)) continue;" ') continue;'
 mutate 'a deployed task needs a deployed head to approve' approve_deployed "&& lastHeadEvent(events)?.kind !== 'deploy') {" '&& false) {'
 mutate 'a row longer than one event body travels in a document child' row 'if (set.row === undefined || JSON.stringify({ v: 1, note, set, ...extra }).length <= 8000 - EVENT_STAGE_BUDGET) return' 'if (true) return'
-mutate 'long comments travel in documents' row 'if (JSON.stringify({ v: 1, note: spec.note, set: {}, ...spec.extra }).length > 8000 - EVENT_STAGE_BUDGET)' 'if (false)'
+mutate 'long comments travel in documents' row 'if (spec.note && JSON.stringify({ v: 1, note: spec.note, set: spec.set || {}, ...spec.extra }).length > 8000 - EVENT_STAGE_BUDGET)' 'if (false)'
 mutate 'the projection reads a long row from its document' row 'return events.map((e) => (e === carrier ? { ...e, rowText } : e));' 'return events;'
 mutate 'a row must be the header of its own task' row "if (ROW_LINE.exec(\`- [ ] \${row}\`)?.[1] !== taskId) throw rule" 'if (false) throw rule'
 mutate 'notes cannot hold a row or a section' row 'if (ROW_LINE.test(line) || SECTION_LINE.test(line)) throw rule' 'if (false) throw rule'
