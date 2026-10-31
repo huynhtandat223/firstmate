@@ -196,9 +196,9 @@ state_put() {  # <cursor-run> <last-green-sha>
 
 # One |-separated row per PR and task: url, task, surface, issue hint, live (1 for a task
 # that still has state/<task>.meta). Live rows come from the endpoint records,
-# finished tasks from the PR URL on their backlog line.
+# finished tasks from the PR URL on their backlog row (bin/fm-tasks-axi.sh rows).
 build_map() {  # <out-file>
-  local f pr task surface backlog
+  local f pr task surface
   {
     for f in "$STATE"/*.meta; do
       [ -f "$f" ] && [ ! -L "$f" ] || continue
@@ -209,19 +209,11 @@ build_map() {  # <out-file>
       surface=$(sed -n 's/^surface=//p' "$f" | head -1)
       printf '%s|%s|%s||1\n' "$pr" "$task" "$surface"
     done
-    backlog="$FM_HOME/data/backlog.md"
-    [ ! -f "$backlog" ] || awk -v repo="$REPO" -v short="${REPO##*/}" '
-      /^- \[.\] / && /\(kind: ship\)/ {
-        line = $0; sub(/^- \[.\] /, "", line)
-        task = line; sub(/ .*/, "", task)
-        hint = ""
-        if (match($0, short " #[0-9]+")) hint = substr($0, RSTART + length(short) + 2, RLENGTH - length(short) - 2)
-        rest = $0
-        while (match(rest, "https://github.com/" repo "/pull/[0-9]+")) {
-          printf "%s|%s||%s|0\n", substr(rest, RSTART, RLENGTH), task, hint
-          rest = substr(rest, RSTART + RLENGTH)
-        }
-      }' "$backlog"
+    FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-tasks-axi.sh" rows --kind ship --fields links 2>/dev/null \
+      | jq -r --arg repo "$REPO" --arg short "${REPO##*/}" '
+        .[] | .id as $task | ((((.title // "") | capture($short + " #(?<n>[0-9]+)")?) | .n) // null) as $hint
+        | ("\(.title // "") \(.links // "")" | scan("https://github.com/" + $repo + "/pull/[0-9]+"))
+        | "\(.)|\($task)||\($hint // "")|0"' || true
   } | awk -F'|' '
     { k = $1 FS $2; seen[k] = 1; if ($3 != "") s[k] = $3; if ($4 != "") h[k] = $4; if ($5 == 1) l[k] = 1 }
     END { for (k in seen) { split(k, a, FS); printf "%s|%s|%s|%s|%d\n", a[1], a[2], s[k], h[k], l[k] } }' \

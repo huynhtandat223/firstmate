@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2016
 # Behavior tests for the task identity checks (spec huynhtandat223/firstmate#200, E7;
-# bin/fm-task-identity-check.sh). TI1: a done id is refused, citing its archive line.
+# bin/fm-task-identity-check.sh). TI1: a done id is refused.
 # TI2: a second live task for one ticket key is refused, naming the first. TI3: a PR
 # that closes another issue is refused, naming both issues (the forge read is a fake
 # gh that answers with the real PR 1725 facts). Every case runs in a lab home under a
@@ -20,7 +20,19 @@ new_home() {  # <name>: a lab home with data/ state/ config/ projects/ and block
   printf 'block\n' > "$HOME_DIR/config/enforce-task-identity"
 }
 
+# The check reads the backlog only through bin/fm-tasks-axi.sh rows, so the fixture rows below must form a backlog
+# tasks-axi parses: rows written bare are put under ## Queued (open) and ## Done (checked), each with its body lines.
+sectionize() {
+  local file="$HOME_DIR/data/backlog.md"
+  [ -f "$file" ] && ! grep -q '^## ' "$file" || return 0
+  awk '
+    /^- \[[xX]\] / { cur = "done" } /^- \[ \] / { cur = "open" }
+    { if (cur == "done") done = done $0 "\n"; else open = open $0 "\n" }
+    END { printf "## In flight\n\n## Queued\n%s\n## Done\n%s", open, done }' "$file" > "$file.tmp" && mv "$file.tmp" "$file"
+}
+
 run() {  # <args...>: the check against HOME_DIR; sets RC and OUT
+  sectionize
   OUT=$(FM_HOME="$HOME_DIR" FM_ROOT_OVERRIDE='' PATH="${FAKEBIN:+$FAKEBIN:}$PATH" "$CHECK" "$@" 2>&1)
   RC=$?
 }
@@ -28,20 +40,19 @@ run() {  # <args...>: the check against HOME_DIR; sets RC and OUT
 test_ti1_a_done_id_is_refused_with_its_line() {
   new_home ti1
   {
-    printf '# Archive\n\n## Archived 2026-09-25\n'
     printf -- '- [x] dci-screen-triggers - POST /v1/screen-triggers (repo: dms-code-index) (kind: ship) (done 2026-09-24)\n'
     printf -- '- [x] other-done - something else (kind: ship)\n'
-  } > "$HOME_DIR/data/done-archive.md"
+  } > "$HOME_DIR/data/backlog.md"
   run add dci-screen-triggers "Screen triggers again"
   expect_code 1 "$RC" "TI1 a done id must be refused: $OUT"
-  assert_contains "$OUT" "data/done-archive.md:4" "TI1 the refusal should cite the archive line"
+  assert_contains "$OUT" "dci-screen-triggers is already a done task" "TI1 the refusal should name the done task"
   run add dci-screen-triggers-2 "Screen triggers again"
   expect_code 0 "$RC" "a fresh id must pass: $OUT"
   printf -- '- [x] done-in-backlog - old (kind: ship)\n' > "$HOME_DIR/data/backlog.md"
   run add done-in-backlog "reuse"
   expect_code 1 "$RC" "a done row in the backlog also blocks reuse: $OUT"
-  assert_contains "$OUT" "data/backlog.md:1" "the backlog line should be cited"
-  pass "TI1: adding task dci-screen-triggers is refused, citing data/done-archive.md and its line; a new id and no match pass"
+  assert_contains "$OUT" "done-in-backlog is already a done task" "the done task should be named"
+  pass "TI1: adding task dci-screen-triggers is refused as a done task of the backlog; a new id and no match pass"
 }
 
 test_a_create_after_dispatch_is_not_refused_for_its_own_branch() {
@@ -52,7 +63,8 @@ test_a_create_after_dispatch_is_not_refused_for_its_own_branch() {
   # The spawn made the pool worktree, whose branch the project clone shares.
   git -C "$HOME_DIR/projects/proj" branch fm/spawned-task
   printf 'token\n' > "$HOME_DIR/token"
-  printf -- '- [x] done-task - old (kind: ship)\n' > "$HOME_DIR/data/done-archive.md"
+  printf -- '- [x] done-task - old (kind: ship)\n' > "$HOME_DIR/data/backlog.md"
+  sectionize
   # The API address is closed: a create that passes the identity check fails on the network,
   # one the check refuses stops before it. The writer is the real fm-task.sh in both runs.
   env_prefix=(env FM_HOME="$HOME_DIR" FM_TASK_BASE_URL=http://127.0.0.1:9 FM_TASK_TOKEN_FILE="$HOME_DIR/token")
@@ -178,6 +190,7 @@ test_the_merge_path_runs_the_pr_identity_check_too() {
   new_home merge
   printf -- '- [ ] %s - Profile Maintenance https://github.com/huynhtandat223/cfw-modules/issues/1707 (repo: cfw-modules) (kind: ship)\n' "$id" > "$HOME_DIR/data/backlog.md"
   printf 'kind=ship\nproject=%s\n' "$HOME_DIR/projects/cfw-modules" > "$HOME_DIR/state/$id.meta"
+  sectionize
   make_fake_gh https://github.com/huynhtandat223/cfw-modules/issues/1708
   for merge in 0 1; do
     out=$(FM_HOME="$HOME_DIR" FM_ROOT_OVERRIDE='' FM_PR_CHECK_MERGE=$([ "$merge" = 1 ] && echo 1 || echo '') PATH="$FAKEBIN:$PATH" "$ROOT/bin/fm-pr-check.sh" "$id" "$pr" 2>&1); rc=$?
@@ -192,10 +205,12 @@ test_the_merge_path_runs_the_pr_identity_check_too() {
 test_the_callers_run_the_check() {
   new_home callers
   printf -- '- [x] reused-id - old\n' > "$HOME_DIR/data/backlog.md"
-  cp "$ROOT/.tasks.toml" "$HOME_DIR/.tasks.toml"
+  fm_test_tasks_toml "$HOME_DIR/.tasks.toml"
   FAKEBIN="$TMP_ROOT/faketasks"
   mkdir -p "$FAKEBIN"
-  printf '#!/usr/bin/env bash\necho "tasks-axi ran: $*" >> "%s/ran"\n' "$TMP_ROOT" > "$FAKEBIN/tasks-axi"
+  sectionize
+  # A stand-in for every write; the check's own `list` read reaches the real tasks-axi.
+  printf '#!/usr/bin/env bash\n[ "$1" != list ] || exec %q "$@"\necho "tasks-axi ran: $*" >> "%s/ran"\n' "$(command -v tasks-axi)" "$TMP_ROOT" > "$FAKEBIN/tasks-axi"
   chmod +x "$FAKEBIN/tasks-axi"
   rm -f "$TMP_ROOT/ran"
   OUT=$(FM_HOME="$HOME_DIR" PATH="$FAKEBIN:$PATH" "$ROOT/bin/fm-tasks-axi.sh" add reused-id "again" --kind ship 2>&1); RC=$?

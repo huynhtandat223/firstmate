@@ -48,7 +48,7 @@
 #                       detected primary harness.
 #   5. read-once contract - the do-not-re-read contract covering every source
 #                       represented by the two digests below.
-#   6. fleet digest   - a compact data/backlog.md identity/metadata listing,
+#   6. fleet digest   - a compact backlog identity/metadata listing,
 #                       every state/*.meta, a bounded state/*.status tail,
 #                       the away posture (state/.afk-contract and the legacy
 #                       state/.afk daemon flag), and a cheap per-task
@@ -174,9 +174,7 @@
 # stay out of the startup digest; the same never-bound-a-blocked-row and
 # held-summary rules apply, recognized there from the title line's own
 # hold/blocked-by markers.
-# Full bodies are targeted follow-up only: `bin/fm-tasks-axi.sh show <id> --full` when
-# compatible tasks-axi is available, or `data/backlog.md` when the file body is
-# truly needed.
+# Full bodies are targeted follow-up only: `bin/fm-tasks-axi.sh show <id> --full`.
 #
 # STATUS TAILS: FM_SESSION_START_STATUS_TAIL bounds how many lines each task's
 # tail prints, and bin/fm-line-cap-lib.sh bounds how long each of those lines
@@ -484,7 +482,7 @@ print_captain_context() {
 }
 
 print_backlog_pointer() {
-  printf 'Full task bodies remain available on demand: bin/fm-tasks-axi.sh show <id> --full when compatible tasks-axi is available, or data/backlog.md.\n'
+  printf 'Full task bodies remain available on demand: bin/fm-tasks-axi.sh show <id> --full.\n'
 }
 
 # Held items are a count per hold kind, plus in full only the ones this turn can
@@ -713,55 +711,56 @@ print_ready_queued_bounded() {
   '
 }
 
+# The backlog is read only through bin/fm-tasks-axi.sh, which addresses this home's configured tasks-axi backend.
+axi() { FM_HOME="$FM_HOME" FM_DATA_OVERRIDE="$DATA" FM_CONFIG_OVERRIDE="$CONFIG" "$SCRIPT_DIR/fm-tasks-axi.sh" "$@"; }
+
 print_backlog_tasks_axi_compact() {
-  local path=$1 in_flight held held_view blocked ready err
-  if ! in_flight=$(tasks-axi list --file "$path" --state in_flight --fields "$BACKLOG_FIELDS" 2>&1); then
+  local in_flight held held_view blocked ready err
+  if ! in_flight=$(axi list --state in_flight --fields "$BACKLOG_FIELDS" 2>&1); then
     err=$in_flight
-  elif ! held=$(tasks-axi list --file "$path" --state held --fields "$HELD_FIELDS" 2>&1); then
+  elif ! held=$(axi list --state held --fields "$HELD_FIELDS" 2>&1); then
     err=$held
-  elif ! blocked=$(tasks-axi list --file "$path" --state queued --blocked --fields "$BACKLOG_FIELDS" 2>&1); then
+  elif ! blocked=$(axi list --state queued --blocked --fields "$BACKLOG_FIELDS" 2>&1); then
     err=$blocked
-  elif ! ready=$(tasks-axi ready --file "$path" 2>&1); then
+  elif ! ready=$(axi ready 2>&1); then
     err=$ready
   else
     printf 'compact backlog listing (tasks-axi; done rows omitted; every in-flight and blocked row shown in full; held rows counted per hold kind, with the due or changed ones in full; ready queued bounded to %s; task bodies omitted)\n' \
       "$QUEUED_LIMIT"
     printf '\nin flight:\n'
-    printf '%s\n' "$in_flight" | fm_hold_reason_decode_stream | strip_axi_help
+    printf '%s\n' "$in_flight" | strip_axi_help
     printf '\n'
-    held_view=$(printf '%s\n' "$held" | fm_hold_reason_decode_stream | strip_axi_help \
+    held_view=$(printf '%s\n' "$held" | strip_axi_help \
       | held_summarize toon 'bin/fm-tasks-axi.sh list --state held')
     emit_held_view "$held_view"
     printf '\nblocked queued:\n'
-    printf '%s\n' "$blocked" | fm_hold_reason_decode_stream | strip_axi_help
+    printf '%s\n' "$blocked" | strip_axi_help
     printf '\nready queued (dispatchable now):\n'
     print_ready_queued_bounded "$ready"
     return 0
   fi
-  printf 'tasks-axi compact listing failed; falling back to title-line rendering.\n'
+  printf 'tasks-axi compact listing failed:\n'
   printf '%s\n' "$err"
-  print_backlog_manual_compact "$path" "fallback"
 }
 
 print_backlog_compact() {
   local path=$1 label=$2
   subsection "$label"
-  if [ -f "$path" ]; then
+  if fm_backlog_backend_manual "$CONFIG"; then
+    # config/backlog-backend `manual`: firstmate edits the backlog file by hand, so it is read as that file.
     if [ -s "$path" ]; then
-      if fm_tasks_axi_backend_available "$CONFIG"; then
-        print_backlog_tasks_axi_compact "$path"
-      elif fm_backlog_backend_manual "$CONFIG"; then
-        print_backlog_manual_compact "$path" "manual backend"
-      else
-        print_backlog_manual_compact "$path" "tasks-axi unavailable or incompatible"
-      fi
-      print_backlog_pointer
+      print_backlog_manual_compact "$path" "manual backend"
     else
-      printf '(present, empty)\n'
+      printf 'ABSENT or empty\n'
     fi
+    printf 'Full task bodies remain available on demand in data/backlog.md (manual backend).\n'
+    return 0
+  elif fm_tasks_axi_backend_available "$CONFIG"; then
+    print_backlog_tasks_axi_compact
   else
-    printf 'ABSENT\n'
+    printf 'tasks-axi unavailable or incompatible; run bin/fm-bootstrap.sh for the install command\n'
   fi
+  print_backlog_pointer
 }
 
 print_status_tail() {
@@ -1083,11 +1082,11 @@ cat <<'EOF'
 This digest prints in full: data/captain.md and data/captain-shared.md, plus the
 handoff its Start here line names (capped at 40000 bytes), all at the top, right
 after the head,
-then every state/*.meta, a compact data/backlog.md listing,
+then every state/*.meta, a compact backlog listing (bin/fm-tasks-axi.sh),
 a bounded tail of every state/*.status,
 data/projects.md, data/secondmates.md, and data/learnings.md.
 Do NOT re-read any of them after reading this digest, and do NOT bulk-read
-data/backlog.md or state/*.status: re-reading everything defeats the entire
+the backlog or state/*.status: re-reading everything defeats the entire
 point of this command.
 
 Go to a source directly only when:
@@ -1096,7 +1095,7 @@ Go to a source directly only when:
   - an individual full status log is needed for older wake-event history, or a
     status line was capped and its tail matters (each task's full log path is
     printed with its tail),
-  - a full task body is needed (bin/fm-tasks-axi.sh show <id> --full, or data/backlog.md),
+  - a full task body is needed (bin/fm-tasks-axi.sh show <id> --full),
   - the backlog listing disclosed omitted queued items and this turn needs them,
   - the handoff printed a "handoff cut at 40000 bytes" marker (then read the
     rest of that handoff file from the byte where it was cut),
@@ -1113,7 +1112,7 @@ EOF
 # truncated tail must never take.
 stage fleet-state
 section "FLEET STATE"
-print_backlog_compact "$DATA/backlog.md" "data/backlog.md"
+print_backlog_compact "$DATA/backlog.md" "backlog (bin/fm-tasks-axi.sh)"
 
 subsection "Work under way (state/*.meta)"
 META_FOUND=0

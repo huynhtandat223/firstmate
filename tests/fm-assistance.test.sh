@@ -15,7 +15,7 @@ printf '#!/usr/bin/env bash\nexit 99\n' > "$TMP_ROOT/fakebin/herdr"
 chmod +x "$TMP_ROOT/fakebin/herdr"
 export PATH="$TMP_ROOT/fakebin:$PATH"
 unset FM_ROOT_OVERRIDE FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_CONFIG_OVERRIDE FM_PROJECTS_OVERRIDE
-cp "$ROOT/.tasks.toml" "$parent/.tasks.toml"
+fm_test_tasks_toml "$parent/.tasks.toml"
 printf 'sample\n' > "$helper/.fm-assistance-home"
 printf 'schema=fm-secondmate-parent.v1\nroute=local\nparent_home=%s\n' "$parent" > "$helper/.fm-assistance-parent"
 printf -- '- sample - Sample observer (home: %s; scope: observe; projects: ; added 2026-10-13)\n' "$helper" > "$parent/data/assistances.md"

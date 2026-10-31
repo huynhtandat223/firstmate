@@ -199,7 +199,7 @@ test_empty_fleet_json() {
   out=$(FM_HOME="$home" "$SNAPSHOT" --json)
   printf '%s' "$out" | jq -e '
     .schema == "fm-fleet-snapshot.v1"
-      and .backlog.present == false
+      and .backlog.present == true and (.backlog.records | length) == 0
       and (.tasks|length == 0)
       and .main_inventory.valid == true
       and .main_inventory.reason == null
@@ -254,8 +254,8 @@ test_fixture_snapshot_json() {
       and .current_state.state == "unknown"
   ' >/dev/null || fail "cmux missing-file row missing"
   printf '%s' "$out" | jq -e '
-    [.backlog.records[] | select(.state == "queued")] | length == 2
-  ' >/dev/null || fail "queued canonical and unstructured backlog records missing"
+    [.backlog.records[] | select(.state == "queued")] | length == 1
+  ' >/dev/null || fail "the queued task row is missing (a free-form backlog line is no task row of tasks-axi)"
   printf '%s' "$out" | jq -e '
     .backlog.records[] | select(.id == "done-task")
     | .state == "done" and .pr_url == "https://github.com/kunchenguid/firstmate/pull/7"
@@ -403,12 +403,13 @@ EOF
   out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --json)
   printf '%s' "$out" | jq -e '
     .main_inventory.valid == false
-      and .main_inventory.reason == "unstructured current backlog row"
-      and .main_inventory.unstructured_current_count == 2
+      and .main_inventory.reason == "in-flight backlog item has no child metadata"
+      and .main_inventory.unstructured_current_count == 0
       and (.main_inventory.orphan_in_flight == ["orphan-ship"])
       and ([.tasks[].id] == ["visible-ship"])
   ' >/dev/null || fail "main_inventory did not disclose orphan/unstructured: $out"
-  # Counterfactual: add meta for the orphan and strip free-form current lines.
+  # The backlog is read through tasks-axi rows, so a free-form line is no task row and never counts.
+  # Counterfactual: add meta for the orphan.
   cat > "$home/data/backlog.md" <<'EOF'
 ## In flight
 - [ ] orphan-ship - Structured without meta (repo: alpha) (kind: ship) (since 2026-07-11)
@@ -435,7 +436,7 @@ EOF
       and (.main_inventory.orphan_in_flight | length) == 0
       and (([.tasks[].id] | sort) == ["orphan-ship", "visible-ship"])
   ' >/dev/null || fail "main_inventory stayed invalid after meta + structured cleanup: $out"
-  pass "main_inventory discloses orphan/unstructured and clears when inventory is consistent"
+  pass "main_inventory discloses an orphan in-flight row and clears when inventory is consistent"
 }
 
 test_normalized_roles_and_plural_blocker_readiness() {
@@ -624,23 +625,23 @@ test_backlog_tasks_axi_forms_and_overrides() {
   mkdir -p "$data/bold-task" "$projects/bold-worktree"
   cat > "$data/backlog.md" <<EOF
 ## In flight
-- **bold-task** - Bold Task data/bold-task/report.md (repo: alpha, since 2026-07-07) (kind: scout)
+- [ ] bold-task - Bold Task (repo: alpha) (kind: scout) (since 2026-07-07)
   Bold body survives.
 
 ## Queued
-- [ ] queued-comma - Queued Comma Task (repo: beta, since 2026-07-08) (kind: ship)
+- [ ] queued-comma - Queued Comma Task (repo: beta) (kind: ship) (since 2026-07-08)
 - [ ] parenthetical-title - Refresh sidebar (mobile) (repo: beta) (kind: ship)
-- [ ] blocked-reason - Blocked Reason (repo: beta) (kind: ship) blocked-by: queued-comma - waits on queued-comma
+- [ ] blocked-reason - Blocked Reason blocked-by: queued-comma (repo: beta) (kind: ship)
 - [ ] sample-decision-route - Choose sample route (repo: sample) (kind: captain) (since 2026-07-14) (hold: captain route choice pending) (hold-kind: captain)
 - [ ] dated-route - Deferred sample route (repo: sample) (kind: ship) (hold: captain sent this to later) (hold-kind: captain) (hold-until: 2026-09-01)
 - [ ] captain-gated-work - Captain-gated ship work (repo: sample) (kind: ship) (hold: captain go pending) (hold-kind: captain)
 - [ ] parked-prose - Parked captain call (repo: sample) (kind: ship) (hold: DEFERRED by captain) (hold-kind: captain)
 
 ## Done
-- [x] done-comma - Done Comma Task https://github.com/kunchenguid/firstmate/pull/42 (repo: gamma, merged 2026-07-09) (kind: ship)
-- [x] done-bracket-pr - Done Bracket PR - <https://github.com/kunchenguid/firstmate/pull/43> (repo: gamma, merged 2026-07-12) (kind: ship)
-- [x] reported-comma - Reported Scout data/reported-comma/report.md (repo: gamma, reported 2026-07-10) (kind: scout)
-- [x] done-note - Done Note local main (repo: delta, done 2026-07-11) (kind: ship)
+- [x] done-comma - Done Comma Task https://github.com/kunchenguid/firstmate/pull/42 (repo: gamma) (kind: ship) (merged 2026-07-09)
+- [x] done-bracket-pr - Done Bracket PR https://github.com/kunchenguid/firstmate/pull/43 (repo: gamma) (kind: ship) (merged 2026-07-12)
+- [x] reported-comma - Reported Scout data/reported-comma/report.md (repo: gamma) (kind: scout) (reported 2026-07-10)
+- [x] done-note - Done Note (repo: delta) (kind: ship) (done 2026-07-11)
 EOF
   printf '# Bold Scout\n' > "$data/bold-task/report.md"
   fm_write_meta "$home/state/bold-task.meta" \
@@ -658,7 +659,7 @@ EOF
   printf '%s' "$out" | jq -e --arg data "$data" --arg projects "$projects" '
     .roots.data == $data
       and .roots.projects == $projects
-      and .backlog.path == ($data + "/backlog.md")
+      and .backlog.path == "bin/fm-tasks-axi.sh rows"
   ' >/dev/null || fail "snapshot did not respect data/projects overrides"
   printf '%s' "$out" | jq -e --arg data "$data" '
     .backlog.records[] | select(.id == "bold-task")
@@ -670,12 +671,11 @@ EOF
       and .kind == "scout"
       and .title == "Bold Task"
       and .body_excerpt == "Bold body survives."
-      and .report_path == "data/bold-task/report.md"
-  ' >/dev/null || fail "bold in-flight backlog row did not parse"
+  ' >/dev/null || fail "in-flight backlog row did not read"
   printf '%s' "$out" | jq -e '
     .backlog.records[] | select(.id == "queued-comma")
     | .repo == "beta" and .since == "2026-07-08"
-  ' >/dev/null || fail "queued comma metadata did not split"
+  ' >/dev/null || fail "queued row metadata did not read"
   printf '%s' "$out" | jq -e '
     .backlog.records[] | select(.id == "parenthetical-title")
     | .title == "Refresh sidebar (mobile)" and .repo == "beta"
@@ -685,8 +685,7 @@ EOF
     | .title == "Blocked Reason"
       and .repo == "beta"
       and .blocked_by == "queued-comma"
-      and .blocked_reason == "waits on queued-comma"
-  ' >/dev/null || fail "blocked suffix did not parse into title and reason"
+  ' >/dev/null || fail "blocker did not read apart from the title"
   printf '%s' "$out" | jq -e '
     .backlog.records[] | select(.id == "sample-decision-route")
     | .title == "Choose sample route"
@@ -736,7 +735,6 @@ EOF
     .backlog.records[] | select(.id == "done-note")
     | .repo == "delta"
       and .title == "Done Note"
-      and .local_note == "local main"
       and .done == "2026-07-11"
       and .completion == {verb:"done",date:"2026-07-11"}
   ' >/dev/null || fail "done closure metadata did not parse"
@@ -749,12 +747,10 @@ EOF
   view=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_DATA_OVERRIDE="$data" FM_PROJECTS_OVERRIDE="$projects" "$VIEW")
   assert_contains "$view" "| bold-task | done / status-log | scout | alpha | tmux | present | $data/bold-task/report.md" \
     "view should render bold in-flight row from snapshot"
-  assert_contains "$view" "| blocked-reason | Blocked Reason | beta | ship | queued-comma - waits on queued-comma | - |" \
-    "view should render blocked reason without title metadata"
+  assert_contains "$view" "| blocked-reason | Blocked Reason | beta | ship | queued-comma | - |" \
+    "view should render the blocker without title metadata"
   assert_contains "$view" "| done-bracket-pr | Done Bracket PR | gamma | ship | - | https://github.com/kunchenguid/firstmate/pull/43 |" \
     "view should render bracketed PR artifact outside the title"
-  assert_contains "$view" "| done-note | Done Note | delta | ship | - | local main |" \
-    "view should render local-only done artifact outside the title"
   pass "snapshot parses tasks-axi rows and respects operational overrides"
 }
 
