@@ -980,19 +980,19 @@ const isVideoEvidence = (ev, videos) => {
   return Boolean(m && videos.some((v) => v.eventSeq === Number(m[1])));
 };
 
-async function findTesterScreenshot(events, row, preferredSeq) {
+async function findTesterScreenshot(events, row) {
   const candidates = [];
   for (const event of [...events].reverse()) {
     if (event.actorRole !== 'tester') continue;
     const imgs = await listAll('fm_event_image', { filter: `fmTaskEventId eq ${event.id}`, orderby: 'position', select: 'id,fmTaskEventId,label,mediaType,position' });
-    for (const img of imgs) candidates.push({ event, img, ref: `event:${event.seq}#image:${img.position || 1}` });
+    for (const img of imgs) {
+      // A screenshot belongs to one scenario/width pair, never to the scenario alone.
+      if ((img.label || '').split(/\s+/)[0] !== rowKey(row)) continue;
+      candidates.push({ event, img, ref: `event:${event.seq}#image:${img.position || 1}` });
+    }
   }
   if (!candidates.length) return null;
-  return (
-    candidates.find((c) => c.event.seq === preferredSeq) ??
-    candidates.find((c) => (c.img.label || '').includes(rowKey(row)) || (c.img.label || '').includes(row.scenarioId)) ??
-    null
-  )?.ref ?? null;
+  return candidates[0]?.ref ?? null;
 }
 
 async function checkApproveReady(task, taskId, events, rows) {
@@ -1023,15 +1023,19 @@ async function cmdApprove(args) {
   const videos = await taskVideos(initialEvents);
   for (const row of initialRows) {
     if (!isVideoEvidence(row.evidence, videos)) continue;
-    const preferredSeq = Number(/^event:(\d+)/.exec(row.evidence ?? '')?.[1] || 0);
-    const replacement = await findTesterScreenshot(initialEvents, row, preferredSeq);
+    const replacement = await findTesterScreenshot(initialEvents, row);
     if (!replacement) throw rule(`approve is refused: check row ${rowKey(row)} references a video (${row.evidence}) and has no Tester screenshot to replace it`);
     const values = { status: row.status, nextActor: row.nextActor, evidence: replacement, head: row.head ?? null, checkedAt: row.checkedAt ?? new Date().toISOString() };
-    await append(taskId, { ...who, key: `${who.key}:video-ev:${rowKey(row)}` }, async () => ({
-      kind: 'check',
-      note: `${rowKey(row)} ${row.status}: ${replacement} (replaced video evidence)`,
-      extra: { row: rowKey(row), values },
-    }));
+    await append(taskId, { ...who, key: `${who.key}:video-ev:${rowKey(row)}` }, async ({ task }) => {
+      // append retries after a sequence conflict with a fresh fold. A competing approval
+      // therefore prevents this evidence check from being stored after Done.
+      guard('approve', task);
+      return {
+        kind: 'check',
+        note: `${rowKey(row)} ${row.status}: ${replacement} (replaced video evidence)`,
+        extra: { row: rowKey(row), values },
+      };
+    });
     await applyNewestCheck(taskId, row);
   }
   return write(

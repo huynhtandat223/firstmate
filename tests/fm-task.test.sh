@@ -2211,11 +2211,22 @@ case_slice_c() {
   local img_ev
   img_ev=$(db fm_task_check | jq -r '.[] | select(.taskId == "tk-sc-vid" and .scenarioId == "A1" and .width == "390") | .evidence')
   [[ "$img_ev" =~ ^event:[0-9]+#image:1$ ]] || { echo "expected event:<seq>#image:1, got $img_ev"; return 1; }
+  ft approve "$tv"
+  must 'mobile screenshot cannot replace desktop video evidence' 5 || return 1
+  [ "$(count fm_event_video)" = 1 ] || return 1
+  ft comment "$tv" --image "$img_file" --image-label 'A1@1440 screenshot' --role tester
+  must 'attach exact desktop screenshot' 0 || return 1
+  img_ev="event:$(db fm_task_event | jq '[.[] | select(.taskId == "tk-sc-vid" and .kind == "comment")] | max_by(.seq).seq')#image:1"
   rm -f "$img_file"
 
-  # Approve now replaces A1@1440's video evidence with the Tester screenshot, deletes the video row, and writes the comment
-  ft approve "$tv"
-  must 'approve with video cleanup and evidence replacement' 0 || return 1
+  # Competing approvals must never append a replacement check after Done.
+  "$BIN/fm-task.sh" approve "$tv" --key sc-approve-a >"$TMP_ROOT/sc-approve-a.log" 2>&1 &
+  local approve_a=$!
+  "$BIN/fm-task.sh" approve "$tv" --key sc-approve-b >"$TMP_ROOT/sc-approve-b.log" 2>&1 &
+  local approve_b=$!
+  wait "$approve_a" || true
+  wait "$approve_b" || true
+  db fm_task_event | jq -e '[.[] | select(.taskId == "tk-sc-vid")] as $e | ($e | map(select(.kind == "approved")) | min_by(.seq).seq) as $approved | $approved != null and all($e[]; .kind != "check" or .seq < $approved)' >/dev/null || { echo 'check appended after competing approval'; return 1; }
   [ "$(count fm_event_video)" = 0 ] || { echo "expected 0 fm_event_video rows after approve, got $(count fm_event_video)"; return 1; }
   db fm_task_check | jq -e --arg ev "$img_ev" '.[] | select(.taskId == "tk-sc-vid" and .scenarioId == "A1" and .width == "1440") | .evidence == $ev' >/dev/null \
     || { echo "video evidence was not replaced by Tester screenshot: $(db fm_task_check)"; return 1; }
