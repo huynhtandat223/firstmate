@@ -341,8 +341,12 @@ if [ "$CHECK" -eq 1 ]; then
     CHECK_CONFIG="${FM_CONFIG_OVERRIDE:-${FM_HOME:-$FM_ROOT}/config}"
     CHECK_STATE="${FM_STATE_OVERRIDE:-${FM_HOME:-$FM_ROOT}/state}"
     # The linked issue is the one the `# Acceptance` section names, not the first URL anywhere.
-    CHECK_ISSUE=$(fm_brief_heading_body "$CHECK_BRIEF" "# Acceptance" | grep -oE 'https://[A-Za-z0-9.-]+/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/issues/[0-9]+' | head -1 || true)
+    CHECK_ISSUE=$(fm_brief_heading_body "$CHECK_BRIEF" "# Acceptance" | grep -oE 'task:[A-Za-z0-9][A-Za-z0-9._-]*|https://[A-Za-z0-9.-]+/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/issues/[0-9]+' | head -1 || true)
     if [ -n "$CHECK_ISSUE" ]; then
+      if [[ "$CHECK_ISSUE" == task:* ]]; then
+        . "$SCRIPT_DIR/fm-task-shadow-config-lib.sh"
+        fm_task_shadow_config "$CONFIG/task-shadow"
+      fi
       if CHECK_ROWS=$("${FM_ACCEPTANCE_BIN:-$SCRIPT_DIR/fm-acceptance.mjs}" rows "$CHECK_ISSUE" --surface all 2>&1); then
         CHECK_TEXT="$CHECK_TEXT $CHECK_ROWS"
       elif [ "$(fm_enforce_mode "$CHECK_CONFIG" herdr-lab-brief)" = block ]; then
@@ -953,8 +957,14 @@ DOD=$(fm_dod_block "$MODE" "$ID" "$BRANCH" "$FORGE" "$BASE_BRANCH" "$UPSTREAM_CO
 
 ACCEPTANCE_SECTION=
 if [ "$ISSUE_SET" -eq 0 ] && [ "$SURFACE" = user-visible ]; then
-  ISSUE_URL="task:$ID"
-  ISSUE_SET=1
+  if TASK_ACCEPTANCE=$(
+    . "$SCRIPT_DIR/fm-task-shadow-config-lib.sh"
+    fm_task_shadow_config "$CONFIG/task-shadow"
+    node "$SCRIPT_DIR/fm-acceptance.mjs" rows "task:$ID" --strict 2>/dev/null
+  ) && [ -n "$TASK_ACCEPTANCE" ]; then
+    ISSUE_URL="task:$ID"
+    ISSUE_SET=1
+  fi
 fi
 if [ "$ISSUE_SET" -eq 1 ]; then
   ACCEPTANCE_SECTION="# Acceptance

@@ -103,7 +103,7 @@ fm_brief_verify_check() {  # <task-id> <brief-file>
   fi
   parse_rc=0
   json=$(
-    if [ "$issue" = "$task" ]; then
+    if [ "$issue" = "$task" ] || [[ "$issue" == task:* ]]; then
       # shellcheck source=bin/fm-task-shadow-config-lib.sh
       . "$root/bin/fm-task-shadow-config-lib.sh"
       fm_task_shadow_config "$config/task-shadow"
