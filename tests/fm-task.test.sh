@@ -2077,6 +2077,13 @@ case_plan_task() {
   printf '## Context\nChanged plan.\n' > "$doc"
   ft describe plan-probe --document "$doc"; must edit 0 || return 1
   ft plan-check plan-probe; must changed 5 || return 1
+  printf '%s\n' '- Parent: shared-spec' > "$doc"
+  ft describe plan-probe --document "$doc"; must parent 0 || return 1
+  ft plan-spec plan-probe; must spec 0 || return 1
+  [ "$OUT" = shared-spec ] || return 1
+  ft create sibling --title sibling --kind ship --repo demo; must sibling 0 || return 1
+  ft describe sibling --document "$doc"; must description 0 || return 1
+  ft plan-approve plan-probe; must split 5 || return 1
 }
 
 case_description_thread() {
