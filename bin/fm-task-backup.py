@@ -23,7 +23,9 @@ import sys
 import tempfile
 
 REQUIRED = {'fm_task', 'fm_task_event', 'fm_event_document', 'fm_task_check',
-            'fm_owner_check', 'fm_task_link'}
+            'fm_owner_check', 'fm_task_link', 'fm_event_done',
+            'fm_event_question', 'fm_event_block', 'fm_event_image',
+            'fm_task_delivery'}
 
 
 def read_db(path):
@@ -35,6 +37,11 @@ def tables(db):
 
 
 def validate(db):
+    # Older SQLite silently returns an empty result for unknown PRAGMAs.
+    if sqlite3.sqlite_version_info < (3, 37, 0):
+        raise ValueError('SQLite 3.37.0 or newer is required for task-only filtering')
+    if not db.execute('PRAGMA table_list').fetchall():
+        raise ValueError('SQLite table discovery is unavailable')
     missing = REQUIRED - tables(db)
     if missing:
         raise ValueError('missing task tables: ' + ', '.join(sorted(missing)))

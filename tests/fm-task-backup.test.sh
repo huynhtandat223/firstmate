@@ -18,7 +18,7 @@ with tempfile.TemporaryDirectory() as temp:
     db.execute('PRAGMA journal_mode=WAL')
     db.execute('CREATE TABLE fm_task(task_id TEXT, title TEXT)')
     db.execute("INSERT INTO fm_task VALUES('probe','known task')")
-    for name in ('fm_task_event', 'fm_event_document', 'fm_task_check', 'fm_owner_check', 'fm_task_link', 'fm_future_child'):
+    for name in ('fm_task_event', 'fm_event_document', 'fm_task_check', 'fm_owner_check', 'fm_task_link', 'fm_event_done', 'fm_event_question', 'fm_event_block', 'fm_event_image', 'fm_task_delivery', 'fm_future_child'):
         db.execute(f'CREATE TABLE {name}(value TEXT)')
         db.execute(f"INSERT INTO {name} VALUES('retained')")
     db.execute('CREATE TABLE unrelated(secret TEXT)')
@@ -67,9 +67,12 @@ with tempfile.TemporaryDirectory() as temp:
         os.utime(path, (0,0))
     run('backup', '--source', source, '--directory', directory, '--keep-days', 1)
     assert not old.exists() and unrelated.exists()
-    db.execute('DROP TABLE fm_owner_check')
-    db.commit()
-    run('backup', '--source', source, '--directory', directory, ok=False)
+    for missing in ('fm_owner_check', 'fm_event_done', 'fm_event_question', 'fm_event_block', 'fm_event_image', 'fm_task_delivery'):
+        db.execute('ALTER TABLE ' + missing + ' RENAME TO temporarily_absent')
+        db.commit()
+        run('backup', '--source', source, '--directory', directory, ok=False)
+        db.execute('ALTER TABLE temporarily_absent RENAME TO ' + missing)
+        db.commit()
     assert unrelated.exists()
     run('backup', '--source', source, '--directory', directory, '--typo', ok=False)
     db.close()
