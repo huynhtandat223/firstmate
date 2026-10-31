@@ -4413,6 +4413,10 @@ $legacy_plan_links"
         break
       fi
       plan_reason="$FM_PLAN_GATE_VERDICT: $FM_PLAN_GATE_REASON; bin/fm-plan-approve.sh $plan_url"
+      if [ "$plan_url" = "$ID" ] && [ -n "${FM_PLAN_GATE_BODY:-}" ]; then
+        # An existing native plan owns approval; an older issue cannot override it.
+        break
+      fi
     done <<< "$plan_links"
     if [ -z "$PLAN_ISSUE" ]; then
       plan_title=$FM_BACKLOG_ROW_TITLE

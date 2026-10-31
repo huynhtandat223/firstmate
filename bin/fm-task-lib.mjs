@@ -403,6 +403,7 @@ const SPECS = {
   document: { pos: ['task'], flags: {} },
   'plan-approve': { pos: ['task'], flags: {} },
   'plan-check': { pos: ['task'], flags: {} },
+  'plan-spec': { pos: ['task'], flags: {} },
   gate: { pos: ['task'], flags: { issue: 's', head: 's', 'evidence-root': 's' } },
   row: { pos: ['task'], flags: { section: 's', 'row-file': 's', 'notes-file': 's', gone: 'b', file: 's' } },
   backlog: { pos: ['action'], flags: { file: 's', out: 's', 'absorb-only': 'b' } },
@@ -1267,11 +1268,35 @@ async function descriptionContent(taskId) {
   return doc.content;
 }
 
+async function taskPlanSpec(taskId) {
+  const body = await descriptionContent(taskId);
+  const parents = [...body.matchAll(/^- Parent:\s*(\S+)\s*$/gm)].map((m) => m[1]);
+  if (parents.length > 1) throw rule('plan ticket must have only one Parent line');
+  if (!parents.length) return taskId;
+  const parent = parents[0];
+  if (!/^[A-Za-z0-9_.-]+$/.test(parent)) throw rule('Parent must be one task id');
+  return parent;
+}
+
+async function cmdPlanSpec(args) {
+  out(await taskPlanSpec(taskIdOf(args)));
+}
+
 async function cmdPlanApprove(args) {
   const taskId = taskIdOf(args);
   const who = identity(args, 'firstmate');
   return write(taskId, who, async ({ task }) => {
     if (!task || CLOSED.includes(task.state)) throw rule('plan approval needs an open task');
+    const spec = await taskPlanSpec(taskId);
+    const active = await listAll('fm_task', { filter: "state ne 'done' and state ne 'archived'" });
+    let count = 0;
+    for (const candidate of active) {
+      if (candidate.repo !== task.repo || candidate.taskId === spec || candidate.taskId === taskId) continue;
+      const candidateEvents = await taskEvents(candidate.taskId);
+      if (!candidateEvents.some((e) => e.kind === 'description')) continue;
+      if (await taskPlanSpec(candidate.taskId) === spec) count++;
+    }
+    if (count) throw rule('spec has more than one open ticket in this repository');
     const hash = crypto.createHash('sha256').update(await descriptionContent(taskId)).digest('hex');
     return { kind: 'plan-approved', note: hash, extra: { descriptionSha256: hash } };
   });
@@ -1999,7 +2024,7 @@ const COMMANDS = {
   'turn-end': cmdTurnEnd, deliver: cmdDeliver, describe: cmdDescribe, thread: cmdThread,
   create: cmdCreate, import: cmdImport, assign: cmdAssign, start: cmdStart, heartbeat: cmdHeartbeat, done: cmdDone, ask: cmdAsk, block: cmdBlock,
   unblock: cmdUnblock, approve: cmdApprove, changes: cmdChanges, reopen: cmdReopen, reassign: cmdReassign, archive: cmdArchive, comment: cmdComment, event: cmdEvent,
-  'plan-approve': cmdPlanApprove, 'plan-check': cmdPlanCheck, document: cmdDocument, link: cmdLink, rows: cmdRows, check: cmdCheck, 'owner-check': cmdOwnerCheck, gate: cmdGate, show: cmdShow, list: cmdList, resume: cmdResume, reproject: cmdReproject,
+  'plan-spec': cmdPlanSpec, 'plan-approve': cmdPlanApprove, 'plan-check': cmdPlanCheck, document: cmdDocument, link: cmdLink, rows: cmdRows, check: cmdCheck, 'owner-check': cmdOwnerCheck, gate: cmdGate, show: cmdShow, list: cmdList, resume: cmdResume, reproject: cmdReproject,
   row: cmdRow, backlog: cmdBacklog, checks: cmdChecks,
 };
 

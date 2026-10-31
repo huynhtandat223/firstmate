@@ -125,7 +125,7 @@ fm_plan_gate_spec_of_body() {  # <repo> <number> <body>; prints the canonical sp
 
 fm_plan_gate_spec() {  # <issue-url> | reads the body fm_plan_gate_issue fetched; sets FM_PLAN_GATE_SPEC
   if [ -n "${FM_PLAN_GATE_TASK:-}" ]; then
-    FM_PLAN_GATE_SPEC=$FM_PLAN_GATE_TASK
+    FM_PLAN_GATE_SPEC=$(fm_plan_gate_task plan-spec "$FM_PLAN_GATE_TASK") || return 1
     return 0
   fi
   [ -n "${FM_PLAN_GATE_ISSUE_REPO:-}" ] && [ -n "${FM_PLAN_GATE_ISSUE_NUMBER:-}" ] || return 1
