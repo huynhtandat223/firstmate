@@ -1335,5 +1335,5 @@ mutate 'a claimed-race retry finds its live Tester' rows_lease \
 mutate 'a used closed Tester id gets a suffix' live_tester \
   's/if ! ledger_test '\''.type == "ask" and .tester == \$id'\'' --arg id "\$id"/if true/'
 mutate 'task-native deployment honors the recorded source' task_native \
-  's/issue=$(recorded_acceptance "\$task" "\$body" "\$hint")/issue=""/g'
+  's/issue=\$\(recorded_acceptance[^\n]*/issue=""/g'
 pass 'every guarded behavior has a red mutation proof'
