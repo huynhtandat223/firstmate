@@ -289,9 +289,12 @@ issue_ref() {
   case "$1" in task:*) printf '%s\n' "${1#task:}" ;; *) printf '%s#%s\n' "${REPO##*/}" "$1" ;; esac
 }
 
-acceptance_url() {
+acceptance_url() (
+  # shellcheck source=bin/fm-task-shadow-config-lib.sh
+  . "$SCRIPT_DIR/fm-task-shadow-config-lib.sh"
+  fm_task_shadow_config "$CONFIG/task-shadow"
   case "$1" in task:*) printf '%s/#firstmate.board?view=board&task=%s\n' "${FM_TASK_BASE_URL:-http://127.0.0.1:5001}" "${1#task:}" ;; *) printf 'https://github.com/%s/issues/%s\n' "$REPO" "$1" ;; esac
-}
+)
 
 acceptance_body_json() {
   case "$1" in

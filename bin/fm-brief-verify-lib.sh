@@ -99,7 +99,14 @@ fm_brief_verify_check() {  # <task-id> <brief-file>
     return
   fi
   parse_rc=0
-  json=$(node "$root/bin/fm-acceptance.mjs" parse "$issue" 2>/dev/null) || parse_rc=$?
+  json=$(
+    if [ "$issue" = "$task" ]; then
+      # shellcheck source=bin/fm-task-shadow-config-lib.sh
+      . "$root/bin/fm-task-shadow-config-lib.sh"
+      fm_task_shadow_config "$config/task-shadow"
+    fi
+    node "$root/bin/fm-acceptance.mjs" parse "$issue" 2>/dev/null
+  ) || parse_rc=$?
   # parse prints its JSON and exits 1 on invalid acceptance data, so the status
   # and .problems both count: a scenario it could not read must not pass.
   problems=
