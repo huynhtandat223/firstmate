@@ -59,9 +59,9 @@ if [ "$cmd" != show ]; then
   mv "$tmp" "$record"
   if [ -e "$FM_HOME/config/task-shadow" ]; then
     if [ "$cmd" = add-url ]; then
-      FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task.sh" event "$id" link --url "$value" --note "$label" >/dev/null 2>&1 || true
-    elif [ -f "$value" ]; then
-      FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task.sh" comment "$id" --image "$value" --image-label "$label" >/dev/null 2>&1 || true
+      FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task.sh" event "$id" link --url "$value" --note "$label" || exit $?
+    else
+      FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task.sh" comment "$id" --image "$value" --image-label "$label" || exit $?
     fi
   fi
   printf 'task: %s\npublished: %s\nhelp: fm-task-links.sh %s show\n' "$id" "$cmd" "$id"
