@@ -3,9 +3,9 @@
 // issues only through this module; the gate and the board import it.
 //
 // Usage:
-//   fm-acceptance.mjs parse <issue-url|-> [--strict]
-//   fm-acceptance.mjs rows <issue-url|-> [--surface user-visible|all] [--draft] [--strict]
-//   fm-acceptance.mjs digest <issue-url|-> [--strict]
+//   fm-acceptance.mjs parse <task-id|board-url|issue-url|-> [--strict]
+//   fm-acceptance.mjs rows <task-id|board-url|issue-url|-> [--surface user-visible|all] [--draft] [--strict]
+//   fm-acceptance.mjs digest <task-id|board-url|issue-url|-> [--strict]
 //
 // An <issue-url> is read with `gh issue view <url> --json body` (20 s bound,
 // FM_ACCEPTANCE_GH names another gh command); `-` reads the issue body from
