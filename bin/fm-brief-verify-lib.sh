@@ -90,7 +90,7 @@ fm_brief_verify_check() {  # <task-id> <brief-file>
   issue=$(printf '%s\n' "$section" | grep -oE "$FM_BRIEF_VERIFY_CFW_ISSUE" | head -1) || true
   if [ -z "$issue" ]; then
     # New task-native acceptance is explicit in the Acceptance section.
-    printf '%s\n' "$section" | grep -Eq 'Task:|task:' || return 0
+    printf '%s\n' "$section" | grep -Eq '^Task: [^[:space:]]+$' || return 0
     issue=$task
   fi
   unread="the brief for $task names $issue, whose scenarios could not be read (fm-acceptance.mjs parse failed, printed nothing or reported problems), so the verify-cfw run cannot be checked; retry"

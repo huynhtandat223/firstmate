@@ -19,12 +19,6 @@ Probe.
 Read task acceptance.
 ## Definition of done
 Scenario passes.
-## Mockup
-None.
-## Links
-None.
-## Decisions
-None.
 ## Scenarios
 - [ ] P1 WHEN a worker reads a task, THE parser SHALL retain its acceptance.
   - page: -
@@ -35,6 +29,12 @@ None.
   - data: probe
   - mock: none
   - surface: internal
+## Mockup
+None.
+## Links
+None.
+## Decisions
+None.
 MD
 node "$ROOT/bin/fm-acceptance.mjs" parse acceptance-probe --strict > "$TMP/parsed"
 jq -e '.problems == [] and .scenarios[0].env == "Dev 5001" and .scenarios[0].mock == "none"' "$TMP/parsed" >/dev/null
