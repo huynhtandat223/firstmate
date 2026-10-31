@@ -1031,9 +1031,26 @@ fm_busy_launch_prompt_parked() {  # <harness>
 # while the launch-prompt backstop below has no capture fallback of its own -
 # without a supplied tail40 it is skipped entirely and a record still pinned
 # at the fm-spawn seed keeps reading busy fm-spawn, unchanged.
+fm_busy_stop_text() {  # <plain pane tail>; prints the matching stop line
+  printf '%s\n' "$1" | grep -iE 'Individual quota reached|Free usage exceeded|Insufficient Balance|hit your (usage )?limit|usage limit has been reached|\[429\][^[:alnum:]]*usage limit|rate limit' -m 1
+}
+
 fm_busy_classify() {  # <backend> <target> <harness> <id> <state-dir> [tail40]
   local backend=$1 target=$2 harness=$3 id=$4 state=$5 tail40=${6-}
   local out rc r_state r_source native log
+  if [ -z "$tail40" ] && command -v fm_backend_capture >/dev/null 2>&1; then
+    tail40=$(fm_backend_capture "$backend" "$target" 40 2>/dev/null) || tail40=
+  fi
+  if [ -n "$tail40" ] && fm_busy_stop_text "$tail40" >/dev/null; then
+    printf 'stopped quota'
+    return 0
+  fi
+  # A relaunch can retain a semantic record from its previous harness. AGY
+  # has no semantic writer; its live footer must outrank that old record.
+  if [ "$harness" = agy ] && printf '%s' "$tail40" | fm_busy_agy_tail_busy; then
+    printf 'busy agy-regex'
+    return 0
+  fi
   case "$harness" in
     kimi*)
       if ! fm_busy_kimi_verified; then

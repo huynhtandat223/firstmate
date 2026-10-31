@@ -26,6 +26,33 @@ new_state_dir() {  # <name>
   printf '%s' "$d"
 }
 
+# Recorded incident panes must outrank even a still-busy plugin record.
+test_quota_stop_overrides_busy_record() {
+  local state text out
+  state=$(new_state_dir quota-stop)
+  "$EV" arm "$state" t1 >/dev/null || fail 'arm failed'
+  for text in 'Individual quota reached ... Resets in 163h' \
+    'Free usage exceeded, subscribe to Go [retrying in 9h 2m attempt #1]' \
+    'Error: 402 ... Insufficient Balance'; do
+    out=$(fm_busy_classify tmux w1 opencode t1 "$state" "$text")
+    [ "$out" = 'stopped quota' ] || fail "quota pane classified $out"
+  done
+  pass 'quota panes override a busy semantic record'
+}
+
+test_agy_relaunch_ignores_previous_harness_record() {
+  local state out
+  state=$(new_state_dir agy-relaunch)
+  "$EV" arm "$state" t1 >/dev/null || fail 'arm failed'
+  out=$(fm_busy_classify tmux w1 agy t1 "$state" 'Generating...
+esc to cancel')
+  [ "$out" = 'busy agy-regex' ] || fail "agy relaunch footer classified $out"
+  pass 'agy relaunch footer outranks a retained semantic record'
+}
+
+test_quota_stop_overrides_busy_record
+test_agy_relaunch_ignores_previous_harness_record
+
 # --- writer: arm and apply ---------------------------------------------------
 
 test_arm_seeds_busy_spawn() {

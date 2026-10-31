@@ -8002,7 +8002,10 @@ test_turn_end_that_must_not_be_pinged_wakes_at_once_with_the_pane_tail() {
   for sample in 'You have hit your usage limit. It resets at 3pm.' \
     'Codex error: The usage limit has been reached' \
     '[429] usage limit exceeded for this key' \
-    'Request failed: rate limit, retry later'
+    'Request failed: rate limit, retry later' \
+    'Individual quota reached ... Resets in 163h' \
+    'Free usage exceeded, subscribe to Go [retrying in 9h 2m attempt #1]' \
+    'Error: 402 ... Insufficient Balance'
   do
     dir=$(tc_case tc-quota ship); state="$dir/state"
     tc_pane "$dir" "$sample"
