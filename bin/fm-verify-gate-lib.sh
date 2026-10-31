@@ -93,6 +93,13 @@ fm_verify_gate_evidence_problem() {  # <rid> <evidence> <base-dir>
   esac
 }
 
+# Parse acceptance using this home's configured task API without leaking settings to callers.
+fm_verify_gate_acceptance() (
+  . "$FM_VERIFY_GATE_DIR/fm-task-shadow-config-lib.sh"
+  fm_task_shadow_config "${FM_CONFIG_OVERRIDE:-$base/config}/task-shadow"
+  node "$FM_VERIFY_GATE_DIR/fm-acceptance.mjs" "$@"
+)
+
 # The scenario line of a record row `- <id>@<width> | <line> | <state> | evidence: <x>`, trimmed.
 fm_verify_gate_row_text() {  # <row>
   local t=${1#- }
@@ -234,9 +241,9 @@ fm_verify_gate_problems() {  # <data-dir> <task-id> <base-dir>
       return 1
     fi
     rc=0
-    rows=$(node "$FM_VERIFY_GATE_DIR/fm-acceptance.mjs" rows "$issue" 2>/dev/null) || rc=$?
+    rows=$(fm_verify_gate_acceptance rows "$issue" 2>/dev/null) || rc=$?
     if [ "$rc" -ne 0 ]; then
-      parse=$(node "$FM_VERIFY_GATE_DIR/fm-acceptance.mjs" parse "$issue" 2>&1) || true
+      parse=$(fm_verify_gate_acceptance parse "$issue" 2>&1) || true
       if printf '%s' "$parse" | jq -e '.problems | length > 0' >/dev/null 2>&1; then
         printf '%s' "$parse" | jq -r --arg i "$issue" '.problems[] | "issue \($i) cannot be read: \(.)"'
       else
@@ -245,11 +252,11 @@ fm_verify_gate_problems() {  # <data-dir> <task-id> <base-dir>
       return 1
     fi
     [ -n "$rows" ] || fm_verify_gate_say "issue $issue has no user-visible scenario row"
-    cur_acc=$(node "$FM_VERIFY_GATE_DIR/fm-acceptance.mjs" digest "$issue" 2>/dev/null) || cur_acc=
+    cur_acc=$(fm_verify_gate_acceptance digest "$issue" 2>/dev/null) || cur_acc=
     if [ -n "$v_acc" ] && [ "$v_acc" != "$cur_acc" ]; then
       fm_verify_gate_say "Tester acceptance $v_acc is not the issue's current digest $cur_acc"
     fi
-    all_rows=$(node "$FM_VERIFY_GATE_DIR/fm-acceptance.mjs" rows "$issue" --surface all 2>/dev/null) || all_rows=$rows
+    all_rows=$(fm_verify_gate_acceptance rows "$issue" --surface all 2>/dev/null) || all_rows=$rows
     while IFS= read -r line; do
       [ -n "$line" ] || continue
       expected="$expected$(printf '%s' "${line#- }" | awk -F' [|] ' '{print $1}')"$'\n'

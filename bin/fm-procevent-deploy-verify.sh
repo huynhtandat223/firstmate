@@ -293,7 +293,7 @@ acceptance_url() (
   # shellcheck source=bin/fm-task-shadow-config-lib.sh
   . "$SCRIPT_DIR/fm-task-shadow-config-lib.sh"
   fm_task_shadow_config "$CONFIG/task-shadow"
-  case "$1" in task:*) printf '%s/#firstmate.board?view=board&task=%s\n' "${FM_TASK_BASE_URL:-http://127.0.0.1:5001}" "${1#task:}" ;; *) printf 'https://github.com/%s/issues/%s\n' "$REPO" "$1" ;; esac
+  case "$1" in task:*) printf '%s/#firstmate.board?view=board&task=%s\n' "${FM_TASK_BASE_URL:-http://127.0.0.1:5001}" "${1#task:}" ;; https://github.com/*) printf '%s\n' "$1" ;; *) printf 'https://github.com/%s/issues/%s\n' "$REPO" "$1" ;; esac
 )
 
 recorded_acceptance() {  # <task> <pr-body> <hint>
@@ -301,7 +301,8 @@ recorded_acceptance() {  # <task> <pr-body> <hint>
   source=$(sed -n 's/^issue: //p' "$FM_HOME/data/$1/verify.md" 2>/dev/null | tail -n 1)
   case "$source" in
     task:*) printf '%s\n' "$source" ;;
-    https://github.com/*/*/issues/[0-9]*) printf '%s\n' "${source##*/}" ;;
+    https://github.com/*/*/issues/[0-9]*)
+      if [[ "$source" == "https://github.com/$REPO/issues/"* ]]; then printf '%s\n' "${source##*/}"; else printf '%s\n' "$source"; fi ;;
     *) resolve_issue "$2" "$3" ;;
   esac
 }
@@ -313,6 +314,7 @@ acceptance_body_json() {
       content=$(task_writer document "${1#task:}") || return 1
       jq -cn --arg body "$content" '{body:$body}'
       ;;
+    https://github.com/*/*/issues/[0-9]*) gh_read "repos/${1#https://github.com/}" ;;
     *) gh_read "repos/$REPO/issues/$1" ;;
   esac
 }

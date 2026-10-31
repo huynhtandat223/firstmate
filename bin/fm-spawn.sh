@@ -4474,6 +4474,11 @@ if [ "$RELAUNCH" != 1 ] && [ "$KIND" = ship ] && [ "$SURFACE" = user-visible ]; 
   fi
   [ -n "$VERIFY_ISSUE" ] || VERIFY_ISSUE=$PLAN_ISSUE
   [ -n "$VERIFY_ISSUE" ] || VERIFY_ISSUE=$(printf '%s\n' "$FM_BACKLOG_ROW_LINKS" | grep -oE 'doc:https://github[.]com/[^[:space:]," ]+/issues/[0-9]+' | head -n 1 | sed 's/^doc://' || true)
+  declared_source=$(awk '/^# Acceptance$/{section=1;next} section && /^# /{exit} section{print}' "$BRIEF" | grep -oE 'task:[A-Za-z0-9][A-Za-z0-9._-]*|https://[A-Za-z0-9.-]+/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/issues/[0-9]+' | head -1 || true)
+  if [ -n "$declared_source" ] && [ "$declared_source" != "$VERIFY_ISSUE" ]; then
+    echo "error: brief acceptance $declared_source differs from verification source $VERIFY_ISSUE; align the acceptance source before spawning" >&2
+    exit 1
+  fi
   if [ -z "$VERIFY_ISSUE" ]; then
     echo "error: $ID is user-visible: write acceptance with bin/fm-task.sh describe $ID --document <file.md>, link it with bin/fm-tasks-axi.sh update $ID --title \"<current title> <issue url>\", or spawn with --surface internal" >&2
     exit 1
