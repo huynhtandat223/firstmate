@@ -4400,8 +4400,11 @@ if [ "$RELAUNCH" != 1 ] && [ "$KIND" != secondmate ] && { [ -e "$CONFIG/dispatch
     fi
     printf 'plan gate: EXCEPTION "%s"\n' "$PLAN_EXCEPTION"
   else
-    plan_reason='no linked GitHub issue'
-    plan_links=$(printf '%s\n' "$FM_BACKLOG_ROW_LINKS" | grep -oE 'doc:https://github[.]com/[^[:space:]," ]+' || true)
+    plan_reason='task plan is not approved'
+    plan_links="doc:$ID"
+    legacy_plan_links=$(printf '%s\n' "$FM_BACKLOG_ROW_LINKS" | grep -oE 'doc:https://github[.]com/[^[:space:]," ]+' || true)
+    plan_links="$plan_links
+$legacy_plan_links"
     while IFS= read -r plan_link; do
       [ -n "$plan_link" ] || continue
       plan_url=${plan_link#doc:}
