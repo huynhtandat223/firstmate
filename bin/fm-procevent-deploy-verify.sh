@@ -296,6 +296,16 @@ acceptance_url() (
   case "$1" in task:*) printf '%s/#firstmate.board?view=board&task=%s\n' "${FM_TASK_BASE_URL:-http://127.0.0.1:5001}" "${1#task:}" ;; *) printf 'https://github.com/%s/issues/%s\n' "$REPO" "$1" ;; esac
 )
 
+recorded_acceptance() {  # <task> <pr-body> <hint>
+  local source
+  source=$(sed -n 's/^issue: //p' "$FM_HOME/data/$1/verify.md" 2>/dev/null | tail -n 1)
+  case "$source" in
+    task:*) printf '%s\n' "$source" ;;
+    https://github.com/*/*/issues/[0-9]*) printf '%s\n' "${source##*/}" ;;
+    *) resolve_issue "$2" "$3" ;;
+  esac
+}
+
 acceptance_body_json() {
   case "$1" in
     task:*)
@@ -353,7 +363,7 @@ plan_deploy() {  # <base-sha> <sha> <run-url> <completed-at> <workdir>
     fi
     while IFS='|' read -r _ task surface hint _; do
       ledger_pr_final "$url" "$task" && continue
-      issue=$(resolve_issue "$body" "$hint")
+      issue=$(recorded_acceptance "$task" "$body" "$hint")
       if [ -z "$issue" ] && printf '%s\n' "$body" | grep -qE '^Task: '; then issue="task:$task"; fi
       printf '%s|%s|%s|%s|%s\n' "$task" "$surface" "$url" "$issue" "$(pr_touched "$body")" >> "$w/rows.psv"
     done < <(awk -F'|' -v p="$url" '$1 == p' "$w/map.psv")
@@ -416,7 +426,7 @@ plan_drafts() {  # <workdir>
       continue
     fi
     body=$(jq -r '.body // ""' <<<"$pr")
-    issue=$(resolve_issue "$body" "$hint")
+    issue=$(recorded_acceptance "$task" "$body" "$hint")
     if [ -z "$issue" ] && printf '%s\n' "$body" | grep -qE '^Task: '; then issue="task:$task"; fi
     if [ -z "$issue" ]; then
       ledger_append "$(jq -cn --arg k "$key" '{type: "draft-skip", key: $k, reason: "no-issue"}')"
@@ -462,9 +472,9 @@ plan_rows_task() {  # <task>
   jq -e 'any(.rows[]; .surface == "user-visible" and .status == "pending" and .nextActor == "tester" and .head != null)' <<<"$json" >/dev/null || return 0
   issue_url=$(jq -r '.issueUrl // empty' <<<"$json")
   [ -n "$issue_url" ] || issue_url=$(sed -n 's/^issue: //p' "$FM_HOME/data/$task/verify.md" | tail -n 1)
-  if [ -z "$issue_url" ] || [[ "$issue_url" == *'#firstmate.board?'*'task='* ]]; then
-    issue_url=$(acceptance_url "task:$task")
-    n="task:$task"
+  if [ -z "$issue_url" ] || [[ "$issue_url" == task:* || "$issue_url" == *'#firstmate.board?'*'task='* ]]; then
+    case "$issue_url" in task:*) n=$issue_url ;; *) n="task:$task" ;; esac
+    issue_url=$(acceptance_url "$n")
     issue_json=$(acceptance_body_json "$n") || return 1
   else
     case "$issue_url" in https://github.com/*/*/issues/[0-9]*) ;; *) return 0 ;; esac
@@ -629,7 +639,7 @@ cmd_replay_skips() {
     comparison=$(gh_read "repos/$REPO/compare/$merged...$sha") || { rc=1; break; }
     jq -e '.status == "ahead" or .status == "identical"' <<<"$comparison" >/dev/null || continue
     hint=$(awk -F'|' -v p="$pr" -v t="$task" '$1 == p && $2 == t {print $4; exit}' "$w/map.psv")
-    issue=$(resolve_issue "$(jq -r '.body // ""' <<<"$body")" "$hint")
+    issue=$(recorded_acceptance "$task" "$(jq -r '.body // ""' <<<"$body")" "$hint")
     if [ -z "$issue" ] && jq -er '.body // ""' <<<"$body" | grep -qE '^Task: '; then issue="task:$task"; fi
     printf '%s|%s|%s\n' "$task" "$pr" "$issue" >> "$w/rows"
   done < <(jq -sc 'unique_by([.task,.pr])[] | select(.type == "skip" and (.reason == "no-user-visible-line" or .reason == "template-refused"))' "$LEDGER")

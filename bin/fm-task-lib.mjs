@@ -54,14 +54,14 @@
 //   checks   <task> [--as-deployed HEAD [--touched IDS]]   read only: JSON of the open rows with their newest values,
 //            `carried`, and `due` (the Tester checks it on the head); --as-deployed reads as if HEAD were deployed next
 //   link     <parent> <child>                the child waits in todo while the parent is open
-//   rows     <task> <issue-url> [--surface all|user-visible]   one check row per scenario x width from
+//   rows     <task> [task:<id>|issue-url] [--surface all|user-visible]   defaults to the task Description; one check row per scenario x width from
 //            fm-acceptance.mjs; user-visible adds, resets and retires the Tester's rows only
 //   check    <task> <id>@<width> pass|fail|pending [--evidence E] [--head H] [--next-actor A]
 //            (--status S is the same as the result word); next actor firstmate on a pass, worker on a fail;
 //            with --role owner a pass or fail also sets the row's owner item (status, decidedAt, note = --evidence)
 //   owner-check <task> <id>@<width> --page-title --url --steps --data --expected   (sets next actor owner;
 //            a row that has an item needs --url and --steps again; a re-sent --key never writes the item twice)
-//   gate     <task> --issue URL --head SHA [--evidence-root DIR]   read only: prints each reason the task is not
+//   gate     <task> [--issue task:<id>|URL] --head SHA [--evidence-root DIR]   defaults to the task Description; read only: prints each reason the task is not
 //            complete (exit 5): a user-visible row of the issue not pass on the deployed head with its current
 //            digest and evidence, or no approved event newer than the last row event (bin/fm-verify-gate-lib.sh)
 //   turn-end <task> --turn TOKEN             check a durable turn generation; heartbeat is not terminal
@@ -1567,7 +1567,7 @@ async function cmdRows(args) {
   const summary = `rows added=${counts.added} reset=${counts.reset} retired=${counts.retired} updated=${counts.updated} unchanged=${counts.unchanged} total=${wanted.size}`;
   const parser = process.env.FM_TASK_ACCEPTANCE || path.join(HERE, 'fm-acceptance.mjs');
   const digestRun = spawnSync('node', [parser, 'digest', issue, '--strict'], { encoding: 'utf8', timeout: 60000 });
-  const taskNative = !args.pos.issue || /^https?:\/\/[^\s]+[?&]task=/.test(issue);
+  const taskNative = !args.pos.issue || issue.startsWith('task:') || /^https?:\/\/[^\s]+[?&]task=/.test(issue);
   if (taskNative && (digestRun.status !== 0 || !/^[a-f0-9]{64}\s*$/.test(digestRun.stdout))) throw rule('acceptance digest could not be read');
   const sets = { ...(taskNative && task.acceptanceDigest !== digestRun.stdout.trim() ? { acceptanceDigest: digestRun.stdout.trim() } : {}), ...(taskNative ? (task.issueUrl !== issue ? { issueUrl: issue } : {}) : (args.pos.issue && !task.issueUrl ? { issueUrl: issue } : {})) };
   if (counts.added + counts.reset + counts.retired + counts.updated === 0 && !Object.keys(sets).length) {
