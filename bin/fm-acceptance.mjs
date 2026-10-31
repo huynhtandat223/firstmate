@@ -247,6 +247,12 @@ export function digest(parsed) {
 
 function readIssueBody(source) {
   if (source === '-') return fs.readFileSync(0, 'utf8');
+  if (!/^https:\/\/github\.com\/[^/]+\/[^/]+\/issues\/\d+$/.test(source)) {
+    const task = process.env.FM_ACCEPTANCE_TASK || new URL('./fm-task.sh', import.meta.url).pathname;
+    const run = spawnSync(task, ['document', source], { encoding: 'utf8', timeout: GH_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024 });
+    if (run.error || run.status !== 0) throw new Error(`could not read task ${source}: ${run.error?.message || run.stderr || run.stdout}`);
+    return run.stdout;
+  }
   const gh = process.env.FM_ACCEPTANCE_GH || 'gh';
   const run = spawnSync(gh, ['issue', 'view', source, '--json', 'body'], { encoding: 'utf8', timeout: GH_TIMEOUT_MS });
   if (run.error) throw new Error(`could not read ${source}: ${run.error.code === 'ETIMEDOUT' ? `no answer in ${GH_TIMEOUT_MS / 1000} s` : run.error.message}`);
