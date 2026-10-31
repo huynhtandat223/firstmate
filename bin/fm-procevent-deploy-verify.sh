@@ -459,11 +459,17 @@ plan_rows_task() {  # <task>
   jq -e 'any(.rows[]; .surface == "user-visible" and .status == "pending" and .nextActor == "tester" and .head != null)' <<<"$json" >/dev/null || return 0
   issue_url=$(jq -r '.issueUrl // empty' <<<"$json")
   [ -n "$issue_url" ] || issue_url=$(sed -n 's/^issue: //p' "$FM_HOME/data/$task/verify.md" | tail -n 1)
-  case "$issue_url" in https://github.com/*/*/issues/[0-9]*) ;; *) return 0 ;; esac
-  repo=${issue_url#https://github.com/}
-  repo=${repo%/issues/*}
-  n=${issue_url##*/}
-  issue_json=$(gh_read "repos/$repo/issues/$n") || return 1
+  if [ -z "$issue_url" ]; then
+    issue_url=$(acceptance_url "task:$task")
+    n="task:$task"
+    issue_json=$(acceptance_body_json "$n") || return 1
+  else
+    case "$issue_url" in https://github.com/*/*/issues/[0-9]*) ;; *) return 0 ;; esac
+    repo=${issue_url#https://github.com/}
+    repo=${repo%/issues/*}
+    n=${issue_url##*/}
+    issue_json=$(gh_read "repos/$repo/issues/$n") || return 1
+  fi
   read_acceptance visible "$(jq -r '.body // ""' <<<"$issue_json")"
   case $? in 0) ;; 1) return 0 ;; *) return 1 ;; esac
   now=$(date +%s)
