@@ -148,8 +148,10 @@ case "$ACTION" in
     [[ "$PLAN_SEQ" =~ ^[1-9][0-9]*$ ]] || usage 'plan needs --plan-seq N'
     note_args=()
     [ -z "$NOTE" ] || note_args=(--note "$NOTE")
-    run plan-decision "$TASK" --decision "$DECISION" --plan-seq "$PLAN_SEQ" "${note_args[@]}" || RC=$?
-    if [ "$RC" -eq 0 ] && ! [[ "$WRITES" == *'(already recorded)'* ]]; then
+    decision_key=$(printf '%s\0' "$OWNER" "$TASK" "$PLAN_SEQ" "$DECISION" "$NOTE" | sha256sum)
+    decision_key=${decision_key%% *}
+    run plan-decision "$TASK" --decision "$DECISION" --plan-seq "$PLAN_SEQ" --key "owner-plan:$decision_key" "${note_args[@]}" || RC=$?
+    if [ "$RC" -eq 0 ]; then
       verb=$([ "$DECISION" = approve ] && printf 'approved' || printf 'asked for changes to')
       body="The owner $verb the plan of task $TASK (plan seq $PLAN_SEQ)${NOTE:+: $NOTE}"
       [ -n "$NOTE" ] || body="${body}."

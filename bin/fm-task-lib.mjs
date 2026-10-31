@@ -982,8 +982,11 @@ const isVideoEvidence = (ev, videos) => {
 
 async function findTesterScreenshot(events, row) {
   const candidates = [];
+  const round = lastHeadEvent(events);
   for (const event of [...events].reverse()) {
     if (event.actorRole !== 'tester') continue;
+    // Only captures attached during the row's current built/deployed round qualify.
+    if (!round || bodyOf(round).head !== row.head || event.seq <= round.seq) continue;
     const imgs = await listAll('fm_event_image', { filter: `fmTaskEventId eq ${event.id}`, orderby: 'position', select: 'id,fmTaskEventId,label,mediaType,position' });
     for (const img of imgs) {
       // A screenshot belongs to one scenario/width pair, never to the scenario alone.
@@ -1208,7 +1211,7 @@ async function cmdDone(args) {
   const nextActor = f['next-actor'] === undefined ? null : oneOf(['tester', 'firstmate'], f['next-actor'], 'next actor');
   return write(taskId, who, async ({ task }) => {
     guard('done', task);
-    if ((task.kind === 'scout' || task.kind === 'plan') && !documents) throw rule(`done on a ${task.kind} task requires --document`);
+    if ((task.kind === 'scout' || task.kind === 'plan') && !documents && !/^(shadow|backfill):/.test(who.key)) throw rule(`done on a ${task.kind} task requires --document`);
     const rows = await checkRows(taskId);
     const waitingOnTester = rows.some((r) => r.surface === 'user-visible' && r.status !== 'retired' && !(r.status === 'pass' && (r.head ?? null) === (f.head ?? null)));
     const child = { summary: f.summary, changedFiles: f['changed-files'], verification: f.verification, residualRisk: f['residual-risk'], rows: f.rows ?? rowsJson(rows), prUrl: f['pr-url'], head: f.head };

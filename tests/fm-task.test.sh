@@ -2191,6 +2191,7 @@ case_slice_c() {
   vseq=$(seq_of)
   [ "$(count fm_event_video)" = 1 ] || { echo "expected 1 fm_event_video row, got $(count fm_event_video)"; return 1; }
   db fm_event_video | jq -e '.[] | .label == "C4 recording" and .mediaType == "video/mp4" and .size == 26' >/dev/null || { echo "video row mismatch: $(db fm_event_video)"; return 1; }
+  ft comment "$tv" --image "$img_file" --image-label 'Desktop screenshot A1@1440' --role tester >/dev/null || return 1
   ft "done" "$tv" "${DONE_FLAGS[@]}" --head h-vid >/dev/null || return 1
   ft event "$tv" deploy --note 'deployed' --head h-vid >/dev/null || return 1
 
@@ -2404,7 +2405,7 @@ mutate 'checks --as-deployed reads a next deploy' carry "const view = as ? [" "c
 mutate 'an owner pass or fail sets the owner item' owner_writer "if (who.role === 'owner' && status !== 'pending') await ownerVerdict(" "if (false) await ownerVerdict("
 mutate 'plan-decision refuses a task without a plan' slice_c 'if (!task.planSeq) throw rule' 'if (false) throw rule'
 mutate 'plan-decision refuses a mismatched plan-seq' slice_c 'if (task.planSeq !== planSeq) throw rule' 'if (false) throw rule'
-mutate 'done on a scout or plan task requires --document' slice_c "if ((task.kind === 'scout' || task.kind === 'plan') && !documents) throw rule" 'if (false) throw rule'
+mutate 'done on a scout or plan task requires --document' slice_c "if ((task.kind === 'scout' || task.kind === 'plan') && !documents && !/^(shadow|backfill):/.test(who.key)) throw rule" 'if (false) throw rule'
 mutate 'approve deletes event videos' slice_c "for (const v of currentVideos) ok(await http('DELETE'" "for (const v of []) ok(await http('DELETE'"
 mutate 'approve replaces video evidence with Tester screenshot' slice_c 'if (!replacement) throw rule' 'if (false) throw rule'
 mutate 'check --evidence-image records event:<seq>#image:1' slice_c 'evidence = `event:${imgRes.event.seq}#image:1`;' 'evidence = null;'

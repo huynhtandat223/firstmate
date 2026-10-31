@@ -64,7 +64,7 @@ if [ "$cmd" != show ]; then
     fm_task_shadow_config "$shadow_config"
     if [ "$cmd" = add-url ]; then
       FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task.sh" event "$id" link --url "$value" --note "$label" || exit $?
-    elif [ -f "$value" ] && [[ "${value,,}" != *.avif ]] && [ "$(wc -c < "$value")" -le 2097152 ] && [ -s "$value" ]; then
+    elif [ "${#label}" -le 200 ] && [ -f "$value" ] && [[ "${value,,}" != *.avif ]] && [ "$(wc -c < "$value")" -le 2097152 ] && [ -s "$value" ]; then
       FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task.sh" comment "$id" --image "$value" --image-label "$label" || exit $?
     fi
   fi
