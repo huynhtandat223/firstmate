@@ -65,6 +65,7 @@
 //            complete (exit 5): a user-visible row of the issue not pass on the deployed head with its current
 //            digest and evidence, or no approved event newer than the last row event (bin/fm-verify-gate-lib.sh)
 //   turn-end <task> --turn TOKEN             check a durable turn generation; heartbeat is not terminal
+//   inbox <notification-id> --action task|linked|delete [--target task-id] [--home main] resolve an inbox item
 //   read-mark <task> --key steer:<task>:<record>  mark one handled steer in fm_task_delivery (consumer read:<task>)
 //   deliver  <task> --consumer NAME           claim each event in fm_task_delivery, then append a wake
 //            FM_HOME is required; delivery is scoped to this task, never a whole foreign fleet.
@@ -393,6 +394,7 @@ const SPECS = {
   'turn-end': { pos: ['task'], flags: { turn: 's' } },
   deliver: { pos: ['task'], flags: { consumer: 's' } },
   'read-mark': { pos: ['task'], flags: {} },
+  inbox: { pos: ['task'], flags: { action: 's', target: 's', home: 's' } },
   document: { pos: ['task'], flags: {} },
   gate: { pos: ['task'], flags: { issue: 's', head: 's', 'evidence-root': 's' } },
 };
@@ -1635,6 +1637,40 @@ async function cmdTurnEnd(args) {
   out(verdict);
 }
 
+async function cmdInbox(args) {
+  const id = taskIdOf(args);
+  const action = args.flags.action;
+  if (!['task', 'linked', 'delete'].includes(action)) throw usage('inbox needs --action task|linked|delete');
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) throw usage('inbox requires a notification UUID');
+  const items = await listAll('notification', { filter: `id eq ${id}`, expand: 'actions,images($select=id),documents($select=id)' });
+  const item = items[0];
+  if (!item) throw new Fail(5, 'inbox item does not exist');
+  if (action === 'delete') {
+    ok(await http('PATCH', `/api/notification/${encodeURIComponent(id)}`, { state: 'dismissed' }), 'dismiss inbox item');
+    const retention = spawnSync('bash', [path.join(os.homedir(), '.local/share/cfw-scripts/notifications-retention.sh'), '--days', '0', '--only', id], { encoding: 'utf8', timeout: 30000 });
+    if (retention.status !== 0) throw new Fail(3, `inbox dismissed but retention failed: ${retention.stderr || retention.error?.message || 'unknown error'}`);
+    let receipt;
+    try { receipt = JSON.parse(retention.stdout); } catch { throw new Fail(3, 'retention returned no JSON receipt'); }
+    if (receipt.deleted !== 1) throw new Fail(3, 'inbox dismissed but retention did not confirm deletion');
+    out(`deleted inbox=${id}`);
+    return;
+  }
+  const target = action === 'task' ? `inbox-${id}` : args.flags.target;
+  if (!target) throw usage('linked needs --target task-id');
+  if (item.resolution && item.taskId !== target) throw new Fail(5, 'inbox item was already handled');
+  if (action === 'task') {
+    await cmdCreate({ pos: { task: target }, flags: { title: item.title, kind: 'other', key: `inbox:${id}:create` } });
+    if (item.body) await cmdComment({ pos: { task: target }, flags: { note: item.body, key: `inbox:${id}:body` } });
+    await requireOpenTask(target, 'make inbox task');
+    const task = await firstRow('fm_task', `taskId eq ${lit(target)}`);
+    ok(await http('PATCH', `/api/fm_task/${encodeURIComponent(task.id)}`, { backlogHome: args.flags.home || 'main' }), 'set inbox task home');
+  } else {
+    await requireOpenTask(target, 'link inbox');
+  }
+  ok(await http('PATCH', `/api/notification/${encodeURIComponent(id)}`, { taskId: target, resolution: action }), 'resolve inbox item');
+  out(`inbox=${id} task=${target} resolution=${action}`);
+}
+
 async function cmdReadMark(args) {
   const taskId = taskIdOf(args);
   const key = args.flags.key;
@@ -1689,7 +1725,7 @@ async function cmdDeliver(args) {
 }
 
 const COMMANDS = {
-  'turn-end': cmdTurnEnd, deliver: cmdDeliver, 'read-mark': cmdReadMark, describe: cmdDescribe, thread: cmdThread,
+  'turn-end': cmdTurnEnd, deliver: cmdDeliver, 'read-mark': cmdReadMark, inbox: cmdInbox, describe: cmdDescribe, thread: cmdThread,
   create: cmdCreate, import: cmdImport, assign: cmdAssign, start: cmdStart, heartbeat: cmdHeartbeat, done: cmdDone, ask: cmdAsk, block: cmdBlock,
   unblock: cmdUnblock, approve: cmdApprove, changes: cmdChanges, reopen: cmdReopen, reassign: cmdReassign, archive: cmdArchive, comment: cmdComment, event: cmdEvent,
   document: cmdDocument, link: cmdLink, rows: cmdRows, check: cmdCheck, 'owner-check': cmdOwnerCheck, gate: cmdGate, show: cmdShow, list: cmdList, resume: cmdResume, reproject: cmdReproject,

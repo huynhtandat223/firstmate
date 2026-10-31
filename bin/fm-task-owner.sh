@@ -7,6 +7,7 @@
 # owner); the writer keeps seq, the transitions and the projection, and this file adds no rule of its own.
 #
 # Usage: fm-task-owner.sh --action ACTION --task TASK [--option O] [--row ID@W] [--note N] [--to RECIPIENT] [--ask why|how|wait-what] --owner ID
+#   inbox-task|inbox-link|inbox-delete resolve a notification (--task is its id; link needs --option task-id)
 #   comment  a task comment: store the note once per owner, note and minute              needs --note
 #   answer   a question:     comment "answer: <option>" (and " - <note>"), then unblock    needs --option
 #   unblock  a block:        comment "<note>", then unblock                                needs --note
@@ -125,6 +126,13 @@ case "$ACTION" in
         fi
       fi
     fi
+    ;;
+  inbox-task|inbox-link|inbox-delete)
+    case "$ACTION" in
+      inbox-task) run inbox "$TASK" --action task ;;
+      inbox-link) [ -n "$OPTION" ] || usage 'inbox-link needs --option task-id'; run inbox "$TASK" --action linked --target "$OPTION" ;;
+      inbox-delete) run inbox "$TASK" --action delete ;;
+    esac || RC=$?
     ;;
   answer)
     [ -n "$OPTION" ] || usage 'answer needs --option'
