@@ -379,6 +379,19 @@ test_steer_read_mark() {
   [ "$RC" = 2 ]
 }
 
+test_inbox_validation() {
+  reset_db
+  ft inbox not-a-uuid --action task
+  [ "$RC" = 2 ] || return 1
+  ft inbox 00000000-0000-0000-0000-000000000000 --action invalid
+  [ "$RC" = 2 ] || return 1
+  [ "$(count fm_task)" = 0 ] || return 1
+  [ "$(count fm_task_event)" = 0 ]
+}
+
+test_inbox_validation || fail 'invalid inbox requests create no task or event'
+pass 'invalid inbox requests create no task or event'
+
 test_steer_read_mark || fail 'steer read mark is task-scoped and idempotent'
 pass 'steer read mark is task-scoped and idempotent'
 
