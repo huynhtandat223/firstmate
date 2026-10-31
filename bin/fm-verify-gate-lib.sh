@@ -83,10 +83,14 @@ fm_verify_gate_say() {
   bad=1
 }
 
-# One evidence value: says the problem for row <rid> when it is not an existing path or URL.
+# One evidence value: says the problem for row <rid> when it is not an existing path, URL, or event reference.
 fm_verify_gate_evidence_problem() {  # <rid> <evidence> <base-dir>
   case "$2" in
     http://?*|https://?*) ;;
+    event:*)
+      if [[ ! "$2" =~ ^event:[1-9][0-9]*#(image:[1-9][0-9]*|document)$ ]]; then
+        fm_verify_gate_say "$1 evidence reference is invalid: $2"
+      fi ;;
     ''|-) fm_verify_gate_say "$1 is pass without evidence" ;;
     /*) [ -e "$2" ] || fm_verify_gate_say "$1 evidence path does not exist: $2" ;;
     *) [ -e "$3/$2" ] || fm_verify_gate_say "$1 evidence path does not exist: $2" ;;

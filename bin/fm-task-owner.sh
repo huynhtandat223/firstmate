@@ -6,12 +6,13 @@
 # a page value. Each action runs bin/fm-task.sh, the one writer, with that owner as actor (`owner:<id>`, role
 # owner); the writer keeps seq, the transitions and the projection, and this file adds no rule of its own.
 #
-# Usage: fm-task-owner.sh --action ACTION --task TASK [--option O] [--row ID@W] [--note N] [--to RECIPIENT] [--ask why|how|wait-what] --owner ID
+# Usage: fm-task-owner.sh --action ACTION --task TASK [--option O] [--row ID@W] [--decision approve|changes] [--plan-seq N] [--note N] [--to RECIPIENT] [--ask why|how|wait-what] --owner ID
 #   comment  a task comment: store the note once per owner, note and minute              needs --note
 #   answer   a question:     comment "answer: <option>" (and " - <note>"), then unblock    needs --option
 #   unblock  a block:        comment "<note>", then unblock                                needs --note
 #   pass     an owner row:   check TASK ROW pass --evidence "<note>" (or "owner pass")     needs --row
 #   fail     an owner row:   check TASK ROW fail --evidence "<note>"                        needs --row and --note
+#   plan     a plan verdict: plan-decision TASK --decision D --plan-seq N [--note N]       needs --decision and --plan-seq
 #   comment delivers a new event in this call: --to firstmate uses fm-inbox note; a live task uses fm-send.
 #   Without --to, the task's live worker is selected, else firstmate. Invalid recipients write nothing.
 #   --ask on comment stores the skill name and delivers its invocation and the exact --reply-to command.
@@ -30,7 +31,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export FM_HOME="${FM_HOME:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 WRITER="${FM_TASK_OWNER_WRITER:-$SCRIPT_DIR/fm-task.sh}"
 
-ACTION='' TASK='' OPTION='' ROW='' NOTE='' OWNER='' TO='' ASK=''
+ACTION='' TASK='' OPTION='' ROW='' DECISION='' PLAN_SEQ='' NOTE='' OWNER='' TO='' ASK=''
 WRITES='[]'
 
 reply() {  # <ok> [error]: the one JSON line, then exit with the code in RC
@@ -47,6 +48,8 @@ while [ "$#" -gt 0 ]; do
     --task) TASK=$2 ;;
     --option) OPTION=$2 ;;
     --row) ROW=$2 ;;
+    --decision) DECISION=$2 ;;
+    --plan-seq) PLAN_SEQ=$2 ;;
     --note) NOTE=$2 ;;
     --owner) OWNER=$2 ;;
     --to) TO=$2 ;;
@@ -140,6 +143,24 @@ case "$ACTION" in
     [ "$ACTION" = pass ] || [ -n "$NOTE" ] || usage 'fail needs --note'
     run check "$TASK" "$ROW" "$ACTION" --evidence "${NOTE:-owner pass}" || RC=$?
     ;;
-  *) usage "--action must be comment, answer, unblock, pass or fail" ;;
+  plan)
+    case "$DECISION" in approve|changes) ;; *) usage 'plan needs --decision approve|changes' ;; esac
+    [[ "$PLAN_SEQ" =~ ^[1-9][0-9]*$ ]] || usage 'plan needs --plan-seq N'
+    note_args=()
+    [ -z "$NOTE" ] || note_args=(--note "$NOTE")
+    run plan-decision "$TASK" --decision "$DECISION" --plan-seq "$PLAN_SEQ" "${note_args[@]}" || RC=$?
+    if [ "$RC" -eq 0 ] && ! [[ "$WRITES" == *'(already recorded)'* ]]; then
+      verb=$([ "$DECISION" = approve ] && printf 'approved' || printf 'asked for changes to')
+      body="The owner $verb the plan of task $TASK (plan seq $PLAN_SEQ)${NOTE:+: $NOTE}"
+      [ -n "$NOTE" ] || body="${body}."
+      words="${NOTE:-$([ "$DECISION" = approve ] && printf 'Approved on the board.' || printf 'Asked for changes on the board.')}"
+      "${FM_TASK_OWNER_INBOX:-$SCRIPT_DIR/fm-inbox.sh}" note --request-id "owner-plan-$TASK-$PLAN_SEQ-$DECISION" -- "$body" >/dev/null || { RC=$?; ERROR='plan decision stored but firstmate delivery failed'; }
+      if [ "$RC" -eq 0 ] && [ -f "$FM_HOME/data/assistances.md" ] && grep -Eq '^- planner\b' "$FM_HOME/data/assistances.md"; then
+        steer_flag="--$(printf '\143\141\160\164\141\151\156')-words"
+        "${FM_TASK_OWNER_ASSISTANCE:-$SCRIPT_DIR/fm-assistance.sh}" steer planner "$steer_flag" "$words" "$body" >/dev/null || { RC=$?; ERROR='plan decision stored but planner delivery failed'; }
+      fi
+    fi
+    ;;
+  *) usage "--action must be comment, answer, unblock, pass, fail or plan" ;;
 esac
 if [ "$RC" -eq 0 ]; then reply true; else reply false "$ERROR"; fi
