@@ -23,6 +23,10 @@ with tempfile.TemporaryDirectory() as temp:
         db.execute(f"INSERT INTO {name} VALUES('retained')")
     db.execute('CREATE TABLE unrelated(secret TEXT)')
     db.execute("INSERT INTO unrelated VALUES('excluded')")
+    db.execute('CREATE VIRTUAL TABLE search_private USING fts5(secret)')
+    db.execute("INSERT INTO search_private VALUES('sensitive-fts-literal')")
+    db.execute("CREATE VIEW private_view AS SELECT 'sensitive-view-literal'")
+    db.execute("CREATE TRIGGER private_trigger AFTER INSERT ON unrelated BEGIN SELECT 'sensitive-trigger-literal'; END")
     db.commit()
     def run(*args, ok=True):
         result = subprocess.run([sys.executable, str(script), *map(str, args)], capture_output=True, text=True)
@@ -31,9 +35,17 @@ with tempfile.TemporaryDirectory() as temp:
     directory = root / 'backups'
     run('backup', '--source', source, '--directory', directory, '--dry-run')
     assert not directory.exists()
+    directory.mkdir(mode=0o700)
+    abandoned = directory / '.snapshot-abandoned'
+    abandoned.write_text('sensitive-abandoned-literal')
     run('backup', '--source', source, '--directory', directory)
+    assert not abandoned.exists()
     snapshot = next(directory.glob('*.sqlite3'))
     assert snapshot.stat().st_mode & 0o077 == 0
+    for secret in (b'sensitive-fts-literal', b'sensitive-view-literal', b'sensitive-trigger-literal'):
+        assert secret not in snapshot.read_bytes()
+    with sqlite3.connect(snapshot) as check:
+        assert not check.execute("SELECT name FROM sqlite_master WHERE type IN ('view','trigger') OR name LIKE 'search_private%'").fetchall()
     restored = root / 'scratch.db'
     run('restore', '--backup', snapshot, '--scratch', restored, '--task', 'probe')
     with sqlite3.connect(restored) as check:

@@ -59,20 +59,32 @@ def backup(args):
             raise ValueError('backup directory must be owned by this user with mode 0700')
         with (directory / '.backup.lock').open('a') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
+            # Only this tool owns this prefix, and no active writer can hold the lock.
+            for abandoned in directory.glob('.snapshot-*'):
+                if abandoned.is_file() or abandoned.is_symlink():
+                    abandoned.unlink()
             fd, temporary = tempfile.mkstemp(prefix='.snapshot-', dir=directory)
             os.close(fd)
             try:
-                with sqlite3.connect(temporary) as target:
-                    source.backup(target)
-                    for name in tables(target):
-                        if not name.startswith('fm_') and not name.startswith('sqlite_'):
-                            target.execute('DROP TABLE ' + quoted(name))
-                    target.commit()
-                    # Removed tables must not remain recoverable in free pages.
-                    target.execute('VACUUM')
-                    count = validate(target)
-                    target.execute('PRAGMA journal_mode=DELETE')
-                target.close()
+                # Prune in memory: a killed process must never leave unrelated data
+                # in a temporary file. table_list distinguishes FTS shadow tables.
+                with sqlite3.connect(':memory:') as filtered:
+                    source.backup(filtered)
+                    for kind, name in filtered.execute(
+                            "SELECT type, name FROM sqlite_master WHERE type IN ('view', 'trigger')").fetchall():
+                        filtered.execute('DROP ' + kind.upper() + ' ' + quoted(name))
+                    removable = [row[1] for row in filtered.execute('PRAGMA table_list')
+                                 if row[2] in ('table', 'virtual')
+                                 and not row[1].startswith(('fm_', 'sqlite_'))]
+                    for name in removable:
+                        filtered.execute('DROP TABLE ' + quoted(name))
+                    filtered.commit()
+                    filtered.execute('VACUUM')
+                    count = validate(filtered)
+                    with sqlite3.connect(temporary) as target:
+                        filtered.backup(target)
+                        target.execute('PRAGMA journal_mode=DELETE')
+                    target.close()
                 now = datetime.datetime.now(datetime.timezone.utc)
                 final = directory / ('fm-task-' + now.strftime('%Y%m%dT%H%M%S%fZ') + '.sqlite3')
                 with open(temporary, 'rb') as handle:
