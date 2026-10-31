@@ -1,0 +1,8 @@
+[Unit]
+Description=Daily Firstmate task record backup
+
+[Service]
+Type=oneshot
+UMask=0077
+ExecStart=/usr/bin/python3 %h/codes/firstmate/bin/fm-task-backup.py backup --source %h/.local/share/cfw-deployments/cfw-forge-dev-5001-data/runtime-api/managed/forge.db --directory %h/.local/share/firstmate-task-backups --keep-days 30
+NoNewPrivileges=true

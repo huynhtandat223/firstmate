@@ -1,0 +1,11 @@
+[Unit]
+Description=Back up Firstmate task records each day
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=15m
+Unit=fm-task-backup.service
+
+[Install]
+WantedBy=timers.target
