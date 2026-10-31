@@ -200,7 +200,7 @@ case_row_pass_without_evidence() {
   refuses "$1" "$home" 'A1@390 is pass without evidence'
 }
 
-# An evidence path must exist: absolute as written, relative under the Tester home.
+# An evidence path must exist: absolute as written, relative under the Tester home, or an event:<seq>#image:<n>/#document reference.
 case_row_evidence_path() {
   local home
   home=$(new_home)
@@ -208,6 +208,13 @@ case_row_evidence_path() {
   refuses "$1" "$home" "A1@390 evidence path does not exist: $home/no-such.png" || return 1
   set_line "$(tester "$home")" '- A1@390 ' "$(row A1@390 pass 'evidence: shots/a1.png')"
   refuses "$1" "$home" 'A1@390 evidence path does not exist: shots/a1.png' || return 1
+  set_line "$(tester "$home")" '- A1@390 ' "$(row A1@390 pass 'evidence: event:bad')"
+  refuses "$1" "$home" 'A1@390 evidence reference is invalid: event:bad' || return 1
+  set_line "$(tester "$home")" '- A1@390 ' "$(row A1@390 pass 'evidence: event:12#image:1')"
+  passes "$1" "$home" || return 1
+  set_line "$(tester "$home")" '- A1@390 ' "$(row A1@390 pass 'evidence: event:12#document')"
+  passes "$1" "$home" || return 1
+  set_line "$(tester "$home")" '- A1@390 ' "$(row A1@390 pass 'evidence: shots/a1.png')"
   mkdir -p "$home/tester/shots"
   : > "$home/tester/shots/a1.png"
   passes "$1" "$home"

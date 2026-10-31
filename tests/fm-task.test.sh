@@ -50,8 +50,10 @@ node - "$TMP_ROOT/schema.json" <<'JS'
 const fs = require('fs');
 const file = process.argv[2]; const s = JSON.parse(fs.readFileSync(file));
 s.fm_event_document = {ops:['list','get','create'],f:{title:{t:'s',m:200},mediaType:{t:'s',m:100},content:{t:'s'}},u:[['fmTaskEventId']],parent:['fmTaskEvent','documents']};
+s.fm_event_video = {ops:['list','get','create','delete'],f:{label:{t:'s',m:200},mediaType:{t:'s',m:32},size:{t:'i'},content:{t:'s'}},u:[],parent:['fmTaskEvent','videos']};
 Object.assign(s.fm_task.f, {row:{t:'s',n:1},notes:{t:'s',n:1},section:{t:'s',n:1,m:32},
-  stage:{t:'s',n:1,m:16},stageSince:{t:'d',n:1},lastEventAt:{t:'d',n:1},lastNote:{t:'s',n:1,m:300},reviewer:{t:'s',n:1,m:64}});
+  stage:{t:'s',n:1,m:16},stageSince:{t:'d',n:1},lastEventAt:{t:'d',n:1},lastNote:{t:'s',n:1,m:300},reviewer:{t:'s',n:1,m:64},
+  planSeq:{t:'i',n:1},planDecision:{t:'s',n:1,m:16},planDecidedAt:{t:'d',n:1}});
 fs.writeFileSync(file, JSON.stringify(s));
 JS
 
@@ -200,7 +202,13 @@ function list(table, query) {
   const top = query.has('$top') ? Number(query.get('$top')) : 100;
   if (top > 100) return refusal(400, 'INVALID_QUERY', `The limit of '100' for Top query has been exceeded. The value from the incoming request is '${top}'.`);
   const skip = Number(query.get('$skip') || 0);
-  const out = { value: rows.slice(skip, skip + top) };
+  let sliced = rows.slice(skip, skip + top);
+  const sel = query.get('$select');
+  if (sel) {
+    const fields = sel.split(',').map((s) => s.trim()).filter(Boolean);
+    sliced = sliced.map((r) => Object.fromEntries(fields.filter((f) => f in r).map((f) => [f, r[f]])));
+  }
+  const out = { value: sliced };
   if (query.get('$count') === 'true') out['@odata.count'] = rows.length;
   return { status: 200, body: out };
 }
@@ -2086,7 +2094,154 @@ case_stage() {
   return 0
 }
 
-CASES=${FM_TASK_CASES:-"description_thread terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed long_notes status_view verify_view owner_writer stage wait carry"}
+# Slice C: plan and plan-decision, done --document for scout/plan, comment --video and approve video cleanup,
+# check --evidence-image and gate event: references, event link --url, and fm-task-owner.sh --action plan.
+case_slice_c() {
+  BIN=$1; reset_db
+  export FM_HOME="$TMP_ROOT/slice-c-home"
+  rm -rf "$FM_HOME"; mkdir -p "$FM_HOME/state" "$FM_HOME/data"
+  local t=tk-sc1 plan_file="$TMP_ROOT/plan.html" doc_file="$TMP_ROOT/report.md" vid_file="$TMP_ROOT/clip.mp4" img_file="$TMP_ROOT/shot.png"
+  printf '<h1>Plan v1</h1>\n' > "$plan_file"
+  printf '# Scout report\nAll good.\n' > "$doc_file"
+  printf 'fake-mp4-video-bytes-12345' > "$vid_file"
+  printf '\x89PNG\r\n\x1a\n' > "$img_file"
+
+  # 1. plan and plan-decision
+  ft create "$t" --title 'Slice C plan task' --kind ship >/dev/null || return 1
+  ft plan "$t"
+  must 'plan without --document' 2 || return 1
+  ft plan-decision "$t" --decision approve --plan-seq 1
+  must 'plan-decision when task has no plan' 5 || return 1
+  ft plan "$t" --document "$plan_file" --document-title 'Plan v1'
+  must 'plan v1' 0 || return 1
+  local pseq1
+  pseq1=$(seq_of)
+  task_row "$t" | jq -e --argjson s "$pseq1" '.planSeq == $s and .planDecision == null and .planDecidedAt == null' >/dev/null || { echo "planSeq projection failed: $(task_row "$t")"; return 1; }
+  db fm_task_event | jq -e --argjson s "$pseq1" '.[] | select(.seq == $s) | .kind == "plan" and .actorRole == "planner"' >/dev/null || { echo "plan event role/kind mismatch"; return 1; }
+  db fm_event_document | jq -e '.[] | select(.title == "Plan v1") | .mediaType == "text/html" and (.content | test("Plan v1"))' >/dev/null || { echo "plan document missing"; return 1; }
+  ft plan-decision "$t" --decision approve --plan-seq $((pseq1 + 99))
+  must 'plan-decision with wrong plan-seq' 5 || return 1
+  ft plan-decision "$t" --decision changes --plan-seq "$pseq1" --note 'split step 2'
+  must 'plan-decision changes' 0 || return 1
+  task_row "$t" | jq -e --argjson s "$pseq1" '.planSeq == $s and .planDecision == "changes" and (.planDecidedAt | type == "string") and .state == "triage"' >/dev/null || { echo "plan-decision projection failed: $(task_row "$t")"; return 1; }
+
+  # Second plan resets planDecision and planDecidedAt
+  printf '<h1>Plan v2</h1>\n' > "$plan_file"
+  ft plan "$t" --document "$plan_file" --document-title 'Plan v2'
+  must 'plan v2' 0 || return 1
+  local pseq2
+  pseq2=$(seq_of)
+  task_row "$t" | jq -e --argjson s "$pseq2" '.planSeq == $s and .planDecision == null and .planDecidedAt == null' >/dev/null || { echo "plan v2 reset failed: $(task_row "$t")"; return 1; }
+
+  # fm-task-owner.sh --action plan delivers inbox note and steers planner when registered
+  local steer_log="$TMP_ROOT/planner-steer.log" fake_assist="$TMP_ROOT/fake-assistance.sh"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> %q\n' "$steer_log" > "$fake_assist"
+  chmod +x "$fake_assist"
+  printf -- '- planner - Planner assistance (home: %s/planner)\n' "$TMP_ROOT" > "$FM_HOME/data/assistances.md"
+  ow() { OUT=$(FM_TASK_OWNER_ASSISTANCE="$fake_assist" "$BIN/fm-task-owner.sh" "$@" 2>"$TMP_ROOT/err"); RC=$?; ERR=$(cat "$TMP_ROOT/err"); }
+  ow --action plan --task "$t" --decision approve --plan-seq "$pseq1" --owner u-1
+  must 'owner plan with stale seq' 5 || return 1
+  ow --action plan --task "$t" --decision approve --plan-seq "$pseq2" --note 'looks great' --owner u-1
+  must 'owner plan approve' 0 || return 1
+  task_row "$t" | jq -e --argjson s "$pseq2" '.planSeq == $s and .planDecision == "approve" and (.planDecidedAt | type == "string")' >/dev/null || { echo "owner plan approve failed: $(task_row "$t")"; return 1; }
+  grep -R -F -- "approved the plan of task $t (plan seq $pseq2): looks great" "$FM_HOME/state/inbox" >/dev/null || { echo "missing firstmate inbox note for plan"; return 1; }
+  grep -F -- "steer planner" "$steer_log" >/dev/null || { echo "missing planner steer: $(cat "$steer_log" 2>/dev/null)"; return 1; }
+  grep -F -- "looks great" "$steer_log" >/dev/null || { echo "missing planner words: $(cat "$steer_log" 2>/dev/null)"; return 1; }
+
+  # 2. done --document required for scout and plan tasks
+  local ts=tk-sc-scout tp=tk-sc-plan
+  ft create "$ts" --title 'Scout task' --kind scout >/dev/null && ft assign "$ts" --to w1 >/dev/null && ft start "$ts" >/dev/null || return 1
+  ft "done" "$ts" "${DONE_FLAGS[@]}"
+  must 'done on scout without --document' 5 || return 1
+  ft "done" "$ts" "${DONE_FLAGS[@]}" --document "$doc_file" --document-title 'Scout Report'
+  must 'done on scout with --document' 0 || return 1
+  ft create "$tp" --title 'Plan task' --kind plan >/dev/null && ft assign "$tp" --to w1 >/dev/null && ft start "$tp" >/dev/null || return 1
+  ft "done" "$tp" "${DONE_FLAGS[@]}"
+  must 'done on plan without --document' 5 || return 1
+  ft "done" "$tp" "${DONE_FLAGS[@]}" --document "$plan_file" --document-title 'Plan Deliverable'
+  must 'done on plan with --document' 0 || return 1
+  ft approve "$tp" >/dev/null || return 1
+  ft plan "$tp" --document "$plan_file"
+  must 'plan on closed task' 5 || return 1
+
+  # 3. event link --url
+  ft event "$t" link
+  must 'event link without --url' 5 || return 1
+  ft event "$t" link --url 'javascript:alert(1)'
+  must 'event link with unsafe url' 5 || return 1
+  ft event "$t" comment --url 'https://example.com'
+  must '--url on non-link event' 2 || return 1
+  ft event "$t" link --url 'https://example.com/preview' --note 'Preview link'
+  must 'event link valid' 0 || return 1
+  db fm_task_event | jq -e --arg t "$t" '.[] | select(.taskId == $t and .kind == "link") | (.body | fromjson | .url == "https://example.com/preview" and .note == "Preview link")' >/dev/null || { echo "link event missing"; return 1; }
+
+  # 4. comment --video, check --evidence-image, gate event: reference, and approve video cleanup
+  local tv=tk-sc-vid
+  ft create "$tv" --title 'Video and evidence task' --kind ship --surface user-visible >/dev/null || return 1
+  use_issue v1
+  ft rows "$tv" "$ISSUE" >/dev/null || return 1
+  ft assign "$tv" --to w1 >/dev/null && ft start "$tv" >/dev/null || return 1
+  ft comment "$tv" --video "$vid_file"
+  must 'video without label' 2 || return 1
+  ft comment "$tv" --video "$plan_file" --video-label 'not a video'
+  must 'video with bad extension' 5 || return 1
+  ft comment "$tv" --video "$vid_file" --video-label 'C4 recording'
+  must 'comment with video' 0 || return 1
+  local vseq
+  vseq=$(seq_of)
+  [ "$(count fm_event_video)" = 1 ] || { echo "expected 1 fm_event_video row, got $(count fm_event_video)"; return 1; }
+  db fm_event_video | jq -e '.[] | .label == "C4 recording" and .mediaType == "video/mp4" and .size == 26' >/dev/null || { echo "video row mismatch: $(db fm_event_video)"; return 1; }
+  ft "done" "$tv" "${DONE_FLAGS[@]}" --head h-vid >/dev/null || return 1
+  ft event "$tv" deploy --note 'deployed' --head h-vid >/dev/null || return 1
+
+  # Pass rows: A1@390 and A2@- with --evidence-image, A1@1440 initially pointing to the video
+  ft check "$tv" A1@1440 pass --evidence "event:${vseq}#video:1" --head h-vid
+  must 'check with video evidence' 0 || return 1
+  ft check "$tv" A1@390 pass --evidence https://example.com/a1-390.png --head h-vid >/dev/null || return 1
+  ft check "$tv" A2@- pass --evidence https://example.com/a2.png --head h-vid >/dev/null || return 1
+  ft check "$tv" A3@- pass --evidence https://example.com/a3.png --head h-vid >/dev/null || return 1
+  # Approve refuses when a check row references a video and there is no Tester screenshot on the task yet
+  ft approve "$tv"
+  must 'approve with video evidence and no screenshot' 5 || return 1
+  [ "$(count fm_event_video)" = 1 ] || { echo "video was deleted on refused approve"; return 1; }
+
+  # Now check A1@390 with --evidence-image (which writes an fm_event_image comment and records event:<seq>#image:1)
+  ft check "$tv" A1@390 pass --evidence-image "$img_file" --evidence-label 'A1@390 screenshot' --head h-vid
+  must 'check with --evidence-image' 0 || return 1
+  local img_ev
+  img_ev=$(db fm_task_check | jq -r '.[] | select(.taskId == "tk-sc-vid" and .scenarioId == "A1" and .width == "390") | .evidence')
+  [[ "$img_ev" =~ ^event:[0-9]+#image:1$ ]] || { echo "expected event:<seq>#image:1, got $img_ev"; return 1; }
+  rm -f "$img_file"
+
+  # Approve now replaces A1@1440's video evidence with the Tester screenshot, deletes the video row, and writes the comment
+  ft approve "$tv"
+  must 'approve with video cleanup and evidence replacement' 0 || return 1
+  [ "$(count fm_event_video)" = 0 ] || { echo "expected 0 fm_event_video rows after approve, got $(count fm_event_video)"; return 1; }
+  db fm_task_check | jq -e --arg ev "$img_ev" '.[] | select(.taskId == "tk-sc-vid" and .scenarioId == "A1" and .width == "1440") | .evidence == $ev' >/dev/null \
+    || { echo "video evidence was not replaced by Tester screenshot: $(db fm_task_check)"; return 1; }
+  db fm_task_event | jq -e '.[] | select(.taskId == "tk-sc-vid" and .kind == "comment") | (.body | fromjson | .note == "1 video đã xóa sau Verify")' >/dev/null \
+    || { echo "missing video cleanup comment event"; return 1; }
+
+  # Gate resolves event:<seq>#image:1 even after local img_file was deleted
+  ft gate "$tv" --issue "$ISSUE" --head h-vid
+  must 'gate with event:<seq>#image:1 evidence' 0 || return 1
+
+  # Gate refuses a broken event:<seq>#image:99 reference
+  local tg=tk-sc-gate
+  ft create "$tg" --title 'Gate bad event ref' --kind ship --surface user-visible >/dev/null || return 1
+  ft rows "$tg" "$ISSUE" >/dev/null && ft assign "$tg" --to w1 >/dev/null && ft start "$tg" >/dev/null || return 1
+  ft "done" "$tg" "${DONE_FLAGS[@]}" --head h-g >/dev/null && ft event "$tg" deploy --note d --head h-g >/dev/null || return 1
+  ft check "$tg" A1@1440 pass --evidence 'event:999999#image:1' --head h-g >/dev/null || return 1
+  ft check "$tg" A1@390 pass --evidence https://example.com/1.png --head h-g >/dev/null || return 1
+  ft check "$tg" A2@- pass --evidence https://example.com/2.png --head h-g >/dev/null || return 1
+  ft check "$tg" A3@- pass --evidence https://example.com/3.png --head h-g >/dev/null || return 1
+  ft approve "$tg" >/dev/null || return 1
+  ft gate "$tg" --issue "$ISSUE" --head h-g
+  must 'gate refuses missing event:<seq>#image:1 reference' 5 || return 1
+  return 0
+}
+
+CASES=${FM_TASK_CASES:-"description_thread terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed long_notes status_view verify_view owner_writer stage wait carry slice_c"}
 
 # ---- real command -------------------------------------------------------------------
 
@@ -2109,7 +2264,7 @@ cp "$TMP_ROOT/fm-task-owner.sh.orig" "$MBIN/fm-task-owner.sh"; chmod +x "$MBIN/f
 cp "$TMP_ROOT/fm-acceptance.mjs.orig" "$MBIN/fm-acceptance.mjs"
 cp "$TMP_ROOT/fm-task.sh.orig" "$MBIN/fm-task.sh"
 cp "$ROOT/bin/fm-task-sources-lib.mjs" "$MBIN/fm-task-sources-lib.mjs"
-cp "$ROOT/bin/fm-backend.sh" "$ROOT/bin/fm-wake-lib.sh" "$ROOT/bin/fm-path-lib.sh" "$MBIN/"
+cp "$ROOT/bin/fm-backend.sh" "$ROOT/bin/fm-wake-lib.sh" "$ROOT/bin/fm-path-lib.sh" "$ROOT/bin/fm-inbox.sh" "$MBIN/"
 chmod +x "$MBIN/fm-task.sh"
 LIB="$MBIN/fm-task-lib.mjs"
 
@@ -2236,6 +2391,14 @@ mutate 'a carried pass counts the deploys after its head was deployed' carry "co
 mutate 'a carried pass counts only for the latest deployed head' carry '&& f.head === deployedHead && carried(row, events)) out(' '&& carried(row, events)) out('
 mutate 'checks --as-deployed reads a next deploy' carry "const view = as ? [" "const view = false ? ["
 mutate 'an owner pass or fail sets the owner item' owner_writer "if (who.role === 'owner' && status !== 'pending') await ownerVerdict(" "if (false) await ownerVerdict("
+mutate 'plan-decision refuses a task without a plan' slice_c 'if (!task.planSeq) throw rule' 'if (false) throw rule'
+mutate 'plan-decision refuses a mismatched plan-seq' slice_c 'if (task.planSeq !== planSeq) throw rule' 'if (false) throw rule'
+mutate 'done on a scout or plan task requires --document' slice_c "if ((task.kind === 'scout' || task.kind === 'plan') && !documents) throw rule" 'if (false) throw rule'
+mutate 'approve deletes event videos' slice_c "for (const v of currentVideos) ok(await http('DELETE'" "for (const v of []) ok(await http('DELETE'"
+mutate 'approve replaces video evidence with Tester screenshot' slice_c 'if (!replacement) throw rule' 'if (false) throw rule'
+mutate 'check --evidence-image records event:<seq>#image:1' slice_c 'evidence = `event:${imgRes.event.seq}#image:1`;' 'evidence = null;'
+mutate 'gate checks event:<seq>#image:<n> references' slice_c 'if (!(await eventEvidenceExists(events, ev))) problems.push' 'if (false) problems.push'
+mutate 'link event requires http or https --url' slice_c "if (kind === 'link' && (!url || !/^https?:\\/\\/\\S+\$/.test(url) || url.length > 2048)) throw rule" 'if (false) throw rule'
 mutate_owner() {  # <label> <exact wrapper text> <replacement>: the owner_writer case goes red
   cp "$TMP_ROOT/fm-task-lib.mjs.orig" "$LIB"
   cp "$TMP_ROOT/fm-task-owner.sh.orig" "$MBIN/fm-task-owner.sh"
