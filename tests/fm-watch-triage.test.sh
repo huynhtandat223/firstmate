@@ -7263,11 +7263,12 @@ test_paused_bg_job_until_timeout_rechecks_after_the_job_ends() {
 
 # CI's stock macOS Bash lane sets FM_TEST_ONLY to run just the bash-3.2
 # churn-deferral regression. The rest of this file is not a 3.2 snapshot suite.
-if [ -n "${FM_TEST_ONLY:-}" ]; then
+if [ -n "${FM_TEST_ONLY:-}" ] && declare -F "$FM_TEST_ONLY" >/dev/null; then
   "$FM_TEST_ONLY"
   exit 0
 fi
 
+if [ -z "${FM_TEST_ONLY:-}" ]; then
 test_status_span_actionable_classifier
 test_status_span_survives_a_later_routine_append
 test_status_span_respects_decision_closure
@@ -7424,6 +7425,7 @@ test_paused_until_wrong_year_is_bounded_by_the_cadence
 test_paused_until_that_passed_is_rechecked_before_the_cadence
 test_paused_bg_job_without_until_stays_silent_after_the_job_ends
 test_paused_bg_job_until_timeout_rechecks_after_the_job_ends
+fi
 
 # The recorded Claude background-task exit picker. The footer is the last
 # non-blank row, which is what fm_composer_blocking_dialog requires.
@@ -8100,6 +8102,11 @@ test_turn_end_cursor_write_failure_wakes_firstmate_naming_it() {
   done
   pass "an unwritable turn-end cursor wakes firstmate with one row that names the failure"
 }
+
+if [ -n "${FM_TEST_ONLY:-}" ]; then
+  "$FM_TEST_ONLY"
+  exit 0
+fi
 
 test_exit_picker_stale_names_the_dialog
 test_exit_picker_wedge_keeps_climbing
