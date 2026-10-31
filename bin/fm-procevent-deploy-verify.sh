@@ -285,7 +285,24 @@ attention_skip() {
 # with a visible skip pending: it was left unhandled so one wake reaches firstmate.
 keep_pending_result() { attention_skip "$1"; }
 
-issue_ref() { printf '%s#%s\n' "${REPO##*/}" "$1"; }
+issue_ref() {
+  case "$1" in task:*) printf '%s\n' "${1#task:}" ;; *) printf '%s#%s\n' "${REPO##*/}" "$1" ;; esac
+}
+
+acceptance_url() {
+  case "$1" in task:*) printf '%s/#firstmate.board?view=board&task=%s\n' "${FM_TASK_BASE_URL:-http://127.0.0.1:5001}" "${1#task:}" ;; *) printf 'https://github.com/%s/issues/%s\n' "$REPO" "$1" ;; esac
+}
+
+acceptance_body_json() {
+  case "$1" in
+    task:*)
+      local content
+      content=$("${FM_DEPLOY_VERIFY_TASK:-$SCRIPT_DIR/fm-task.sh}" document "${1#task:}") || return 1
+      jq -cn --arg body "$content" '{body:$body}'
+      ;;
+    *) gh_read "repos/$REPO/issues/$1" ;;
+  esac
+}
 
 # The PR body's `Scenarios touched:` line: all, none, or its ids, comma-separated. Only an explicit `none` names none;
 # a body with no line, or a line with neither ids nor `none`, touches all, so its deploy carries nothing.
@@ -334,6 +351,7 @@ plan_deploy() {  # <base-sha> <sha> <run-url> <completed-at> <workdir>
     while IFS='|' read -r _ task surface hint _; do
       ledger_pr_final "$url" "$task" && continue
       issue=$(resolve_issue "$body" "$hint")
+      if [ -z "$issue" ] && printf '%s\n' "$body" | grep -qE '^Task: '; then issue="task:$task"; fi
       printf '%s|%s|%s|%s|%s\n' "$task" "$surface" "$url" "$issue" "$(pr_touched "$body")" >> "$w/rows.psv"
     done < <(awk -F'|' -v p="$url" '$1 == p' "$w/map.psv")
   done < <(jq -sc 'unique_by(.url) | .[]' "$w/prs.jsonl")
@@ -350,7 +368,7 @@ plan_deploy() {  # <base-sha> <sha> <run-url> <completed-at> <workdir>
       while IFS='|' read -r _ _ url _; do add_skip "$url" "$task" no-issue "$sha"; done <<<"$rows"
       continue
     fi
-    issue_json=$(gh_read "repos/$REPO/issues/$n") || return 1
+    issue_json=$(acceptance_body_json "$n") || return 1
     read_acceptance visible "$(jq -r '.body // ""' <<<"$issue_json")"
     case $? in
       0) ;;
@@ -372,7 +390,7 @@ plan_deploy() {  # <base-sha> <sha> <run-url> <completed-at> <workdir>
       $0 != "all" && $0 != "none" { for (i = 1; i <= NF; i++) if (!s[$i]++) o = o (o == "" ? "" : ",") $i }
       END { print a ? "all" : (o == "" ? "none" : o) }')
     add_ask "$(jq -cn --arg key "deploy:$task:$sha" --arg task "$task" --arg issue "$(issue_ref "$n")" \
-      --arg issue_url "https://github.com/$REPO/issues/$n" --arg sha "$sha" --arg run "$run" --argjson arrival "$arrival" \
+      --arg issue_url "$(acceptance_url "$n")" --arg sha "$sha" --arg run "$run" --argjson arrival "$arrival" \
       --argjson prs "$(printf '%s\n' "$rows" | cut -d'|' -f3 | jq -R . | jq -sc .)" \
       --argjson lines "$(printf '%s\n' "$lines" | jq -R . | jq -sc .)" --argjson rows "$ISSUE_ROWS" --arg touched "$touched" \
       '{round: "deploy", key: $key, task: $task, issue: $issue, issue_url: $issue_url, prs: $prs, sha: $sha, run: $run, lines: $lines, rows: $rows, touched: $touched, arrival: $arrival}')"
@@ -396,11 +414,12 @@ plan_drafts() {  # <workdir>
     fi
     body=$(jq -r '.body // ""' <<<"$pr")
     issue=$(resolve_issue "$body" "$hint")
+    if [ -z "$issue" ] && printf '%s\n' "$body" | grep -qE '^Task: '; then issue="task:$task"; fi
     if [ -z "$issue" ]; then
       ledger_append "$(jq -cn --arg k "$key" '{type: "draft-skip", key: $k, reason: "no-issue"}')"
       continue
     fi
-    issue_json=$(gh_read "repos/$REPO/issues/$issue") || return 1
+    issue_json=$(acceptance_body_json "$issue") || return 1
     read_acceptance draft "$(jq -r '.body // ""' <<<"$issue_json")"
     case $? in
       0) ;;
@@ -419,7 +438,7 @@ plan_drafts() {  # <workdir>
     pushed=$(jq -r '.commit.committer.date' <<<"$commit")
     arrival=$(jq -n --arg d "$pushed" '$d | fromdateiso8601')
     add_ask "$(jq -cn --arg key "$key" --arg task "$task" --arg issue "$(issue_ref "$issue")" \
-      --arg issue_url "https://github.com/$REPO/issues/$issue" --arg head "$head" --arg pushed "$pushed" \
+      --arg issue_url "$(acceptance_url "$issue")" --arg head "$head" --arg pushed "$pushed" \
       --arg pr "$url" --argjson arrival "$arrival" \
       --argjson lines "$(printf '%s\n' "$lines" | jq -R . | jq -sc .)" --argjson rows "$ISSUE_ROWS" \
       '{round: "draft", key: $key, task: $task, issue: $issue, issue_url: $issue_url, prs: [$pr], sha: $head, head: $head, pushed: $pushed, run: null, lines: $lines, rows: $rows, arrival: $arrival}')"
@@ -609,7 +628,7 @@ cmd_replay_skips() {
       rows=$(sort -u "$w/rows" | awk -F'|' -v t="$task" '$1 == t')
       n=$(cut -d'|' -f3 <<<"$rows" | grep -m1 . || true)
       [ -n "$n" ] || continue
-      body=$(gh_read "repos/$REPO/issues/$n") || { rc=1; break; }
+      body=$(acceptance_body_json "$n") || { rc=1; break; }
       read_acceptance visible "$(jq -r '.body // ""' <<<"$body")"
       case $? in
         0) ;;
@@ -619,7 +638,7 @@ cmd_replay_skips() {
       lines=$ISSUE_LINES
       [ -n "$lines" ] || continue
       ask=$(jq -cn --arg key "replay:$task:$sha" --arg task "$task" --arg issue "$(issue_ref "$n")" \
-        --arg url "https://github.com/$REPO/issues/$n" --arg sha "$sha" --argjson at "$(date +%s)" \
+        --arg url "$(acceptance_url "$n")" --arg sha "$sha" --argjson at "$(date +%s)" \
         --argjson prs "$(cut -d'|' -f2 <<<"$rows" | jq -R . | jq -sc .)" \
         --argjson lines "$(printf '%s\n' "$lines" | jq -R . | jq -sc .)" --argjson rows "$ISSUE_ROWS" \
         '{round:"deploy", key:$key, task:$task, issue:$issue, issue_url:$url, prs:$prs, sha:$sha, run:null, lines:$lines, rows:$rows, arrival:$at}')
