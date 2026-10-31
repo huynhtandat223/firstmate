@@ -19,7 +19,8 @@
 # Decoded reasons use quoted strings so embedded line breaks remain intact.
 #
 # `rows [list flags]` is firstmate's own read: the same `list` table as one JSON
-# array of objects (hold reasons decoded, "-" and "none" as null, and the full
+# array of objects (hold reasons decoded, a missing scalar "-" or missing list
+# "none" as null, text fields kept as written, and the full
 # title and body of a row `list` cut, read with `show <id> --full`). Scripts that
 # need task fields read the backlog through it rather than parsing a backlog file.
 #
@@ -178,13 +179,17 @@ DATA=$(cd "$DATA" && pwd -P) || fail "cannot resolve backlog data directory $DAT
 cd "$FM_BACKLOG_AXI_ROOT" || fail "cannot enter the backlog root $FM_BACKLOG_AXI_ROOT"
 case "${1:-}" in
   rows)
-    # `rows [list flags]`: the `list` table as one JSON array of objects, hold reasons decoded, "-" and "none" as
+    # `rows [list flags]`: the `list` table as one JSON array of objects, hold reasons decoded, missing values as
     # null. `list` cuts a long title or body; for such a row the full text comes from `show <id> --full`, so a
     # reader never sees a cut value. The one structured backlog read for scripts.
     set -o pipefail
     listed=$(tasks-axi list "${ARGS[@]:1}" | fm_hold_reason_decode_stream | jq -Rn '
       def cell: if startswith("\"") then fromjson else . end;
       def cut: test("\n\\.\\.\\. \\(truncated, [0-9]+ chars total");
+      # tasks-axi prints a missing list field (links, deps, blocked_by) as `none` and a missing scalar as `-`; title
+      # and body are text and keep any literal value.
+      def missing($f): if ($f | IN("links", "deps", "blocked_by")) then . == "none"
+                       elif ($f | IN("title", "body")) then false else . == "-" end;
       reduce inputs as $line ({fields: null, rows: []};
         if ($line | test("^tasks\\[[0-9]+\\]\\{")) then
           .fields = ($line | capture("\\{(?<f>[^}]*)\\}").f | split(","))
@@ -192,7 +197,7 @@ case "${1:-}" in
           .fields as $f
           | ([$line | ltrimstr("  ") | scan("\"(?:[^\"\\\\]|\\\\.)*\"|[^,]+") | cell]) as $c
           | .rows += [reduce range(0; $f | length) as $i ({};
-              .[$f[$i]] = ($c[$i] | if . == "-" or (. == "none" and $f[$i] != "title") then null else . end))
+              .[$f[$i]] = ($c[$i] | if missing($f[$i]) then null else . end))
               | ._cut = [to_entries[] | select((.value | type) == "string" and (.value | cut)) | .key]]
         else .fields = null end)
       | .rows') || exit $?

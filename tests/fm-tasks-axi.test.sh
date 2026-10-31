@@ -282,6 +282,12 @@ test_wrapper_rows() {
     "$(printf '%s' "$out" | jq -c .)" "rows did not give the queued table as decoded JSON objects"
   out=$(wrapper_from_code "$dir" rows --state 'done') || fail "rows --state done failed: $out"
   assert_equals 'rows-2 done' "$(printf '%s' "$out" | jq -r '.[] | "\(.id) \(.state)"')" "rows --state done did not give the done row"
+  # A literal "none" is data in a scalar or text field; only a list field's `none` and a scalar's `-` are missing.
+  wrapper_from_code "$dir" add rows-3 "third" --repo none --body "none" >/dev/null || fail "add rows-3 failed"
+  out=$(wrapper_from_code "$dir" rows --state queued --fields body,links) || fail "rows with body failed: $out"
+  assert_equals '{"repo":"none","body":"none","links":null}' \
+    "$(printf '%s' "$out" | jq -c '.[] | select(.id == "rows-3") | {repo, body, links}')" \
+    "rows dropped a literal none or kept a missing list as text"
   pass "fm-tasks-axi.sh rows reads the backlog as JSON objects with decoded hold reasons"
 }
 
