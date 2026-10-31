@@ -1662,8 +1662,9 @@ async function cmdInbox(args) {
     await cmdCreate({ pos: { task: target }, flags: { title: item.title, kind: 'other', key: `inbox:${id}:create` } });
     if (item.body) await cmdComment({ pos: { task: target }, flags: { note: item.body, key: `inbox:${id}:body` } });
     await requireOpenTask(target, 'make inbox task');
-    const task = await firstRow('fm_task', `taskId eq ${lit(target)}`);
-    ok(await http('PATCH', `/api/fm_task/${encodeURIComponent(task.id)}`, { backlogHome: args.flags.home || 'main' }), 'set inbox task home');
+    await write(target, identity({ flags: { key: `inbox:${id}:home` } }, 'firstmate'), async () => ({
+      kind: 'row', note: 'Inbox task home', set: { backlogHome: args.flags.home || 'main' },
+    }));
   } else {
     await requireOpenTask(target, 'link inbox');
   }
