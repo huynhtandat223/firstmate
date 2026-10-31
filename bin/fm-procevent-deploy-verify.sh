@@ -297,7 +297,7 @@ acceptance_body_json() {
   case "$1" in
     task:*)
       local content
-      content=$("${FM_DEPLOY_VERIFY_TASK:-$SCRIPT_DIR/fm-task.sh}" document "${1#task:}") || return 1
+      content=$(task_writer document "${1#task:}") || return 1
       jq -cn --arg body "$content" '{body:$body}'
       ;;
     *) gh_read "repos/$REPO/issues/$1" ;;
@@ -459,7 +459,7 @@ plan_rows_task() {  # <task>
   jq -e 'any(.rows[]; .surface == "user-visible" and .status == "pending" and .nextActor == "tester" and .head != null)' <<<"$json" >/dev/null || return 0
   issue_url=$(jq -r '.issueUrl // empty' <<<"$json")
   [ -n "$issue_url" ] || issue_url=$(sed -n 's/^issue: //p' "$FM_HOME/data/$task/verify.md" | tail -n 1)
-  if [ -z "$issue_url" ]; then
+  if [ -z "$issue_url" ] || [[ "$issue_url" == *'#firstmate.board?'*'task='* ]]; then
     issue_url=$(acceptance_url "task:$task")
     n="task:$task"
     issue_json=$(acceptance_body_json "$n") || return 1
@@ -627,6 +627,7 @@ cmd_replay_skips() {
     jq -e '.status == "ahead" or .status == "identical"' <<<"$comparison" >/dev/null || continue
     hint=$(awk -F'|' -v p="$pr" -v t="$task" '$1 == p && $2 == t {print $4; exit}' "$w/map.psv")
     issue=$(resolve_issue "$(jq -r '.body // ""' <<<"$body")" "$hint")
+    if [ -z "$issue" ] && jq -er '.body // ""' <<<"$body" | grep -qE '^Task: '; then issue="task:$task"; fi
     printf '%s|%s|%s\n' "$task" "$pr" "$issue" >> "$w/rows"
   done < <(jq -sc 'unique_by([.task,.pr])[] | select(.type == "skip" and (.reason == "no-user-visible-line" or .reason == "template-refused"))' "$LEDGER")
   if [ "$rc" -eq 0 ]; then
