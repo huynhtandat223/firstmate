@@ -2948,10 +2948,12 @@ surface_nonterminal_stale() {  # <window> <hash> [dialog-name]
   elif [ -z "$STALE_WAIT_DECLARATION" ] && unknown_alive_stale_bound "$win" "$task"; then
     bounded=0
     throttled=0
+  elif [ -n "$STALE_WAIT_DECLARATION" ]; then
+    # An unknown-but-alive pane whose bounded window expired re-surfaces on
+    # its own cadence, so the once-per-wait record below does not absorb it.
+    bounded=0
   elif stale_wait_fired "$key" "$task" "$dialog"; then
     throttled=0
-  elif [ -n "$STALE_WAIT_DECLARATION" ]; then
-    bounded=0
   fi
   if [ "$throttled" -ne 0 ]; then
     reason=$(stale_reason_naming_dialog "stale: $win" "$dialog")

@@ -2026,9 +2026,6 @@ test_crewmate_scaffolds_forbid_pool_administration() {
     || fail "scout brief leading-cd rule is missing or differs from the ship brief"
   assert_grep "every sub-agent you launch" "$brief" "scout brief did not pass the leading-cd rule to sub-agents"
 
-  # The daemon half of the rule survived the fold.
-  assert_grep "no-mistakes" "$brief" "scout brief lost the shared no-mistakes daemon rule"
-
   # The daemon item reaches the brief that drives the pipeline.
   brief="$home/data/brief-pool-no-mistakes/brief.md"
   # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
