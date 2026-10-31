@@ -3964,9 +3964,9 @@ EOF
     stop_text=$(fm_busy_stop_text "$tail40") || stop_text=
     if [ -n "$stop_text" ]; then
       if [ "$(cat "$STATE/.quota-$key" 2>/dev/null || true)" != "$stop_text" ]; then
-        fm_wake_append stale "$w" "worker stopped: $task: $stop_text" || exit 1
+        fm_wake_append stale "$w" "stale: $w worker stopped: $task: $stop_text" || exit 1
         printf '%s' "$stop_text" > "$STATE/.quota-$key"
-        wake "worker stopped: $task: $stop_text"
+        wake "stale: $w worker stopped: $task: $stop_text"
       fi
       continue
     fi

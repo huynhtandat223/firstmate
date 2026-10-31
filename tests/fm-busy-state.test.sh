@@ -31,6 +31,20 @@ test_quota_stop_overrides_busy_record() {
   local state text out
   state=$(new_state_dir quota-stop)
   "$EV" arm "$state" t1 >/dev/null || fail 'arm failed'
+  "$EV" apply "$state" t1 busy --current-gen --source opencode-plugin --event busy >/dev/null || fail 'plugin event failed'
+  out=$(fm_busy_classify tmux w1 opencode t1 "$state" 'Reading fixture: Insufficient Balance
+printf "Free usage exceeded"
+# Individual quota reached
+rate limit is handled in this test')
+  [ "$out" = 'busy opencode-plugin' ] || fail "quoted quota text classified $out"
+  out=$(fm_busy_classify tmux w1 opencode t1 "$state" 'Individual quota reached
+new turn
+running tool
+reading code
+writing code
+checking tests
+still working')
+  [ "$out" = 'busy opencode-plugin' ] || fail "historical stop classified $out"
   for text in 'Individual quota reached ... Resets in 163h' \
     'Free usage exceeded, subscribe to Go [retrying in 9h 2m attempt #1]' \
     'Error: 402 ... Insufficient Balance'; do
