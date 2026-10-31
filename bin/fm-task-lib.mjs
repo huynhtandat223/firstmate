@@ -69,18 +69,6 @@
 //            FM_HOME is required; delivery is scoped to this task, never a whole foreign fleet.
 //            A crash between claim and queue append requires operator reconciliation (no duplicate claim).
 //            a row that has an item needs all five template fields again; a re-sent --key never writes the item twice)
-//   row      <task> --section S --row-file F --notes-file F [--file BACKLOG] | --gone   one backlog row, verbatim: the
-//            header after the checkbox (one line, starting "<task> - "), the lines under it (each ending in a newline)
-//            and its section, in the view of BACKLOG (default as for backlog below), which is then synced with that
-//            row taken from the record; --gone takes it out of that view. Text over one event body goes in a documents child.
-//   backlog  sync|render [--file BACKLOG] [--out F] [--absorb-only]   the backlog view (T7): sync writes every row the
-//            file holds differently to the record (a task the record lacks is imported first), then renders the file
-//            from the record (--absorb-only leaves the file); render prints or writes (--out) the view only. BACKLOG defaults to FM_DATA_OVERRIDE, else
-//            $FM_HOME/data, /backlog.md. Line 1 names the record; the checkbox is [x] in Done; in a section the rows
-//            follow the event that put them there, In flight and Done newest first, other sections oldest first. A
-//            line outside a row other than a blank one refuses the sync (exit 5) after the import, file unchanged.
-//            The record is shared by every home: a view holds and changes only the rows its own file wrote. A sync and
-//            a row call of one file each hold an exclusive lock on <file>.view-lock (perl's flock) while they run.
 //   show     <task> [--json]   list [--state S] [--actor A] [--json]   resume <task>   reproject <task> | --all
 //            reproject --all folds every task row again (the board card's step fields too) and prints each repair.
 // Every write takes --key K (the idempotency key; a re-send returns the first event), --actor NAME
@@ -119,7 +107,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { attr, hermes, holdText } from './fm-task-sources-lib.mjs';
 
@@ -158,7 +146,10 @@ const TRANSITIONS = {
 // the fm_task columns the projection holds, with the lengths the API enforces on them
 const LIMITS = { title: 300, repo: 200, kind: 32, state: 32, assignee: 64, nextActor: 32, blockKind: 32, blockReason: 2000, issueUrl: 2048, prUrl: 2048, surface: 32, section: 32 };
 const PROJECTED = ['acceptanceDigest', 'title', 'repo', 'kind', 'state', 'assignee', 'nextActor', 'blockKind', 'blockReason', 'blockRepeats', 'issueUrl', 'prUrl', 'surface', 'holdUntil', 'row', 'notes', 'section', 'lastSeq',
-  'stage', 'stageSince', 'lastEventAt', 'lastNote', 'reviewer'];
+  'stage', 'stageSince', 'lastEventAt', 'lastNote', 'reviewer',
+  // the backlog columns the cfw5001 tasks-axi backend writes in each row event's set (tasks-axi src/backends/cfw5001-transport.ts BACKLOG_COLUMNS)
+  'backlogHome', 'backlogKind', 'backlogHoldReason', 'backlogHoldKind', 'backlogHoldUntil', 'backlogPriority', 'backlogDeps', 'backlogSince',
+  'backlogClosed', 'backlogSeq', 'backlogPublicFollowup'];
 // The board card's step (cfw-modules#1678 change 199): the writer owns the rule and the page only reads it.
 const STEP_OF_STATE = { triage: 'queued', todo: 'queued', ready: 'queued', done: 'passed' };
 const REVIEWER_KINDS = ['check', 'owner-check', 'approved', 'changes'];
@@ -402,8 +393,6 @@ const SPECS = {
   deliver: { pos: ['task'], flags: { consumer: 's' } },
   document: { pos: ['task'], flags: {} },
   gate: { pos: ['task'], flags: { issue: 's', head: 's', 'evidence-root': 's' } },
-  row: { pos: ['task'], flags: { section: 's', 'row-file': 's', 'notes-file': 's', gone: 'b', file: 's' } },
-  backlog: { pos: ['action'], flags: { file: 's', out: 's', 'absorb-only': 'b' } },
 };
 
 function parseArgs(command, argv) {
@@ -961,291 +950,8 @@ const cmdApprove = simple('approve', 'approved', async (task, args, taskId) => {
   return { state: 'done', nextActor: 'firstmate', blockKind: null, blockReason: null, blockRepeats: 0, holdUntil: null };
 });
 
-// ---- the backlog view (T7) ------------------------------------------------------------------------------
-// data/backlog.md is a view of the record: each row is fm_task's row (the header after the checkbox), notes (the lines
-// under it, each ending in a newline) and section, verbatim. The checkbox is [x] in Done. In a section the rows follow
-// the event that put them there: In flight and Done newest first, every other section oldest first, as tasks-axi places
-// a moved row. Line 1 is the view's own and names the record.
-const BACKLOG_LINE1 = '# Backlog - a view of the task record (fm_task row, notes and section); change it through bin/fm-tasks-axi.sh';
-const BACKLOG_SECTIONS = ['In flight', 'Queued', 'Done'];
-const NEWEST_FIRST = ['In flight', 'Done'];
-const ROW_LINE = /^- \[[ x]\] ([A-Za-z0-9._-]+) - /;
-const SECTION_LINE = /^## (.*)$/;
-
-function readText(file, what) {
-  let bytes;
-  try {
-    bytes = fs.readFileSync(file);
-  } catch {
-    throw usage(`${what} is missing or unreadable: ${file}`);
-  }
-  try {
-    return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
-  } catch {
-    throw rule(`${what} is not UTF-8: ${file}`);
-  }
-}
-
-// The values a row event sets, checked so that rendering them gives back the same row.
-function rowValues(taskId, section, row, notes) {
-  if (!section || section.length > LIMITS.section || /[\r\n]/.test(section) || section !== section.trim()) throw rule(`the section must be one line of 1 to ${LIMITS.section} characters`);
-  if (/[\r\n]/.test(row)) throw rule('the row is one line: the header after the checkbox');
-  if (ROW_LINE.exec(`- [ ] ${row}`)?.[1] !== taskId) throw rule(`the row must start with "${taskId} - "`);
-  if (notes !== '' && !notes.endsWith('\n')) throw rule('the notes end with a newline');
-  for (const line of notes.split('\n').slice(0, -1)) {
-    if (ROW_LINE.test(line) || SECTION_LINE.test(line)) throw rule(`a notes line reads as a row or a section: ${JSON.stringify(line.slice(0, 60))}`);
-  }
-  return { section, row, notes };
-}
-
-// A row event, naming the backlog file whose view holds the row; text over one event body goes in a documents child
-// as `<row>\n<notes>`.
 // Reserve 64 characters for the stage metadata append adds, without duplicating its fold rules.
 const EVENT_STAGE_BUDGET = 64;
-function rowSpec(taskId, set, note, file) {
-  const extra = { file };
-  if (set.row === undefined || JSON.stringify({ v: 1, note, set, ...extra }).length <= 8000 - EVENT_STAGE_BUDGET) return { kind: 'row', note, set, extra };
-  const doc = { title: `backlog row ${taskId}`, mediaType: 'text/markdown', content: `${set.row}\n${set.notes}` };
-  return { kind: 'row', note, set: { section: set.section, rowDocument: true }, extra, children: { documents: [doc] } };
-}
-// Every sync and row call of one backlog file holds an exclusive lock on <file>.view-lock for its reads, writes and
-// render, so an older one never writes its rows after a newer one. Node has no flock, so a perl child takes the lock
-// and holds it until this process closes its stdin (or ends).
-const LOCK_PERL = 'use Fcntl qw(:flock); open(my $f, ">>", shift) or die "cannot open the lock: $!\\n"; flock($f, LOCK_EX) or die "cannot lock: $!\\n"; $| = 1; print "locked\\n"; <STDIN>;';
-async function withBacklogLock(file, fn) {
-  const holder = spawn('perl', ['-e', LOCK_PERL, `${file}.view-lock`], { stdio: ['pipe', 'pipe', 'pipe'] });
-  await new Promise((resolve, reject) => {
-    const failed = (why) => reject(new Fail(3, `the backlog lock ${file}.view-lock was not taken: ${why}`));
-    holder.once('error', (error) => failed(error.message));
-    holder.once('exit', (code) => failed(`exit ${code}`));
-    holder.stdout.once('data', () => {
-      holder.removeAllListeners('exit');
-      resolve();
-    });
-  });
-  try {
-    return await fn();
-  } finally {
-    holder.stdin.end();
-  }
-}
-
-// A backlog file's identity: its real path, so a link to the file names the same view (and a write lands in the file).
-// The backlog a command names: --file, else FM_DATA_OVERRIDE, else $FM_HOME/data, then backlog.md.
-const backlogFile = (file) => backlogPath(file || path.join(process.env.FM_DATA_OVERRIDE || path.join(process.env.FM_HOME || '.', 'data'), 'backlog.md'));
-const backlogPath = (file) => {
-  try {
-    return fs.realpathSync(file);
-  } catch {
-    return path.resolve(file);
-  }
-};
-
-async function cmdRow(args) {
-  const taskId = taskIdOf(args);
-  const who = identity(args, 'firstmate');
-  const f = args.flags;
-  let set;
-  if (f.gone) {
-    if (f.section !== undefined || f['row-file'] !== undefined || f['notes-file'] !== undefined) throw usage('--gone takes no --section, --row-file or --notes-file');
-    set = { section: null };
-  } else {
-    if (f.section === undefined || f['row-file'] === undefined || f['notes-file'] === undefined) throw usage('row needs --section, --row-file and --notes-file, or --gone');
-    set = rowValues(taskId, f.section, readText(f['row-file'], 'the row file'), readText(f['notes-file'], 'the notes file'));
-  }
-  const file = backlogFile(f.file);
-  const store = () =>
-    write(taskId, who, async ({ task }) => {
-      if (!task) throw rule('no such task');
-      return rowSpec(taskId, set, noteOf(args), file);
-    });
-  if (!fs.existsSync(file)) return store();
-  // the view shows the row at once, so the next sync does not take the file's older copy back
-  return withBacklogLock(file, async () => {
-    const result = await store();
-    try {
-      out(await syncBacklog(file, who, { skip: taskId }));
-    } catch (error) {
-      if (error instanceof Fail) throw new Fail(error.code, `the row is stored; ${file} was not generated: ${error.message}`);
-      throw error;
-    }
-    return result;
-  });
-}
-
-// The rows of a backlog file in file order, and the first line the record cannot hold (null when there is none).
-// Line 1 is the file's title when it starts with "# ". A blank line that belongs to no row (tasks-axi leaves one in an
-// empty section) holds nothing and is dropped; any other line outside a row cannot be held.
-function parseBacklogFile(text, file) {
-  if (text !== '' && !text.endsWith('\n')) throw rule(`${file} does not end with a newline`);
-  const lines = text === '' ? [] : text.slice(0, -1).split('\n');
-  const titled = /^# /.test(lines[0] ?? '');
-  const rows = [];
-  const seen = new Set();
-  let problem = null;
-  let section = null;
-  let current = null;
-  lines.forEach((line, i) => {
-    if (i === 0 && titled) return;
-    const sec = SECTION_LINE.exec(line);
-    if (sec) {
-      section = sec[1];
-      current = null;
-      return;
-    }
-    const id = ROW_LINE.exec(line)?.[1];
-    if (id && section !== null) {
-      if (seen.has(id)) throw rule(`${file} holds ${id} twice`);
-      seen.add(id);
-      current = { id, section, row: line.slice(6), notes: '' };
-      rows.push(current);
-      return;
-    }
-    if (current) current.notes += `${line}\n`;
-    else if (line.trim() !== '') problem ??= `${file} line ${i + 1} is not part of a row, so the record cannot hold it: ${JSON.stringify(line.slice(0, 80))}; the file is left as it is`;
-  });
-  for (const r of rows) rowValues(r.id, r.section, r.row, r.notes);
-  return { rows, problem };
-}
-
-function renderBacklog(rows) {
-  const names = [...BACKLOG_SECTIONS, ...[...new Set(rows.map((r) => r.section))].filter((s) => !BACKLOG_SECTIONS.includes(s)).sort()];
-  let text = `${BACKLOG_LINE1}\n\n`;
-  for (const name of names) {
-    text += `## ${name}\n`;
-    for (const r of rows) if (r.section === name) text += `- [${name === 'Done' ? 'x' : ' '}] ${r.row}\n${r.notes}`;
-  }
-  return text;
-}
-
-// The record's side: every task row; for each task the backlog file its newest row event names, the seq of the event
-// that put it in its section of that file, and the seq of its newest row event. The record is shared by every home, so
-// a view holds only the rows its own file put there.
-async function backlogRecord(file) {
-  const tasks = new Map((await listAll('fm_task', { orderby: 'taskId' })).map((t) => [t.taskId, t]));
-  const entry = new Map();
-  const last = new Map();
-  const place = new Map();
-  const owner = new Map();
-  for (const e of await listAll('fm_task_event', { filter: "kind eq 'row'", orderby: 'seq' })) {
-    const body = bodyOf(e);
-    if (!('section' in (body.set || {}))) continue;
-    const where = JSON.stringify([body.file ?? null, body.set.section]);
-    if (place.get(e.taskId) !== where) entry.set(e.taskId, e.seq);
-    place.set(e.taskId, where);
-    owner.set(e.taskId, body.file ?? null);
-    last.set(e.taskId, e.seq);
-  }
-  return { tasks, entry, last, mine: (taskId) => owner.get(taskId) === file };
-}
-
-function recordRows(record) {
-  const rows = [...record.tasks.values()]
-    .filter((t) => t.section && t.row && record.mine(t.taskId))
-    .map((t) => ({ id: t.taskId, section: t.section, row: t.row, notes: t.notes ?? '', entry: record.entry.get(t.taskId) ?? 0 }));
-  const sections = [...new Set(rows.map((r) => r.section))];
-  return sections.flatMap((name) => rows.filter((r) => r.section === name).sort((a, b) => (NEWEST_FIRST.includes(name) ? b.entry - a.entry : a.entry - b.entry)));
-}
-
-// The order to write changed rows in so that section entry gives the file's order back: newest-first sections bottom up.
-function writeOrder(rows) {
-  const out = [];
-  for (const name of [...new Set(rows.map((r) => r.section))]) {
-    const own = rows.filter((r) => r.section === name);
-    out.push(...(NEWEST_FIRST.includes(name) ? own.reverse() : own));
-  }
-  return out;
-}
-
-// A task the record does not hold yet: import it at the state the old-source mapping gives its row.
-async function importRow(r, who) {
-  const head = r.row.slice(r.id.length + 3);
-  const hold = holdText(attr(head, 'hold'));
-  const map = hermes({ section: r.section, hold, holdKind: attr(head, 'hold-kind') });
-  const kind = attr(head, 'kind');
-  const title = head.split(/ https?:\/\/| \((?:repo|kind|since|hold|merged|done)\b/)[0].trim().slice(0, LIMITS.title) || r.id;
-  await write(r.id, { ...who, key: `import:${r.id}` }, async ({ task }) => {
-    if (task) throw rule(`task ${r.id} already present`);
-    return {
-      kind: 'created',
-      note: 'imported from the backlog view',
-      set: { title, repo: attr(head, 'repo').slice(0, LIMITS.repo) || null, kind: TASK_KINDS.includes(kind) ? kind : 'other', state: map.state, assignee: r.id.slice(0, LIMITS.assignee), nextActor: map.nextActor, blockKind: map.blockKind, blockReason: map.blockKind ? (hold || 'backlog hold').slice(0, LIMITS.blockReason) : null, blockRepeats: 0, issueUrl: null, prUrl: null, surface: null, holdUntil: null },
-    };
-  });
-}
-
-async function rowWrite(taskId, set, who, last, file) {
-  const key = `row:${taskId}:${last}:${crypto.createHash('sha256').update(JSON.stringify([file, set])).digest('hex').slice(0, 16)}`;
-  await write(taskId, { ...who, key }, async ({ task }) => {
-    if (!task) throw rule('no such task');
-    return rowSpec(taskId, set, 'backlog view', file);
-  });
-}
-
-async function cmdBacklog(args) {
-  const action = args.pos.action;
-  if (!['sync', 'render'].includes(action)) throw usage('backlog needs sync or render');
-  const file = backlogFile(args.flags.file);
-  if (action === 'render') {
-    const text = renderBacklog(recordRows(await backlogRecord(file)));
-    if (!args.flags.out || args.flags.out === '-') return process.stdout.write(text);
-    fs.writeFileSync(args.flags.out, text);
-    return out(`rendered ${args.flags.out}`);
-  }
-  if (args.flags.out) throw usage('--out is for render');
-  const who = identity(args, 'firstmate');
-  out(await withBacklogLock(file, () => syncBacklog(file, who, { absorbOnly: args.flags['absorb-only'] })));
-}
-
-// Absorb a backlog file into the record, then render it from the record. `skip` names a task whose record row was just
-// written by `row`: the file's copy of that row is not absorbed, so the render carries the record's.
-async function syncBacklog(file, who, { absorbOnly = false, skip = null } = {}) {
-  const text = readText(file, 'the backlog file');
-  const { rows, problem } = parseBacklogFile(text, file);
-  let record = await backlogRecord(file);
-  let written = 0;
-  for (const r of rows) {
-    if (record.tasks.has(r.id)) continue;
-    await importRow(r, who);
-    written++;
-  }
-  // a file the record cannot hold still has its new tasks imported, so their other record writes land
-  if (problem) throw rule(problem);
-  if (written) record = await backlogRecord(file);
-  for (const r of writeOrder(rows)) {
-    const t = record.tasks.get(r.id);
-    if (r.id === skip) continue;
-    if (record.mine(r.id) && t.section === r.section && t.row === r.row && (t.notes ?? '') === r.notes) continue;
-    await rowWrite(r.id, { section: r.section, row: r.row, notes: r.notes }, who, record.last.get(r.id) ?? 0, file);
-    written++;
-  }
-  const inFile = new Set(rows.map((r) => r.id));
-  for (const t of record.tasks.values()) {
-    if (!t.section || inFile.has(t.taskId) || !record.mine(t.taskId) || t.taskId === skip) continue;
-    await rowWrite(t.taskId, { section: null }, who, record.last.get(t.taskId) ?? 0, file);
-    written++;
-  }
-  if (absorbOnly) return `backlog: ${rows.length} rows, ${written} written, file left as it is (--absorb-only)`;
-  if (written) record = await backlogRecord(file);
-  const view = recordRows(record);
-  const ids = (list) => list.filter((id) => id !== skip).sort().join('\n');
-  if (ids(view.map((r) => r.id)) !== ids([...inFile])) {
-    throw new Fail(3, `the record does not hold the rows ${file} holds (another writer moved meanwhile); the file is left as it is; run backlog sync again`);
-  }
-  const next = renderBacklog(view);
-  let state = 'unchanged';
-  if (next !== text) {
-    if (fs.readFileSync(file, 'utf8') !== text) {
-      state = 'changed meanwhile, left for the next sync';
-    } else {
-      const tmp = `${file}.${process.pid}.tmp`;
-      fs.writeFileSync(tmp, next);
-      fs.renameSync(tmp, file);
-      state = 'generated';
-    }
-  }
-  return `backlog: ${rows.length} rows, ${written} written, file ${state}`;
-}
 
 async function cmdDescribe(args) {
   const f = args.flags;
@@ -1969,7 +1675,7 @@ const COMMANDS = {
   create: cmdCreate, import: cmdImport, assign: cmdAssign, start: cmdStart, heartbeat: cmdHeartbeat, done: cmdDone, ask: cmdAsk, block: cmdBlock,
   unblock: cmdUnblock, approve: cmdApprove, changes: cmdChanges, reopen: cmdReopen, reassign: cmdReassign, archive: cmdArchive, comment: cmdComment, event: cmdEvent,
   document: cmdDocument, link: cmdLink, rows: cmdRows, check: cmdCheck, 'owner-check': cmdOwnerCheck, gate: cmdGate, show: cmdShow, list: cmdList, resume: cmdResume, reproject: cmdReproject,
-  row: cmdRow, backlog: cmdBacklog, checks: cmdChecks,
+  checks: cmdChecks,
 };
 
 async function main(argv) {

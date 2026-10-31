@@ -45,7 +45,7 @@ new_lab() {  # <bin-dir>: a firstmate home with a Tester role and fake spawn, ta
   BIN=$1
   SEQ=0
   mkdir -p "$H"/{state,data,config/roles} "$TH/data/pending-mentions" "$GHD"
-  : > "$H/data/backlog.md"
+  printf '## In flight\n\n## Queued\n\n## Done\n' > "$H/data/backlog.md"  # backlog_task appends under Done
   register_tester
   cat > "$LAB/spawn" <<SH
 #!/usr/bin/env bash

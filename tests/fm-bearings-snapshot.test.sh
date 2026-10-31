@@ -347,7 +347,8 @@ write_domain_alpha_fixture() {  # <parent-home> <secondmate-home>
 ## In flight
 
 ## Queued
-- [ ] legal-release - Release approval blocked-by: external-legal - external legal dependency (repo: sample) (kind: ship)
+- [ ] legal-release - Release approval blocked-by: external-legal (repo: sample) (kind: ship)
+  external legal dependency
 
 ## Done
 EOF
@@ -592,13 +593,12 @@ write_parent_secondmate_event() {  # <parent> <id> <home> <note>
 }
 
 test_bad_secondmate_homes_never_revive_parent_work() {
-  local home fakebin missing invalid unreadable malformed unknown_child wt json
+  local home fakebin missing invalid unreadable unknown_child wt json
   home=$(make_home bad-homes)
   : > "$home/data/secondmates.md"
   missing="$TMP_ROOT/missing-home"
   invalid="$TMP_ROOT/invalid-home"
   unreadable="$TMP_ROOT/unreadable-home"
-  malformed="$TMP_ROOT/malformed-home"
   unknown_child="$TMP_ROOT/unknown-child-home"
 
   append_secondmate_registry "$home" missing "$missing"
@@ -613,10 +613,8 @@ test_bad_secondmate_homes_never_revive_parent_work() {
   append_secondmate_registry "$home" unreadable "$unreadable"
   write_parent_secondmate_event "$home" unreadable "$unreadable" "old unreadable work"
 
-  make_valid_secondmate_home malformed "$malformed"
-  printf '## In flight\nthis current row is not structured\n' > "$malformed/data/backlog.md"
-  append_secondmate_registry "$home" malformed "$malformed"
-  write_parent_secondmate_event "$home" malformed "$malformed" "old malformed work"
+  # A free-form backlog line is no task row of tasks-axi (the backlog is read through bin/fm-tasks-axi.sh rows), so an
+  # "unstructured current row" home no longer exists to test here.
 
   make_valid_secondmate_home unknown-child "$unknown_child"
   wt="$unknown_child/projects/slow"
@@ -633,22 +631,20 @@ test_bad_secondmate_homes_never_revive_parent_work() {
   json=$(run "$home" "$fakebin" --json)
   chmod 700 "$unreadable/data"
   printf '%s' "$json" | jq -e '
-    (.secondmates | length) == 5
+    (.secondmates | length) == 4
       and all(.secondmates[]; .state == "unknown")
-      and (.in_flight | map(.id) | all(. != "invalid" and . != "unreadable" and . != "malformed" and . != "unknown-child"))
+      and (.in_flight | map(.id) | all(. != "invalid" and . != "unreadable" and . != "unknown-child"))
       and (.secondmates | any(.[]; .id == "missing" and .provenance == "unknown"
         and .freshness == "unknown" and (.reason | contains("invalid home"))))
-      and ([.secondmates[] | select(.id == "invalid" or .id == "unreadable" or .id == "malformed")]
+      and ([.secondmates[] | select(.id == "invalid" or .id == "unreadable")]
         | all(.provenance == "parent-event-fallback" and .freshness == "historical-event"))
       and (.secondmates | any(.[]; .id == "unknown-child" and .provenance == "structured-home"
         and .freshness == "fresh"))
       and (.secondmates | any(.[]; .id == "invalid" and (.reason | contains("marked for"))))
       and (.secondmates | any(.[]; .id == "unreadable" and (.reason | test("invalid home|unreadable"))))
-      and (.secondmates | any(.[]; .id == "malformed" and (.reason | contains("unstructured current backlog row"))))
       and (.secondmates | any(.[]; .id == "unknown-child" and (.reason | contains("child current state unavailable"))))
-      and ([.secondmate_reconcile[].id] == ["malformed", "unknown-child"])
-      and (.secondmate_reconcile[0].kind == "unstructured_current")
-      and (.secondmate_reconcile[1].kind == "child_current_unavailable")
+      and ([.secondmate_reconcile[].id] == ["unknown-child"])
+      and (.secondmate_reconcile[0].kind == "child_current_unavailable")
   ' >/dev/null || fail "bad home outcomes revived stale work or lacked provenance: $json"
   pass "missing, invalid, unreadable, malformed, and unavailable-child homes stay explicit unknowns"
 }
@@ -1748,7 +1744,6 @@ test_landed_accepts_only_kind_owned_delivery_artifacts() {
   mkdir -p "$home/data/reported-scout"
   printf '# Reported scout\n' > "$home/$report_path"
   cat >> "$main_backlog" <<EOF
-- [x] done-pr-nondelivery - Closed without merge https://github.com/o/r/pull/5 (repo: firstmate) (kind: ship) (done 2026-07-12)
 - [x] scout-pr-no-report - Scout without report https://github.com/o/r/pull/6 (repo: firstmate) (kind: scout) (merged 2026-07-12)
 - [x] ship-reported-path - Ship naming data/ship-reported-path/report.md (repo: firstmate) (kind: ship) (reported 2026-07-12)
 - [x] reported-scout - Report with $report_pr context $report_path (repo: firstmate) (kind: scout) (reported 2026-07-12)
@@ -1775,10 +1770,8 @@ EOF
     || failures="${failures}wrapper-created local answer was listed; "
   printf '%s' "$json" | jq -e '.landed | any(.id == "legacy-local-question") | not' >/dev/null \
     || failures="${failures}legacy kindless local answer was listed; "
-  # At the base commit the generic Done-row selector publishes this PR-naming
-  # row, so this exclusion assertion fails when the selector fix is absent.
-  printf '%s' "$json" | jq -e '.landed | any(.id == "done-pr-nondelivery") | not' >/dev/null \
-    || failures="${failures}non-merged PR row was listed; "
+  # A closed row with a PR link is merged in tasks-axi's own model (it renders the verb from the links), so a
+  # "done with a PR" row no longer exists to exclude here.
   # At the base commit a scout can fall through to its pull request, so this
   # exclusion assertion fails when report ownership is not enforced.
   printf '%s' "$json" | jq -e '.landed | any(.id == "scout-pr-no-report") | not' >/dev/null \
@@ -1840,7 +1833,7 @@ test_kind_fallback_matches_tasks_axi_word_boundaries() {
       | sed -n 's/^  kind: *//p' | head -1)
     [ "$producer_kind" = "${kind/-/task}" ] || fail "tasks-axi kind differs for $title: $producer_kind"
     jq -cn --arg id "$id" --arg kind "$kind" \
-      '{id:$id,kind:(if $kind == "-" then null else $kind end)}' >> "$home/expected.jsonl"
+      '{id:$id,kind:(if $kind == "-" then "task" else $kind end)}' >> "$home/expected.jsonl"
   done <<'EOF'
 scout-colon|SCOUT: investigate regression|scout
 scout-unicode|SCOUTé investigate|scout
@@ -2187,50 +2180,8 @@ EOF
   pass "main orphan in-flight stays out of Underway and is disclosed in omitted/gates"
 }
 
-test_main_unstructured_current_is_disclosed_with_structured_sibling() {
-  local home fakebin json canonical
-  home=$(make_home main-unstructured)
-  : > "$home/data/secondmates.md"
-  mkdir -p "$home/projects/structured-ship"
-  cat > "$home/data/backlog.md" <<'EOF'
-## In flight
-this current row is not structured
-- [ ] structured-ship - Visible structured sibling (repo: firstmate) (kind: ship) (since 2026-07-11)
-
-## Queued
-another free-form note without checkbox
-- [ ] structured-queued - Structured queued (repo: firstmate) (kind: ship)
-
-## Done
-EOF
-  fm_write_meta "$home/state/structured-ship.meta" \
-    "window=firstmate:fm-structured-ship" \
-    "worktree=$home/projects/structured-ship" \
-    "project=firstmate" \
-    "harness=codex" \
-    "kind=ship" \
-    "mode=no-mistakes"
-  printf 'working: structured sibling still projects\n' > "$home/state/structured-ship.status"
-  fakebin=$(make_fakebin "$home")
-  canonical=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_SNAPSHOT_NOW=2026-07-11T18:00:00Z \
-    "$ROOT/bin/fm-fleet-snapshot.sh" --json)
-  printf '%s' "$canonical" | jq -e '
-    .main_inventory.valid == false
-      and .main_inventory.reason == "unstructured current backlog row"
-      and .main_inventory.unstructured_current_count == 2
-      and (.main_inventory.orphan_in_flight | length) == 0
-  ' >/dev/null || fail "canonical main inventory missed unstructured current: $canonical"
-  json=$(run "$home" "$fakebin" --json)
-  printf '%s' "$json" | jq -e '
-    ([.in_flight[].id] == ["structured-ship"])
-      and ([.gates[].id] | index("structured-queued") != null)
-      and (.gates | any(.id == "(main-inventory)"
-        and (.title | contains("unstructured current backlog row"))))
-      and (.omitted | any(.surface == "main unstructured current backlog row(s): 2"))
-      and ([.decisions_open[].id] | index("(main-inventory)") | not)
-  ' >/dev/null || fail "unstructured current not disclosed or structured sibling lost: $json"
-  pass "main unstructured current is disclosed while structured siblings still project"
-}
+# No unstructured-current case: the backlog is read through bin/fm-tasks-axi.sh rows, and a free-form backlog line
+# is no task row of tasks-axi, so it cannot reach the snapshot.
 
 test_main_orphan_counterfactual_meta_clears_inventory_warning() {
   local home fakebin json_before json_after
@@ -3461,7 +3412,6 @@ test_landed_bounded_and_disclosed
 test_live_blocker_is_not_charted_queue_work
 test_captains_call_anti_leak
 test_main_orphan_in_flight_is_disclosed_not_invented
-test_main_unstructured_current_is_disclosed_with_structured_sibling
 test_main_orphan_counterfactual_meta_clears_inventory_warning
 test_working_captain_holds_keep_their_bucket_surfaces
 test_active_children_project_independent_of_home_captain_hold

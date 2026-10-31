@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # fm-task-shadow.sh - write one state change to the task record, in shadow (spec huynhtandat223/cfw-modules#1675, T3).
 #
-# The old sources stay authoritative: the backlog, state/<id>.meta, the status files and the steering inbox. A state
-# script that changes one of them calls this hook right after its own change succeeded, and the hook writes the same
+# The old sources stay authoritative: state/<id>.meta, the status files and the steering inbox. The backlog is no longer
+# mirrored here: under the cfw5001 tasks-axi backend it lives in the same Dev 5001 rows, and title_of and hold_event
+# read a title, a kind and a hold-set occurrence through bin/fm-tasks-axi.sh show. A state
+# script that changes one of the old sources calls this hook right after its own change succeeded, and the hook writes the same
 # change to the record through bin/fm-task.sh. The hook never changes the script's result: it exits 0 whatever the
 # writer answers, and it logs each writer call to state/task-shadow.log (epoch, task, hook event, writer command, exit code).
 #
@@ -18,8 +20,6 @@
 #   fm-task-shadow.sh held <task> <hold-kind> <reason>               ask (captain) or block        (bin/fm-captain-hold.sh hold)
 #   fm-task-shadow.sh answered <task> <released|closed>              unblock or approve            (bin/fm-captain-hold.sh answer)
 #   fm-task-shadow.sh deploy-verify <task> <sha> <round> <issue>     a deploy event                (bin/fm-procevent-deploy-verify.sh)
-#   fm-task-shadow.sh backlog <verb> <task> [<hold-kind> <reason>]   done | reopen | hold | unhold (bin/fm-backlog-transition-lib.sh;
-#                                                                    a captain hold is left to bin/fm-captain-hold.sh)
 #
 # Status line to writer command: working -> heartbeat (after unblock and start when the record holds the task blocked);
 # done -> done (the line is the summary; the other template fields read "-"); needs-decision -> ask with the options
@@ -68,7 +68,6 @@ WRITER=${FM_TASK_SHADOW_WRITER:-$SCRIPT_DIR/fm-task.sh}
 TIMEOUT=${FM_TASK_SHADOW_TIMEOUT:-30}
 LOG="$STATE/task-shadow.log"
 TASK=${1:-}
-[ "$EVENT" != backlog ] || TASK=${2:-}
 case "$TASK" in ''|.*|*[!A-Za-z0-9._-]*) exit 0 ;; esac
 
 short() { printf '%s' "$1" | cksum | awk '{ printf "%x", $1 }'; }  # a short stable digest for a key
@@ -90,12 +89,16 @@ w() {
   return "$rc"
 }
 
+# The task's title and kind come from the backlog through bin/fm-tasks-axi.sh show; the backlog file is never read.
+backlog_field() {  # <field>: one top-level field of `fm-tasks-axi.sh show <task>`, empty when absent
+  FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-tasks-axi.sh" show "$TASK" --full 2>/dev/null \
+    | sed -n "s/^  $1: //p" | head -1 | jq -Rr 'if startswith("\"") then fromjson else . end | if . == "-" then "" else . end'
+}
+
 title_of() {
-  local row
-  row=$(grep -m1 -- "^- \[.\] $TASK - " "$DATA/backlog.md" 2>/dev/null) || { printf '%s' "$TASK"; return; }
-  row=${row#*" - "}
-  row=$(printf '%s' "$row" | sed -E 's# https?://.*##; s# \((repo|kind|since|hold|hold-kind|hold-until|merged|done)\b.*##')
-  printf '%s' "$(cut_to "$row" 300)"
+  local title
+  title=$(backlog_field title | sed -E 's# https?://.*##')
+  printf '%s' "$(cut_to "${title:-$TASK}" 300)"
 }
 
 rows_task() { grep -qx 'record: rows' "$DATA/$TASK/verify.md" 2>/dev/null; }
@@ -183,16 +186,14 @@ hold_event() {  # <hold-kind> <reason>: make the record capable of taking this o
   # Captain hold-set is the source transition identity, not a whole-file mtime.
   occurrence=${3:-}
   if [ -z "$occurrence" ]; then
-    occurrence=$(awk -v id="$TASK" '
-      /^- \[[ x]\] / { active=($3 == id) }
-      active && /Captain hold set:/ { sub(/^.*Captain hold set: /, ""); print; exit }
-    ' "$DATA/backlog.md" 2>/dev/null)
+    occurrence=$(FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-tasks-axi.sh" show "$TASK" --full 2>/dev/null \
+      | grep -o 'Captain hold set: [^"\\]*' | head -1 | sed 's/^Captain hold set: //')
     [ -n "$occurrence" ] || occurrence=legacy
   fi
   key=$(short "$kind|$reason|$occurrence")
   current=$("$WRITER" show "$TASK" --json 2>/dev/null) || current=''
   if [ -z "$current" ]; then
-    w "hold-$key-create" create "$TASK" --title "$(title_of)" --kind "$(record_kind "$(grep -m1 -- "^- \[.\] $TASK - " "$DATA/backlog.md" 2>/dev/null | sed -n 's/.*(kind: \([^)]*\)).*/\1/p')")" || return 0
+    w "hold-$key-create" create "$TASK" --title "$(title_of)" --kind "$(record_kind "$(backlog_field kind)")" || return 0
     current='{"state":"triage"}'
   fi
   current=$(printf '%s' "$current" | jq -r '.state // "running"' 2>/dev/null) || current=running
@@ -255,14 +256,6 @@ case "$EVENT" in
     ;;
   deploy-verify)
     w "deploy-$(short "${2:-}|${3:-}")" event "$TASK" deploy --note "deploy ${3:-} at ${2:-}: verify ask sent (${4:-})"
-    ;;
-  backlog)
-    case "${1:-}" in
-      done) close_task backlog-done ;;
-      reopen) w backlog-reopen reopen "$TASK" --reason 'backlog row reopened' ;;
-      hold) [ "${3:-}" = captain ] || hold_event "${3:-hold}" "${4:-}" ;;
-      unhold) w backlog-unhold unblock "$TASK" || w backlog-unhold-comment event "$TASK" comment --note 'backlog hold lifted' ;;
-    esac
     ;;
 esac
 exit 0
