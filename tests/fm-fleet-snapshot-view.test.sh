@@ -642,6 +642,7 @@ test_backlog_tasks_axi_forms_and_overrides() {
 - [x] done-bracket-pr - Done Bracket PR https://github.com/kunchenguid/firstmate/pull/43 (repo: gamma) (kind: ship) (merged 2026-07-12)
 - [x] reported-comma - Reported Scout data/reported-comma/report.md (repo: gamma) (kind: scout) (reported 2026-07-10)
 - [x] done-note - Done Note (repo: delta) (kind: ship) (done 2026-07-11)
+- [x] merged-with-report - Merged With Report https://github.com/kunchenguid/firstmate/pull/44 data/merged-with-report/report.md (repo: gamma) (kind: ship) (merged 2026-07-13)
 EOF
   printf '# Bold Scout\n' > "$data/bold-task/report.md"
   fm_write_meta "$home/state/bold-task.meta" \
@@ -738,6 +739,11 @@ EOF
       and .done == "2026-07-11"
       and .completion == {verb:"done",date:"2026-07-11"}
   ' >/dev/null || fail "done closure metadata did not parse"
+  printf '%s' "$out" | jq -e '
+    .backlog.records[] | select(.id == "merged-with-report")
+    | .completion == {verb:"merged",date:"2026-07-13"}
+      and .report_path == "data/merged-with-report/report.md"
+  ' >/dev/null || fail "a ship closed with a PR and a report was not merged (tasks-axi closes PR first)"
   printf '%s' "$out" | jq -e --arg data "$data" '
     .tasks[] | select(.id == "bold-task")
     | .backlog.id == "bold-task"

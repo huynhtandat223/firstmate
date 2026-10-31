@@ -432,9 +432,10 @@ backlog_json() (
        | ([(.body // "") | split("\n")[] | gsub("^[[:space:]]+|[[:space:]]+$"; "") | select(. != "")]) as $body
        | ((.title // "") | test("(^|[[:space:]])local main$")) as $title_local
        | ($title_local or (($body | last) == "local main")) as $local
-       # The verb tasks-axi itself renders from the links (report, else PR, else done); a local-only landing is done.
-       | (if .closed == null then null elif $report != null then "reported" elif $local then "done"
-          elif ($links | any(test("/pull/[0-9]+"))) then "merged" else "done" end) as $verb
+       # The verb tasks-axi itself renders from the links (PR, else report, else done: closureVerb in its
+       # markdown-grammar.ts); a row whose record says it landed on local main is done.
+       | (if .closed == null then null elif $local then "done"
+          elif ($links | any(test("/pull/[0-9]+"))) then "merged" elif $report != null then "reported" else "done" end) as $verb
        | {order:$order,
           state,
           structured:true,
