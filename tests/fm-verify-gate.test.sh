@@ -625,6 +625,6 @@ swap 'each reason the record gives is a problem' rows_problems "printf '%s\\n' \
     bad=1" 'bad=1'
 unsay 'a record that cannot be read is a problem' rows_record_unreadable 'the task record cannot be read: $(sed'
 swap 'the record is asked about the deployed head' rows_deployed_head '--head "$want_sha"' '--head "$issue"'
-swap 'no deployed head, no read of the record' rows_deployed_head '[ -n "$issue" ] && [ -n "$want_sha" ] || return 0' '[ -n "$issue" ] || return 0'
+swap 'no deployed head, no read of the record' rows_deployed_head '[ -n "$want_sha" ] || return 0' ':'
 swap 'the writer runs with the record settings' rows_writer_settings '    fm_task_shadow_config "$config/task-shadow"' '    :'
 pass 'every rule of the gate has a red mutation proof'

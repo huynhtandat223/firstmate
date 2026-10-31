@@ -157,7 +157,7 @@ const TRANSITIONS = {
 
 // the fm_task columns the projection holds, with the lengths the API enforces on them
 const LIMITS = { title: 300, repo: 200, kind: 32, state: 32, assignee: 64, nextActor: 32, blockKind: 32, blockReason: 2000, issueUrl: 2048, prUrl: 2048, surface: 32, section: 32 };
-const PROJECTED = ['title', 'repo', 'kind', 'state', 'assignee', 'nextActor', 'blockKind', 'blockReason', 'blockRepeats', 'issueUrl', 'prUrl', 'surface', 'holdUntil', 'row', 'notes', 'section', 'lastSeq',
+const PROJECTED = ['acceptanceDigest', 'title', 'repo', 'kind', 'state', 'assignee', 'nextActor', 'blockKind', 'blockReason', 'blockRepeats', 'issueUrl', 'prUrl', 'surface', 'holdUntil', 'row', 'notes', 'section', 'lastSeq',
   'stage', 'stageSince', 'lastEventAt', 'lastNote', 'reviewer'];
 // The board card's step (cfw-modules#1678 change 199): the writer owns the rule and the page only reads it.
 const STEP_OF_STATE = { triage: 'queued', todo: 'queued', ready: 'queued', done: 'passed' };
@@ -400,6 +400,7 @@ const SPECS = {
   reproject: { pos: ['task'], flags: { all: 'b' } },
   'turn-end': { pos: ['task'], flags: { turn: 's' } },
   deliver: { pos: ['task'], flags: { consumer: 's' } },
+  document: { pos: ['task'], flags: {} },
   gate: { pos: ['task'], flags: { issue: 's', head: 's', 'evidence-root': 's' } },
   row: { pos: ['task'], flags: { section: 's', 'row-file': 's', 'notes-file': 's', gone: 'b', file: 's' } },
   backlog: { pos: ['action'], flags: { file: 's', out: 's', 'absorb-only': 'b' } },
@@ -1256,6 +1257,15 @@ async function cmdDescribe(args) {
   });
 }
 
+async function cmdDocument(args) {
+  const events = await taskEvents(taskIdOf(args));
+  const event = events.filter((e) => e.kind === 'description').at(-1);
+  if (!event) throw rule('task has no Description event');
+  const doc = await firstRow('fm_event_document', `fmTaskEventId eq ${event.id}`);
+  if (!doc || !doc.content) throw rule('task Description document is missing');
+  out(doc.content);
+}
+
 async function cmdThread(args) {
   const since = args.flags.since ?? '0';
   if (!/^\d+$/.test(since) || !Number.isSafeInteger(Number(since))) throw usage('--since must be a nonnegative integer');
@@ -1494,6 +1504,8 @@ async function wantedRows(issue) {
       page: fit(s.page, 200),
       controls: fit(s.controls.length ? s.controls.join('; ') : '-', 2000),
       data: fit(s.data, 2000),
+      env: fit(s.env, 2000),
+      mock: fit(s.mock, 2000),
       proof: fit(s.proof, 4000),
       acceptanceDigest: crypto.createHash('sha256').update(JSON.stringify(rest)).digest('hex'),
     });
@@ -1503,8 +1515,7 @@ async function wantedRows(issue) {
 
 async function cmdRows(args) {
   const taskId = taskIdOf(args);
-  const issue = args.pos.issue;
-  if (!issue) throw usage('rows needs <task> <issue-url>');
+  const issue = args.pos.issue || taskId;
   const who = identity(args, 'firstmate');
   const task = fold(await taskEvents(taskId));
   if (!task) throw rule(`no such task ${taskId}`);
@@ -1530,7 +1541,7 @@ async function cmdRows(args) {
       continue;
     }
     const changed = row.line !== want.line || row.acceptanceDigest !== want.acceptanceDigest;
-    const text = { line: want.line, surface: want.surface, page: want.page, controls: want.controls, data: want.data, proof: want.proof, acceptanceDigest: want.acceptanceDigest };
+    const text = { line: want.line, surface: want.surface, page: want.page, controls: want.controls, data: want.data, env: want.env, mock: want.mock, proof: want.proof, acceptanceDigest: want.acceptanceDigest };
     if (row.status === 'retired') {
       await resetEvent(key, actorFor(want.surface));
       ok(await http('PATCH', `/api/fm_task_check/${row.id}`, { ...text, ...fresh, nextActor: actorFor(want.surface) }), `reopen the check row ${key}`);
@@ -1554,7 +1565,11 @@ async function cmdRows(args) {
     counts.retired++;
   }
   const summary = `rows added=${counts.added} reset=${counts.reset} retired=${counts.retired} updated=${counts.updated} unchanged=${counts.unchanged} total=${wanted.size}`;
-  const sets = task.issueUrl ? {} : { issueUrl: issue };
+  const parser = process.env.FM_TASK_ACCEPTANCE || path.join(HERE, 'fm-acceptance.mjs');
+  const digestRun = spawnSync('node', [parser, 'digest', issue, '--strict'], { encoding: 'utf8', timeout: 60000 });
+  const taskNative = !args.pos.issue || /^https?:\/\/[^\s]+[?&]task=/.test(issue);
+  if (taskNative && (digestRun.status !== 0 || !/^[a-f0-9]{64}\s*$/.test(digestRun.stdout))) throw rule('acceptance digest could not be read');
+  const sets = { ...(taskNative && task.acceptanceDigest !== digestRun.stdout.trim() ? { acceptanceDigest: digestRun.stdout.trim() } : {}), ...(taskNative ? (task.issueUrl !== issue ? { issueUrl: issue } : {}) : (args.pos.issue && !task.issueUrl ? { issueUrl: issue } : {})) };
   if (counts.added + counts.reset + counts.retired + counts.updated === 0 && !Object.keys(sets).length) {
     out(summary);
     return;
@@ -1691,7 +1706,8 @@ async function cmdChecks(args) {
 async function cmdGate(args) {
   const taskId = taskIdOf(args);
   const f = args.flags;
-  if (!f.issue || !f.head) throw usage('gate needs --issue URL and --head SHA');
+  if (!f.head) throw usage('gate needs --head SHA');
+  f.issue ||= taskId;
   const events = await taskEvents(taskId);
   if (!fold(events)) {
     out(`the task record has no task ${taskId}`);
@@ -1952,7 +1968,7 @@ const COMMANDS = {
   'turn-end': cmdTurnEnd, deliver: cmdDeliver, describe: cmdDescribe, thread: cmdThread,
   create: cmdCreate, import: cmdImport, assign: cmdAssign, start: cmdStart, heartbeat: cmdHeartbeat, done: cmdDone, ask: cmdAsk, block: cmdBlock,
   unblock: cmdUnblock, approve: cmdApprove, changes: cmdChanges, reopen: cmdReopen, reassign: cmdReassign, archive: cmdArchive, comment: cmdComment, event: cmdEvent,
-  link: cmdLink, rows: cmdRows, check: cmdCheck, 'owner-check': cmdOwnerCheck, gate: cmdGate, show: cmdShow, list: cmdList, resume: cmdResume, reproject: cmdReproject,
+  document: cmdDocument, link: cmdLink, rows: cmdRows, check: cmdCheck, 'owner-check': cmdOwnerCheck, gate: cmdGate, show: cmdShow, list: cmdList, resume: cmdResume, reproject: cmdReproject,
   row: cmdRow, backlog: cmdBacklog, checks: cmdChecks,
 };
 

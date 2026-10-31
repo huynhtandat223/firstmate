@@ -1107,6 +1107,24 @@ scenario_cap() {
   [ "$(jq -r .cursor_run "$H/data/deploy-verify/state.json")" = 2 ] || { echo 'the cursor did not advance after delivery'; return 1; }
 }
 
+scenario_task_native() {
+  new_lab "$1"
+  backlog_task alpha 11 ''
+  : > "$H/config/task-shadow"
+  issue_body V1:user-visible > "$LAB/description"
+  printf '#!/usr/bin/env bash\ncase "$1" in document) cat "%s/description" ;; checks) echo "{\\"rows\\":[]}" ;; esac\n' "$LAB" > "$LAB/writer"
+  chmod +x "$LAB/writer"
+  export FM_TASK_SHADOW_WRITER="$LAB/writer"
+  fx_runs '1:completed:success:s0' '2:completed:success:s2'
+  fx_jobs 2 success
+  fx_compare s0 s2 c1
+  gh_put "repos/$REPO/commits/$(sha c1)/pulls" "$(jq -cn --arg u "$RURL/pull/11" '[{html_url:$u, merged_at:"2026-10-20T14:00:00Z",base:{ref:"main"},body:"Task: alpha"}]')"
+  set_cursor 1 s0
+  cycle
+  unset FM_TASK_SHADOW_WRITER
+  asked | jq -e 'select(.task == "alpha" and .issue == "alpha" and (.issue_url | contains("task=alpha")))' >/dev/null || { echo 'task-native ask missing'; return 1; }
+}
+
 run_scenarios() {  # <bin-dir>
   local s rc=0
   for s in ledger skips not_deployed draft spawn_brief failures runner live_tester cap skip_catchup rows refused replay replay_refused shadow rows_record carry rows_ask rows_lease rows_lease_two rows_lease_failed_send; do
@@ -1117,7 +1135,7 @@ run_scenarios() {  # <bin-dir>
 
 # ---- real adapter -----------------------------------------------------------
 
-for s in ledger skips not_deployed draft spawn_brief failures runner live_tester cap skip_catchup rows refused replay replay_refused shadow rows_record carry rows_ask rows_lease rows_lease_two rows_lease_failed_send; do
+for s in task_native ledger skips not_deployed draft spawn_brief failures runner live_tester cap skip_catchup rows refused replay replay_refused shadow rows_record carry rows_ask rows_lease rows_lease_two rows_lease_failed_send; do
   out=$(scenario_"$s" "$ROOT/bin" 2>&1) || fail "scenario $s failed on the real adapter: $out"
   pass "deploy-verify $s"
 done
@@ -1314,4 +1332,6 @@ mutate 'a claimed-race retry finds its live Tester' rows_lease \
   's/id=\$\(tester_id_for_ask "\$2"\)/id=missing/'
 mutate 'a used closed Tester id gets a suffix' live_tester \
   's/if ! ledger_test '\''.type == "ask" and .tester == \$id'\'' --arg id "\$id"/if true/'
+mutate 'task-native deployment needs a task fallback' task_native \
+  's/issue="task:\$task"/issue=""/g'
 pass 'every guarded behavior has a red mutation proof'

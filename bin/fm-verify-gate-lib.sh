@@ -127,9 +127,9 @@ fm_verify_gate_rows() {
   first=$(sed -n '1p' "$file")
   [ "$first" = 'surface: user-visible' ] || fm_verify_gate_say "line 1 of $file must be 'surface: user-visible' (found '$first')"
   issue=$(fm_verify_gate_field "$file" issue)
-  [ -n "$issue" ] || fm_verify_gate_say "firstmate record has no 'issue: <url>' line"
+  issue=${issue:-$id}
   fm_verify_gate_deployed_head
-  [ -n "$issue" ] && [ -n "$want_sha" ] || return 0
+  [ -n "$want_sha" ] || return 0
   config=${FM_CONFIG_OVERRIDE:-$base/config}
   err=$(mktemp "${TMPDIR:-/tmp}/fm-verify-gate.XXXXXX") || { fm_verify_gate_say "the task record cannot be read: no temporary file"; return 0; }
   rc=0

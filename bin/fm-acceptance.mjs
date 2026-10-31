@@ -3,9 +3,9 @@
 // issues only through this module; the gate and the board import it.
 //
 // Usage:
-//   fm-acceptance.mjs parse <issue-url|-> [--strict]
-//   fm-acceptance.mjs rows <issue-url|-> [--surface user-visible|all] [--draft] [--strict]
-//   fm-acceptance.mjs digest <issue-url|-> [--strict]
+//   fm-acceptance.mjs parse <task-id|board-url|issue-url|-> [--strict]
+//   fm-acceptance.mjs rows <task-id|board-url|issue-url|-> [--surface user-visible|all] [--draft] [--strict]
+//   fm-acceptance.mjs digest <task-id|board-url|issue-url|-> [--strict]
 //
 // An <issue-url> is read with `gh issue view <url> --json body` (20 s bound,
 // FM_ACCEPTANCE_GH names another gh command); `-` reads the issue body from
@@ -247,6 +247,16 @@ export function digest(parsed) {
 
 function readIssueBody(source) {
   if (source === '-') return fs.readFileSync(0, 'utf8');
+  if (/^https?:\/\//.test(source) && source.includes('task=')) {
+    const url = new URL(source);
+    source = new URLSearchParams(url.hash.split('?')[1] || url.search).get('task') || source;
+  }
+  if (!/^https:\/\/[^/]+\/[^/]+\/[^/]+\/issues\/\d+$/.test(source)) {
+    const task = process.env.FM_ACCEPTANCE_TASK || new URL('./fm-task.sh', import.meta.url).pathname;
+    const run = spawnSync(task, ['document', source], { encoding: 'utf8', timeout: GH_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024 });
+    if (run.error || run.status !== 0) throw new Error(`could not read task ${source}: ${run.error?.message || run.stderr || run.stdout}`);
+    return run.stdout;
+  }
   const gh = process.env.FM_ACCEPTANCE_GH || 'gh';
   const run = spawnSync(gh, ['issue', 'view', source, '--json', 'body'], { encoding: 'utf8', timeout: GH_TIMEOUT_MS });
   if (run.error) throw new Error(`could not read ${source}: ${run.error.code === 'ETIMEDOUT' ? `no answer in ${GH_TIMEOUT_MS / 1000} s` : run.error.message}`);
