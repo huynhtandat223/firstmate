@@ -22,7 +22,7 @@ if ! fm_plan_gate_issue "$url"; then
   exit 1
 fi
 if [ -n "${FM_PLAN_GATE_TASK:-}" ]; then
-  fm_plan_gate_task plan-approve "$FM_PLAN_GATE_TASK"
+  fm_plan_gate_task plan-approve "$FM_PLAN_GATE_TASK" --note "$note"
   exit $?
 fi
 if ! fm_plan_gate_spec; then

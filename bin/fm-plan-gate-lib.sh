@@ -25,7 +25,7 @@ fm_plan_gate_read() {
 fm_plan_gate_task() (
   . "$FM_PLAN_GATE_ROOT/bin/fm-task-shadow-config-lib.sh"
   fm_task_shadow_config "${FM_CONFIG_OVERRIDE:-${FM_HOME:-$FM_PLAN_GATE_ROOT}/config}/task-shadow"
-  "$FM_PLAN_GATE_ROOT/bin/fm-task.sh" "$@"
+  "${FM_PLAN_GATE_TASK_WRITER:-$FM_PLAN_GATE_ROOT/bin/fm-task.sh}" "$@"
 )
 
 fm_plan_gate_issue() {  # <issue-url> [--any-state]; a closed issue still yields its spec
@@ -34,7 +34,17 @@ fm_plan_gate_issue() {  # <issue-url> [--any-state]; a closed issue still yields
   if [[ $1 != https://github.com/*/issues/* ]]; then
     FM_PLAN_GATE_TASK=$1
     if [[ $1 == *task=* ]]; then FM_PLAN_GATE_TASK=${1##*task=}; FM_PLAN_GATE_TASK=${FM_PLAN_GATE_TASK%%&*}; fi
-    FM_PLAN_GATE_BODY=$(fm_plan_gate_task document "$FM_PLAN_GATE_TASK") || { FM_PLAN_GATE_REASON='task Description read failed'; return 1; }
+    local description_error
+    if ! description_error=$(fm_plan_gate_task document "$FM_PLAN_GATE_TASK" 2>&1); then
+      FM_PLAN_GATE_BODY=
+      FM_PLAN_GATE_VERDICT=error
+      case "$description_error" in
+        *'task has no Description event'*) FM_PLAN_GATE_VERDICT=missing ;;
+      esac
+      FM_PLAN_GATE_REASON="task Description read failed: $description_error"
+      return 1
+    fi
+    FM_PLAN_GATE_BODY=$description_error
     FM_PLAN_GATE_HASH=$(printf '%s' "$FM_PLAN_GATE_BODY" | shasum -a 256 | cut -d' ' -f1)
     FM_PLAN_GATE_ISSUE_REPO=tasks
     FM_PLAN_GATE_ISSUE_NUMBER=$FM_PLAN_GATE_TASK

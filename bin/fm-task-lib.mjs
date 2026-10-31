@@ -1296,9 +1296,10 @@ async function cmdPlanApprove(args) {
       if (!candidateEvents.some((e) => e.kind === 'description')) continue;
       if (await taskPlanSpec(candidate.taskId) === spec) count++;
     }
-    if (count) throw rule('spec has more than one open ticket in this repository');
+    const childCount = count + (taskId === spec ? 0 : 1);
+    if (childCount > 1) throw rule('spec has more than one open ticket in this repository');
     const hash = crypto.createHash('sha256').update(await descriptionContent(taskId)).digest('hex');
-    return { kind: 'plan-approved', note: hash, extra: { descriptionSha256: hash } };
+    return { kind: 'plan-approved', note: args.flags.note || hash, extra: { descriptionSha256: hash } };
   });
 }
 
