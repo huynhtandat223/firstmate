@@ -366,6 +366,22 @@ ASK_FLAGS=(--question 'Which one?' --option 'Option A' --option 'Option B' --rec
 mk_ready() { ft create "$1" --title "Task $1" --kind ship --repo example/repo && ft assign "$1" --to worker-1; }
 mk_running() { mk_ready "$1" && ft start "$1"; }
 
+test_steer_read_mark() {
+  reset_db
+  mk_running steer-probe || return 1
+  ft event steer-probe steer --note 'read this' --key steer:steer-probe:001.msg || return 1
+  local seq
+  seq=$(seq_of)
+  ft read-mark steer-probe --key steer:steer-probe:001.msg || return 1
+  ft read-mark steer-probe --key steer:steer-probe:001.msg || return 1
+  [ "$(db fm_task_delivery | jq --argjson seq "$seq" '[.[] | select(.consumer == "read:steer-probe" and .seq == $seq)] | length')" = 1 ] || return 1
+  ft read-mark other-task --key steer:steer-probe:001.msg && return 1
+  [ "$RC" = 2 ]
+}
+
+test_steer_read_mark || fail 'steer read mark is task-scoped and idempotent'
+pass 'steer read mark is task-scoped and idempotent'
+
 # ---- issue bodies for the rows cases ----------------------------------------------
 
 scenario() {  # <id> <surface> <page> <widths> <line> <proof>
