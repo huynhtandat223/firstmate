@@ -65,6 +65,41 @@ refused_cleanly
 expect 'link it with bin/fm-tasks-axi.sh update surf'
 pass 'a user-visible spawn whose backlog item links no issue is refused'
 
+new_case visible-task cfw-modules ''
+cat > "$home/tools/task-reader" <<'SH'
+#!/usr/bin/env bash
+[ "$1" = document ] && [ "$2" = surf ] || exit 1
+cat <<'MD'
+## Context
+Probe.
+## Requirements
+Read acceptance.
+## Definition of done
+Acceptance passes.
+## Scenarios
+- [ ] P1 WHEN the task is read, THE spawn SHALL use task acceptance.
+  - page: task-board
+  - widths: 390
+  - controls: -
+  - env: Dev 5001
+  - proof: command readback
+  - data: probe
+  - mock: none
+  - surface: user-visible
+## Mockup
+None.
+## Links
+None.
+## Decisions
+None.
+MD
+SH
+chmod +x "$home/tools/task-reader"
+FM_ACCEPTANCE_TASK="$home/tools/task-reader" spawn --surface user-visible
+launched
+assert_grep 'issue: task:surf' "$home/data/surf/verify.md" "$label: missing task source"
+pass 'a user-visible task with Description acceptance launches without an issue'
+
 new_case other-visible demo "$url"
 spawn --surface user-visible
 launched

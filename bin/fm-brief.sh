@@ -118,7 +118,7 @@
 # --surface <user-visible|internal> is an optional ship-only input; absent means
 # internal and leaves the brief unchanged. user-visible adds the done-gate wording
 # that bin/fm-dod-lib.sh owns (record: bin/fm-verify-gate-lib.sh).
-# --issue <issue-url> is an optional ship-only input, the task's issue as
+# --issue <source> is an optional ship-only acceptance input: task:<id> or
 # https://<host>/<owner>/<repo>/issues/<n>. It adds an `# Acceptance` section that
 # names the issue and the command `bin/fm-acceptance.mjs rows <issue-url> --surface all` (every scenario, internal ones too), so the
 # worker reads the scenario list from the one parser and the brief carries no list
@@ -388,8 +388,8 @@ if [ "$KIND" = ship ]; then
     *) echo "error: --surface must be user-visible or internal (got '$SURFACE')" >&2; exit 1 ;;
   esac
   [ "$SURFACE_SET" -eq 0 ] || [ -n "$SURFACE" ] || { echo "error: --surface requires a non-empty value" >&2; exit 1; }
-  if [ "$ISSUE_SET" -eq 1 ] && ! [[ "$ISSUE_URL" =~ ^https://[A-Za-z0-9.-]+/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/issues/[0-9]+$ ]]; then
-    echo "error: --issue must be https://<host>/<owner>/<repo>/issues/<n> (got '$ISSUE_URL')" >&2
+  if [ "$ISSUE_SET" -eq 1 ] && ! [[ "$ISSUE_URL" =~ ^https://[A-Za-z0-9.-]+/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/issues/[0-9]+$ || "$ISSUE_URL" =~ ^task:[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+    echo "error: --issue must be https://<host>/<owner>/<repo>/issues/<n> or task:<id> (got '$ISSUE_URL')" >&2
     exit 1
   fi
 elif [ "$ISSUE_SET" -eq 1 ]; then
@@ -952,6 +952,10 @@ RULE1=$(fm_ship_rule_one "$MODE" "$ID" "$BRANCH" "$FORGE" "$BASE_BRANCH") || exi
 DOD=$(fm_dod_block "$MODE" "$ID" "$BRANCH" "$FORGE" "$BASE_BRANCH" "$UPSTREAM_CONSENT" "$SURFACE") || exit 1
 
 ACCEPTANCE_SECTION=
+if [ "$ISSUE_SET" -eq 0 ] && [ "$SURFACE" = user-visible ]; then
+  ISSUE_URL="task:$ID"
+  ISSUE_SET=1
+fi
 if [ "$ISSUE_SET" -eq 1 ]; then
   ACCEPTANCE_SECTION="# Acceptance
 The acceptance for this task is the scenarios of $ISSUE_URL.
