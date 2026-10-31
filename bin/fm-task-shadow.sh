@@ -91,8 +91,8 @@ w() {
 
 # The task's title and kind come from the backlog through bin/fm-tasks-axi.sh show; the backlog file is never read.
 backlog_field() {  # <field>: one top-level field of `fm-tasks-axi.sh show <task>`, empty when absent
-  FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-tasks-axi.sh" show "$TASK" 2>/dev/null \
-    | sed -n "s/^  $1: //p" | head -1 | sed -E 's/^"-"$//; s/^"(.*)"$/\1/'
+  FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-tasks-axi.sh" show "$TASK" --full 2>/dev/null \
+    | sed -n "s/^  $1: //p" | head -1 | jq -Rr 'if startswith("\"") then fromjson else . end | if . == "-" then "" else . end'
 }
 
 title_of() {

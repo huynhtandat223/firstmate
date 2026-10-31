@@ -8,7 +8,9 @@
 #
 # add: called by bin/fm-tasks-axi.sh add|create before tasks-axi runs and by
 #   bin/fm-task.sh create. It refuses
-#   - an id found as a done row of this home's backlog (bin/fm-tasks-axi.sh rows);
+#   - an id found as a done row of this home's backlog (bin/fm-tasks-axi.sh rows), of a
+#     markdown home's data/done-archive.md (citing the line), or, on a cfw5001 home, in the
+#     Dev 5001 task record (done, archived, section Done, or closed);
 #   - an id with a local fm/<id> branch in the project clone <repo> (the pool
 #     worktrees share that clone's refs), naming the branch; only when <repo> is
 #     given. bin/fm-task.sh create passes it, except the shadow create that follows
@@ -36,6 +38,8 @@ CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 PROJECTS="${FM_PROJECTS_OVERRIDE:-$FM_HOME/projects}"
 # shellcheck source=bin/fm-enforce-lib.sh
 . "$SCRIPT_DIR/fm-enforce-lib.sh"
+# shellcheck source=bin/fm-tasks-axi-lib.sh
+. "$SCRIPT_DIR/fm-tasks-axi-lib.sh"
 
 # hit <code> <text>: log, and refuse when the switch holds block.
 hit() {
@@ -51,11 +55,31 @@ hit() {
 # This home's backlog rows (bin/fm-tasks-axi.sh rows); the backlog file is never read here.
 rows() { FM_HOME="$FM_HOME" FM_DATA_OVERRIDE="$DATA" "$SCRIPT_DIR/fm-tasks-axi.sh" rows "$@" 2>/dev/null; }
 
+# done_elsewhere <id>: the id is a done task that `list` no longer shows. A markdown backlog prunes done rows into
+# data/done-archive.md; a cfw5001 backlog prunes by clearing the row's section, and old rows of other homes stay in
+# Dev 5001 too, so there the task record itself is read (state done or archived, section Done, or a closed date).
+# An unreachable API finds nothing; the check only adds refusals.
+done_elsewhere() {
+  local id=$1 backend line
+  backend=$(fm_tasks_axi_backend "$(dirname "$DATA")" 2>/dev/null) || backend=markdown
+  if [ "$backend" = cfw5001 ]; then
+    FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task.sh" show "$id" --json 2>/dev/null | jq -e '
+      .state == "done" or .state == "archived" or .section == "Done" or .backlogClosed != null' >/dev/null &&
+      printf 'the Dev 5001 task record\n'
+    return 0
+  fi
+  [ -f "$DATA/done-archive.md" ] || return 0
+  line=$(awk -v id="$id" '$1 == "-" && $2 == "[x]" && $3 == id { print NR; exit }' "$DATA/done-archive.md")
+  [ -z "$line" ] || printf 'data/done-archive.md:%s\n' "$line"
+}
+
 check_add() {
-  local id=$1 title=$2 repo=${3:-} key other clone
+  local id=$1 title=$2 repo=${3:-} key other clone where
   if rows --state 'done' | jq -e --arg id "$id" 'any(.[]; .id == $id)' >/dev/null; then
     hit reused-id "task id $id is already a done task in this home's backlog; use a new id, or reopen that task if it is the same work"
   fi
+  where=$(done_elsewhere "$id")
+  [ -z "$where" ] || hit reused-id "task id $id is already a done task ($where); use a new id, or reopen that task if it is the same work"
   if [ -n "$repo" ]; then
     clone="$PROJECTS/$repo"
     if [ -d "$clone" ] && [ -n "$(git -C "$clone" for-each-ref --format='%(refname)' "refs/heads/fm/$id" 2>/dev/null)" ]; then

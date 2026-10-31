@@ -48,6 +48,14 @@ test_ti1_a_done_id_is_refused_with_its_line() {
   assert_contains "$OUT" "dci-screen-triggers is already a done task" "TI1 the refusal should name the done task"
   run add dci-screen-triggers-2 "Screen triggers again"
   expect_code 0 "$RC" "a fresh id must pass: $OUT"
+  # A markdown backlog prunes done rows into data/done-archive.md, which `list` does not read.
+  {
+    printf '# Archive\n\n## Archived 2026-09-25\n'
+    printf -- '- [x] archived-id - pruned long ago (kind: ship) (done 2026-09-24)\n'
+  } > "$HOME_DIR/data/done-archive.md"
+  run add archived-id "again"
+  expect_code 1 "$RC" "an archived done id must be refused: $OUT"
+  assert_contains "$OUT" "data/done-archive.md:4" "the archive line should be cited"
   printf -- '- [x] done-in-backlog - old (kind: ship)\n' > "$HOME_DIR/data/backlog.md"
   run add done-in-backlog "reuse"
   expect_code 1 "$RC" "a done row in the backlog also blocks reuse: $OUT"
@@ -122,6 +130,11 @@ test_ti2_a_second_task_for_one_ticket_key_is_refused() {
   expect_code 1 "$RC" "the key match ignores case: $OUT"
   run add dev-15769-b "DEV-15769A suffixed"
   expect_code 0 "$RC" "DEV-15769A is not the key DEV-15769: $OUT"
+  # A key past the 80 characters `list` keeps of a title still counts.
+  printf -- '- [ ] long-title - %s DEV-777 late key (kind: ship)\n' "$(printf 'x%.0s' $(seq 1 90))" > "$HOME_DIR/data/backlog.md"
+  run add dev-777-again "DEV-777 again"
+  expect_code 1 "$RC" "a key after character 80 of a live title must be refused: $OUT"
+  assert_contains "$OUT" "long-title" "the long-title holder should be named"
   printf -- '- [ ] dev-12a-live - DEV-12A something (kind: ship)\n' >> "$HOME_DIR/data/backlog.md"
   run add dev-12-new "DEV-12 other ticket"
   expect_code 0 "$RC" "DEV-12 must not match the live DEV-12A: $OUT"
@@ -179,6 +192,12 @@ test_ti3_a_pr_closing_another_issue_is_refused() {
   make_fake_gh https://github.com/huynhtandat223/cfw-modules/issues/17070
   run pr spelled https://github.com/huynhtandat223/cfw-modules/pull/1715
   expect_code 1 "$RC" "issue 17070 is not issue 1707: $OUT"
+  # An issue URL past the 500 characters `list` keeps of a body is still the linked issue.
+  printf -- '- [ ] long-body - Long body task (kind: ship)\n  %s https://github.com/huynhtandat223/cfw-modules/issues/1707\n' \
+    "$(printf 'b%.0s' $(seq 1 600))" > "$HOME_DIR/data/backlog.md"
+  make_fake_gh https://github.com/huynhtandat223/cfw-modules/issues/1708
+  run pr long-body "$pr"
+  expect_code 1 "$RC" "an issue URL after body character 500 must still be compared: $OUT"
   run pr no-such-task "$pr"
   expect_code 0 "$RC" "a task with no backlog item has no linked issue: $OUT"
   FAKEBIN=''

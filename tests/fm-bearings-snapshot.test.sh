@@ -1833,7 +1833,7 @@ test_kind_fallback_matches_tasks_axi_word_boundaries() {
       | sed -n 's/^  kind: *//p' | head -1)
     [ "$producer_kind" = "${kind/-/task}" ] || fail "tasks-axi kind differs for $title: $producer_kind"
     jq -cn --arg id "$id" --arg kind "$kind" \
-      '{id:$id,kind:(if $kind == "-" then null else $kind end)}' >> "$home/expected.jsonl"
+      '{id:$id,kind:(if $kind == "-" then "task" else $kind end)}' >> "$home/expected.jsonl"
   done <<'EOF'
 scout-colon|SCOUT: investigate regression|scout
 scout-unicode|SCOUTé investigate|scout

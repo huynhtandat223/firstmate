@@ -19,9 +19,9 @@
 # Decoded reasons use quoted strings so embedded line breaks remain intact.
 #
 # `rows [list flags]` is firstmate's own read: the same `list` table as one JSON
-# array of objects (hold reasons decoded, "-" and "none" as null, a truncated
-# title or body cut back to its kept text). Scripts that need task fields read
-# the backlog through it rather than parsing a backlog file.
+# array of objects (hold reasons decoded, "-" and "none" as null, and the full
+# title and body of a row `list` cut, read with `show <id> --full`). Scripts that
+# need task fields read the backlog through it rather than parsing a backlog file.
 #
 # While config/task-shadow is on, a landed `hold` or `start` is followed by
 # bin/fm-task-shadow.sh's `held` or `started` lifecycle write; it never changes
@@ -179,11 +179,12 @@ cd "$FM_BACKLOG_AXI_ROOT" || fail "cannot enter the backlog root $FM_BACKLOG_AXI
 case "${1:-}" in
   rows)
     # `rows [list flags]`: the `list` table as one JSON array of objects, hold reasons decoded, "-" and "none" as
-    # null, a list-truncated title or body cut back to its kept text. The one structured backlog read for scripts.
+    # null. `list` cuts a long title or body; for such a row the full text comes from `show <id> --full`, so a
+    # reader never sees a cut value. The one structured backlog read for scripts.
     set -o pipefail
-    tasks-axi list "${ARGS[@]:1}" | fm_hold_reason_decode_stream | jq -Rn '
+    listed=$(tasks-axi list "${ARGS[@]:1}" | fm_hold_reason_decode_stream | jq -Rn '
       def cell: if startswith("\"") then fromjson else . end;
-      def kept: sub("\n\\.\\.\\. \\(truncated, [0-9]+ chars total.*$"; "");
+      def cut: test("\n\\.\\.\\. \\(truncated, [0-9]+ chars total");
       reduce inputs as $line ({fields: null, rows: []};
         if ($line | test("^tasks\\[[0-9]+\\]\\{")) then
           .fields = ($line | capture("\\{(?<f>[^}]*)\\}").f | split(","))
@@ -191,10 +192,24 @@ case "${1:-}" in
           .fields as $f
           | ([$line | ltrimstr("  ") | scan("\"(?:[^\"\\\\]|\\\\.)*\"|[^,]+") | cell]) as $c
           | .rows += [reduce range(0; $f | length) as $i ({};
-              .[$f[$i]] = ($c[$i] | if . == "-" or (. == "none" and $f[$i] != "title") then null
-                                   elif type == "string" then kept else . end))]
+              .[$f[$i]] = ($c[$i] | if . == "-" or (. == "none" and $f[$i] != "title") then null else . end))
+              | ._cut = [to_entries[] | select((.value | type) == "string" and (.value | cut)) | .key]]
         else .fields = null end)
-      | .rows'
+      | .rows') || exit $?
+    full=
+    for cut_id in $(printf '%s' "$listed" | jq -r '.[] | select(._cut | length > 0) | .id'); do
+      one=$(tasks-axi show "$cut_id" --full | fm_hold_reason_decode_stream | jq -Rn --arg id "$cut_id" '
+        reduce inputs as $l ({};
+          if ($l | test("^  (title|body): ")) then
+            ($l | capture("^  (?<k>title|body): (?<v>.*)$")) as $m
+            | .[$m.k] = ($m.v | if startswith("\"") then fromjson else . end)
+          else . end) | {($id): .}' | jq -c .) || exit $?
+      full=$full$one$'\n'
+    done
+    # Through stdin, not argv: a full body can pass the argument size limit.
+    printf '%s\n%s' "$listed" "$full" | jq -s '
+      .[0] as $rows | (.[1:] | add // {}) as $full
+      | $rows | map(. as $r | reduce ($r._cut[]) as $k ($r; .[$k] = ($full[$r.id][$k] // .[$k])) | del(._cut))'
     exit $?
     ;;
   show|view|list)

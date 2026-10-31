@@ -443,7 +443,7 @@ backlog_json() (
           title:((.title // "") | gsub("<?https?://[^[:space:])\"<>]+>?"; "") | sub("[[:space:]]+(-[[:space:]]+)?data/[^[:space:])]+/report\\.md$"; "")
                  | sub("[[:space:]]+(-[[:space:]]+)?local main$"; "") | sub("[[:space:]]+-[[:space:]]*$"; "") | gsub("[[:space:]]+"; " ") | trim),
           repo,
-          kind:(if .kind == "task" then null else .kind end),  # tasks-axi lists a row with no kind as "task"
+          kind,
           priority,
           hold_reason,
           hold_kind,
@@ -890,9 +890,11 @@ main_inventory_json() {  # <backlog-json-file> <tasks-json-file>
     | ([ $owned_in_flight[]
          | select(.id as $id | [$tasks[].id] | index($id) | not)
          | .id ]) as $orphan_in_flight
-    | (($unstructured_current | length) == 0
+    | ($backlog.present == true
+       and ($unstructured_current | length) == 0
        and ($orphan_in_flight | length) == 0) as $valid
-    | (if ($unstructured_current | length) > 0 then "unstructured current backlog row"
+    | (if $backlog.present != true then "backlog unread: " + ($backlog.error // "no backlog read")
+       elif ($unstructured_current | length) > 0 then "unstructured current backlog row"
        elif ($orphan_in_flight | length) > 0 then "in-flight backlog item has no child metadata"
        else null end) as $reason
     | {
@@ -971,7 +973,7 @@ secondmate_home_summary_json() {  # <backlog-json-file> <tasks-json-file>
          | select(.id == $work.id and (.current_state.state == "done" or .current_state.state == "failed"))
          | {id,state:.current_state.state} ]) as $terminal_in_flight
     | ([if $backlog.present != true then
-          {kind:"missing_backlog",ids:[],reason:"missing structured backlog"}
+          {kind:"missing_backlog",ids:[],reason:("missing structured backlog" + (if $backlog.error then ": " + $backlog.error else "" end))}
         else empty end,
         if ($unstructured_current | length) > 0 then
           {kind:"unstructured_current",ids:[],reason:"unstructured current backlog row"}
