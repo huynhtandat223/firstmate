@@ -1110,6 +1110,8 @@ scenario_cap() {
 scenario_task_native() {
   new_lab "$1"
   backlog_task alpha 11 ''
+  mkdir -p "$H/data/alpha"
+  printf 'surface: user-visible\nissue: task:alpha\n' > "$H/data/alpha/verify.md"
   : > "$H/config/task-shadow"
   issue_body V1:user-visible > "$LAB/description"
   printf '#!/usr/bin/env bash\ncase "$1" in document) cat "%s/description" ;; checks) echo "{\\"rows\\":[]}" ;; esac\n' "$LAB" > "$LAB/writer"
@@ -1118,7 +1120,7 @@ scenario_task_native() {
   fx_runs '1:completed:success:s0' '2:completed:success:s2'
   fx_jobs 2 success
   fx_compare s0 s2 c1
-  gh_put "repos/$REPO/commits/$(sha c1)/pulls" "$(jq -cn --arg u "$RURL/pull/11" '[{html_url:$u, merged_at:"2026-10-20T14:00:00Z",base:{ref:"main"},body:"Task: alpha"}]')"
+  gh_put "repos/$REPO/commits/$(sha c1)/pulls" "$(jq -cn --arg u "$RURL/pull/11" '[{html_url:$u, merged_at:"2026-10-20T14:00:00Z",base:{ref:"main"},body:"No issue or task marker"}]')"
   set_cursor 1 s0
   cycle
   unset FM_TASK_SHADOW_WRITER
@@ -1332,6 +1334,6 @@ mutate 'a claimed-race retry finds its live Tester' rows_lease \
   's/id=\$\(tester_id_for_ask "\$2"\)/id=missing/'
 mutate 'a used closed Tester id gets a suffix' live_tester \
   's/if ! ledger_test '\''.type == "ask" and .tester == \$id'\'' --arg id "\$id"/if true/'
-mutate 'task-native deployment needs a task fallback' task_native \
-  's/issue="task:\$task"/issue=""/g'
+mutate 'task-native deployment honors the recorded source' task_native \
+  's/issue=\$\(recorded_acceptance[^\n]*/issue=""/g'
 pass 'every guarded behavior has a red mutation proof'

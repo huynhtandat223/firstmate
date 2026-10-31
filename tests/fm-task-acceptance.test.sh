@@ -40,6 +40,9 @@ node "$ROOT/bin/fm-acceptance.mjs" parse acceptance-probe --strict > "$TMP/parse
 jq -e '.problems == [] and .scenarios[0].env == "Dev 5001" and .scenarios[0].mock == "none"' "$TMP/parsed" >/dev/null
 node "$ROOT/bin/fm-acceptance.mjs" digest acceptance-probe --strict > "$TMP/digest"
 grep -Eq '^[a-f0-9]{64}$' "$TMP/digest"
+node "$ROOT/bin/fm-acceptance.mjs" digest task:acceptance-probe --strict > "$TMP/explicit-digest"
+cmp "$TMP/digest" "$TMP/explicit-digest"
+node "$ROOT/bin/fm-acceptance.mjs" rows task:acceptance-probe --surface all --strict | grep -F 'P1@-'
 # A reader failure must refuse rather than return empty acceptance.
 export FM_ACCEPTANCE_TASK=/nonexistent/task-reader
 if node "$ROOT/bin/fm-acceptance.mjs" parse acceptance-probe --strict > /dev/null 2>&1; then
