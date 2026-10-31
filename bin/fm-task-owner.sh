@@ -148,6 +148,6 @@ case "$ACTION" in
     [ "$ACTION" = pass ] || [ -n "$NOTE" ] || usage 'fail needs --note'
     run check "$TASK" "$ROW" "$ACTION" --evidence "${NOTE:-owner pass}" || RC=$?
     ;;
-  *) usage "--action must be comment, answer, unblock, pass or fail" ;;
+  *) usage "--action must be comment, answer, unblock, pass, fail, inbox-task, inbox-link or inbox-delete" ;;
 esac
 if [ "$RC" -eq 0 ]; then reply true; else reply false "$ERROR"; fi
