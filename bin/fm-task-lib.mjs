@@ -987,7 +987,8 @@ async function findTesterScreenshot(events, row) {
     const imgs = await listAll('fm_event_image', { filter: `fmTaskEventId eq ${event.id}`, orderby: 'position', select: 'id,fmTaskEventId,label,mediaType,position' });
     for (const img of imgs) {
       // A screenshot belongs to one scenario/width pair, never to the scenario alone.
-      if ((img.label || '').split(/\s+/)[0] !== rowKey(row)) continue;
+      const escapedKey = rowKey(row).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      if (!new RegExp(`(^|[^A-Za-z0-9_@.-])${escapedKey}(?=$|[^A-Za-z0-9_@.-])`).test(img.label || '')) continue;
       candidates.push({ event, img, ref: `event:${event.seq}#image:${img.position || 1}` });
     }
   }

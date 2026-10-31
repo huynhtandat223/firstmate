@@ -154,7 +154,9 @@ case "$ACTION" in
       body="The owner $verb the plan of task $TASK (plan seq $PLAN_SEQ)${NOTE:+: $NOTE}"
       [ -n "$NOTE" ] || body="${body}."
       words="${NOTE:-$([ "$DECISION" = approve ] && printf 'Approved on the board.' || printf 'Asked for changes on the board.')}"
-      "${FM_TASK_OWNER_INBOX:-$SCRIPT_DIR/fm-inbox.sh}" note --request-id "owner-plan-$TASK-$PLAN_SEQ-$DECISION" -- "$body" >/dev/null || { RC=$?; ERROR='plan decision stored but firstmate delivery failed'; }
+      decision_seq=$(jq -r '.[0]' <<<"$WRITES")
+      decision_seq=${decision_seq#seq=}; decision_seq=${decision_seq%% *}
+      "${FM_TASK_OWNER_INBOX:-$SCRIPT_DIR/fm-inbox.sh}" note --request-id "owner-plan-$TASK-$decision_seq" -- "$body" >/dev/null || { RC=$?; ERROR='plan decision stored but firstmate delivery failed'; }
       if [ "$RC" -eq 0 ] && [ -f "$FM_HOME/data/assistances.md" ] && grep -Eq '^- planner\b' "$FM_HOME/data/assistances.md"; then
         steer_flag="--$(printf '\143\141\160\164\141\151\156')-words"
         "${FM_TASK_OWNER_ASSISTANCE:-$SCRIPT_DIR/fm-assistance.sh}" steer planner "$steer_flag" "$words" "$body" >/dev/null || { RC=$?; ERROR='plan decision stored but planner delivery failed'; }

@@ -57,10 +57,14 @@ if [ "$cmd" != show ]; then
   ' > "$tmp"
   validate "$tmp" || fail 'invalid URL, image path, or label' 2
   mv "$tmp" "$record"
-  if [ -e "$FM_HOME/config/task-shadow" ]; then
+  shadow_config="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}/task-shadow"
+  if [ -e "$shadow_config" ]; then
+    # shellcheck source=bin/fm-task-shadow-config-lib.sh
+    . "$SCRIPT_DIR/fm-task-shadow-config-lib.sh"
+    fm_task_shadow_config "$shadow_config"
     if [ "$cmd" = add-url ]; then
       FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task.sh" event "$id" link --url "$value" --note "$label" || exit $?
-    else
+    elif [ -f "$value" ] && [[ "${value,,}" != *.avif ]] && [ "$(wc -c < "$value")" -le 2097152 ] && [ -s "$value" ]; then
       FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task.sh" comment "$id" --image "$value" --image-label "$label" || exit $?
     fi
   fi
