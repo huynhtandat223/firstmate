@@ -1657,13 +1657,15 @@ async function cmdInbox(args) {
   }
   const target = action === 'task' ? `inbox-${id}` : args.flags.target;
   if (!target) throw usage('linked needs --target task-id');
+  const home = args.flags.home || 'main';
+  if (!/^[A-Za-z0-9._-]{1,128}$/.test(home)) throw usage('inbox --home must be a valid backlog home');
   if (item.resolution && item.taskId !== target) throw new Fail(5, 'inbox item was already handled');
   if (action === 'task') {
     await cmdCreate({ pos: { task: target }, flags: { title: item.title, kind: 'other', key: `inbox:${id}:create` } });
     if (item.body) await cmdComment({ pos: { task: target }, flags: { note: item.body, key: `inbox:${id}:body` } });
     await requireOpenTask(target, 'make inbox task');
     await write(target, identity({ flags: { key: `inbox:${id}:home` } }, 'firstmate'), async () => ({
-      kind: 'row', note: 'Inbox task home', set: { backlogHome: args.flags.home || 'main' },
+      kind: 'row', note: 'Inbox task home', set: { backlogHome: home },
     }));
   } else {
     await requireOpenTask(target, 'link inbox');
