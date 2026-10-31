@@ -5,8 +5,8 @@ backup --source DB --directory DIR [--keep-days 30] [--dry-run]
 restore --backup DB --scratch DB --task TASK_ID
 
 The source must be the managed runtime database, not the app's root forge.db.
-Uses SQLite online backup (includes committed WAL), then removes non-task tables
-from the private snapshot. Includes every fm_* table, including owner items.
+Copies task schemas and rows from one SQLite read transaction (includes committed
+WAL) into a private snapshot. Includes every fm_* table, including owner items.
 Retention deletes only this tool's dated snapshots after a successful backup.
 Restore never writes an existing path and is NOT a live-database restore command.
 Dependencies: Python 3 standard library. Output is a flat TOON object.
@@ -73,25 +73,38 @@ def backup(args):
             fd, temporary = tempfile.mkstemp(prefix='.snapshot-', dir=directory)
             os.close(fd)
             try:
-                # Prune in memory: a killed process must never leave unrelated data
-                # in a temporary file. table_list distinguishes FTS shadow tables.
-                with sqlite3.connect(':memory:') as filtered:
-                    source.backup(filtered)
-                    for kind, name in filtered.execute(
-                            "SELECT type, name FROM sqlite_master WHERE type IN ('view', 'trigger')").fetchall():
-                        filtered.execute('DROP ' + kind.upper() + ' ' + quoted(name))
-                    removable = [row[1] for row in filtered.execute('PRAGMA table_list')
-                                 if row[2] in ('table', 'virtual')
-                                 and not row[1].startswith(('fm_', 'sqlite_'))]
-                    for name in removable:
-                        filtered.execute('DROP TABLE ' + quoted(name))
-                    filtered.commit()
-                    filtered.execute('VACUUM')
-                    count = validate(filtered)
+                # Pin one committed source view for schema and rows, including WAL.
+                # Only task data reaches disk; memory is bounded by one row batch.
+                source.execute('BEGIN')
+                try:
+                    validate(source)
+                    task_tables = [row for row in source.execute('PRAGMA table_list')
+                                   if row[1].startswith('fm_')]
+                    if any(row[2] != 'table' for row in task_tables):
+                        raise ValueError('task tables must be ordinary SQLite tables')
                     with sqlite3.connect(temporary) as target:
-                        filtered.backup(target)
-                        target.execute('PRAGMA journal_mode=DELETE')
+                        for _, name, *_ in task_tables:
+                            schema = source.execute(
+                                "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+                                (name,)).fetchone()[0]
+                            target.execute(schema)
+                            columns = [row[1] for row in source.execute(
+                                'PRAGMA table_xinfo(' + quoted(name) + ')') if row[6] == 0]
+                            names = ','.join(map(quoted, columns))
+                            rows = source.execute('SELECT ' + names + ' FROM ' + quoted(name))
+                            insert = ('INSERT INTO ' + quoted(name) + '(' + names + ') VALUES ('
+                                      + ','.join('?' for _ in columns) + ')')
+                            while batch := rows.fetchmany(128):
+                                target.executemany(insert, batch)
+                        for name, sql in source.execute(
+                                "SELECT tbl_name, sql FROM sqlite_master WHERE type='index' AND sql IS NOT NULL"):
+                            if name in {row[1] for row in task_tables}:
+                                target.execute(sql)
+                        target.commit()
+                        count = validate(target)
                     target.close()
+                finally:
+                    source.rollback()
                 now = datetime.datetime.now(datetime.timezone.utc)
                 final = directory / ('fm-task-' + now.strftime('%Y%m%dT%H%M%S%fZ') + '.sqlite3')
                 with open(temporary, 'rb') as handle:
