@@ -1035,7 +1035,7 @@ fm_busy_stop_text() {  # <plain pane tail>; prints the matching stop line
   # Accept terminal error rows, not prose, shell commands, or source excerpts.
   # Only the latest rendered content is evidence of a current stop.
   printf '%s\n' "$1" | grep -v '^[[:space:]]*$' | tail -6 \
-    | grep -iE '^[[:space:]]*(Individual quota reached|Free usage exceeded|Error:[[:space:]]*402.*Insufficient Balance|You have hit your (usage )?limit|Codex error: The usage limit has been reached|\[429\][^[:alnum:]]*usage limit|Request failed: rate limit)' -m 1
+    | grep -iE '^[[:space:]]*(Individual quota reached|Free usage exceeded|Error:[[:space:]]*402.*Insufficient Balance|You have hit your (usage )?limit|Codex error: The usage limit has been reached|\[429\][^[:alnum:]]*usage limit|Request failed: rate limit|Error:.*rate limit)' -m 1
 }
 
 fm_busy_classify() {  # <backend> <target> <harness> <id> <state-dir> [tail40]

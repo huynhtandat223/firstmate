@@ -8005,6 +8005,7 @@ test_turn_end_that_must_not_be_pinged_wakes_at_once_with_the_pane_tail() {
     'Codex error: The usage limit has been reached' \
     '[429] usage limit exceeded for this key' \
     'Request failed: rate limit, retry later' \
+    'Error: rate limit exceeded' \
     'Individual quota reached ... Resets in 163h' \
     'Free usage exceeded, subscribe to Go [retrying in 9h 2m attempt #1]' \
     'Error: 402 ... Insufficient Balance'
