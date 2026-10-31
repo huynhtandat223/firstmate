@@ -994,6 +994,7 @@ const isVideoEvidence = (ev, videos) => {
 async function findTesterScreenshot(events, row, preferredSeq) {
   const candidates = [];
   for (const event of [...events].reverse()) {
+    if (event.actorRole !== 'tester') continue;
     const imgs = await listAll('fm_event_image', { filter: `fmTaskEventId eq ${event.id}`, orderby: 'position', select: 'id,fmTaskEventId,label,mediaType,position' });
     for (const img of imgs) candidates.push({ event, img, ref: `event:${event.seq}#image:${img.position || 1}` });
   }
@@ -1001,9 +1002,8 @@ async function findTesterScreenshot(events, row, preferredSeq) {
   return (
     candidates.find((c) => c.event.seq === preferredSeq) ??
     candidates.find((c) => (c.img.label || '').includes(rowKey(row)) || (c.img.label || '').includes(row.scenarioId)) ??
-    candidates.find((c) => c.event.actorRole === 'tester') ??
-    candidates[0]
-  ).ref;
+    null
+  )?.ref ?? null;
 }
 
 async function checkApproveReady(task, taskId, events, rows) {
@@ -1027,7 +1027,8 @@ async function cmdApprove(args) {
   const who = identity(args, 'firstmate');
   const initialEvents = await taskEvents(taskId);
   const initialTask = fold(initialEvents);
-  guard('approve', initialTask);
+  const replay = await eventByKey(who.key);
+  if (!replay) guard('approve', initialTask);
   const initialRows = newestRows(await checkRows(taskId), initialEvents);
   await checkApproveReady(initialTask, taskId, initialEvents, initialRows);
   const videos = await taskVideos(initialEvents);
