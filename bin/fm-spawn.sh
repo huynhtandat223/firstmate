@@ -4400,8 +4400,11 @@ if [ "$RELAUNCH" != 1 ] && [ "$KIND" != secondmate ] && { [ -e "$CONFIG/dispatch
     fi
     printf 'plan gate: EXCEPTION "%s"\n' "$PLAN_EXCEPTION"
   else
-    plan_reason='no linked GitHub issue'
-    plan_links=$(printf '%s\n' "$FM_BACKLOG_ROW_LINKS" | grep -oE 'doc:https://github[.]com/[^[:space:]," ]+' || true)
+    plan_reason='task plan is not approved'
+    plan_links="doc:$ID"
+    legacy_plan_links=$(printf '%s\n' "$FM_BACKLOG_ROW_LINKS" | grep -oE 'doc:https://github[.]com/[^[:space:]," ]+' || true)
+    plan_links="$plan_links
+$legacy_plan_links"
     while IFS= read -r plan_link; do
       [ -n "$plan_link" ] || continue
       plan_url=${plan_link#doc:}
@@ -4410,6 +4413,10 @@ if [ "$RELAUNCH" != 1 ] && [ "$KIND" != secondmate ] && { [ -e "$CONFIG/dispatch
         break
       fi
       plan_reason="$FM_PLAN_GATE_VERDICT: $FM_PLAN_GATE_REASON; bin/fm-plan-approve.sh $plan_url"
+      if [ "$plan_url" = "$ID" ] && [ "${FM_PLAN_GATE_VERDICT:-error}" != missing ]; then
+        # An existing native plan owns approval; an older issue cannot override it.
+        break
+      fi
     done <<< "$plan_links"
     if [ -z "$PLAN_ISSUE" ]; then
       plan_title=$FM_BACKLOG_ROW_TITLE

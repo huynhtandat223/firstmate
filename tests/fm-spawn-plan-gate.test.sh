@@ -3,6 +3,10 @@
 set -u
 . "$(dirname "${BASH_SOURCE[0]}")/fixtures.sh"
 TMP_ROOT=$(fm_test_tmproot fm-spawn-plan-gate)
+# Legacy cases explicitly prove a missing native Description, not API failure.
+printf '#!/usr/bin/env bash\necho "fm-task: task has no Description event" >&2\nexit 5\n' > "$TMP_ROOT/task-reader"
+chmod +x "$TMP_ROOT/task-reader"
+export FM_PLAN_GATE_TASK_WRITER="$TMP_ROOT/task-reader"
 # Each pane reports a test-owned isolated copy; successful launches must persist
 # approval evidence, while refusals must occur before any terminal is created.
 new_case() {
