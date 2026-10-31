@@ -58,18 +58,23 @@ function crewMapping(home, t) {
   }
   return mapped;
 }
+// This home's backlog rows, read only through bin/fm-tasks-axi.sh rows (its configured tasks-axi backend; the backlog
+// file is never parsed here). A failed read throws, so a caller never takes an unreadable backlog for an empty one.
+const SECTION = {in_flight: 'In flight', queued: 'Queued', done: 'Done'};
+function backlogRows(home) {
+  const args = ['rows', '--fields', 'hold_kind,hold_reason,created,closed,links,body'];
+  const env = {...process.env, FM_HOME: home, ...(process.env.FM_DATA_OVERRIDE ? {FM_DATA_OVERRIDE: process.env.FM_DATA_OVERRIDE} : {})};
+  const result = spawnSync(path.join(here, 'fm-tasks-axi.sh'), args, {encoding: 'utf8', env, timeout: 120000});
+  if (result.status !== 0) throw new Error(`bin/fm-tasks-axi.sh rows failed: ${(result.stderr || '').trim().split('\n')[0]}`);
+  return JSON.parse(result.stdout || '[]');
+}
 export function parseBacklog(home, now = Date.now(), taskId) {
-  let section = '', cur;
-  const rows = [];
-  for (const line of read(path.join(process.env.FM_DATA_OVERRIDE || path.join(home, 'data'), 'backlog.md')).split('\n')) {
-    if (line.startsWith('## ')) { section = line.slice(3).trim(); cur = null; continue; }
-    const m = line.match(/^- \[[ x]\] ([A-Za-z0-9._-]+) - (.*)$/);
-    if (m) {
-      const head = m[2];
-      cur = {id: m[1], section, title: head.split(/ https?:\/\/| \((?:repo|kind|since|hold|merged|done)\b/)[0].trim(), head, notes: [], repo: attr(head, 'repo'), kind: attr(head, 'kind'), hold: holdText(attr(head, 'hold')), holdKind: attr(head, 'hold-kind'), since: attr(head, 'since'), completed: attr(head, 'done') || attr(head, 'merged')};
-      rows.push(cur);
-    } else if (cur) cur.notes.push(line);
-  }
+  const rows = backlogRows(home).map(r => ({
+    id: r.id, section: SECTION[r.state] || r.state, title: r.title || r.id,
+    head: [r.title, r.links].filter(Boolean).join(' '), notes: (r.body || '').split('\n'),
+    repo: r.repo || '', kind: r.kind || '', hold: r.hold_reason || '', holdKind: r.hold_kind || '',
+    since: r.created || '', completed: r.closed || '',
+  }));
   return rows.filter(t => (!taskId || t.id === taskId) && (t.section !== 'Done' || Date.parse(t.completed) >= now - 30 * 86400000)).map(t => {
     const meta = read(path.join(home, 'state', `${t.id}.meta`));
     const assignee = meta.match(/^assignee=(.*)$/m)?.[1] || t.id;

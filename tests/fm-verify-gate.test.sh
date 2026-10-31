@@ -549,6 +549,10 @@ done
 MBIN="$TMP_ROOT/mbin"
 mkdir -p "$MBIN"
 cp "$ROOT/bin/fm-acceptance.mjs" "$MBIN/fm-acceptance.mjs"
+# The library reads backlog rows through its sibling bin/fm-tasks-axi.sh, which needs its own sibling libraries.
+for f in fm-tasks-axi.sh fm-tasks-axi-lib.sh fm-backlog-transition-lib.sh fm-hold-reason-lib.sh fm-timeout-lib.sh fm-pr-lib.sh; do
+  ln -s "$ROOT/bin/$f" "$MBIN/$f"
+done
 cp "$ROOT/bin/fm-verify-gate-lib.sh" "$TMP_ROOT/gate.orig"
 MLIB="$MBIN/fm-verify-gate-lib.sh"
 
@@ -607,8 +611,8 @@ mutate 'a PR elsewhere takes the deployed line' a_pr_in_another_repo_takes_the_d
 unsay 'a missing ask refuses for a PR in the watched repo' a_pr_in_the_watched_repo_needs_an_ask 'no deploy ask for'
 mutate 'a PR in the watched repo needs an ask, not a deployed line' a_pr_in_the_watched_repo_needs_an_ask 's/if fm_verify_gate_task_in_repo "\$state" "\$data" "\$id" "\$repo"; then/if false; then/'
 mutate 'the endpoint record names the PR' pass_and_read_only 's/case "\$pr" in "https:\/\/github.com\/\$4\/pull\/"\[0-9\]\*\) return 0 ;; esac//'
-mutate 'the backlog line names the PR' the_backlog_line_names_the_pr 's/\[ -f "\$2\/backlog.md" \] \|\| return 1/return 1/'
-mutate 'only the task'"'"'s own backlog line counts' the_backlog_line_names_the_pr 's/if \(t == task && match/if (match/'
+mutate 'the backlog row names the PR' the_backlog_line_names_the_pr 's/select\(\.id == \$task and /select(false and /'
+mutate 'only the task'"'"'s own backlog row counts' the_backlog_line_names_the_pr 's/\.id == \$task and //'
 unsay 'approval is required' approval "missing 'approved: firstmate"
 unsay 'approval is a number' approval 'approved line needs a numeric epoch'
 unsay 'approval is newer than the Tester' approval 'approved: firstmate $approved is not newer'

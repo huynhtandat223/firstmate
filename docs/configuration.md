@@ -517,6 +517,10 @@ The check is log-only until `config/enforce-herdr-lab-brief` holds `block`: each
 ## Backlog backend (.tasks.toml / config/backlog-backend)
 
 The tracked `.tasks.toml` pins the default `tasks-axi` markdown backend to `data/backlog.md`, with `done_keep = 10` and an archive at `data/done-archive.md`.
+A home keeps its backlog in Dev 5001 with `backend = "cfw5001"` and `[cfw5001] home = "<name>"` in the `.tasks.toml` of its backlog root: the backlog is then the `fm_task` rows whose `backlogHome` is that name, and no markdown file holds it (no render, no archive).
+That backend is a fork-only option of tasks-axi (`huynhtandat223/tasks-axi`, keys owned by its `src/config.ts` and `src/backends/cfw5001.ts`); a stock tasks-axi build refuses it with `UNSUPPORTED`, which is why the tracked default stays markdown.
+Do not set `[cfw5001] db` in a home: the backlog is read through the API only.
+Scripts read the backlog only through `bin/fm-tasks-axi.sh` (`rows` gives the `list` table as JSON) and change it only through tasks-axi verbs; the only `bin/` code that touches `data/backlog.md` itself is the `manual` backend's startup digest and the secondmate handoff, receive and provisioning paths, which move markdown backlogs between homes.
 A home may instead select another tasks-axi adapter such as Beads through its own `.tasks.toml` or `TASKS_AXI_BACKEND`; firstmate still uses only tasks-axi verbs for routine backlog reads and mutations, and the adapter maps `start` and evidence-bearing `done` transitions to its native statuses and evidence fields.
 
 ### Captain holds on Beads
@@ -558,6 +562,7 @@ An unreadable backend configuration can refuse lifecycle work before the no-back
 
 ### Handoffs between homes
 
+A home whose backend is `cfw5001` refuses every secondmate handoff (exit 2), because the move edits only a markdown backlog file and that home has none.
 Secondmate handoffs bypass that routine-backend choice: `fm-backlog-handoff.sh` keeps only its own fleet-level validation and delegates the item move to `tasks-axi mv`; its [script header](../bin/fm-backlog-handoff.sh) owns route-specific wake outcomes and remote outbox release.
 It moves in-scope `## Queued` items only and refuses `## In flight` and historical `## Done` records, which stay with their home for pruning or archiving.
 
