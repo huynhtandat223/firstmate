@@ -9,6 +9,12 @@ set -u
 
 TMP_ROOT=$(fm_test_tmproot fm-watch-triage-wedge-defer-tests)
 
+# These fixtures age a worker's blocked: or needs-decision: line past ten minutes
+# to drive the wedge ladder, then acknowledge the wake to start the next round.
+# The drain's firstmate-owed-wait gate (bin/fm-firstmate-wait-lib.sh) would refuse
+# that acknowledgement; it has its own tests, so it is off for this file.
+export FM_FIRSTMATE_WAIT_DEFAULT_MINUTES=off
+
 # Arm the opt-in parked-gate wait evidence for a fixture built above.
 arm_parked_gate() {  # <case-dir>
   : > "$1/config/wedge-defer-parked-gate"

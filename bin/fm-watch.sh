@@ -2903,7 +2903,11 @@ stale_wait_mark() {  # <window-key> <task> [dialog-name]
 # whole duration. Three bounds apply:
 #   - an undeclared quiet worker wakes once per wait (stale_wait_pair): the first
 #     sight keeps the inspect-an-inconclusive-state intent, and only a new status
-#     line or a new turn end starts another wake;
+#     line or a new turn end starts another wake, except that a pane whose busy
+#     state is unknown, whose agent is alive, and which shows no progress
+#     evidence (UNKNOWN_ALIVE_NO_PROGRESS, set by unknown_alive_stale_bound)
+#     keeps surfacing on every new hash, so a wedged pane that still animates
+#     is never silenced;
 #   - a worker held for the captain wakes never: a `captain-held` status line or
 #     an open backlog captain call (see task_captain_call_open above) means
 #     firstmate already knows;
@@ -2920,6 +2924,7 @@ surface_nonterminal_stale() {  # <window> <hash> [dialog-name]
   task=$(window_to_task "$win" "$STATE")
   last=$(status_declared_wait_line "$STATE/$task.status")
   STALE_WAIT_DECLARATION=
+  UNKNOWN_ALIVE_NO_PROGRESS=0
   if status_is_paused "$last"; then
     declared=0
     bounded=0
@@ -2952,7 +2957,7 @@ surface_nonterminal_stale() {  # <window> <hash> [dialog-name]
     # An unknown-but-alive pane whose bounded window expired re-surfaces on
     # its own cadence, so the once-per-wait record below does not absorb it.
     bounded=0
-  elif stale_wait_fired "$key" "$task" "$dialog"; then
+  elif [ "$UNKNOWN_ALIVE_NO_PROGRESS" -eq 0 ] && stale_wait_fired "$key" "$task" "$dialog"; then
     throttled=0
   fi
   if [ "$throttled" -ne 0 ]; then
@@ -3001,6 +3006,7 @@ surface_nonterminal_stale() {  # <window> <hash> [dialog-name]
 # wedge_timer_check.
 unknown_alive_stale_bound() {  # <window> <task>
   local win=$1 task=$2 meta verdict agent_alive
+  UNKNOWN_ALIVE_NO_PROGRESS=0
   [ -n "$task" ] || return 1
   meta="$STATE/$task.meta"
   if [ -f "$meta" ]; then
@@ -3012,7 +3018,10 @@ unknown_alive_stale_bound() {  # <window> <task>
   [ "${verdict%% *}" = unknown ] || return 1
   agent_alive=$(fm_backend_agent_alive "$(window_backend "$win")" "$win" 2>/dev/null) || agent_alive=unknown
   [ "$agent_alive" = alive ] || return 1
-  unknown_alive_progressing "$task" || return 1
+  if ! unknown_alive_progressing "$task"; then
+    UNKNOWN_ALIVE_NO_PROGRESS=1
+    return 1
+  fi
   STALE_WAIT_DECLARATION="unknown-alive:$task:$(window_backend "$win"):$win:$verdict"
   stale_wait_throttled "$(window_key "$win")" "$STALE_WAIT_DECLARATION"
 }
