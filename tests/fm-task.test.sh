@@ -52,6 +52,9 @@ const file = process.argv[2]; const s = JSON.parse(fs.readFileSync(file));
 s.fm_event_document = {ops:['list','get','create'],f:{title:{t:'s',m:200},mediaType:{t:'s',m:100},content:{t:'s'}},u:[['fmTaskEventId']],parent:['fmTaskEvent','documents']};
 Object.assign(s.fm_task.f, {row:{t:'s',n:1},notes:{t:'s',n:1},section:{t:'s',n:1,m:32},
   stage:{t:'s',n:1,m:16},stageSince:{t:'d',n:1},lastEventAt:{t:'d',n:1},lastNote:{t:'s',n:1,m:300},reviewer:{t:'s',n:1,m:64}});
+Object.assign(s.fm_task.f, Object.fromEntries(['workflowState','stepHarness','stepModel','stepEffort','stepAlive','setupBy'].map(k => [k,{t:'s',n:1}])));
+Object.assign(s.fm_task.f, {workflowSince:{t:'d',n:1},setupAt:{t:'d',n:1}});
+s.fm_task_step = {ops:['list','get','create','patch','delete'],u:[['taskId','state']],f:{taskId:{t:'s'},state:{t:'s'},position:{t:'i'},attempt:{t:'i'},status:{t:'s'},...Object.fromEntries(['harness','model','effort','fallbacks','source','ruleIds','account','alive','endReason'].map(k=>[k,{t:'s',n:1}])),...Object.fromEntries(['startedAt','lastHeartbeatAt','endedAt'].map(k=>[k,{t:'d',n:1}]))}};
 fs.writeFileSync(file, JSON.stringify(s));
 JS
 
@@ -2189,48 +2192,36 @@ case_owner_writer() {
 # SG1 (#176 Step 5): every write folds the board card's step onto the row: stage by the step rule, stageSince only
 # when the step changes, lastEventAt and lastNote from the newest event that is not a backlog view row event,
 # reviewer from the newest check, owner-check, approved or changes event.
+case_workflow() {
+  BIN=$1; reset_db
+  mk_running tk-flow >/dev/null || return 1
+  printf '%s' '{"steps":[{"state":"implement","harness":"pi","model":"example","effort":"high"},{"state":"merge"}]}' > "$TMP_ROOT/setup.json"
+  ft setup tk-flow --file "$TMP_ROOT/setup.json"; must setup 0 || return 1
+  ft move tk-flow --to implement; must move 0 || return 1
+  ft step tk-flow start --harness pi --model example --effort high; must start 0 || return 1
+  task_row tk-flow | jq -e '.workflowState == "implement" and .stepModel == "example" and .stepAlive == "alive"' >/dev/null || return 1
+  ft move tk-flow --to testing; must 'unconfigured state refused' 5 || return 1
+  ft step tk-flow dead; must dead 0 || return 1
+  ft step tk-flow end --reason cleanup; must cleanup 0 || return 1
+  db fm_task_step | jq -e '[.[]|select(.taskId == "tk-flow")]|length == 2' >/dev/null || return 1
+  ft move tk-flow --to merge; must merge 0 || return 1
+  task_row tk-flow | jq -e '.workflowState == "merge" and .stepModel == null' >/dev/null || return 1
+}
 case_stage() {
   BIN=$1; reset_db
-  local t=tk-sg row since prev long
+  local t=tk-sg2 long
   at_of() { db fm_task_event | jq -r --arg t "$1" --argjson s "$2" '.[] | select(.taskId == $t and .seq == $s) | .createdAt'; }
-  step() {  # <label> <want stage> <stageSince: same|new>: the row after the last ft call
-    must "$1" 0 || return 1
-    row=$(task_row $t); local seq; seq=$(seq_of)
-    db fm_task_event | jq -e --argjson seq "$seq" --arg stage "$2" '.[] | select(.seq == $seq) | (.body | fromjson | .stage) == $stage' >/dev/null || { echo "$1: event stage differs from projection"; return 1; }
-    [ "$(jq -r .stage <<<"$row")" = "$2" ] || { echo "$1: stage $(jq -r .stage <<<"$row"), want $2: $row"; return 1; }
-    [ "$(jq -r .lastEventAt <<<"$row")" = "$(at_of $t "$seq")" ] || { echo "$1: lastEventAt is not the newest event's time: $row"; return 1; }
-    since=$(jq -r .stageSince <<<"$row")
-    if [ "$3" = new ]; then [ "$since" = "$(at_of $t "$seq")" ] || { echo "$1: stageSince did not move to this event: $row"; return 1; }
-    else [ "$since" = "$prev" ] || { echo "$1: stageSince moved inside the step ($prev -> $since)"; return 1; }; fi
-    prev=$since
-  }
-  ft create $t --title t --kind ship --repo example/repo; step 'created: triage is queued' queued new || return 1
-  ft assign $t --to worker-1; step 'assigned: ready stays queued' queued same || return 1
-  ft start $t; step 'started: running is working' working new || return 1
-  ft heartbeat $t --note 'still building'; step 'a heartbeat stays working' working same || return 1
-  [ "$(task_row $t | jq -r .lastNote)" = 'still building' ] || { echo "lastNote is not the newest note: $(task_row $t)"; return 1; }
-  ft event $t pr --note 'opened' --pr-url https://github.com/example/repo/pull/1; step 'a pr event after started is pr' pr new || return 1
-  ft block transient $t --reason 'waiting on CI' --next-actor firstmate; step 'blocked keeps its step' pr same || return 1
-  [ "$(task_state $t)" = blocked ] || { echo "the block did not block: $(task_row $t)"; return 1; }
-  ft unblock $t; step 'unblocked: ready is queued' queued new || return 1
-  ft start $t; step 'started again: no pr since the newest started is working' working new || return 1
-  ft "done" $t "${DONE_FLAGS[@]}"; step 'done with no deploy is pr' pr new || return 1
-  ft changes $t --note 'fix the label' --actor reviewer-1; step 'changes: ready is queued' queued new || return 1
-  [ "$(task_row $t | jq -r .reviewer)" = reviewer-1 ] || { echo "reviewer is not the actor of the newest changes: $(task_row $t)"; return 1; }
-  ft start $t; step 'started after changes' working new || return 1
-  ft "done" $t "${DONE_FLAGS[@]}"; step 'done again is pr' pr new || return 1
-  ft event $t deploy --note 'deployed' --head abc123; step 'a deploy after the newest done is dev' dev new || return 1
-  ft comment $t --note 'looks fine'; step 'a comment stays dev' dev same || return 1
-  ft approve $t --actor firstmate-1; step 'approved: done is passed' passed new || return 1
-  [ "$(task_row $t | jq -r .reviewer)" = firstmate-1 ] || { echo "reviewer is not the actor of the newest approved: $(task_row $t)"; return 1; }
-  ft archive $t; step 'archived keeps its step' passed same || return 1
   # lastNote is cut to 300; an event with no note clears it
-  t=tk-sg2; prev=''
+  t=tk-sg2
   mk_running $t >/dev/null || { echo "setup: $ERR"; return 1; }
+  ft 'done' $t "${DONE_FLAGS[@]}"; must 'done' 0 || return 1
+  ft changes $t --note 'review correction' --actor reviewer-1; must changes 0 || return 1
+  [ "$(task_row $t | jq -r .reviewer)" = reviewer-1 ] || return 1
+  ft start $t; must restart 0 || return 1
   long=$(printf 'x%.0s' $(seq 1 400))
   ft comment $t --note "$long"; must 'long note' 0 || return 1
   [ "$(task_row $t | jq -r '.lastNote | length')" = 300 ] || { echo "lastNote is not cut to 300: $(task_row $t | jq -r '.lastNote | length')"; return 1; }
-  [ "$(task_row $t | jq -r .reviewer)" = null ] || { echo "a task with no review event has a reviewer: $(task_row $t)"; return 1; }
+  [ "$(task_row $t | jq -r .reviewer)" = reviewer-1 ] || return 1
   # a backlog view row event is not a real event: lastNote and lastEventAt stay on the newest other event
   ft comment $t --note 'real note'; must 'real note' 0 || return 1
   local real_at; real_at=$(at_of $t "$(seq_of)")
@@ -2260,17 +2251,16 @@ case_stage() {
   task_row $t | jq -e --arg at "$(at_of $t "$(seq_of)")" '.lastNote == "real note" and .lastEventAt == $at' >/dev/null \
     || { echo "a reconcile divergence became lastNote: $(task_row $t)"; return 1; }
   # SG2: reproject --all fills the step fields of every row, and a second run repairs nothing
-  api -X PATCH "$BASE/api/fm_task/$(task_row tk-sg | jq -r .id)" -d '{"stage":null,"stageSince":null}' >/dev/null
   api -X PATCH "$BASE/api/fm_task/$(task_row tk-sg2 | jq -r .id)" -d '{"lastNote":null}' >/dev/null
   ft reproject --all; must 'reproject --all' 0 || return 1
-  grep -q '^reproject --all: 2 tasks, 2 repaired$' <<<"$OUT" || { echo "reproject --all did not repair both rows: $OUT"; return 1; }
-  [ "$(task_row tk-sg | jq -r .stage)" = passed ] && [ "$(task_row tk-sg2 | jq -r .lastNote)" = 'real note' ] || { echo "reproject --all left a row unfilled: $(task_row tk-sg) $(task_row tk-sg2)"; return 1; }
+  grep -q '^reproject --all: 1 tasks, 1 repaired$' <<<"$OUT" || { echo "reproject --all did not repair both rows: $OUT"; return 1; }
+  [ "$(task_row tk-sg2 | jq -r .lastNote)" = 'real note' ] || { echo "reproject --all left a row unfilled: $(task_row tk-sg) $(task_row tk-sg2)"; return 1; }
   ft reproject --all; must 'reproject --all again' 0 || return 1
-  [ "$OUT" = 'reproject --all: 2 tasks, 0 repaired' ] || { echo "a second reproject --all repaired again: $OUT"; return 1; }
+  [ "$OUT" = 'reproject --all: 1 tasks, 0 repaired' ] || { echo "a second reproject --all repaired again: $OUT"; return 1; }
   return 0
 }
 
-CASES=${FM_TASK_CASES:-"description_thread terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed row backlog status_view verify_view owner_writer stage wait carry"}
+CASES=${FM_TASK_CASES:-"description_thread terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed row backlog status_view verify_view owner_writer workflow stage wait carry"}
 
 # ---- real command -------------------------------------------------------------------
 
@@ -2359,10 +2349,6 @@ mutate 'a re-sent owner-check does not write its item again' owner_replay "const
 mutate 'a re-sent owner-check key with another call is refused' owner_replay "if (prior && (prior.taskId !== taskId ||" "if (false && (prior.taskId !== taskId ||"
 mutate 'a new result clears the head and evidence of an older one' check_nulls "evidence: v.evidence ?? null, head: v.head ?? null };" "...(v.evidence ? { evidence: v.evidence } : {}), ...(v.head ? { head: v.head } : {}) };"
 mutate 'a check on a task that closed meanwhile is refused' check_close "if (CLOSED.includes(task.state)) throw rule(\`check is refused:" "if (false) throw rule(\`check is refused:"
-mutate 'blocked keeps the step it had' stage "task.stage ?? 'queued'" "'queued'"
-mutate 'a deploy after the newest done is dev' stage "if (event.kind === 'deploy') deployed = true;" ";"
-mutate 'a pr event after the newest started is pr' stage "if (event.kind === 'pr') pullRequest = true;" ";"
-mutate 'stageSince moves only when the step changes' stage "if (stage !== task.stage) Object.assign(task, { stage, stageSince: event.createdAt ?? null });" "Object.assign(task, { stage, stageSince: event.createdAt ?? null });"
 mutate 'the reviewer is the actor of the newest review event' stage "if (REVIEWER_KINDS.includes(event.kind)) task.reviewer = event.actor ?? null;" ";"
 mutate 'a row event does not move lastNote or lastEventAt' stage "if (event.kind !== 'row') {" "if (true) {"
 mutate 'a machine record does not become lastNote' stage "if (!isMachineRecord(event, note)) task.lastNote" "task.lastNote"

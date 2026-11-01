@@ -1243,6 +1243,9 @@ case "$VERB" in
     ;;
   exit)
     result=$(do_exit)
+    if [ -e "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}/task-shadow" ]; then
+      FM_HOME=$FM_HOME "$SCRIPT_DIR/fm-task.sh" step "$ID" end --reason cleanup || true
+    fi
     echo "$result $ID harness=$HARNESS backend=$BACKEND endpoint=$T worktree=$WT"
     ;;
   relaunch)

@@ -14,6 +14,10 @@
 //   assign   <task> --to ASSIGNEE            triage|todo|ready -> ready (todo while a parent is open)
 //   reassign <task> --to ASSIGNEE --reason WHY  changes only assignee; refused from done and archived
 //   start    <task>                          ready -> running
+//   setup <task> --file JSON [--by firstmate|owner]   ordered {steps:[{state,harness,model,effort,fallbacks}]}
+//   move <task> --to STATE                   advance through the approved setup
+//   step <task> start --harness H --model M [--effort E] [--account A]
+//   step <task> alive|dead|end [--reason R]   record the current setup step's runtime
 //   heartbeat <task> [--note N]              running (today's `working:`)
 //   done     <task> --summary --changed-files --verification --residual-risk [--rows JSON]
 //            [--pr-url U] [--head H] [--next-actor tester|firstmate]       running -> review
@@ -158,11 +162,11 @@ const TRANSITIONS = {
 // the fm_task columns the projection holds, with the lengths the API enforces on them
 const LIMITS = { title: 300, repo: 200, kind: 32, state: 32, assignee: 64, nextActor: 32, blockKind: 32, blockReason: 2000, issueUrl: 2048, prUrl: 2048, surface: 32, section: 32 };
 const PROJECTED = ['acceptanceDigest', 'title', 'repo', 'kind', 'state', 'assignee', 'nextActor', 'blockKind', 'blockReason', 'blockRepeats', 'issueUrl', 'prUrl', 'surface', 'holdUntil', 'row', 'notes', 'section', 'lastSeq',
-  'stage', 'stageSince', 'lastEventAt', 'lastNote', 'reviewer'];
+  'workflowState', 'workflowSince', 'stepHarness', 'stepModel', 'stepEffort', 'stepAlive', 'setupBy', 'setupAt', 'lastEventAt', 'lastNote', 'reviewer'];
 // The board card's step (cfw-modules#1678 change 199): the writer owns the rule and the page only reads it.
-const STEP_OF_STATE = { triage: 'queued', todo: 'queued', ready: 'queued', done: 'passed' };
+const WORKFLOW_STATES = ['queued', 'plan', 'implement', 'testing', 'merge', 'verify', 'done'];
 const REVIEWER_KINDS = ['check', 'owner-check', 'approved', 'changes'];
-const DATE_FIELDS = ['holdUntil', 'stageSince', 'lastEventAt'];
+const DATE_FIELDS = ['holdUntil', 'workflowSince', 'setupAt', 'lastEventAt'];
 // the backlog row's text: kept in the record verbatim, too long and multi-line for `show`'s field=value lines
 const ROW_TEXT = ['row', 'notes'];
 const TASK_ID = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
@@ -300,20 +304,13 @@ const isMachineRecord = (event, note) => {
 };
 function fold(events) {
   let task = null;
-  let deployed = false;
-  let pullRequest = false;
+
   for (const event of [...events].sort((a, b) => a.seq - b.seq)) {
     const set = { ...(bodyOf(event).set || {}), ...(event.rowText || {}) };
     if (event.kind === 'created' && !task) task = { taskId: event.taskId };
     if (!task) continue;
-    if (event.kind === 'done') deployed = false;
-    if (event.kind === 'deploy') deployed = true;
-    if (event.kind === 'started' || event.kind === 'changes') pullRequest = false;
-    if (event.kind === 'pr') pullRequest = true;
     task = { ...task, ...set, lastSeq: event.seq };
-    const stage = STEP_OF_STATE[task.state] ?? (task.state === 'review' ? (deployed ? 'dev' : 'pr')
-      : task.state === 'running' ? (pullRequest ? 'pr' : 'working') : task.stage ?? 'queued');
-    if (stage !== task.stage) Object.assign(task, { stage, stageSince: event.createdAt ?? null });
+    if (event.kind === 'created' && !task.workflowState) Object.assign(task, { workflowState: 'queued', workflowSince: event.createdAt ?? null });
     if (event.kind !== 'row') {
       const note = String(bodyOf(event).note ?? '');
       task.lastEventAt = event.createdAt ?? null;
@@ -371,6 +368,9 @@ async function project(taskId) {
 // ---- arguments --------------------------------------------------------------------------------------------
 const COMMON = { actor: 's', role: 's', key: 's', note: 's', task: 's', json: 'b' };
 const SPECS = {
+  setup: { pos: ['task'], flags: { file: 's', by: 's' } },
+  move: { pos: ['task'], flags: { to: 's' } },
+  step: { pos: ['task', 'action'], flags: { harness: 's', model: 's', effort: 's', account: 's', reason: 's', generation: 's' } },
   create: { pos: ['task'], flags: { title: 's', kind: 's', repo: 's', issue: 's', surface: 's', after: 'm' } },
   import: { pos: ['task'], flags: { title: 's', kind: 's', repo: 's', state: 's', assignee: 's', 'next-actor': 's', 'block-kind': 's', 'block-reason': 's', issue: 's', 'pr-url': 's', surface: 's', until: 's', since: 's' } },
   assign: { pos: ['task'], flags: { to: 's' } },
@@ -498,8 +498,7 @@ async function append(taskId, who, build) {
       spec.extra = { ...spec.extra, noteDocument: true };
     }
     const body = { seq: high + 1, taskId, kind: spec.kind, actorRole: who.role, actor: who.actor, body: wireBody(spec), idempotencyKey: who.key };
-    const stage = fold([...events, body])?.stage;
-    body.body = wireBody({ ...spec, extra: { ...spec.extra, stage } });
+    body.body = wireBody(spec);
     Object.assign(body, spec.children || {});
     let res;
     try {
@@ -642,6 +641,8 @@ async function write(taskId, who, build, after, wait) {
   const result = await append(taskId, who, build);
   let projected;
   try {
+    const stepWrites = bodyOf(result.event).stepWrites;
+    if (Array.isArray(stepWrites)) for (const step of stepWrites) await saveStep(taskId, step);
     projected = await project(taskId);
     if (after) {
       await after(result);
@@ -794,6 +795,85 @@ async function verifyView(event) {
 // ---- commands ---------------------------------------------------------------------------------------------
 const noteOf = (args) => args.flags.note ?? '';
 
+const stepRows = (taskId) => listAll('fm_task_step', { filter: `taskId eq ${lit(taskId)}`, orderby: 'position' });
+const stepProjection = (step) => ({ stepHarness: step?.harness ?? null, stepModel: step?.model ?? null, stepEffort: step?.effort ?? null, stepAlive: step?.alive ?? null });
+async function saveStep(taskId, step) {
+  const old = await firstRow('fm_task_step', `taskId eq ${lit(taskId)} and state eq ${lit(step.state)}`);
+  return ok(await http(old ? 'PATCH' : 'POST', old ? `/api/fm_task_step/${old.id}` : '/api/fm_task_step', { taskId, ...step }), 'write step');
+}
+async function cmdSetup(args) {
+  const taskId = taskIdOf(args);
+  if (!args.flags.file) throw usage('setup needs --file');
+  const by = oneOf(['firstmate', 'owner'], args.flags.by ?? 'firstmate', 'setup by');
+  let input;
+  try { input = JSON.parse(fs.readFileSync(args.flags.file, 'utf8')); } catch { throw usage('setup file must contain JSON'); }
+  const steps = Array.isArray(input) ? input : input.steps;
+  if (!Array.isArray(steps) || !steps.length) throw usage('setup needs a nonempty steps array');
+  let position = -1;
+  const normalized = steps.map((s, index) => {
+    const p = WORKFLOW_STATES.indexOf(s.state);
+    if (p <= position || p < 1 || p > 5) throw rule('setup states must be unique and in workflow order');
+    position = p;
+    if (s.state !== 'merge' && (!s.harness || !s.model)) throw usage(`${s.state} needs harness and model`);
+    if (s.fallbacks !== undefined && !Array.isArray(s.fallbacks)) throw usage('fallbacks must be an array');
+    return { state: s.state, position: index, harness: s.state === 'merge' ? null : s.harness, model: s.state === 'merge' ? null : s.model, effort: s.state === 'merge' ? null : s.effort ?? null, fallbacks: JSON.stringify(s.fallbacks ?? []), source: by, ruleIds: s.ruleIds ?? null };
+  });
+  return write(taskId, identity(args, 'firstmate'), async ({ task }) => {
+    if (!task || CLOSED.includes(task.state)) throw rule('setup requires an open task');
+    const old = await stepRows(taskId);
+    if (old.some(s => s.status !== 'pending')) {
+      if (old.length !== normalized.length || old.some((s, i) => s.state !== normalized[i].state || (s.status !== 'pending' && ['harness', 'model', 'effort', 'fallbacks'].some(k => s[k] !== normalized[i][k])))) throw rule('started setup permits only pending model changes');
+    } else if (old.some(s => !normalized.some(n => n.state === s.state))) throw rule('removing persisted setup states is not supported');
+    const stepWrites = normalized.map(s => ({ ...s, ...(old.some(o => o.state === s.state) ? {} : { status: 'pending', attempt: 0 }) }));
+    return { kind: 'setup', extra: { stepWrites }, set: { setupBy: by, setupAt: new Date().toISOString() }, children: { documents: [{ title: 'Setup', mediaType: 'application/json', content: JSON.stringify(normalized) }] } };
+  });
+}
+async function cmdMove(args) {
+  const taskId = taskIdOf(args);
+  const to = oneOf(WORKFLOW_STATES, args.flags.to, 'workflow state');
+  return write(taskId, identity(args, 'firstmate'), async ({ task }) => {
+    if (!task || CLOSED.includes(task.state)) throw rule('move requires an open task');
+    const steps = await stepRows(taskId);
+    const index = steps.findIndex(s => s.state === task.workflowState);
+    const target = steps.find(s => s.state === to);
+    const next = task.workflowState === 'queued' ? steps[0] : steps[index + 1];
+    const retry = ['testing', 'verify'].includes(task.workflowState) && to === 'implement' && (await checkRows(taskId)).some(r => r.status === 'fail');
+    if (!target || (next?.state !== to && !retry)) throw rule('move must follow setup; Done requires approve');
+    return { kind: 'moved', set: { workflowState: to, workflowSince: new Date().toISOString(), ...stepProjection(target) } };
+  });
+}
+async function cmdStep(args) {
+  const taskId = taskIdOf(args);
+  const action = oneOf(['start', 'alive', 'dead', 'end'], args.pos.action, 'step action');
+  const who = identity(args, 'firstmate');
+  if (['alive', 'dead'].includes(action)) {
+    const currentTask = fold(await taskEvents(taskId));
+    const step = (await stepRows(taskId)).find(s => s.state === currentTask?.workflowState);
+    if (!step || step.status !== 'running' || step.alive === action) return out(`step ${taskId}: unchanged`);
+    who.key = args.flags.key ?? `step-live:${taskId}:${step.state}:${step.attempt}:${action}:${step.alive ?? 'none'}`;
+  }
+  return write(taskId, who, async ({ task }) => {
+    if (!task) throw rule('no such task');
+    const current = (await stepRows(taskId)).find(s => s.state === task.workflowState);
+    if (!current) throw rule('current workflow state has no setup step');
+    const now = new Date().toISOString();
+    let patch;
+    if (action === 'start') {
+      if (current.status === 'running') throw rule('end the running step before starting another attempt');
+      if (current.state === 'merge') throw rule('Merge has no worker model');
+      if (!args.flags.harness || !args.flags.model) throw usage('step start needs --harness and --model');
+      patch = { harness: args.flags.harness, model: args.flags.model, effort: args.flags.effort ?? null, account: args.flags.account ?? null, status: 'running', alive: 'alive', attempt: current.attempt + 1, startedAt: now, lastHeartbeatAt: now, endedAt: null, endReason: null };
+    } else if (action === 'end') {
+      if (!args.flags.reason) throw usage('step end needs --reason');
+      patch = { status: args.flags.reason === 'failed' ? 'failed' : 'done', alive: 'dead', endedAt: now, endReason: args.flags.reason };
+    } else {
+      if (current.status !== 'running') throw rule('liveness requires a running step');
+      patch = { alive: action };
+    }
+    return { kind: 'step', note: args.flags.reason ?? action, extra: { stepWrites: [{ state: current.state, ...patch }] }, set: stepProjection({ ...current, ...patch }) };
+  });
+}
+
 async function cmdCreate(args) {
   const taskId = taskIdOf(args);
   const who = identity(args, 'firstmate');
@@ -896,7 +976,11 @@ const cmdStart = simple('start', 'started', async (task, args, taskId) => {
   if (parents.length) throw rule(`start is refused while the task waits on open parents: ${parents.join(', ')}`);
   return { state: 'running', nextActor: 'worker', holdUntil: null };
 });
-const cmdHeartbeat = simple('heartbeat', 'heartbeat', async () => ({}));
+const cmdHeartbeat = simple('heartbeat', 'heartbeat', async (task, args, taskId) => {
+  const step = (await stepRows(taskId)).find(s => s.state === task.workflowState && s.status === 'running');
+  if (step) await saveStep(taskId, { state: step.state, lastHeartbeatAt: new Date().toISOString() });
+  return {};
+});
 const cmdUnblock = simple('unblock', 'unblocked', async (task, args, taskId) => {
   const waiting = (await openParents(taskId)).length > 0;
   const set = { state: waiting ? 'todo' : 'ready', nextActor: 'worker', holdUntil: null, blockReason: null };
@@ -958,7 +1042,9 @@ const cmdApprove = simple('approve', 'approved', async (task, args, taskId) => {
     const stale = visible.filter((r) => (r.head ?? null) !== head && !carried(r, events));
     if (stale.length) throw rule(`approve is refused: these user-visible rows passed on another head than the latest built or deployed head (${head ?? 'none'}): ${stale.map((r) => `${rowKey(r)} (${r.head ?? 'none'})`).join(', ')}`);
   }
-  return { state: 'done', nextActor: 'firstmate', blockKind: null, blockReason: null, blockRepeats: 0, holdUntil: null };
+  const steps = await stepRows(taskId);
+  if (steps.length && steps.at(-1).state !== task.workflowState) throw rule('approve requires the last configured workflow state');
+  return { state: 'done', workflowState: 'done', workflowSince: new Date().toISOString(), stepAlive: null, nextActor: 'firstmate', blockKind: null, blockReason: null, blockRepeats: 0, holdUntil: null };
 });
 
 // ---- the backlog view (T7) ------------------------------------------------------------------------------
@@ -1965,6 +2051,7 @@ async function cmdDeliver(args) {
 }
 
 const COMMANDS = {
+  setup: cmdSetup, move: cmdMove, step: cmdStep,
   'turn-end': cmdTurnEnd, deliver: cmdDeliver, describe: cmdDescribe, thread: cmdThread,
   create: cmdCreate, import: cmdImport, assign: cmdAssign, start: cmdStart, heartbeat: cmdHeartbeat, done: cmdDone, ask: cmdAsk, block: cmdBlock,
   unblock: cmdUnblock, approve: cmdApprove, changes: cmdChanges, reopen: cmdReopen, reassign: cmdReassign, archive: cmdArchive, comment: cmdComment, event: cmdEvent,

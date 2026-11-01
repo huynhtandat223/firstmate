@@ -3528,6 +3528,15 @@ while :; do
     TASK_DELIVERY_LAST=$task_id
     task_delivery_processed=1
     task_consumer="firstmate-${FM_HOME##*/}"
+    if [ -e "$CONFIG/task-shadow" ]; then
+      task_live_line=$(fm_run_timed 2 "$SCRIPT_DIR/fm-crew-state.sh" "$task_id" 2>/dev/null) || task_live_line=''
+      case "$task_live_line" in
+        'state: stopped '*|'state: torn-down '*)
+          fm_run_timed 2 env FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task.sh" step "$task_id" dead >/dev/null 2>&1 || true ;;
+        'state: working '*|'state: paused '*|'state: parked '*|'state: idle '*)
+          fm_run_timed 2 env FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task.sh" step "$task_id" alive >/dev/null 2>&1 || true ;;
+      esac
+    fi
     fm_run_timed 2 env FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task.sh" deliver "$task_id" --consumer "$task_consumer" >/dev/null 2>&1 || true
     # One task per pass bounds API work independently of fleet size.
     break

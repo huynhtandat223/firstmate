@@ -30,7 +30,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export FM_HOME="${FM_HOME:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 WRITER="${FM_TASK_OWNER_WRITER:-$SCRIPT_DIR/fm-task.sh}"
 
-ACTION='' TASK='' OPTION='' ROW='' NOTE='' OWNER='' TO='' ASK=''
+ACTION='' TASK='' OPTION='' ROW='' NOTE='' OWNER='' TO='' ASK='' SETUP=''
 WRITES='[]'
 
 reply() {  # <ok> [error]: the one JSON line, then exit with the code in RC
@@ -43,6 +43,7 @@ usage() { RC=2; reply false "$1"; }
 while [ "$#" -gt 0 ]; do
   [ "$#" -ge 2 ] || usage "$1 needs a value"
   case "$1" in
+    --setup) SETUP=$2 ;;
     --action) ACTION=$2 ;;
     --task) TASK=$2 ;;
     --option) OPTION=$2 ;;
@@ -91,6 +92,13 @@ worker_live() {
 
 RC=0
 case "$ACTION" in
+  setup)
+    [ -n "$SETUP" ] || usage 'setup needs --setup JSON'
+    setup_file=$(mktemp "${TMPDIR:-/tmp}/fm-owner-setup.XXXXXX") || usage 'no temporary file'
+    trap 'rm -f "$setup_file"' EXIT
+    printf '%s' "$SETUP" > "$setup_file"
+    run setup "$TASK" --file "$setup_file" --by owner || RC=$?
+    ;;
   comment)
     [[ "$NOTE" =~ [^[:space:]] ]] || usage 'comment needs a nonblank --note'
     # shellcheck source=bin/fm-backend.sh
@@ -140,6 +148,6 @@ case "$ACTION" in
     [ "$ACTION" = pass ] || [ -n "$NOTE" ] || usage 'fail needs --note'
     run check "$TASK" "$ROW" "$ACTION" --evidence "${NOTE:-owner pass}" || RC=$?
     ;;
-  *) usage "--action must be comment, answer, unblock, pass or fail" ;;
+  *) usage "--action must be setup, comment, answer, unblock, pass or fail" ;;
 esac
 if [ "$RC" -eq 0 ]; then reply true; else reply false "$ERROR"; fi
