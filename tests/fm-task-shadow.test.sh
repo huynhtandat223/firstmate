@@ -385,7 +385,8 @@ make_live_fakebin() {  # <dir>
 #!/usr/bin/env bash
 case "${1:-}" in
   list-windows) cat "$FAKE_WINDOWS" ;;
-  capture-pane) date +%s%N ;;  # a pane that changes on every poll is working, so no stale wake ends the watcher
+  # a pane that changes on every poll is working, so no stale wake ends the watcher; with $FAKE_SLOW each read takes 4 s
+  capture-pane) [ ! -e "${FAKE_SLOW:-/nonexistent}" ] || { : > "$FAKE_SLOW.started"; sleep 4; }; date +%s%N ;;
   display-message) case "$*" in *pane_tty*) printf '/dev/pts/fake\n' ;; *) printf 'claude\n' ;; esac ;;
 esac
 exit 0
@@ -398,14 +399,23 @@ SH
   printf '%s\n' "$fakebin"
 }
 
-start_watcher() {  # runs bin/fm-watch.sh in the case home at a 1 s poll; sets WATCHER
+start_watcher() {  # runs bin/fm-watch.sh in the case home at a 1 s poll and a 1 s step pass; sets WATCHER
   env FM_ROOT_OVERRIDE='' FM_HOME="$HOME_DIR" FM_CONFIG_OVERRIDE="$HOME_DIR/config" FM_STATE_OVERRIDE="$HOME_DIR/state" \
-    FM_DATA_OVERRIDE="$HOME_DIR/data" FM_TASK_SHADOW_WRITER="$WRITER" FAKE_CALLS="$CALLS" FAKE_WINDOWS="$CASE_DIR/windows" \
-    PATH="$FAKEBIN:$PATH" FM_POLL=1 FM_SIGNAL_GRACE=0 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    FM_DATA_OVERRIDE="$HOME_DIR/data" FM_TASK_SHADOW_WRITER="$WRITER" FAKE_CALLS="$CALLS" FAKE_WINDOWS="$CASE_DIR/windows" FAKE_SLOW="$CASE_DIR/slow" \
+    PATH="$FAKEBIN:$PATH" FM_POLL=1 FM_SIGNAL_GRACE=0 FM_CHECK_INTERVAL="${CHECK_EVERY:-999999}" FM_HEARTBEAT=999999 FM_TASK_STEP_EVERY=1 \
     "${SBIN:-$ROOT/bin}/fm-watch.sh" > "$CASE_DIR/watch.out" 2>&1 &
   WATCHER=$!
 }
 stop_watcher() { kill -TERM "$WATCHER" 2>/dev/null || true; wait "$WATCHER" 2>/dev/null || true; }
+
+wait_count() {  # <seconds> <extended regex> <n>: wait until n recorded writer calls match
+  local tries=$(($1 * 10))
+  while [ "$tries" -gt 0 ]; do
+    [ "$(grep -Ec -- "$2" "$CALLS" 2>/dev/null)" -ge "$3" ] && return 0
+    sleep 0.1; tries=$((tries - 1))
+  done
+  return 1
+}
 
 wait_calls() {  # <seconds> <extended regex>: wait until a recorded writer call matches
   local tries=$(($1 * 10))
@@ -417,7 +427,8 @@ wait_calls() {  # <seconds> <extended regex>: wait until a recorded writer call 
 }
 
 # Tester kdb-d1 D2: a stopped worker's dot stayed alive for minutes, because the watcher wrote one task's liveness per
-# pass. Every task's liveness reaches the record within one pass, and the writer runs only on a change, across restarts.
+# pass, then for a minute because one supervision cycle takes that long on a busy home. Every task's liveness reaches the
+# record within one step pass, even while a cycle is still running, and the writer runs only on a change, across restarts.
 test_watcher_writes_every_task_liveness_each_pass() {
   local t steps
   make_case watcher-step on
@@ -429,7 +440,7 @@ test_watcher_writes_every_task_liveness_each_pass() {
   FAKE_FAIL='step t3' FAKE_FAIL_ONCE=1 FAKE_FAIL_CODE=3 start_watcher
   # five tasks and a 1 s poll: one task per pass needs five passes, every task per pass needs one
   wait_calls 3 '^step t5 alive' || { stop_watcher; fail "the fifth task's liveness did not reach the record within one pass: $(cat "$CALLS")"; }
-  wait_calls 3 '^deliver t2 ' || true  # one more pass, which tries t3 again
+  wait_count 3 '^step t3 ' 2 || true  # the next step pass tries t3 again
   steps=$(grep -c '^step ' "$CALLS")
   [ "$steps" -eq 6 ] || { stop_watcher; fail "five tasks and one unanswered call should make six step calls, got $steps: $(cat "$CALLS")"; }
   printf '%s\n' w1 w3 w4 w5 > "$CASE_DIR/windows"
@@ -448,7 +459,19 @@ test_watcher_writes_every_task_liveness_each_pass() {
   wait_calls 15 '^deliver t4 ' || { stop_watcher; fail "the restarted watcher did not make four passes: $(cat "$CALLS" "$CASE_DIR/watch.out")"; }
   stop_watcher
   assert_equals 'step t1 alive --generation g1b' "$(grep '^step ' "$CALLS")" "a restarted watcher writes only the changed task, and a refused write once"
-  pass "watcher: every task's liveness reaches the record within one pass, once per change, across restarts; no answer is tried again, a refusal is not; delivery still visits every task"
+  # a supervision cycle held for about 16 s by slow pane reads: a pane closed meanwhile still stops its dot within seconds
+  : > "$CALLS"; : > "$CASE_DIR/slow"; rm -f "$CASE_DIR/slow.started"
+  FM_WATCH_HANDLING_SUCCESSOR=1 start_watcher
+  t=0; while [ ! -e "$CASE_DIR/slow.started" ] && [ "$t" -lt 100 ]; do sleep 0.1; t=$((t + 1)); done
+  [ -e "$CASE_DIR/slow.started" ] || { stop_watcher; fail "the cycle never read a pane: $(cat "$CASE_DIR/watch.out")"; }
+  printf '%s\n' w1 w4 w5 > "$CASE_DIR/windows"
+  wait_calls 4 '^step t3 dead --generation g3$' || { stop_watcher; fail "a pane closed during a long cycle did not stop its dot within 4 s: $(cat "$CALLS")"; }
+  stop_watcher
+  rm -f "$CASE_DIR/slow"
+  # the step loop stops with its watcher: a pane closed after the watcher stopped writes nothing
+  : > "$CALLS"; printf '%s\n' w4 w5 > "$CASE_DIR/windows"; sleep 3
+  assert_equals "" "$(grep '^step ' "$CALLS")" "no step pass runs after the watcher stopped"
+  pass "watcher: every task's liveness reaches the record within one step pass, also during a long cycle, once per change, across restarts; no answer is tried again, a refusal is not; delivery still visits every task"
 }
 
 test_watcher_writes_every_task_liveness_each_pass
@@ -525,4 +548,4 @@ mutate_script 'fm-verify-close.sh writes the verified close' test_verify_close_w
 mutate_script 'fm-captain-hold.sh writes the hold' test_captain_hold_writes_the_record fm-captain-hold.sh 'shadow_record held'
 mutate_script 'fm-captain-hold.sh writes the closing answer' test_captain_hold_writes_the_record fm-captain-hold.sh 'shadow_record answered "$1" closed'
 mutate_script 'fm-captain-hold.sh writes the release' test_captain_hold_writes_the_record fm-captain-hold.sh 'shadow_record answered "$1" released'
-mutate_script 'fm-watch.sh writes every task liveness each pass' test_watcher_writes_every_task_liveness_each_pass fm-watch.sh '  task_step_pass'
+mutate_script 'fm-watch.sh writes every task liveness each step pass' test_watcher_writes_every_task_liveness_each_pass fm-watch.sh '  task_step_pass'

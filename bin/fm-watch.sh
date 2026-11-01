@@ -3432,6 +3432,7 @@ watcher_cleanup() {
     fi
   fi
   fm_active_check_stop || cleanup_status=1
+  task_step_loop_stop
   fm_check_output_cleanup
   fm_capture_output_cleanup
   fm_custom_check_snapshot_cleanup
@@ -3526,7 +3527,8 @@ TASK_RECORD_WRITER=${FM_TASK_SHADOW_WRITER:-$SCRIPT_DIR/fm-task.sh}
 TASK_STEP_WRITTEN="$STATE/.task-step-live"
 
 # Opt-in task record (plan v2 D1): each card's live dot follows its incarnation's endpoint. Every task is read on every
-# pass, so a stopped worker's dot stops within one pass; the writer is called only for a task whose liveness or spawn
+# pass of task_step_loop below, so a stopped worker's dot stops within one interval, however long one supervision cycle
+# takes; the writer is called only for a task whose liveness or spawn
 # generation differs from the last one written, so the API work is one call per change. The writer refuses a report
 # whose spawn generation is not the one that started the running step. A call the API did not answer is tried again on
 # the next pass; a refusal is settled like a write, so a task the record does not hold costs no call on every pass.
@@ -3558,8 +3560,29 @@ task_step_pass() {
   printf '%s' "$next" > "$TASK_STEP_WRITTEN.tmp.$$" && mv -f "$TASK_STEP_WRITTEN.tmp.$$" "$TASK_STEP_WRITTEN"
 }
 
+# Seconds between step passes. One supervision cycle can take a minute on a busy home (every pane read, every task's
+# record calls, the check sweep), so the step pass runs in its own child loop instead of once per cycle: a closed pane's
+# dot stops within one interval plus one pass. The child is the only writer of TASK_STEP_WRITTEN, prints nothing on this
+# watcher's stdout (the wake channel), stops with this watcher (task_step_loop_stop in watcher_cleanup), and stops on its
+# own once this watcher's pid is gone. An asynchronous subshell does not keep the EXIT trap, so it never runs
+# watcher_cleanup.
+TASK_STEP_EVERY=${FM_TASK_STEP_EVERY:-5}
+TASK_STEP_LOOP_PID=
+task_step_loop() {  # <watcher pid>
+  while kill -0 "$1" 2>/dev/null; do
+    task_step_pass
+    sleep "$TASK_STEP_EVERY"
+  done
+}
+task_step_loop_stop() {
+  [ -n "$TASK_STEP_LOOP_PID" ] || return 0
+  kill "$TASK_STEP_LOOP_PID" 2>/dev/null || true
+  TASK_STEP_LOOP_PID=
+}
+
+task_step_loop "$$" >/dev/null 2>&1 &
+TASK_STEP_LOOP_PID=$!
 while :; do
-  task_step_pass
   # Scope delivery to this home's direct task records, never another home's events.
   task_delivery_processed=0
   for task_meta in "$STATE"/*.meta; do
