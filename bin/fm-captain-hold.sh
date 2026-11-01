@@ -365,9 +365,9 @@ tasks_axi() {
   backend=$(fm_tasks_axi_backend "$root") || return 2
   if [ "$backend" = markdown ]; then
     file=$(fm_backlog_file "$data") || fail "$FM_BACKLOG_TRANSITION_ERROR"
-    (cd "$root" && tasks-axi "$@" --file "$file")
+    (cd "$(fm_tasks_axi_workdir "$root")" && tasks-axi "$@" --file "$file")
   else
-    (cd "$root" && tasks-axi "$@")
+    (cd "$(fm_tasks_axi_workdir "$root")" && tasks-axi "$@")
   fi
 }
 
@@ -614,19 +614,19 @@ captain_migration_scan_load() {  # <resolved-data-dir>
     CAPTAIN_MIGRATION_SCAN_LOADED=1
     return 0
   fi
-  entries=$(captain_beads_toml_entries "$root/.tasks.toml")
+  entries=$(captain_beads_toml_entries "$(fm_tasks_axi_workdir "$root")/.tasks.toml")
   bd_bin=$(captain_beads_setting "$entries" binary)
   bd_path=$(captain_beads_setting "$entries" path)
   bd_bin=${bd_bin:-bd}
   if [ -z "$bd_path" ]; then
-    printf 'fm-captain-hold: the beads backend carries no graph path in %s, so a migrated hold cannot be found\n' "$root/.tasks.toml" >&2
+    printf 'fm-captain-hold: the beads backend carries no graph path in %s, so a migrated hold cannot be found\n' "$(fm_tasks_axi_workdir "$root")/.tasks.toml" >&2
     return 2
   fi
-  # A relative [beads] path resolves against the backlog root, the same rule
-  # every other .tasks.toml path consumer uses, never against the process CWD.
+  # A relative [beads] path resolves against the directory tasks-axi runs from,
+  # the same rule tasks-axi itself uses, never against the process CWD.
   case "$bd_path" in
     /*) ;;
-    *) bd_path="$root/$bd_path" ;;
+    *) bd_path="$(fm_tasks_axi_workdir "$root")/$bd_path" ;;
   esac
   command -v "$bd_bin" >/dev/null 2>&1 || {
     printf 'fm-captain-hold: the beads binary %s is not on PATH, so a migrated hold cannot be found\n' "$bd_bin" >&2
@@ -712,7 +712,7 @@ resolve_migrated_entry() {  # <origin-or-empty> <entry>
   # No marker line anywhere: a mechanical migration keeps the legacy id under
   # the configured prefix, but that name alone is evidence of nothing, so only
   # a row still held for the captain - and only one of them - is accepted.
-  entries=$(captain_beads_toml_entries "$root/.tasks.toml")
+  entries=$(captain_beads_toml_entries "$(fm_tasks_axi_workdir "$root")/.tasks.toml")
   prefix=$(captain_beads_setting "$entries" prefix)
   [ -n "$prefix" ] || return 1
   prefixed_matches=
