@@ -830,7 +830,7 @@ async function cmdSetup(args) {
     }
     const removed = old.filter(s => !normalized.some(n => n.state === s.state));
     if (removed.some(s => !['pending', 'skipped'].includes(s.status))) throw rule('only pending setup states can be skipped');
-    const stepWrites = [...normalized.map(s => ({ ...s, ...(old.some(o => o.state === s.state) ? {} : { status: 'pending', attempt: 0 }) })), ...removed.map(s => ({ state: s.state, status: 'skipped' }))];
+    const stepWrites = [...normalized.map(s => ({ ...s, ...(old.some(o => o.state === s.state && o.status !== 'skipped') ? {} : { status: 'pending', attempt: 0 }) })), ...removed.map(s => ({ state: s.state, status: 'skipped' }))];
     return { kind: 'setup', extra: { stepWrites }, set: { setupBy: by, setupAt: new Date().toISOString() }, children: { documents: [{ title: 'Setup', mediaType: 'application/json', content: JSON.stringify(normalized) }] } };
   });
 }

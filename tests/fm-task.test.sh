@@ -2197,6 +2197,10 @@ case_workflow() {
   mk_running tk-flow >/dev/null || return 1
   printf '%s' '{"steps":[{"state":"implement","harness":"pi","model":"example","effort":"high"},{"state":"merge"}]}' > "$TMP_ROOT/setup.json"
   ft setup tk-flow --file "$TMP_ROOT/setup.json"; must setup 0 || return 1
+  printf '%s' '{"steps":[{"state":"implement","harness":"pi","model":"example","effort":"high"}]}' > "$TMP_ROOT/setup-one.json"
+  ft setup tk-flow --file "$TMP_ROOT/setup-one.json"; must 'skip pending merge' 0 || return 1
+  db fm_task_step | jq -e '.[]|select(.taskId == "tk-flow" and .state == "merge")|.status == "skipped"' >/dev/null || return 1
+  ft setup tk-flow --file "$TMP_ROOT/setup.json"; must 'restore setup selection' 0 || return 1
   ft move tk-flow --to implement; must move 0 || return 1
   ft step tk-flow start --harness pi --model example --effort high; must start 0 || return 1
   task_row tk-flow | jq -e '.workflowState == "implement" and .stepModel == "example" and .stepAlive == "alive"' >/dev/null || return 1
