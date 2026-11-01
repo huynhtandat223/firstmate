@@ -2579,6 +2579,39 @@ case_backlog_home() {
   return $rc
 }
 
+case_owner_hold() {
+  # hold and release: the owner's board buttons run fm-captain-hold.sh and tell firstmate; a refused hold tells no one
+  BIN=$1
+  export FM_HOME="$TMP_ROOT/owner-hold-home"
+  rm -rf "$FM_HOME"; mkdir -p "$FM_HOME/state"
+  local stub="$TMP_ROOT/owner-hold-stub" log="$TMP_ROOT/owner-hold.log" inbox="$TMP_ROOT/owner-hold-inbox.log" rc=0
+  : > "$log"; : > "$inbox"
+  cat > "$stub" <<STUB
+#!/usr/bin/env bash
+printf '%s|' "\$@" >> "$log"
+if [ "\$1" = answer ]; then shift 2; [ "\$1" = --decision-file ] && printf 'file=%s' "\$(cat "\$2")" >> "$log"; fi
+echo >> "$log"
+[ -z "\${HOLD_REFUSE:-}" ] || { echo 'refused: closed' >&2; exit 5; }
+echo held
+STUB
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s"\n' "$inbox" > "$TMP_ROOT/owner-hold-inbox"
+  chmod +x "$stub" "$TMP_ROOT/owner-hold-inbox"
+  ohold() { OUT=$(FM_TASK_OWNER_HOLD="$stub" FM_TASK_OWNER_INBOX="$TMP_ROOT/owner-hold-inbox" "$BIN/fm-task-owner.sh" "$@" 2>"$TMP_ROOT/err"); RC=$?; }
+  ohold --action hold --task tk-oh1 --owner u-1; must 'hold' 0 || rc=1
+  grep -qx 'hold|tk-oh1|--reason|Held by the owner on the board.|' "$log" || { echo "hold call: $(cat "$log")"; rc=1; }
+  jq -e '.ok and .action == "hold" and .writes == ["held"]' <<<"$OUT" >/dev/null || { echo "hold reply: $OUT"; rc=1; }
+  grep -q 'The owner held task tk-oh1 on the board: Held by the owner on the board.' "$inbox" || { echo "hold note: $(cat "$inbox")"; rc=1; }
+  ohold --action release --task tk-oh1 --note 'go on' --owner u-1; must 'release' 0 || rc=1
+  grep -q '^answer|tk-oh1|--decision-file|.*|--release|file=go on$' "$log" || { echo "release call: $(cat "$log")"; rc=1; }
+  grep -q 'The owner released the hold on task tk-oh1 on the board: go on' "$inbox" || { echo "release note: $(cat "$inbox")"; rc=1; }
+  : > "$inbox"
+  HOLD_REFUSE=1 ohold --action hold --task tk-oh1 --owner u-1; must 'refused hold' 5 || rc=1
+  jq -e '.ok == false and .error == "refused: closed"' <<<"$OUT" >/dev/null || { echo "refused reply: $OUT"; rc=1; }
+  [ ! -s "$inbox" ] || { echo "a refused hold told firstmate: $(cat "$inbox")"; rc=1; }
+  ohold --action hold --task tk-oh1; must 'hold without an owner' 2 || rc=1
+  return $rc
+}
+
 case_model_rules() {
   BIN=$1; reset_db
   export TZ=UTC
@@ -2746,7 +2779,7 @@ case_setup_rules() {
   return 0
 }
 
-CASES=${FM_TASK_CASES:-"plan_task description_thread terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed long_notes status_view verify_view owner_writer workflow stage wait carry slice_c model_rules checklist question_round setup_rules backlog_home"}
+CASES=${FM_TASK_CASES:-"plan_task description_thread terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed long_notes status_view verify_view owner_writer workflow stage wait carry slice_c model_rules checklist question_round setup_rules backlog_home owner_hold"}
 
 # ---- real command -------------------------------------------------------------------
 
@@ -2962,6 +2995,18 @@ mutate_owner() {  # <label> <exact wrapper text> <replacement>: the owner_writer
 }
 mutate_owner 'the writer operation needs the owner the row appends' "case \"\$OWNER\" in ''|" "case \"\$OWNER\" in x|"
 mutate_owner 'the writer runs as the owner' 'FM_TASK_ROLE=owner' 'FM_TASK_ROLE=worker'
+mutate_owner_hold() {  # <label> <exact source text> <replacement>
+  cp "$TMP_ROOT/fm-task-owner.sh.orig" "$MBIN/fm-task-owner.sh"
+  S="$2" R="$3" perl -0pi -e 's/\Q$ENV{S}\E/$ENV{R}/' "$MBIN/fm-task-owner.sh"
+  cmp -s "$TMP_ROOT/fm-task-owner.sh.orig" "$MBIN/fm-task-owner.sh" && fail "mutation '$1' changed nothing"
+  if out=$(case_owner_hold "$MBIN" 2>&1); then fail "removing the guard '$1' left case owner_hold green"; fi
+  cp "$TMP_ROOT/fm-task-owner.sh.orig" "$MBIN/fm-task-owner.sh"
+  pass "guard '$1' is needed: case owner_hold goes red without it"
+}
+mutate_owner_hold 'release lifts the hold rather than closing the task' 'run answer "$TASK" --decision-file "$decision_file" --release' 'run answer "$TASK" --decision-file "$decision_file"'
+mutate_owner_hold 'only a stored hold tells firstmate' '    if [ "$RC" -eq 0 ]; then
+      verb=$([ "$ACTION" = hold ]' '    if true; then
+      verb=$([ "$ACTION" = hold ]'
 mutate_owner 'an answer unblocks after its comment' 'run comment "$TASK" --note "$text" && run unblock "$TASK" || RC=$?' 'run comment "$TASK" --note "$text" || RC=$?'
 pass 'every guarded behavior has a red mutation proof'
 live_home_untouched

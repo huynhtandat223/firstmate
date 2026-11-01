@@ -21,6 +21,9 @@
 #            --harness --model --effort --rank --account --hours --scope --enabled --warning and --note; an empty
 #            value is left out. --task names the record task fm-model-rules. One key per owner, fields and minute.
 #   checklist an item:       checklist TASK off|on ITEM [--reason "<note>"]                  needs --item and --on or --off; --off needs --note
+#   hold     a captain hold: fm-captain-hold.sh hold TASK --reason "<note>" (default "Held by the owner on the board.")
+#   release  lift the hold:  fm-captain-hold.sh answer TASK --decision-file <the note> --release (default "Released by
+#            the owner on the board."); hold and release each tell firstmate through fm-inbox note
 #   comment delivers a new event in this call: --to firstmate uses fm-inbox note; a live task uses fm-send.
 #   Without --to, the task's live worker is selected, else firstmate. Invalid recipients write nothing.
 #   --ask on comment stores the skill name and delivers its invocation and the exact --reply-to command.
@@ -31,13 +34,14 @@
 # Exits 0, 2 for a usage refusal (nothing written), or the first refusing writer call's code; a refused comment
 # stops before the unblock; a refused setup stops before the move.
 # Environment: FM_HOME defaults to this file's home (its parent directory), so the status view lands where the
-# watcher reads it. FM_TASK_OWNER_WRITER replaces bin/fm-task.sh (the tests); the writer's own settings
+# watcher reads it. FM_TASK_OWNER_WRITER replaces bin/fm-task.sh and FM_TASK_OWNER_HOLD bin/fm-captain-hold.sh (the tests); the writer's own settings
 # (FM_TASK_BASE_URL, FM_TASK_TOKEN_FILE) keep their defaults.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export FM_HOME="${FM_HOME:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 WRITER="${FM_TASK_OWNER_WRITER:-$SCRIPT_DIR/fm-task.sh}"
+HOLD="${FM_TASK_OWNER_HOLD:-$SCRIPT_DIR/fm-captain-hold.sh}"
 
 ACTION='' TASK='' OPTION='' ROW='' DECISION='' PLAN_SEQ='' NOTE='' OWNER='' TO='' ASK='' RULE='' ITEM='' SWITCH='' QUESTION='' SETUP=''
 declare -A RULE_FIELD=()
@@ -235,6 +239,23 @@ case "$ACTION" in
       *) usage 'checklist needs --on or --off' ;;
     esac
     ;;
-  *) usage "--action must be setup, comment, answer, unblock, pass, fail, plan, checklist, rule-add, rule-set, rule-delete, inbox-task, inbox-link or inbox-delete" ;;
+  hold|release)
+    WRITER=$HOLD
+    if [ "$ACTION" = hold ]; then
+      words=${NOTE:-Held by the owner on the board.}
+      run hold "$TASK" --reason "$words" || RC=$?
+    else
+      words=${NOTE:-Released by the owner on the board.}
+      decision_file=$(mktemp "${TMPDIR:-/tmp}/fm-owner-release.XXXXXX") || usage 'no temporary file'
+      trap 'rm -f "$decision_file"' EXIT
+      printf '%s\n' "$words" > "$decision_file"
+      run answer "$TASK" --decision-file "$decision_file" --release || RC=$?
+    fi
+    if [ "$RC" -eq 0 ]; then
+      verb=$([ "$ACTION" = hold ] && printf 'held' || printf 'released the hold on')
+      "${FM_TASK_OWNER_INBOX:-$SCRIPT_DIR/fm-inbox.sh}" note --request-id "owner-$ACTION-$TASK-$(date -u +%Y%m%dT%H%M%S)" -- "The owner $verb task $TASK on the board: $words" >/dev/null || { RC=$?; ERROR="$ACTION stored but firstmate delivery failed"; }
+    fi
+    ;;
+  *) usage "--action must be setup, comment, answer, unblock, pass, fail, plan, checklist, hold, release, rule-add, rule-set, rule-delete, inbox-task, inbox-link or inbox-delete" ;;
 esac
 if [ "$RC" -eq 0 ]; then reply true; else reply false "$ERROR"; fi
