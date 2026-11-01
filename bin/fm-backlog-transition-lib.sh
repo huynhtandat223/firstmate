@@ -691,6 +691,45 @@ fm_backlog_verify_items_decode() {  # <encoded-items>
     print $out;'
 }
 
+# The stored hold reason of a verify-pending row: "verification pending: <items>" in the
+# fm-hold-v1 form, cut to whole items so it fits the smallest hold-reason field a backend
+# stores (Dev 5001's fm_task.backlog_hold_reason holds 2000 characters, and a longer value
+# refuses the row write). A cut list ends with "and N more"; bin/fm-verify-close.sh prints
+# every item. The argument holds one item per line, since an item's text can hold "; ".
+fm_backlog_verify_reason() {  # <id> <items>
+  local text
+  text=$(printf '%s' "$2" | perl -e '
+    use strict; use warnings;
+    my ($id) = @ARGV;
+    my $in = do { local $/; <STDIN> };
+    # 1491 raw bytes encode to 2000 characters with the fm-hold-v1: prefix; keep a margin.
+    my $limit = 1400;
+    my $head = "verification pending: ";
+    my @items = grep { length } split /\n/, $in;
+    # A pending-close record written before items went one per line holds them "; "-joined, and an
+    # item may itself hold "; ", so its pieces are cut points, not a count: the tail names no number.
+    my $legacy = @items == 1 && $items[0] =~ /; /;
+    @items = split /; /, $items[0] if $legacy;
+    my $more_of = sub { $legacy ? "more" : "$_[0] more" };
+    my $out = $head . join("; ", @items);
+    if (length($out) > $limit) {
+      my $kept = $head;
+      my $n = 0;
+      for my $item (@items) {
+        my $rest = @items - $n - 1;
+        my $tail = $rest ? "; and " . $more_of->($rest) . " (bin/fm-verify-close.sh $id lists all)" : "";
+        my $next = $kept . ($n ? "; " : "") . $item;
+        last if length($next . $tail) > $limit;
+        $kept = $next;
+        $n++;
+      }
+      my $more = @items - $n;
+      $out = $kept . ($n ? "; and " : "and ") . $more_of->($more) . " (bin/fm-verify-close.sh $id lists all)";
+    }
+    print $out;' "$1") || return 1
+  fm_hold_reason_encode "$text"
+}
+
 # data/<id>/verify-pending: written when teardown chooses verification pending, removed when the
 # row is closed (a normal teardown close, bin/fm-verify-close.sh, or an answer to a captain call
 # whose record is complete).
@@ -727,12 +766,14 @@ fm_backlog_verify_marker_remove() {  # <data-dir> <id>
 # captain call keeps that hold and gains a body line instead: the captain's call wins, as it
 # does for a plain retain.
 fm_backlog_verify_pending() {  # <data-dir> <id> <encoded-items> [flag...]
-  local data=$1 id=$2 encoded=$3 items
+  local data=$1 id=$2 encoded=$3 items joined
   shift 3
   if ! items=$(fm_backlog_verify_items_decode "$encoded"); then
     FM_BACKLOG_TRANSITION_ERROR="the missing verification items of $id could not be decoded"
     return 1
   fi
+  # The record holds one item per line; people read them joined.
+  joined=$(printf '%s\n' "$items" | awk 'NF { printf "%s%s", sep, $0; sep = "; " }')
   if ! fm_backlog_row_probe "$data" "$id"; then
     FM_BACKLOG_TRANSITION_ERROR=$FM_BACKLOG_ROW_ERROR
     return 1
@@ -743,11 +784,11 @@ fm_backlog_verify_pending() {  # <data-dir> <id> <encoded-items> [flag...]
   # Hold before the reopen inside retain, so the row is never Queued and unheld: tasks-axi keeps
   # a hold across reopen.
   if [ "$FM_BACKLOG_ROW_HOLD_KIND" != captain ]; then
-    fm_backlog_mutate "$data" hold "$id" --reason "$(fm_hold_reason_encode "verification pending: $items")" --kind external || return 1
+    fm_backlog_mutate "$data" hold "$id" --reason "$(fm_backlog_verify_reason "$id" "$items")" --kind external || return 1
   fi
   fm_backlog_retain "$data" "$id" "$@" || return 1
   if [ "$FM_BACKLOG_ROW_HOLD_KIND" = captain ]; then
-    fm_backlog_body_append_line "$data" "$id" "Verification pending: $items"
+    fm_backlog_body_append_line "$data" "$id" "Verification pending: $joined"
   fi
 }
 

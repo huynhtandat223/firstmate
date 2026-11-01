@@ -6,14 +6,20 @@
 # a page value. Each action runs bin/fm-task.sh, the one writer, with that owner as actor (`owner:<id>`, role
 # owner); the writer keeps seq, the transitions and the projection, and this file adds no rule of its own.
 #
-# Usage: fm-task-owner.sh --action ACTION --task TASK [--option O] [--row ID@W] [--decision approve|changes] [--plan-seq N] [--note N] [--to RECIPIENT] [--ask why|how|wait-what] --owner ID
+# Usage: fm-task-owner.sh --action ACTION --task TASK [--option O] [--row ID@W] [--item I --on|--off] [--decision approve|changes] [--plan-seq N] [--note N] [--to RECIPIENT] [--ask why|how|wait-what] [--rule ID --state S ...] --owner ID
 #   inbox-task|inbox-link|inbox-delete resolve a notification (--task is its id; link needs --option task-id)
 #   comment  a task comment: store the note once per owner, note and minute              needs --note
-#   answer   a question:     comment "answer: <option>" (and " - <note>"), then unblock    needs --option
+#   answer   a question:     with --question SEQ, answer TASK --question SEQ --option O [--note N] (one card of a
+#            round; the last answer returns the task to its worker); without it, comment "answer: <option>"
+#            (and " - <note>"), then unblock                                                 needs --option
 #   unblock  a block:        comment "<note>", then unblock                                needs --note
 #   pass     an owner row:   check TASK ROW pass --evidence "<note>" (or "owner pass")     needs --row
 #   fail     an owner row:   check TASK ROW fail --evidence "<note>"                        needs --row and --note
 #   plan     a plan verdict: plan-decision TASK --decision D --plan-seq N [--note N]       needs --decision and --plan-seq
+#   rule-add|rule-set|rule-delete  a model rule (Settings > Models): rule add|set|delete [--rule ID] with --state
+#            --harness --model --effort --rank --account --hours --scope --enabled --warning and --note; an empty
+#            value is left out. --task names the record task fm-model-rules. One key per owner, fields and minute.
+#   checklist an item:       checklist TASK off|on ITEM [--reason "<note>"]                  needs --item and --on or --off; --off needs --note
 #   comment delivers a new event in this call: --to firstmate uses fm-inbox note; a live task uses fm-send.
 #   Without --to, the task's live worker is selected, else firstmate. Invalid recipients write nothing.
 #   --ask on comment stores the skill name and delivers its invocation and the exact --reply-to command.
@@ -32,7 +38,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export FM_HOME="${FM_HOME:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 WRITER="${FM_TASK_OWNER_WRITER:-$SCRIPT_DIR/fm-task.sh}"
 
-ACTION='' TASK='' OPTION='' ROW='' DECISION='' PLAN_SEQ='' NOTE='' OWNER='' TO='' ASK=''
+ACTION='' TASK='' OPTION='' ROW='' DECISION='' PLAN_SEQ='' NOTE='' OWNER='' TO='' ASK='' RULE='' ITEM='' SWITCH='' QUESTION=''
+declare -A RULE_FIELD=()
+RULE_FLAGS='state harness model effort rank account hours scope enabled warning'
 WRITES='[]'
 
 reply() {  # <ok> [error]: the one JSON line, then exit with the code in RC
@@ -43,6 +51,9 @@ reply() {  # <ok> [error]: the one JSON line, then exit with the code in RC
 usage() { RC=2; reply false "$1"; }
 
 while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --on|--off) [ -z "$SWITCH" ] || usage 'give --on or --off once'; SWITCH=${1#--}; shift; continue ;;
+  esac
   [ "$#" -ge 2 ] || usage "$1 needs a value"
   case "$1" in
     --action) ACTION=$2 ;;
@@ -55,6 +66,10 @@ while [ "$#" -gt 0 ]; do
     --owner) OWNER=$2 ;;
     --to) TO=$2 ;;
     --ask) ASK=$2 ;;
+    --rule) RULE=$2 ;;
+    --question) QUESTION=$2 ;;
+    --state|--harness|--model|--effort|--rank|--account|--hours|--scope|--enabled|--warning) RULE_FIELD[${1#--}]=$2 ;;
+    --item) ITEM=$2 ;;
     *) usage "unknown argument $1" ;;
   esac
   shift 2
@@ -139,8 +154,15 @@ case "$ACTION" in
     ;;
   answer)
     [ -n "$OPTION" ] || usage 'answer needs --option'
-    text="answer: $OPTION${NOTE:+ - $NOTE}"
-    run comment "$TASK" --note "$text" && run unblock "$TASK" || RC=$?
+    if [ -n "$QUESTION" ]; then
+      [[ "$QUESTION" =~ ^[1-9][0-9]*$ ]] || usage 'answer --question must be an event seq'
+      note_args=()
+      [ -z "$NOTE" ] || note_args=(--note "$NOTE")
+      run answer "$TASK" --question "$QUESTION" --option "$OPTION" "${note_args[@]}" --key "owner-answer:$TASK:$QUESTION" || RC=$?
+    else
+      text="answer: $OPTION${NOTE:+ - $NOTE}"
+      run comment "$TASK" --note "$text" && run unblock "$TASK" || RC=$?
+    fi
     ;;
   unblock)
     [ -n "$NOTE" ] || usage 'unblock needs --note'
@@ -173,6 +195,29 @@ case "$ACTION" in
       fi
     fi
     ;;
-  *) usage "--action must be comment, answer, unblock, pass, fail, plan, inbox-task, inbox-link or inbox-delete" ;;
+  rule-add|rule-set|rule-delete)
+    [ "$TASK" = fm-model-rules ] || usage 'a rule action needs --task fm-model-rules'
+    verb=${ACTION#rule-}
+    if [ "$verb" = add ]; then [ -z "$RULE" ] || usage 'rule-add takes no --rule'; else [ -n "$RULE" ] || usage "$ACTION needs --rule ID"; fi
+    rule_args=()
+    [ -z "$RULE" ] || rule_args+=("$RULE")
+    if [ "$verb" != delete ]; then
+      for name in $RULE_FLAGS; do
+        [ -z "${RULE_FIELD[$name]:-}" ] || rule_args+=("--$name" "${RULE_FIELD[$name]}")
+      done
+      [ -z "$NOTE" ] || rule_args+=(--note "$NOTE")
+    fi
+    digest=$(printf '%s\0' "$OWNER" "$ACTION" "${rule_args[@]}" "$(date -u +%Y-%m-%dT%H:%M)" | sha256sum) || usage 'rule digest failed'
+    run rule "$verb" "${rule_args[@]}" --key "owner-rule:${digest%% *}" || RC=$?
+    ;;
+  checklist)
+    [ -n "$ITEM" ] || usage 'checklist needs --item'
+    case "$SWITCH" in
+      off) [[ "$NOTE" =~ [^[:space:]] ]] || usage 'checklist --off needs a nonblank --note'; run checklist "$TASK" off "$ITEM" --reason "$NOTE" || RC=$? ;;
+      on) if [ -n "$NOTE" ]; then run checklist "$TASK" on "$ITEM" --reason "$NOTE" || RC=$?; else run checklist "$TASK" on "$ITEM" || RC=$?; fi ;;
+      *) usage 'checklist needs --on or --off' ;;
+    esac
+    ;;
+  *) usage "--action must be comment, answer, unblock, pass, fail, plan, checklist, rule-add, rule-set, rule-delete, inbox-task, inbox-link or inbox-delete" ;;
 esac
 if [ "$RC" -eq 0 ]; then reply true; else reply false "$ERROR"; fi

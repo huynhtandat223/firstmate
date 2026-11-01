@@ -923,6 +923,7 @@ $WAIT_BLOCK$INBOX_SECTION
 
 # Definition of done
 Write your findings to \`$DATA/$ID/report.md\`.
+Open every owner-facing report with a short Vietnamese summary that fits within one 390px-wide screen; put the detailed evidence after it, in English if useful.
 The report must stand alone: what you did, what you found, the evidence (commands run, output, file:line references), and what you recommend.
 $LAVISH_LINE
 Before reporting done, read and follow \`$FM_ROOT/.agents/skills/captain-hold-lifecycle/SKILL.md\` and pass its shared completion gate for the report and any visual review.

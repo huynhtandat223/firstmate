@@ -51,7 +51,8 @@ const fs = require('fs');
 const file = process.argv[2]; const s = JSON.parse(fs.readFileSync(file));
 s.fm_event_document = {ops:['list','get','create'],f:{title:{t:'s',m:200},mediaType:{t:'s',m:100},content:{t:'s'}},u:[['fmTaskEventId']],parent:['fmTaskEvent','documents']};
 s.fm_event_video = {ops:['list','get','create','delete'],f:{label:{t:'s',m:200},mediaType:{t:'s',m:32},size:{t:'i'},content:{t:'s'}},u:[],parent:['fmTaskEvent','videos']};
-Object.assign(s.fm_task.f, {row:{t:'s',n:1},notes:{t:'s',n:1},section:{t:'s',n:1,m:32},
+s.fm_model_rule = {ops:['list','get','create','patch','delete'],f:{state:{t:'s',n:1,m:16},harness:{t:'s',n:1,m:32},model:{t:'s',n:1,m:128},effort:{t:'s',n:1,m:16},rank:{t:'i',n:1},account:{t:'s',n:1,m:64},hours:{t:'s',n:1,m:64},scope:{t:'s',n:1,m:200},enabled:{t:'b',n:1},warning:{t:'s',n:1,m:200},note:{t:'s',n:1,m:300}},u:[]};
+Object.assign(s.fm_task.f, {backlogHome:{t:'s',n:1,m:64},row:{t:'s',n:1},notes:{t:'s',n:1},section:{t:'s',n:1,m:32},
   stage:{t:'s',n:1,m:16},stageSince:{t:'d',n:1},lastEventAt:{t:'d',n:1},lastNote:{t:'s',n:1,m:300},reviewer:{t:'s',n:1,m:64},
   planSeq:{t:'i',n:1},planDecision:{t:'s',n:1,m:16},planDecidedAt:{t:'d',n:1}});
 fs.writeFileSync(file, JSON.stringify(s));
@@ -373,6 +374,10 @@ ASK_FLAGS=(--question 'Which one?' --option 'Option A' --option 'Option B' --rec
 
 mk_ready() { ft create "$1" --title "Task $1" --kind ship --repo example/repo && ft assign "$1" --to worker-1; }
 mk_running() { mk_ready "$1" && ft start "$1"; }
+cl_off() {  # <task> <item>...: turn checklist items off, so a case about other rows can approve
+  local t=$1 item; shift
+  for item in "$@"; do ft checklist "$t" off "$item" --reason 'not this case' >/dev/null || return 1; done
+}
 
 test_steer_read_mark() {
   reset_db
@@ -1086,6 +1091,7 @@ case_approve_head() {
   local t=tk-ah r
   ft create tk-ah0 --title t --kind ship --surface user-visible >/dev/null; ft assign tk-ah0 --to w >/dev/null; ft start tk-ah0 >/dev/null
   ft "done" tk-ah0 "${DONE_FLAGS[@]}" >/dev/null
+  cl_off tk-ah0 ci mockup tester deploy || return 1
   ft approve tk-ah0
   must 'approve a user-visible task with no rows' 5 || return 1
   case $ERR in *'no check rows'*) ;; *) echo "the refusal does not say the rows are missing: $ERR"; return 1 ;; esac
@@ -2035,6 +2041,128 @@ case_owner_writer() {
   [ "$(db fm_task_check | jq -r '.[] | select(.taskId == "tk-ow2" and .scenarioId == "A1" and .width == "1440") | .status')" = fail ] || { echo "the check row did not take the fail"; return 1; }
 }
 
+# CL1-CL4 (task-checklist-template T3): create writes the kind's checklist, items pass from the record's evidence,
+# off needs a reason and only a cl: row takes it, rows and gate skip cl: rows, and approve refuses an open item.
+case_checklist() {
+  BIN=$1; reset_db
+  export FM_HOME="$TMP_ROOT/checklist-home"
+  rm -rf "$FM_HOME"; mkdir -p "$FM_HOME/state"
+  local t=tk-cl1 doc="$TMP_ROOT/cl-plan.md" img="$TMP_ROOT/cl-mock.png" cl seq rows
+  ow() { OUT=$("$BIN/fm-task-owner.sh" "$@" 2>"$TMP_ROOT/err"); RC=$?; ERR=$(cat "$TMP_ROOT/err"); }
+  clrow() { db fm_task_check | jq -c --arg t "$1" --arg id "cl:$2" '.[] | select(.taskId == $t and .scenarioId == $id)'; }
+  printf '# Plan\nok\n' > "$doc"
+  printf '\x89PNG\r\n\x1a\n' > "$img"
+  ft create $t --title 'Plan probe' --kind plan; must 'create plan' 0 || return 1
+  cl=$(db fm_task_check | jq -c --arg t $t '[.[] | select(.taskId == $t)]')
+  jq -e '(map(.scenarioId) | sort) == ["cl:decision","cl:mockup","cl:plan","cl:tester"] and all(.[]; .width == "-" and .surface == "checklist" and .nextActor == "firstmate")' <<<"$cl" >/dev/null || { echo "plan template rows: $cl"; return 1; }
+  jq -e '(map(select(.status == "pending") | .scenarioId) | sort) == ["cl:decision","cl:mockup","cl:plan"] and (.[] | select(.scenarioId == "cl:tester") | .status == "off" and .evidence == "Plan task: Tester verifies the ship slices it files")' <<<"$cl" >/dev/null || { echo "plan template values: $cl"; return 1; }
+  ft checklist $t apply; must 'apply again' 0 || return 1
+  [ "$OUT" = 'checklist added=0 total=4' ] && [ "$(count fm_task_check)" = 4 ] || { echo "apply is not idempotent: $OUT, $(count fm_task_check) rows"; return 1; }
+  ft create tk-cl0 --title 'No template' --kind ship >/dev/null; ft create tk-cl0b --title 'Other' --kind other >/dev/null
+  ft checklist tk-cl0 apply; must 'apply on an internal ship' 0 || return 1
+  [ "$OUT" = 'checklist added=0 total=0' ] && [ "$(count fm_task_check)" = 4 ] || { echo "a kind without a template got rows: $OUT"; return 1; }
+  # off needs a reason and an existing cl: item; check never writes off
+  ft checklist $t off mockup; must 'off without a reason' 2 || return 1
+  ft checklist $t off nothing --reason r; must 'off on a missing item' 5 || return 1
+  # CL2: a done document passes Plan document with the event that holds it
+  ft assign $t --to w1 >/dev/null && ft start $t >/dev/null || return 1
+  ft "done" $t "${DONE_FLAGS[@]}" --document "$doc" --document-title '[probe] T3 plan'; must 'done with a document' 0 || return 1
+  seq=$(seq_of)
+  clrow $t plan | jq -e --arg ev "event:$seq#document" '.status == "pass" and .evidence == $ev' >/dev/null || { echo "plan item: $(clrow $t plan)"; return 1; }
+  # a comment image labelled mockup passes Prototype / mockup
+  ft comment $t --image "$img" --image-label 'mockup 390'; must 'mockup comment' 0 || return 1
+  seq=$(seq_of)
+  clrow $t mockup | jq -e --arg ev "event:$seq#image:1" '.status == "pass" and .evidence == $ev' >/dev/null || { echo "mockup item: $(clrow $t mockup)"; return 1; }
+  # CL4: approve names the open item
+  ft approve $t; must 'approve with an open item' 5 || return 1
+  case $ERR in *'cl:decision'*) ;; *) echo "the refusal does not name cl:decision: $ERR"; return 1 ;; esac
+  # CL3 through the owner's button: off needs a note, and an off item no longer blocks approve
+  ow --action checklist --task $t --item decision --off --owner u-1; must 'owner off without a note' 2 || return 1
+  ow --action checklist --task $t --item decision --owner u-1; must 'owner checklist without on or off' 2 || return 1
+  ow --action checklist --task $t --item decision --off --note '[probe] no question' --owner u-1; must 'owner off' 0 || return 1
+  clrow $t decision | jq -e '.status == "off" and .evidence == "[probe] no question"' >/dev/null || { echo "decision item: $(clrow $t decision)"; return 1; }
+  db fm_task_event | jq -e --arg t $t '[.[] | select(.taskId == $t and .kind == "checklist" and .actor == "owner:u-1" and .actorRole == "owner")] | length == 1' >/dev/null || { echo "the owner's off is not an owner event"; return 1; }
+  ft approve $t; must 'approve after the items close' 0 || return 1
+  # an owner question passes Owner decision once answered; on sets it pending and the record passes it again
+  t=tk-cl3
+  ft create $t --title 'Plan question' --kind plan >/dev/null && ft assign $t --to w1 >/dev/null && ft start $t >/dev/null || return 1
+  ft ask $t "${ASK_FLAGS[@]}" --next-actor owner >/dev/null || return 1
+  [ "$(clrow $t decision | jq -r .status)" = pending ] || { echo "an open question passed the item"; return 1; }
+  ow --action answer --task $t --option 'Option A' --owner u-1; must 'owner answer' 0 || return 1
+  seq=$(db fm_task_event | jq --arg t $t '[.[] | select(.taskId == $t and .kind == "unblocked")] | max_by(.seq).seq')
+  clrow $t decision | jq -e --arg ev "event:$seq" '.status == "pass" and .evidence == $ev' >/dev/null || { echo "decision item: $(clrow $t decision)"; return 1; }
+  ow --action checklist --task $t --item decision --off --note '[probe] later' --owner u-1; must 'owner off before on' 0 || return 1
+  ow --action checklist --task $t --item decision --on --owner u-1; must 'owner on' 0 || return 1
+  [ "$(clrow $t decision | jq -r .status)" = pass ] || { echo "an item set on did not pass again: $(clrow $t decision)"; return 1; }
+  [ "$(db fm_task_event | jq --arg t $t '[.[] | select(.taskId == $t and .kind == "checklist" and (.body | fromjson | .values.status == "pass"))] | length')" = 2 ] || { echo "the second pass is not its own event"; return 1; }
+  # any open question keeps the item open, also after an answered owner question
+  ft checklist $t off decision --reason later >/dev/null && ft start $t >/dev/null && ft ask $t "${ASK_FLAGS[@]}" >/dev/null || return 1
+  ft checklist $t on decision; must 'on with a question open' 0 || return 1
+  [ "$(clrow $t decision | jq -r .status)" = pending ] || { echo "an open question passed the item: $(clrow $t decision)"; return 1; }
+  # firstmate's unblock is not the owner's answer; the owner's approval of the current plan is
+  t=tk-cl4
+  ft create $t --title 'Plan unblock' --kind plan >/dev/null && ft assign $t --to w1 >/dev/null && ft start $t >/dev/null || return 1
+  ft ask $t "${ASK_FLAGS[@]}" --next-actor owner >/dev/null && ft unblock $t >/dev/null || return 1
+  [ "$(clrow $t decision | jq -r .status)" = pending ] || { echo "firstmate's unblock passed the decision item: $(clrow $t decision)"; return 1; }
+  ft plan $t --document "$doc" >/dev/null || return 1
+  seq=$(seq_of)
+  ft plan-decision $t --decision approve --plan-seq "$seq"; must 'owner plan approval' 0 || return 1
+  clrow $t decision | jq -e --arg ev "event:$(seq_of)" '.status == "pass" and .evidence == $ev' >/dev/null || { echo "plan approval did not pass the decision item: $(clrow $t decision)"; return 1; }
+  # a revised plan takes the approval back; the owner's changes on it keep the item pending
+  ft plan $t --document "$doc" >/dev/null || return 1
+  [ "$(clrow $t decision | jq -r .status)" = pending ] || { echo "a revised plan kept the decision pass: $(clrow $t decision)"; return 1; }
+  ft plan-decision $t --decision changes --plan-seq "$(seq_of)" >/dev/null || return 1
+  [ "$(clrow $t decision | jq -r .status)" = pending ] || { echo "the owner's changes passed the decision item: $(clrow $t decision)"; return 1; }
+  # cl:ci follows the head of the newest done call, whatever order the ci results arrive in
+  t=tk-cl6
+  ft create $t --title 'Ship heads' --kind ship --surface user-visible >/dev/null && ft assign $t --to w1 >/dev/null && ft start $t >/dev/null || return 1
+  ft "done" $t "${DONE_FLAGS[@]}" --head h1 >/dev/null && ft event $t ci --head h1 --note 'CI green on the PR at head h1' >/dev/null || return 1
+  [ "$(clrow $t ci | jq -r .status)" = pass ] || { echo "green ci on the built head did not pass: $(clrow $t ci)"; return 1; }
+  ft changes $t --note 'push h2' >/dev/null && ft start $t >/dev/null && ft "done" $t "${DONE_FLAGS[@]}" --head h2 >/dev/null || return 1
+  [ "$(clrow $t ci | jq -r .status)" = pending ] || { echo "a new built head kept the old head's ci pass: $(clrow $t ci)"; return 1; }
+  ft event $t ci --head h2 --note 'CI green on the PR at head h2' >/dev/null || return 1
+  clrow $t ci | jq -e --arg ev "event:$(seq_of)" '.status == "pass" and .evidence == $ev' >/dev/null || { echo "green ci on the new head did not pass: $(clrow $t ci)"; return 1; }
+  ft event $t ci --head h1 --note 'CI failed on the PR at head h1: 1 check(s) did not pass' >/dev/null || return 1
+  [ "$(clrow $t ci | jq -r .status)" = pass ] || { echo "a late result for an older head reset the pass: $(clrow $t ci)"; return 1; }
+  # a done call without --head: the head the ci result reports
+  t=tk-cl7
+  ft create $t --title 'Ship no head' --kind ship --surface user-visible >/dev/null && ft assign $t --to w1 >/dev/null && ft start $t >/dev/null || return 1
+  ft "done" $t "${DONE_FLAGS[@]}" >/dev/null && ft event $t ci --head h9 --note 'CI green on the PR at head h9' >/dev/null || return 1
+  clrow $t ci | jq -e --arg ev "event:$(seq_of)" '.status == "pass" and .evidence == $ev' >/dev/null || { echo "green ci after a done without a head did not pass: $(clrow $t ci)"; return 1; }
+  # a user-visible ship: rows and gate skip cl: rows; tester, deploy and ci pass from the record
+  t=tk-cl2
+  ft create $t --title 'Ship probe' --kind ship --surface user-visible >/dev/null || return 1
+  [ "$(db fm_task_check | jq -c --arg t $t '[.[] | select(.taskId == $t) | .scenarioId] | sort')" = '["cl:ci","cl:deploy","cl:mockup","cl:tester"]' ] || { echo "ship template: $(db fm_task_check | jq -c --arg t $t '[.[] | select(.taskId == $t)]')"; return 1; }
+  use_issue v1
+  ft rows $t "$ISSUE"; must 'rows' 0 || return 1
+  case $OUT in *'total=4') ;; *) echo "rows counted cl: rows: $OUT"; return 1 ;; esac
+  use_issue v3
+  ft rows $t "$ISSUE" >/dev/null || return 1
+  [ "$(db fm_task_check | jq --arg t $t '[.[] | select(.taskId == $t and (.scenarioId | startswith("cl:")) and .status == "retired")] | length')" = 0 ] || { echo "rows retired a cl: row"; return 1; }
+  use_issue v1
+  ft rows $t "$ISSUE" >/dev/null || return 1
+  ft check $t cl:ci@- pass; must 'check on a cl: row' 2 || return 1
+  ft check $t A2@- off; must 'check off on a scenario row' 5 || return 1
+  ft assign $t --to w1 >/dev/null && ft start $t >/dev/null && ft "done" $t "${DONE_FLAGS[@]}" --head h1 >/dev/null || return 1
+  for rows in A1@1440 A1@390 A2@- A3@-; do ft check $t $rows pass --evidence https://example.com/e.png --head h1 >/dev/null || return 1; done
+  [ "$(clrow $t tester | jq -r .status)" = pass ] && [ "$(clrow $t deploy | jq -r .status)" = pending ] || { echo "tester/deploy before the deploy: $(clrow $t tester) $(clrow $t deploy)"; return 1; }
+  ft event $t deploy --head h1 --note deployed; must 'deploy' 0 || return 1
+  clrow $t deploy | jq -e --arg ev "event:$(seq_of)" '.status == "pass" and .evidence == $ev' >/dev/null || { echo "deploy item: $(clrow $t deploy)"; return 1; }
+  ft event $t ci --head h1 --note 'CI failed on the PR at head h1: 1 check(s) did not pass' >/dev/null || return 1
+  [ "$(clrow $t ci | jq -r .status)" = pending ] || { echo "a failed ci passed the item"; return 1; }
+  ft event $t ci --head h1 --note 'CI green on the PR at head h1' >/dev/null || return 1
+  [ "$(clrow $t ci | jq -r .status)" = pass ] || { echo "a green ci did not pass the item: $(clrow $t ci)"; return 1; }
+  ft gate $t --issue "$ISSUE" --head h1; must 'gate before approve' 5 || return 1
+  case $OUT in *cl:*) echo "gate names a cl: row: $OUT"; return 1 ;; esac
+  ft approve $t; must 'approve with mockup open' 5 || return 1
+  case $ERR in *'cl:mockup@- (pending)'*) ;; *) echo "the refusal does not name cl:mockup: $ERR"; return 1 ;; esac
+  ft checklist $t off mockup --reason '[probe] task không có UI' >/dev/null || return 1
+  ft checklist $t off tester --reason later >/dev/null && ft checklist $t on tester >/dev/null || return 1
+  [ "$(clrow $t tester | jq -r .status)" = pass ] || { echo "an item set on did not pass from the rows: $(clrow $t tester)"; return 1; }
+  ft approve $t; must 'approve with every item closed' 0 || return 1
+  ft checklist $t on mockup; must 'checklist on a closed task' 5 || return 1
+}
+
 # SG1 (#176 Step 5): every write folds the board card's step onto the row: stage by the step rule, stageSince only
 # when the step changes, lastEventAt and lastNote from the newest event that is not a backlog view row event,
 # reviewer from the newest check, owner-check, approved or changes event.
@@ -2189,6 +2317,7 @@ case_slice_c() {
   must 'done on plan without --document' 5 || return 1
   ft "done" "$tp" "${DONE_FLAGS[@]}" --document "$plan_file" --document-title 'Plan Deliverable'
   must 'done on plan with --document' 0 || return 1
+  cl_off "$tp" mockup decision || return 1
   ft approve "$tp" >/dev/null || return 1
   ft plan "$tp" --document "$plan_file"
   must 'plan on closed task' 5 || return 1
@@ -2209,6 +2338,7 @@ case_slice_c() {
   ft create "$tv" --title 'Video and evidence task' --kind ship --surface user-visible >/dev/null || return 1
   use_issue v1
   ft rows "$tv" "$ISSUE" >/dev/null || return 1
+  cl_off "$tv" ci mockup || return 1
   ft assign "$tv" --to w1 >/dev/null && ft start "$tv" >/dev/null || return 1
   ft comment "$tv" --video "$vid_file"
   must 'video without label' 2 || return 1
@@ -2271,6 +2401,7 @@ case_slice_c() {
   local tg=tk-sc-gate
   ft create "$tg" --title 'Gate bad event ref' --kind ship --surface user-visible >/dev/null || return 1
   ft rows "$tg" "$ISSUE" >/dev/null && ft assign "$tg" --to w1 >/dev/null && ft start "$tg" >/dev/null || return 1
+  cl_off "$tg" ci mockup || return 1
   ft "done" "$tg" "${DONE_FLAGS[@]}" --head h-g >/dev/null && ft event "$tg" deploy --note d --head h-g >/dev/null || return 1
   ft check "$tg" A1@1440 pass --evidence 'event:999999#image:1' --head h-g >/dev/null || return 1
   ft check "$tg" A1@390 pass --evidence https://example.com/1.png --head h-g >/dev/null || return 1
@@ -2282,7 +2413,138 @@ case_slice_c() {
   return 0
 }
 
-CASES=${FM_TASK_CASES:-"description_thread terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed long_notes status_view verify_view owner_writer stage wait carry slice_c"}
+# Plan v2 D2: the owner's model rules. rule writes fm_model_rule and logs a rules event on fm-model-rules; rules reads
+# the candidates of a state in rank order (enabled, in hours, account, scope), and with --task stops a task that has none.
+case_model_rules() {
+  BIN=$1; reset_db
+  export TZ=UTC
+  local night=2026-11-03T20:00:00Z day=2026-11-03T10:00:00Z sat=2026-10-31T10:00:00Z id1 id2 id3 n row q
+  rid() { sed -n 's/^rule=\([^ ]*\) .*/\1/p' <<<"$OUT"; }
+  ft rule add --state implement --harness opencode --model ds-flash --rank 1 --hours 17-07,sat,sun --note '[probe] D5'
+  must 'rule add' 0 || return 1
+  id1=$(rid)
+  ft rule add --state implement --harness pi --model sol --effort high --rank 2; id2=$(rid)
+  ft rule add --state implement --harness claude --model sonnet --rank 3 --account claude3; id3=$(rid)
+  ft rule add --state plan --harness claude --model opus --rank 1 >/dev/null
+  [ "$(count fm_model_rule)" = 4 ] || { echo "rules stored: $(count fm_model_rule)"; return 1; }
+  # the change log: a rules event per change on the record task, kept out of the board's home
+  [ "$(db fm_task_event | jq '[.[] | select(.taskId == "fm-model-rules" and .kind == "rules")] | length')" = 4 ] || { echo "rules events: $(db fm_task_event | jq -c '[.[] | select(.taskId == "fm-model-rules")]')"; return 1; }
+  [ "$(task_row fm-model-rules | jq -r .backlogHome)" = system ] || { echo "record task home: $(task_row fm-model-rules)"; return 1; }
+  # candidates: rank order, hours wrap past midnight, a day token, the account filter
+  ft rules --state implement --repo firstmate --at "$night"; must 'rules at night' 0 || return 1
+  [ "$(cut -d" " -f1 <<<"$OUT" | tr '\n' ' ')" = 'rank=1 rank=2 rank=3 ' ] && [[ $(head -1 <<<"$OUT") == *"model=ds-flash"*"id=$id1"* ]] || { echo "night: $OUT"; return 1; }
+  ft rules --state implement --repo firstmate --at "$day"
+  [[ $OUT != *ds-flash* ]] && [[ $(head -1 <<<"$OUT") == *"id=$id2"* ]] || { echo "an out-of-hours rule ran by day: $OUT"; return 1; }
+  ft rules --state implement --repo firstmate --at "$sat"
+  [[ $(head -1 <<<"$OUT") == *"id=$id1"* ]] || { echo "the sat token did not hold: $OUT"; return 1; }
+  ft rules --state implement --at "$night" --account claude2
+  [[ $OUT != *"id=$id3"* ]] || { echo "an account-bound rule ran for another account: $OUT"; return 1; }
+  # switched off, it is no candidate; the replayed key changes nothing again
+  ft rule set "$id1" --enabled false --key off-1; must 'rule set' 0 || return 1
+  ft rule set "$id1" --enabled true --key off-1; must 'rule set replay' 0 || return 1
+  [ "$(db fm_model_rule | jq -r --arg id "$id1" '.[] | select(.id == $id) | .enabled')" = false ] || { echo "a replayed key wrote the rule again"; return 1; }
+  ft rules --state implement --repo firstmate --at "$night"
+  [[ $OUT != *ds-flash* ]] || { echo "an off rule is still a candidate: $OUT"; return 1; }
+  # value checks: nothing stored
+  n=$(count fm_model_rule)
+  ft rule add --state implement --harness h --model m; must 'rule add without rank' 2 || return 1
+  ft rule add --state build --harness h --model m --rank 1; must 'rule add of an unknown state' 5 || return 1
+  ft rule add --state implement --harness h --model m --rank 1 --hours 'noon'; must 'rule add of bad hours' 5 || return 1
+  ft rule set no-such-id --rank 2; must 'rule set of a missing rule' 5 || return 1
+  [ "$(count fm_model_rule)" = "$n" ] || { echo "a refused rule was stored"; return 1; }
+  # a repo some rule names in its scope uses only those rules; all off, the task stops with the owner question
+  ft rule add --state implement --harness opencode --model ds-flash --rank 1 --scope probe-kdb --enabled false >/dev/null
+  ft rules --state implement --repo probe-kdb --at "$night"
+  [ -z "$OUT" ] || { echo "a scoped repo used the general rules: $OUT"; return 1; }
+  ft rules --state implement --repo firstmate --at "$night"
+  [[ $OUT == *"id=$id2"* ]] || { echo "the scoped rule hid the general rules from another repo: $OUT"; return 1; }
+  mk_ready tk-nm >/dev/null
+  ft rules --state implement --repo probe-kdb --at "$night" --task tk-nm
+  must 'no candidate with --task' 5 || return 1
+  row=$(task_row tk-nm)
+  [ "$(jq -r .state <<<"$row")" = blocked ] && [ "$(jq -r .nextActor <<<"$row")" = owner ] && [ "$(jq -r .blockReason <<<"$row")" = 'Không còn model cho Implement' ] \
+    || { echo "the task did not stop for the owner: $row"; return 1; }
+  q=$(db fm_event_question | jq -c '.[-1]')
+  jq -e '(.options | fromjson) == ["Bật opencode ds-flash", "Chờ quota"]' <<<"$q" >/dev/null || { echo "question options: $q"; return 1; }
+  grep -q 'waiting on owner: Không còn model cho Implement' "$FM_HOME/state/tk-nm.status" || { echo "no owner wait line"; return 1; }
+  n=$(count fm_task_event)
+  ft rules --state implement --repo probe-kdb --at "$night" --task tk-nm
+  must 'no candidate again' 5 || return 1
+  [ "$(count fm_task_event)" = "$n" ] || { echo "a second stop asked the owner twice"; return 1; }
+  # the board's owner actions run the same writer as the owner; empty values are left out
+  local ow_out
+  ow_out=$("$BIN/fm-task-owner.sh" --action rule-add --task fm-model-rules --state verify --harness claude --model opus --rank 4 --effort '' --hours '' --note '[probe] owner' --owner u-1 2>&1)
+  jq -e '.ok == true' <<<"$ow_out" >/dev/null || { echo "owner rule-add: $ow_out"; return 1; }
+  db fm_model_rule | jq -e '[.[] | select(.state == "verify" and .model == "opus" and .rank == 4 and .enabled == true and .effort == null and .note == "[probe] owner")] | length == 1' >/dev/null || { echo "owner rule row: $(db fm_model_rule)"; return 1; }
+  db fm_task_event | jq -e '.[-1] | .kind == "rules" and .actor == "owner:u-1" and .actorRole == "owner"' >/dev/null || { echo "owner rules event: $(db fm_task_event | jq -c '.[-1]')"; return 1; }
+  ow_out=$("$BIN/fm-task-owner.sh" --action rule-set --task fm-model-rules --rule "$id2" --enabled false --owner u-1 2>&1)
+  jq -e '.ok == true' <<<"$ow_out" >/dev/null && [ "$(db fm_model_rule | jq -r --arg id "$id2" '.[] | select(.id == $id) | .enabled')" = false ] || { echo "owner rule-set: $ow_out"; return 1; }
+  ow_out=$("$BIN/fm-task-owner.sh" --action rule-set --task tk-nm --rule "$id2" --enabled true --owner u-1 2>&1)
+  jq -e '.ok == false' <<<"$ow_out" >/dev/null || { echo "a rule action on another task ran: $ow_out"; return 1; }
+  # delete
+  ft rule delete "$id3"; must 'rule delete' 0 || return 1
+  db fm_model_rule | jq -e --arg id "$id3" 'all(.[]; .id != $id)' >/dev/null || { echo "the deleted rule is still stored"; return 1; }
+  return 0
+}
+
+# Plan v2 D3: a round of owner questions on one task, each answered by its seq; owner questions never go to triage,
+# while a worker's third block of one kind to firstmate still does (D8, D9, D12).
+case_question_round() {
+  BIN=$1; reset_db
+  export FM_HOME="$TMP_ROOT/round-home"
+  rm -rf "$FM_HOME"; mkdir -p "$FM_HOME/state"
+  local t=tk-qr q1 q2 q3 row f ow_out
+  q() { ft ask $t --question "$1" --option 'Yes' --option 'No' --recommendation 'Yes' --why 'probe' --next-actor owner; }
+  mk_running $t >/dev/null || return 1
+  q '[probe] Q1'; must 'first owner ask' 0 || return 1; q1=$(seq_of)
+  q '[probe] Q2'; must 'second owner ask from blocked' 0 || return 1; q2=$(seq_of)
+  q '[probe] Q3'; must 'third owner ask from blocked' 0 || return 1; q3=$(seq_of)
+  row=$(task_row $t)
+  [ "$(jq -r .state <<<"$row")" = blocked ] && [ "$(jq -r .nextActor <<<"$row")" = owner ] && [ "$(jq -r .blockRepeats <<<"$row")" = 0 ] \
+    || { echo "a round of owner asks left: $row"; return 1; }
+  [ "$(db fm_task_event | jq --arg t $t '[.[] | select(.taskId == $t and .kind == "needs-decision")] | length')" = 3 ] || { echo "the round is not three questions"; return 1; }
+  ft resume $t
+  [[ $OUT == *'OPEN QUESTIONS (3)'*'[probe] Q1'*'[probe] Q2'*'[probe] Q3'* ]] || { echo "resume: $OUT"; return 1; }
+  # only an owner question joins the round
+  ft ask $t "${ASK_FLAGS[@]}"; must 'a question to firstmate from blocked' 5 || return 1
+  # an answer names an open question and one of its options
+  ft answer $t --question 999999 --option Yes; must 'answer to no open question' 5 || return 1
+  ft answer $t --question "$q1" --option Maybe; must 'answer with an option the question lacks' 5 || return 1
+  ft answer $t --question "$q1"; must 'answer with neither option nor note' 2 || return 1
+  ft answer $t --question "$q1" --option Yes --key a1; must 'answer one' 0 || return 1
+  [ "$(task_state $t)" = blocked ] && [ "$(task_row $t | jq -r .nextActor)" = owner ] || { echo "the first answer moved the task: $(task_row $t)"; return 1; }
+  [ "$(task_row $t | jq -r .blockReason)" = '[probe] Q2' ] || { echo "the reason is not the next open question: $(task_row $t)"; return 1; }
+  ft answer $t --question "$q1" --option No; must 'a second answer to an answered question' 5 || return 1
+  f="$FM_HOME/state/$t.status"
+  [ "$(grep -c '^resolved .*the wait on owner cleared: answered' "$f")" = 1 ] || { echo "the first answer cleared $(grep -c '^resolved' "$f") waits"; return 1; }
+  ft answer $t --question "$q2" --option No --note 'not now'; must 'answer two' 0 || return 1
+  [ "$(task_state $t)" = blocked ] || { echo "the second answer moved the task"; return 1; }
+  # the board's one tap: the owner script answers by seq
+  ow_out=$("$BIN/fm-task-owner.sh" --action answer --task $t --question "$q3" --option Yes --owner u-1 2>&1)
+  jq -e '.ok == true' <<<"$ow_out" >/dev/null || { echo "owner answer: $ow_out"; return 1; }
+  row=$(task_row $t)
+  [ "$(jq -r .state <<<"$row")" = ready ] && [ "$(jq -r .nextActor <<<"$row")" = worker ] || { echo "the last answer did not return the task: $row"; return 1; }
+  db fm_task_event | jq -e --arg t $t --argjson q1 "$q1" --argjson q2 "$q2" --argjson q3 "$q3" '[.[] | select(.taskId == $t and .kind == "answered") | (.body | fromjson | .answer.question)] == [$q1, $q2, $q3]' >/dev/null \
+    || { echo "answered events: $(db fm_task_event | jq -c --arg t $t '[.[] | select(.taskId == $t and .kind == "answered") | .body]')"; return 1; }
+  db fm_task_event | jq -e --arg t $t '[.[] | select(.taskId == $t and .kind == "answered")][-1] | .actor == "owner:u-1" and .actorRole == "owner"' >/dev/null || { echo "the owner answer is not the owner's"; return 1; }
+  [ "$(grep -c '^resolved .*the wait on owner cleared: answered' "$f")" = 3 ] || { echo "not every question's wait cleared"; return 1; }
+  ft resume $t; [[ $OUT == *'OPEN QUESTIONS (0)'* ]] || { echo "resume after the round: $OUT"; return 1; }
+  # a transient block is no owner round: an owner ask is refused there
+  ft start $t >/dev/null; ft block transient $t --reason waiting --next-actor firstmate >/dev/null
+  q '[probe] Q4'; must 'an owner ask on a transient block' 5 || return 1
+  # D12: a worker's third failure block to firstmate still goes to triage
+  ft unblock $t >/dev/null; ft start $t >/dev/null
+  local i
+  for i in 1 2; do
+    ft block failure $t --reason 'same blocker' --next-actor firstmate >/dev/null; ft unblock $t >/dev/null; ft start $t >/dev/null
+  done
+  ft block failure $t --reason 'same blocker' --next-actor firstmate; must 'third failure block' 0 || return 1
+  row=$(task_row $t)
+  [ "$(jq -r .state <<<"$row")" = triage ] && [ "$(jq -r .nextActor <<<"$row")" = firstmate ] || { echo "the third failure block did not go to triage: $row"; return 1; }
+  return 0
+}
+
+CASES=${FM_TASK_CASES:-"description_thread terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed long_notes status_view verify_view owner_writer stage wait carry slice_c model_rules checklist question_round"}
 
 # ---- real command -------------------------------------------------------------------
 
@@ -2376,7 +2638,7 @@ mutate 'a deploy after the newest done is dev' stage "if (event.kind === 'deploy
 mutate 'a pr event after the newest started is pr' stage "if (event.kind === 'pr') pullRequest = true;" ";"
 mutate 'stageSince moves only when the step changes' stage "if (stage !== task.stage) Object.assign(task, { stage, stageSince: event.createdAt ?? null });" "Object.assign(task, { stage, stageSince: event.createdAt ?? null });"
 mutate 'the reviewer is the actor of the newest review event' stage "if (REVIEWER_KINDS.includes(event.kind)) task.reviewer = event.actor ?? null;" ";"
-mutate 'a row event does not move lastNote or lastEventAt' stage "if (event.kind !== 'row') {" "if (true) {"
+mutate 'a row event does not move lastNote or lastEventAt' stage "if (event.kind !== 'row' && event.kind !== 'checklist') {" "if (event.kind !== 'checklist') {"
 mutate 'a machine record does not become lastNote' stage "if (!isMachineRecord(event, note)) task.lastNote" "task.lastNote"
 mutate 'a machine record is one only under its own key' stage "if (!Object.hasOwn(MACHINE_RECORDS, prefix) || taskId !== event.taskId) return false;" ";"
 mutate 'a reconcile divergence is a machine record' stage "{ backfill: 'sha256,source', reconcile: 'field,oldSource,record' }" "{ backfill: 'sha256,source' }"
@@ -2420,7 +2682,7 @@ mutate 'a wait writes its keyed paused line' wait "if (event.kind === 'wait') {"
 mutate 'a cleared wait gets its resolved line' wait "    if (!by) continue;" "    continue;"
 mutate 'rows clear a wait only when every asked row has a result' wait "asked.every((key) =>" "asked.some((key) =>"
 mutate 'deliver resolves a wait that another home cleared' wait "  await waitView(taskIdOf(args), taskStream);" ""
-mutate 'a question to the owner waits on the answer' wait "nextActor === 'owner' ? () => waitOn(" "false ? () => waitOn("
+mutate 'a question to the owner waits on the answer' wait "nextActor === 'owner' ? (result) => waitOn(" "false ? (result) => waitOn("
 mutate 'a PR-ready done waits after its own line' wait "  if (wait) await wait(result);
   await waitView(taskId);" "  await waitView(taskId);"
 mutate 'only a merged pr event clears a merge wait' wait "e.kind === 'pr' && /\\bmerged\\b/i.test(" "e.kind === 'pr' && /./.test("
@@ -2440,6 +2702,36 @@ mutate 'approve replaces video evidence with Tester screenshot' slice_c 'if (!re
 mutate 'check --evidence-image records event:<seq>#image:1' slice_c 'evidence = `event:${imgRes.event.seq}#image:1`;' 'evidence = null;'
 mutate 'gate checks event:<seq>#image:<n> references' slice_c 'if (!(await eventEvidenceExists(events, ev))) problems.push' 'if (false) problems.push'
 mutate 'link event requires http or https --url' slice_c "if (kind === 'link' && (!url || !/^https?:\\/\\/\\S+\$/.test(url) || url.length > 2048)) throw rule" 'if (false) throw rule'
+mutate 'create writes the checklist template' checklist 'await applyChecklist(taskId);
+    },' '},'
+mutate 'rows leaves cl: rows alone' checklist '.filter((row) => !isChecklist(row)).map((row) => [rowKey(row), row]));' '.map((row) => [rowKey(row), row]));'
+mutate 'a write passes the items the record proves' checklist 'if (await syncChecklist(taskId)) projected = await project(taskId);' ';'
+mutate 'checklist off needs a reason' checklist "if (verb === 'off' && !reason?.trim()) throw usage" 'if (false) throw usage'
+mutate 'an open question keeps the decision item open' checklist "if (task.blockKind === 'needs-decision' && task.state === 'blocked') return null;" ''
+mutate 'only a green ci passes the ci item' checklist '/\bCI green\b/.test(bodyOf(ci).note' 'true || (bodyOf(ci).note'
+mutate 'firstmate'"'"'s unblock is not the owner'"'"'s answer' checklist "e.kind === 'unblocked' && e.actorRole === 'owner'" "e.kind === 'unblocked'"
+mutate 'the owner'"'"'s plan approval passes the decision item' checklist 'if (approval) return' 'if (false) return'
+mutate 'a passed ci or decision item is checked again' checklist "(r.status === 'pass' && RECHECKED.includes(r.scenarioId))" 'false'
+mutate 'a done without a head reads the ci result'"'"'s head' checklist "const head = built ?? (" "const head = built ?? (false && "
+mutate 'ci reads only the built head' checklist "newest((e) => e.kind === 'ci' && bodyOf(e).head === head)" "newest((e) => e.kind === 'ci')"
+mutate 'rules lists only enabled rules' model_rules "r.enabled === true && inHours(" "inHours("
+mutate 'an hour range wraps past midnight' model_rules ": hour >= from || hour < to;" ": false;"
+mutate 'a repo named in a scope uses only its scoped rules' model_rules "(scoped.length ? scoped : forState.filter((r) => !r.scope))" "forState"
+mutate 'rules with --task stops a task that has no candidate' model_rules "  await stopForNoModel(taskIdOf(args)" "  if (false) await stopForNoModel(taskIdOf(args)"
+mutate 'a missing model asks the owner once while it is open' model_rules ".some((e) => bodyOf(e).set?.blockReason === question)) throw rule" ".some(() => false)) throw rule"
+mutate 'a re-sent rule key writes nothing again' model_rules "  const prior = await eventByKey(who.key);
+  if (prior) {
+    out(" "  const prior = null;
+  if (prior) {
+    out("
+mutate 'an owner ask joins a round of open owner questions' question_round "    if (!round) guard('ask', task);" "    guard('ask', task);"
+mutate 'an owner question leaves blockRepeats as it was' question_round "    const set = nextActor === 'owner'" "    const set = false"
+mutate 'an answered event closes only its question' question_round "    else if (e.kind === 'answered') open = open.filter((call) => call.seq !== bodyOf(e).answer?.question);" ""
+mutate 'only the last answer returns the task to its worker' question_round "    const set = left.length
+      ?" "    const set = false
+      ?"
+mutate 'an answer must be one of the question options' question_round "if (!options.includes(f.option)) throw rule" "if (false) throw rule"
+mutate 'each owner question waits on its own answer' question_round "(question ? bodyOf(e).answer?.question === question :" "(question ? true :"
 mutate_owner() {  # <label> <exact wrapper text> <replacement>: the owner_writer case goes red
   cp "$TMP_ROOT/fm-task-lib.mjs.orig" "$LIB"
   cp "$TMP_ROOT/fm-task-owner.sh.orig" "$MBIN/fm-task-owner.sh"
