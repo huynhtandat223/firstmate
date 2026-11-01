@@ -1219,7 +1219,7 @@ BASE_BRANCH=$(grep '^base_branch=' "$META" | cut -d= -f2- || true)
 TEARDOWN_VERIFY_ITEMS=
 TEARDOWN_VERIFY_LINES=
 if [ "$KIND" = ship ] && [ "$(fm_meta_get "$META" surface)" = user-visible ]; then
-  TEARDOWN_VERIFY_LINES=$(fm_verify_gate_problems "$DATA" "$ID" "$FM_HOME") || TEARDOWN_VERIFY_LINES=
+  TEARDOWN_VERIFY_LINES=$(fm_verify_gate_problems "$DATA" "$ID" "$FM_HOME") || :
   TEARDOWN_VERIFY_ITEMS=$(printf '%s\n' "$TEARDOWN_VERIFY_LINES" | awk 'NF { printf "%s%s", sep, $0; sep = "; " }')
 fi
 
