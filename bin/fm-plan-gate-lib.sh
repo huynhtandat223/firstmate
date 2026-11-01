@@ -76,14 +76,27 @@ fm_plan_gate_issue() {  # <issue-url> [--any-state]; a closed issue still yields
 
 # A plan exemption names a spawn that carries no plan, so no approval applies.
 # `verify` covers only a deploy-verify Tester: a scout whose id is verify-<task>-<sha7>,
-# with the adapter's optional -<n> suffix for a reused id.
+# with the adapter's optional -<n> suffix for a reused id, and whose brief holds the
+# adapter's fm-tester-verify.v1 ask for that same task and sha under `### The ask`.
+# The check stops a scout whose own instructions are not a verify ask; like
+# --plan-exception, it does not stop a caller who writes such an ask by hand.
 # On success FM_PLAN_GATE_EXEMPTION holds the backlog line the spawn records.
-fm_plan_gate_exemption() {  # <name> <kind> <task-id>
+fm_plan_gate_exemption() {  # <name> <kind> <task-id> <brief>
+  local ask
   FM_PLAN_GATE_EXEMPTION=
   case "$1" in
     verify)
       if [ "$2" != scout ] || ! [[ $3 =~ ^verify-.+-[0-9a-f]{7}(-[0-9]+)?$ ]]; then
         FM_PLAN_GATE_REASON='the verify exemption covers only a verify-<task>-<sha7>[-<n>] scout'
+        return 1
+      fi
+      ask=$(awk '/^### The ask$/{f=1;next} f && /^```json$/{j=1;next} j && /^```$/{exit} j{print}' "${4:-/dev/null}" 2>/dev/null)
+      # shellcheck disable=SC2016 # jq variables
+      if ! jq -e --arg id "$3" '.schema == "fm-tester-verify.v1"
+          and (.task | type == "string") and ((.head // .sha) | type == "string")
+          and ("verify-\(.task)-\((.head // .sha)[0:7])") as $base
+          | ($id == $base or ($id | startswith($base + "-")))' <<<"$ask" >/dev/null 2>&1; then
+        FM_PLAN_GATE_REASON="the verify exemption needs the brief's deploy-verify ask for the same task and sha ($4)"
         return 1
       fi
       FM_PLAN_GATE_EXEMPTION='Plan exemption (verify): a deploy-verify Tester checks delivered work and carries no plan'
