@@ -14,7 +14,9 @@
 //   assign   <task> --to ASSIGNEE            triage|todo|ready -> ready (todo while a parent is open)
 //   reassign <task> --to ASSIGNEE --reason WHY  changes only assignee; refused from done and archived
 //   start    <task>                          ready -> running
-//   setup    <task> --file JSON [--by firstmate|owner]   {"steps":[{state,harness,model,effort,fallbacks:[{harness,model,effort}]}]}:
+//   setup    <task> --file JSON [--by firstmate|owner]   {"steps":[{state,harness,model,effort,fallbacks:[{harness,model,effort}]}]}
+//            or --from-rules --states implement,merge,... [--repo R] [--account A] [--at ISO]: each state's first `rules`
+//            candidate with the rest as fallbacks (source rule, ruleIds); a state with none stops the task as `rules --task` does:
 //            the states the task needs, in workflow order (plan implement testing merge verify; Merge has no model).
 //            Writes one fm_task_step row per state; a pending state left out becomes skipped. Once a state has
 //            started, the list of states is fixed (exit 5 otherwise); a state that has run keeps the runtime it ran
@@ -425,7 +427,7 @@ async function project(taskId) {
 // ---- arguments --------------------------------------------------------------------------------------------
 const COMMON = { actor: 's', role: 's', key: 's', note: 's', task: 's', json: 'b' };
 const SPECS = {
-  setup: { pos: ['task'], flags: { file: 's', by: 's' } },
+  setup: { pos: ['task'], flags: { file: 's', by: 's', 'from-rules': 'b', states: 's', repo: 's', account: 's', at: 's' } },
   move: { pos: ['task'], flags: { to: 's' } },
   step: { pos: ['task', 'action'], flags: { harness: 's', model: 's', effort: 's', account: 's', reason: 's', generation: 's' } },
   create: { pos: ['task'], flags: { title: 's', kind: 's', repo: 's', issue: 's', surface: 's', after: 'm' } },
@@ -899,12 +901,46 @@ async function saveStep(taskId, step) {
   const old = await firstRow('fm_task_step', `taskId eq ${lit(taskId)} and state eq ${lit(step.state)}`);
   return ok(await http(old ? 'PATCH' : 'POST', old ? `/api/fm_task_step/${old.id}` : '/api/fm_task_step', { taskId, ...step }), 'write step');
 }
+// A setup built from the owner's model rules (plan v2 D2): each state's first candidate now is its runtime and the rest
+// are its fallbacks, in rank order; Merge has no model. A state with no candidate stops the task with the owner question.
+async function stepsFromRules(taskId, f, who) {
+  const states = String(f.states ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+  if (!states.length) throw usage('setup --from-rules needs --states implement,merge,...');
+  const task = fold(await taskEvents(taskId));
+  if (!task) throw rule('setup requires an open task');
+  const repo = f.repo ?? task.repo ?? undefined;
+  const at = f.at === undefined ? new Date() : new Date(isoOf(f.at, '--at'));
+  const rows = await listAll('fm_model_rule', { orderby: 'id' });
+  const steps = [];
+  for (const state of states) {
+    if (state === 'merge') {
+      steps.push({ state });
+      continue;
+    }
+    const { pool, live } = ruleCandidates(rows, { state: oneOf(RULE_STATES, state, 'state'), repo, account: f.account, at });
+    if (!live.length) {
+      await stopForNoModel(taskId, { state, repo, at, pool }, { ...who, key: `${who.key}:no-model:${state}` });
+      throw rule(`no ${state} rule can run for ${repo ?? 'every repo'} now; ${taskId} waits on the owner`);
+    }
+    const [first, ...rest] = live;
+    const ids = [];
+    for (const r of live) if ([...ids, r.id].join(',').length <= 500) ids.push(r.id);
+    steps.push({ state, harness: first.harness, model: first.model, effort: first.effort ?? undefined, source: 'rule', ruleIds: ids.join(','),
+      fallbacks: rest.map((r) => ({ harness: r.harness, model: r.model, ...(r.effort ? { effort: r.effort } : {}) })) });
+  }
+  return steps;
+}
+
 async function cmdSetup(args) {
   const taskId = taskIdOf(args);
-  if (!args.flags.file) throw usage('setup needs --file');
+  const fromRules = args.flags['from-rules'] === true;
+  if (fromRules === Boolean(args.flags.file)) throw usage('setup needs --file or --from-rules, not both');
   const by = oneOf(['firstmate', 'owner'], args.flags.by ?? 'firstmate', 'setup by');
   let input;
-  try { input = JSON.parse(fs.readFileSync(args.flags.file, 'utf8')); } catch { throw usage('setup file must contain JSON'); }
+  if (fromRules) input = { steps: await stepsFromRules(taskId, args.flags, identity(args, 'firstmate')) };
+  else {
+    try { input = JSON.parse(fs.readFileSync(args.flags.file, 'utf8')); } catch { throw usage('setup file must contain JSON'); }
+  }
   const steps = Array.isArray(input) ? input : input.steps;
   if (!Array.isArray(steps) || !steps.length) throw usage('setup needs a nonempty steps array');
   let position = -1;
@@ -917,7 +953,7 @@ async function cmdSetup(args) {
     for (const candidate of s.fallbacks ?? []) {
       if (!candidate || typeof candidate.harness !== 'string' || !candidate.harness.trim() || typeof candidate.model !== 'string' || !candidate.model.trim()) throw usage('each fallback needs harness and model');
     }
-    return { state: s.state, position: index, harness: s.state === 'merge' ? null : s.harness, model: s.state === 'merge' ? null : s.model, effort: s.state === 'merge' ? null : s.effort ?? null, fallbacks: JSON.stringify(s.fallbacks ?? []), source: by, ruleIds: s.ruleIds ?? null };
+    return { state: s.state, position: index, harness: s.state === 'merge' ? null : s.harness, model: s.state === 'merge' ? null : s.model, effort: s.state === 'merge' ? null : s.effort ?? null, fallbacks: JSON.stringify(s.fallbacks ?? []), source: s.source === 'rule' ? 'rule' : by, ruleIds: s.ruleIds ?? null };
   });
   return write(taskId, identity(args, 'firstmate'), async ({ task }) => {
     if (!task || CLOSED.includes(task.state)) throw rule('setup requires an open task');
