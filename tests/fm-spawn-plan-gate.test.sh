@@ -85,7 +85,7 @@ pass 'exception skips GitHub'
 # A deploy-verify Tester carries no plan: the gate's verify exemption launches it
 # with no Description and no GitHub read, and records the exemption.
 tester=verify-alpha-1234567
-for label in verify-gated verify-exempt verify-exempt-ship verify-exempt-name verify-exempt-unknown; do
+for label in verify-gated verify-exempt verify-exempt-ship verify-exempt-name verify-exempt-loose verify-exempt-unknown; do
   new_case "$label" ''
   fm_test_spawn_brief "$home" "$tester"
   tasks-axi add "$tester" 'Verify alpha' --kind scout --file "$home/data/backlog.md" >/dev/null
@@ -94,6 +94,11 @@ for label in verify-gated verify-exempt verify-exempt-ship verify-exempt-name ve
     verify-exempt) args=("$tester" "$home/projects/demo" --scout --plan-exempt verify) ;;
     verify-exempt-ship) args=(gate "$home/projects/demo" --mode direct-PR --yolo off --plan-exempt verify) ;;
     verify-exempt-name) args=(gate "$home/projects/demo" --scout --plan-exempt verify) ;;
+    verify-exempt-loose)
+      fm_test_spawn_brief "$home" verify-foo
+      tasks-axi add verify-foo 'Not a Tester' --kind scout --file "$home/data/backlog.md" >/dev/null
+      args=(verify-foo "$home/projects/demo" --scout --plan-exempt verify)
+      ;;
     verify-exempt-unknown) args=("$tester" "$home/projects/demo" --scout --plan-exempt other) ;;
   esac
   out=$(fm_test_run_spawn "$home" "$home/pane" "$fakebin" "${args[@]}" 2>&1)
@@ -116,7 +121,7 @@ for label in verify-gated verify-exempt verify-exempt-ship verify-exempt-name ve
       ;;
   esac
   if [ "$label" != verify-exempt ]; then
-    [ ! -e "$home/state/$tester.meta" ] && [ ! -e "$home/state/gate.meta" ] || fail "$label wrote meta"
+    [ ! -e "$home/state/$tester.meta" ] && [ ! -e "$home/state/gate.meta" ] && [ ! -e "$home/state/verify-foo.meta" ] || fail "$label wrote meta"
     [ ! -e "$fakebin/.spawn-window" ] || fail "$label created endpoint"
   fi
   pass "$label at spawn boundary"
