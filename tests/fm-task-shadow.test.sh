@@ -20,6 +20,8 @@ mk_writer() {  # <dir>: a fake bin/fm-task.sh that records one line per call
   cat > "$1/fake-writer" <<'SH'
 #!/usr/bin/env bash
 if [ "${1:-}" = show ]; then printf '{"state":"%s"}\n' "${FAKE_STATE:-running}"; exit 0; fi
+# a call matching $FAKE_LATE is recorded 1.5 s late, once, as an API that answers late
+case "$*" in *"${FAKE_LATE:-@none@}"*) [ -e "$FAKE_CALLS.late" ] || { : > "$FAKE_CALLS.late"; sleep 1.5; } ;; esac
 printf '%s\n' "$*" >> "$FAKE_CALLS"
 printf 'auth=%s url=%s token=%s\n' "${FM_TASK_AUTH:-}" "${FM_TASK_BASE_URL:-}" "${FM_TASK_TOKEN_FILE:-}" >> "$FAKE_CALLS.env"
 [ -z "${FAKE_HANG:-}" ] || sleep "$FAKE_HANG"
@@ -46,7 +48,7 @@ make_case() {  # <name> <on|off>
   mk_writer "$CASE_DIR"
   WRITER="$CASE_DIR/fake-writer"
   CALLS="$CASE_DIR/calls.log"
-  : > "$CALLS"
+  : > "$CALLS"; : > "$CALLS.env"; rm -f "$CALLS.failed" "$CALLS.late"
   [ "$2" = off ] || : > "$HOME_DIR/config/task-shadow"
 }
 
@@ -426,55 +428,142 @@ wait_calls() {  # <seconds> <extended regex>: wait until a recorded writer call 
   return 1
 }
 
-# Tester kdb-d1 D2: a stopped worker's dot stayed alive for minutes, because the watcher wrote one task's liveness per
-# pass, then for a minute because one supervision cycle takes that long on a busy home. Every task's liveness reaches the
-# record within one step pass, even while a cycle is still running, and the writer runs only on a change, across restarts.
-test_watcher_writes_every_task_liveness_each_pass() {
-  local t steps
-  make_case watcher-step on
+# Tester kdb-d1 D2: a stopped worker's dot stayed alive for minutes, first because the watcher wrote one task's liveness
+# per pass, then because the step pass lived inside the watcher, which does not run while firstmate handles a wake.
+# bin/fm-task-step-loop.sh is one loop per home beside the watcher: every task's liveness reaches the record within one
+# pass with no watcher running, the writer runs only on a change, across restarts.
+
+loop() {  # <mode>: run bin/fm-task-step-loop.sh in the case home at a 1 s interval
+  env FM_ROOT_OVERRIDE='' FM_HOME="$HOME_DIR" FM_CONFIG_OVERRIDE="$HOME_DIR/config" FM_STATE_OVERRIDE="$HOME_DIR/state" \
+    FM_DATA_OVERRIDE="$HOME_DIR/data" FM_TASK_SHADOW_WRITER="$WRITER" FAKE_CALLS="$CALLS" FAKE_WINDOWS="$CASE_DIR/windows" \
+    PATH="$FAKEBIN:$PATH" FM_TASK_STEP_EVERY=1 "${SBIN:-$ROOT/bin}/fm-task-step-loop.sh" "$1"
+}
+loop_pid() { cat "$HOME_DIR/state/.task-step-loop.lock/pid" 2>/dev/null || true; }
+
+# A live session: a process named in state/.lock, bounded so an escaped one ends on its own. Sets SESSION.
+hold_session() {
+  sleep "$FM_TEST_STUB_MAX_BLOCK_SECONDS" &
+  SESSION=$!
+  printf '%s\n' "$SESSION" > "$HOME_DIR/state/.lock"
+}
+end_session() { kill "$SESSION" 2>/dev/null || true; wait "$SESSION" 2>/dev/null || true; }
+fm_pid_alive_test() { kill -0 "$1" 2>/dev/null; }
+
+make_step_case() {  # <name>: five tasks, each with a live window
+  local t
+  make_case "$1" on
   FAKEBIN=$(make_live_fakebin "$CASE_DIR")
-  fm_test_track_watcher_state "$HOME_DIR/state"
   printf '%s\n' w1 w2 w3 w4 w5 > "$CASE_DIR/windows"
   for t in 1 2 3 4 5; do printf 'window=fmses:w%s\nharness=claude\nspawn_gen=g%s\n' "$t" "$t" > "$HOME_DIR/state/t$t.meta"; done
+  hold_session
+}
+
+test_step_loop_writes_every_task_liveness() {
+  local steps first out
+  make_step_case step-loop
   # t3's first write gets no answer from the API (3), so the next pass tries it again
-  FAKE_FAIL='step t3' FAKE_FAIL_ONCE=1 FAKE_FAIL_CODE=3 start_watcher
-  # five tasks and a 1 s poll: one task per pass needs five passes, every task per pass needs one
-  wait_calls 3 '^step t5 alive' || { stop_watcher; fail "the fifth task's liveness did not reach the record within one pass: $(cat "$CALLS")"; }
-  wait_count 3 '^step t3 ' 2 || true  # the next step pass tries t3 again
+  out=$(FAKE_FAIL='step t3' FAKE_FAIL_ONCE=1 FAKE_FAIL_CODE=3 loop start)
+  assert_contains "$out" "task-step-loop: started pid=" "the first start starts the loop"
+  first=$(loop_pid)
+  out=$(loop start)
+  assert_equals "task-step-loop: running pid=$first" "$out" "a second start keeps the one loop of the home"
+  wait_calls 3 '^step t5 alive' || { loop stop; end_session; fail "the fifth task's liveness did not reach the record within one pass: $(cat "$CALLS")"; }
+  wait_count 3 '^step t3 ' 2 || true
   steps=$(grep -c '^step ' "$CALLS")
-  [ "$steps" -eq 6 ] || { stop_watcher; fail "five tasks and one unanswered call should make six step calls, got $steps: $(cat "$CALLS")"; }
+  [ "$steps" -eq 6 ] || { loop stop; end_session; fail "five tasks and one unanswered call should make six step calls, got $steps: $(cat "$CALLS")"; }
+  # no watcher runs in this home: a pane closed now still stops its dot within one interval
   printf '%s\n' w1 w3 w4 w5 > "$CASE_DIR/windows"
-  wait_calls 3 '^step t2 dead --generation g2$' || { stop_watcher; fail "a worker gone did not stop its dot within one pass: $(cat "$CALLS")"; }
-  # delivery stays one task per pass: wait until it has visited every task, several passes after the change
-  wait_calls 15 '^deliver t5 ' || { stop_watcher; fail "delivery did not reach t5: $(cat "$CALLS")"; }
-  stop_watcher
+  wait_calls 3 '^step t2 dead --generation g2$' || { loop stop; end_session; fail "a worker gone did not stop its dot within 3 s with no watcher: $(cat "$CALLS")"; }
+  sleep 2
+  out=$(loop stop)
+  assert_equals "task-step-loop: stopped pid=$first" "$out" "stop ends the loop"
+  assert_absent "$HOME_DIR/state/.task-step-loop.lock" "a stopped loop releases its lock"
   assert_equals "$(printf '%s\n' 'step t1 alive --generation g1' 'step t2 alive --generation g2' 'step t3 alive --generation g3' 'step t4 alive --generation g4' 'step t5 alive --generation g5' 'step t3 alive --generation g3' 'step t2 dead --generation g2')" \
     "$(grep '^step ' "$CALLS")" "the writer runs once per task and once per change, and again only after no answer"
-  for t in 1 2 3 4 5; do grep -q "^deliver t$t --consumer" "$CALLS" || fail "delivery skipped t$t: $(cat "$CALLS")"; done
   : > "$CALLS"; rm -f "$CALLS.failed"
   # t1 relaunched as g1b, and the writer refuses its report by a rule (5): a refusal is settled, not tried every pass
   sed -i.bak 's/^spawn_gen=g1$/spawn_gen=g1b/' "$HOME_DIR/state/t1.meta"
-  # restarted as the arm restarts it after a handled wake, so no recovery notice ends it after one pass
-  FAKE_FAIL='step t1' FM_WATCH_HANDLING_SUCCESSOR=1 start_watcher
-  wait_calls 15 '^deliver t4 ' || { stop_watcher; fail "the restarted watcher did not make four passes: $(cat "$CALLS" "$CASE_DIR/watch.out")"; }
-  stop_watcher
-  assert_equals 'step t1 alive --generation g1b' "$(grep '^step ' "$CALLS")" "a restarted watcher writes only the changed task, and a refused write once"
-  # a supervision cycle held for about 16 s by slow pane reads: a pane closed meanwhile still stops its dot within seconds
-  : > "$CALLS"; : > "$CASE_DIR/slow"; rm -f "$CASE_DIR/slow.started"
-  FM_WATCH_HANDLING_SUCCESSOR=1 start_watcher
-  t=0; while [ ! -e "$CASE_DIR/slow.started" ] && [ "$t" -lt 100 ]; do sleep 0.1; t=$((t + 1)); done
-  [ -e "$CASE_DIR/slow.started" ] || { stop_watcher; fail "the cycle never read a pane: $(cat "$CASE_DIR/watch.out")"; }
-  printf '%s\n' w1 w4 w5 > "$CASE_DIR/windows"
-  wait_calls 4 '^step t3 dead --generation g3$' || { stop_watcher; fail "a pane closed during a long cycle did not stop its dot within 4 s: $(cat "$CALLS")"; }
-  stop_watcher
-  rm -f "$CASE_DIR/slow"
-  # the step loop stops with its watcher: a pane closed after the watcher stopped writes nothing
-  : > "$CALLS"; printf '%s\n' w4 w5 > "$CASE_DIR/windows"; sleep 3
-  assert_equals "" "$(grep '^step ' "$CALLS")" "no step pass runs after the watcher stopped"
-  pass "watcher: every task's liveness reaches the record within one step pass, also during a long cycle, once per change, across restarts; no answer is tried again, a refusal is not; delivery still visits every task"
+  FAKE_FAIL='step t1' loop start >/dev/null
+  wait_calls 3 '^step t1 ' || { loop stop; end_session; fail "the restarted loop did not write t1: $(cat "$CALLS")"; }
+  sleep 3
+  loop stop >/dev/null
+  end_session
+  assert_equals 'step t1 alive --generation g1b' "$(grep '^step ' "$CALLS")" "a restarted loop writes only the changed task, and a refused write once"
+  pass "step loop: one loop per home writes every task's liveness within one pass with no watcher running, once per change, across restarts; no answer is tried again, a refusal is not"
 }
 
-test_watcher_writes_every_task_liveness_each_pass
+# The loop ends with the session: a home whose session lock names a dead pid, or has none, runs no loop.
+test_step_loop_ends_with_the_session() {
+  local pid t=0
+  make_step_case step-loop-session
+  loop start >/dev/null
+  pid=$(loop_pid)
+
+  fm_pid_alive_test "$pid" || { end_session; fail "the loop did not start"; }
+  end_session
+  while fm_pid_alive_test "$pid" && [ "$t" -lt 40 ]; do sleep 0.1; t=$((t + 1)); done
+  fm_pid_alive_test "$pid" && { loop stop; fail "the loop outlived its session by 4 s"; }
+  assert_absent "$HOME_DIR/state/.task-step-loop.lock" "a loop that ended with its session releases its lock"
+  assert_equals "task-step-loop: off" "$(loop start)" "no loop starts while the session lock names a dead pid"
+  rm -f "$HOME_DIR/state/.lock"
+  assert_equals "task-step-loop: off" "$(loop start)" "no loop starts without a session lock"
+  pass "step loop: the loop ends when the home's session lock goes away, and none starts without one"
+}
+
+# PR 264 review: a stop killed only the loop shell, so its in-flight writer could commit alive after a successor wrote
+# dead, and the dot stayed alive. A stop now waits for the in-flight write before the lock is free for a successor.
+test_step_loop_stop_waits_for_the_write() {
+  local t=0
+  make_step_case step-loop-stop
+  printf '%s\n' w1 > "$CASE_DIR/windows"
+  rm -f "$HOME_DIR"/state/t[2-5].meta
+  # the first write of t1 is recorded only after 1.5 s, as an API that answers late
+  FAKE_LATE='step t1 alive' loop start >/dev/null
+  while [ ! -e "$CALLS.late" ] && [ "$t" -lt 50 ]; do sleep 0.1; t=$((t + 1)); done
+  [ -e "$CALLS.late" ] || { loop stop; end_session; fail "the loop never wrote t1: $(cat "$CALLS")"; }
+  loop stop >/dev/null
+  : > "$CASE_DIR/windows"
+  loop start >/dev/null
+  wait_calls 4 '^step t1 dead' || { loop stop; end_session; fail "the successor did not write t1 dead: $(cat "$CALLS")"; }
+  sleep 2
+  loop stop >/dev/null
+  end_session
+  assert_equals "$(printf '%s\n' 'step t1 alive --generation g1' 'step t1 dead --generation g1')" "$(grep '^step ' "$CALLS")" \
+    "the stopped loop's late write lands before the successor's"
+  pass "step loop: a stop during a write waits for it, so a successor's write is the last one"
+}
+
+# The arm path starts the loop, and the watcher's delivery calls carry the writer settings of the flag file.
+test_arm_starts_the_step_loop() {
+  local t=0 arm
+  make_step_case step-loop-arm
+  printf 'FM_TASK_BASE_URL=http://task.example\n' > "$HOME_DIR/config/task-shadow"
+  fm_test_track_watcher_state "$HOME_DIR/state"
+  env FM_ROOT_OVERRIDE='' FM_HOME="$HOME_DIR" FM_CONFIG_OVERRIDE="$HOME_DIR/config" FM_STATE_OVERRIDE="$HOME_DIR/state" \
+    FM_DATA_OVERRIDE="$HOME_DIR/data" FM_TASK_SHADOW_WRITER="$WRITER" FAKE_CALLS="$CALLS" FAKE_WINDOWS="$CASE_DIR/windows" \
+    PATH="$FAKEBIN:$PATH" FM_POLL=1 FM_SIGNAL_GRACE=0 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_TASK_STEP_EVERY=1 \
+    FM_WATCH_HANDLING_SUCCESSOR=1 "${SBIN:-$ROOT/bin}/fm-watch-arm.sh" > "$CASE_DIR/arm.out" 2>&1 &
+  arm=$!
+  while [ -z "$(loop_pid)" ] && [ "$t" -lt 50 ]; do sleep 0.1; t=$((t + 1)); done
+  wait_calls 15 '^deliver t5 ' || true
+  kill -TERM "$arm" 2>/dev/null || true; wait "$arm" 2>/dev/null || true
+  [ -n "$(loop_pid)" ] || { end_session; fail "the arm started no step loop: $(cat "$CASE_DIR/arm.out")"; }
+  wait_calls 3 '^step t5 alive' || { loop stop; end_session; fail "the loop the arm started wrote nothing: $(cat "$CALLS")"; }
+  # the loop outlives the watcher: a pane closed after the arm and its watcher stopped still stops its dot
+  printf '%s\n' w1 w2 w3 w4 > "$CASE_DIR/windows"
+  wait_calls 3 '^step t5 dead' || { loop stop; end_session; fail "a pane closed with no watcher running did not stop its dot: $(cat "$CALLS")"; }
+  loop stop >/dev/null
+  end_session
+  for t in 1 2 3 4 5; do grep -q "^deliver t$t --consumer" "$CALLS" || fail "delivery skipped t$t: $(cat "$CALLS")"; done
+  [ "$(paste -d ' ' "$CALLS" "$CALLS.env" | grep '^deliver ' | grep -vc 'url=http://task.example')" -eq 0 ] \
+    || fail "a delivery call ran without the flag file's settings: $(paste -d ' ' "$CALLS" "$CALLS.env" | grep '^deliver ')"
+  pass "arm: every arm starts the home's step loop, which outlives the watcher; delivery visits every task with the flag file's settings"
+}
+
+test_step_loop_writes_every_task_liveness
+test_step_loop_ends_with_the_session
+test_step_loop_stop_waits_for_the_write
+test_arm_starts_the_step_loop
 test_flag_absent_writes_nothing
 test_dispatched_creates_assigns_and_starts
 test_status_lines_map_to_writer_commands
@@ -548,4 +637,8 @@ mutate_script 'fm-verify-close.sh writes the verified close' test_verify_close_w
 mutate_script 'fm-captain-hold.sh writes the hold' test_captain_hold_writes_the_record fm-captain-hold.sh 'shadow_record held'
 mutate_script 'fm-captain-hold.sh writes the closing answer' test_captain_hold_writes_the_record fm-captain-hold.sh 'shadow_record answered "$1" closed'
 mutate_script 'fm-captain-hold.sh writes the release' test_captain_hold_writes_the_record fm-captain-hold.sh 'shadow_record answered "$1" released'
-mutate_script 'fm-watch.sh writes every task liveness each step pass' test_watcher_writes_every_task_liveness_each_pass fm-watch.sh '  task_step_pass'
+mutate_script 'fm-watch-arm.sh starts the step loop' test_arm_starts_the_step_loop fm-watch-arm.sh 'fm-task-step-loop.sh" start'
+mutate_script 'fm-watch.sh hands delivery the flag settings' test_arm_starts_the_step_loop fm-watch.sh '|| fm_task_shadow_config "$CONFIG/task-shadow"'
+mutate_script 'a stop waits for the in-flight write' test_step_loop_stop_waits_for_the_write fm-task-step-loop.sh "trap 'STOP=1' TERM INT HUP"
+mutate_script 'an interrupted wait waits again for the write' test_step_loop_stop_waits_for_the_write fm-task-step-loop.sh 'while ! wait "$writer" && kill -0 "$writer"'
+mutate_script 'the loop ends with the session' test_step_loop_ends_with_the_session fm-task-step-loop.sh 'case "$FM_LOCK_INSPECT_STATE" in free|stale) return 1 ;; esac'

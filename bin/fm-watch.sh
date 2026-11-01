@@ -3432,7 +3432,6 @@ watcher_cleanup() {
     fi
   fi
   fm_active_check_stop || cleanup_status=1
-  task_step_loop_stop
   fm_check_output_cleanup
   fm_capture_output_cleanup
   fm_custom_check_snapshot_cleanup
@@ -3523,65 +3522,9 @@ resurface_after_downtime() {
 
 # The task record writer; FM_TASK_SHADOW_WRITER replaces bin/fm-task.sh (the tests use a fake), as in bin/fm-task-shadow.sh.
 TASK_RECORD_WRITER=${FM_TASK_SHADOW_WRITER:-$SCRIPT_DIR/fm-task.sh}
-# The last liveness written per task, one `<task>\t<spawn generation>\t<alive|dead>` line each, kept across watcher restarts.
-TASK_STEP_WRITTEN="$STATE/.task-step-live"
+# Each card's live dot (the step liveness) is written by bin/fm-task-step-loop.sh, which runs beside this watcher and
+# outlives its cycles; bin/fm-watch-arm.sh starts it.
 
-# Opt-in task record (plan v2 D1): each card's live dot follows its incarnation's endpoint. Every task is read on every
-# pass of task_step_loop below, so a stopped worker's dot stops within one interval, however long one supervision cycle
-# takes; the writer is called only for a task whose liveness or spawn
-# generation differs from the last one written, so the API work is one call per change. The writer refuses a report
-# whose spawn generation is not the one that started the running step. A call the API did not answer is tried again on
-# the next pass; a refusal is settled like a write, so a task the record does not hold costs no call on every pass.
-task_step_pass() {
-  local meta id generation live line written next=''
-  [ -e "$CONFIG/task-shadow" ] || return 0
-  # the writer settings the flag file carries (FM_TASK_BASE_URL, FM_TASK_AUTH, FM_TASK_TOKEN_FILE), as the hook reads them
-  fm_task_shadow_config "$CONFIG/task-shadow"
-  written=$(cat "$TASK_STEP_WRITTEN" 2>/dev/null || true)
-  for meta in "$STATE"/*.meta; do
-    [ -f "$meta" ] || continue
-    id=${meta##*/}; id=${id%.meta}
-    generation=$(fm_meta_get "$meta" spawn_gen)
-    live=$(fm_backend_agent_alive "$(fm_backend_of_meta "$meta")" "$(fm_backend_target_of_meta "$meta")" 2>/dev/null) || live=unknown
-    line=$(printf '%s\t%s\t%s' "$id" "$generation" "$live")
-    case "$live" in
-      alive|dead)
-        if ! printf '%s\n' "$written" | grep -Fqx -- "$line"; then
-          fm_run_timed 2 env FM_HOME="$FM_HOME" "$TASK_RECORD_WRITER" step "$id" "$live" --generation "$generation" >/dev/null 2>&1
-          # the API did not answer (3) or the call ran out of time: try again next pass; any other answer is settled
-          case $? in 3|124|137) line='' ;; esac
-        fi ;;
-      *) line='' ;;
-    esac
-    [ -n "$line" ] || line=$(printf '%s\n' "$written" | awk -F '\t' -v id="$id" '$1 == id { print; exit }')
-    [ -z "$line" ] || next+="$line"$'\n'
-  done
-  [ "$next" = "${written:+$written$'\n'}" ] && return 0
-  printf '%s' "$next" > "$TASK_STEP_WRITTEN.tmp.$$" && mv -f "$TASK_STEP_WRITTEN.tmp.$$" "$TASK_STEP_WRITTEN"
-}
-
-# Seconds between step passes. One supervision cycle can take a minute on a busy home (every pane read, every task's
-# record calls, the check sweep), so the step pass runs in its own child loop instead of once per cycle: a closed pane's
-# dot stops within one interval plus one pass. The child is the only writer of TASK_STEP_WRITTEN, prints nothing on this
-# watcher's stdout (the wake channel), stops with this watcher (task_step_loop_stop in watcher_cleanup), and stops on its
-# own once this watcher's pid is gone. An asynchronous subshell does not keep the EXIT trap, so it never runs
-# watcher_cleanup.
-TASK_STEP_EVERY=${FM_TASK_STEP_EVERY:-5}
-TASK_STEP_LOOP_PID=
-task_step_loop() {  # <watcher pid>
-  while kill -0 "$1" 2>/dev/null; do
-    task_step_pass
-    sleep "$TASK_STEP_EVERY"
-  done
-}
-task_step_loop_stop() {
-  [ -n "$TASK_STEP_LOOP_PID" ] || return 0
-  kill "$TASK_STEP_LOOP_PID" 2>/dev/null || true
-  TASK_STEP_LOOP_PID=
-}
-
-task_step_loop "$$" >/dev/null 2>&1 &
-TASK_STEP_LOOP_PID=$!
 while :; do
   # Scope delivery to this home's direct task records, never another home's events.
   task_delivery_processed=0
@@ -3592,6 +3535,8 @@ while :; do
     TASK_DELIVERY_LAST=$task_id
     task_delivery_processed=1
     task_consumer="firstmate-${FM_HOME##*/}"
+    # the writer settings the flag file carries (FM_TASK_BASE_URL, FM_TASK_AUTH, FM_TASK_TOKEN_FILE), as the hook reads them
+    [ ! -e "$CONFIG/task-shadow" ] || fm_task_shadow_config "$CONFIG/task-shadow"
     fm_run_timed 2 env FM_HOME="$FM_HOME" "$TASK_RECORD_WRITER" deliver "$task_id" --consumer "$task_consumer" >/dev/null 2>&1 || true
     # One task per pass bounds API work independently of fleet size.
     break
