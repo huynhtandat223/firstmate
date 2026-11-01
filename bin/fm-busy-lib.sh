@@ -1044,9 +1044,9 @@ fm_busy_stop_text() {  # <plain pane tail>; prints the matching stop line
     printf '%s\n' "$pane" | grep -m 1 '^⚠ Individual quota reached\.'
     return 0
   fi
-  if printf '%s\n' "$pane" | grep -qE '^Build · .*OpenCode · ' \
-    && printf '%s\n' "$pane" | grep -qE '^⬝+ Free usage exceeded, subscribe to Go \[retrying in .*attempt #[0-9]+\] esc interrupt'; then
-    printf '%s\n' "$pane" | grep -m 1 -E '^⬝+ Free usage exceeded'
+  if printf '%s\n' "$pane" | grep -qE '^[┃[:space:]]*Build · .*OpenCode · ' \
+    && printf '%s\n' "$pane" | grep -qE '^[┃[:space:]]*⬝+ Free usage exceeded, subscribe to Go \[retrying in .*attempt #[0-9]+\]'; then
+    printf '%s\n' "$pane" | grep -m 1 -E '^[┃[:space:]]*⬝+ Free usage exceeded'
     return 0
   fi
   if printf '%s\n' "$pane" | grep -qE '^[[:space:]]*Error: 402: \{"message":' \
