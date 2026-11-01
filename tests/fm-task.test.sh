@@ -2220,6 +2220,22 @@ case_workflow() {
   task_row tk-close | jq -e '.state == "done" and .workflowState == "done" and .stepAlive == null' >/dev/null || { echo "approve did not close the flow: $(task_row tk-close)"; return 1; }
   db fm_task_step | jq -e '[.[] | select(.taskId == "tk-close")] | map({(.state): .status}) | add | .verify == "skipped" and .merge == "skipped" and .implement == "done"' >/dev/null \
     || { echo "approve left steps open: $(db fm_task_step | jq -c '.[] | select(.taskId == "tk-close")')"; return 1; }
+  # testing fails back to implement: implement ran last although testing sits later in the setup
+  printf '%s' '{"steps":[{"state":"implement","harness":"pi","model":"example"},{"state":"testing","harness":"pi","model":"example"},{"state":"merge"}]}' > "$TMP_ROOT/setup-test.json"
+  mk_running tk-back >/dev/null || return 1
+  ft setup tk-back --file "$TMP_ROOT/setup-test.json"; must 'back setup' 0 || return 1
+  ft move tk-back --to implement; must 'back implement' 0 || return 1
+  ft step tk-back start --harness pi --generation b1; must 'back start implement' 0 || return 1
+  ft move tk-back --to testing; must 'back testing' 0 || return 1
+  ft step tk-back start --harness pi --generation b2; must 'back start testing' 0 || return 1
+  api -X POST "$BASE/api/fm_task_check" -d '{"taskId":"tk-back","scenarioId":"T1","width":"1440","status":"fail","nextActor":"worker","surface":"user-visible","page":"p","line":"l","controls":"-","data":"-","proof":"-","acceptanceDigest":"d"}' >/dev/null
+  ft move tk-back --to implement; must 'back to implement on a failed row' 0 || return 1
+  ft step tk-back start --harness pi --generation b3; must 'back start implement again' 0 || return 1
+  api -X PATCH "$BASE/api/fm_task_check/$(db fm_task_check | jq -r '.[] | select(.taskId == "tk-back") | .id')" -d '{"status":"pass"}' >/dev/null
+  ft "done" tk-back "${DONE_FLAGS[@]}"; must 'back done' 0 || return 1
+  ft approve tk-back; must 'back approve' 0 || return 1
+  ft reopen tk-back --reason 'again'; must 'back reopen' 0 || return 1
+  [ "$(task_row tk-back | jq -r .workflowState)" = implement ] || { echo "reopen picked the state by position, not by the last run: $(task_row tk-back)"; return 1; }
   ft reopen tk-close --reason 'one more round'; must reopen 0 || return 1
   [ "$(task_row tk-close | jq -r .workflowState)" = implement ] || { echo "reopen did not return to the last state that ran: $(task_row tk-close)"; return 1; }
   db fm_task_step | jq -e '[.[] | select(.taskId == "tk-close")] | map({(.state): .status}) | add | .verify == "pending" and .merge == "pending"' >/dev/null \
@@ -2709,6 +2725,7 @@ mutate 'reopen lets the states approve skipped wait again' workflow "s.status ==
 mutate 'a start with no model keeps the configured model' workflow "model: args.flags.model || current.model," "model: args.flags.model,"
 mutate 'a setup edit leaves a state that ran as it ran' workflow "ran(s.state) ? { state: s.state, position: s.position }" "false ? { state: s.state, position: s.position }"
 mutate 'a setup edit of the current pending state shows on the card' workflow "setAt: new Date().toISOString(), ...card }" "setAt: new Date().toISOString() }"
+mutate 'reopen returns to the state that ran last in event order' workflow "const last = steps.find(s => s.state === lastRan);" "const last = steps.filter(s => ['done', 'failed', 'running'].includes(s.status)).at(-1);"
 mutate 'approve skips the states that never started' workflow ": s.status === 'pending' ? [{ state: s.state, status: 'skipped', endReason: 'approved' }] : []);" ": []);"
 mutate 'a move ends the running attempt of the state left behind' workflow "const stepWrites = left ? [{ state: left.state, status: 'done'" "const stepWrites = false ? [{ state: left.state, status: 'done'"
 mutate 'the reviewer is the actor of the newest review event' stage "if (REVIEWER_KINDS.includes(event.kind)) task.reviewer = event.actor ?? null;" ";"

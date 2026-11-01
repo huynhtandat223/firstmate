@@ -1123,7 +1123,10 @@ const cmdReopen = async (args) => {
   // the workflow returns to the last state that ran, and the states approve skipped wait again
   return simple('reopen', 'reopened', async (task, a, taskId) => {
     const steps = await stepRows(taskId);
-    const last = steps.filter(s => ['done', 'failed', 'running'].includes(s.status)).at(-1);
+    // the state that ran last in event order: after testing sends the task back, implement ran after testing
+    const lastRan = (await taskEvents(taskId)).filter(e => e.kind === 'step').flatMap(e => bodyOf(e).stepWrites ?? [])
+      .filter(w => w.status === 'running').at(-1)?.state;
+    const last = steps.find(s => s.state === lastRan);
     const stepWrites = steps.filter(s => s.status === 'skipped' && s.endReason === 'approved').map(s => ({ state: s.state, status: 'pending', endReason: null }));
     return { state: 'ready', nextActor: 'firstmate', blockKind: null, blockReason: null, blockRepeats: 0, holdUntil: null,
       ...(task.workflowState === 'done' ? { workflowState: last?.state ?? 'queued', workflowSince: new Date().toISOString(), ...stepProjection(last) } : {}), stepWrites };
