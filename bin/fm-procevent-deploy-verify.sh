@@ -799,6 +799,7 @@ hold_for_cap() {  # <ask-json>
 }
 
 # Fill a scaffolded brief's two subsections from files, one section at a time.
+# The spec replaces the scaffold's {FIRSTMATE_SPEC} placeholder line.
 fill_brief() {  # <brief> <intent-file> <spec-file>
   local brief=$1 intent=$2 spec=$3 tmp
   tmp="$brief.fill"
@@ -806,9 +807,15 @@ fill_brief() {  # <brief> <intent-file> <spec-file>
     function emit(file,    line) { while ((getline line < file) > 0) print line; close(file) }
     /^## Captain.s intent$/ { print; print ""; emit(intent); skip = 1; next }
     /^## Firstmate spec$/ { skip = 0; print; print ""; emit(spec); next }
+    /^\{FIRSTMATE_SPEC\}$/ { next }
     skip { next }
     { print }
   ' "$brief" > "$tmp" && mv -f "$tmp" "$brief"
+}
+
+# The ask JSON a filled brief carries under `### The ask`, or nothing.
+brief_ask() {  # <brief>
+  awk '/^### The ask$/{f=1;next} f && /^```json$/{j=1;next} j && /^```$/{exit} j{print}' "$1"
 }
 
 # Spawn a new Tester scout for an ask and write the ask into its brief. Returns 1 with DELIVER_ERROR
@@ -816,7 +823,7 @@ fill_brief() {  # <brief> <intent-file> <spec-file>
 spawn_tester() {  # <ask-json> <content-json>
   local ask=$1 content=$2 id task sha issue_url role_md role_json harness model effort
   local tester_home record brief evidence intent spec
-  local -a args=() sargs=()
+  local -a args=()
   id=$TESTER_ID
   task=$(jq -r .task <<<"$ask")
   sha=$(jq -r '.head // .sha' <<<"$ask")
@@ -852,11 +859,17 @@ spawn_tester() {  # <ask-json> <content-json>
     record="$tester_home/data/verify/$task.md"
     [ -n "$tester_home" ] && [ -f "$record" ] && args+=( --also-write "$record" )
   fi
+  brief="$FM_HOME/data/$id/brief.md"
+  # A retry after a refused spawn finds the brief it already filled; the same ask
+  # reuses it, because fm-brief.sh never overwrites a brief.
+  if [ -f "$brief" ] && [ "$(brief_ask "$brief")" = "$content" ]; then
+    spawn_tester_launch "$id" "$harness" "$model" "$effort"
+    return
+  fi
   if ! FM_HOME=$FM_HOME "$BRIEF_CMD" "${args[@]}" >/dev/null 2>&1; then
     DELIVER_ERROR="Tester ask not delivered: the Tester brief could not be scaffolded"
     return 1
   fi
-  brief="$FM_HOME/data/$id/brief.md"
   intent=$(mktemp "${TMPDIR:-/tmp}/fm-tester-intent.XXXXXX") || return 1
   spec=$(mktemp "${TMPDIR:-/tmp}/fm-tester-spec.XXXXXX") || { rm -f "$intent"; return 1; }
   printf 'Verify %s on %s for %s.\nThe ask below names every scenario and width to check; record each result and its evidence.\n' \
@@ -872,7 +885,14 @@ spawn_tester() {  # <ask-json> <content-json>
     return 1
   fi
   rm -f "$intent" "$spec"
-  sargs=( "$id" "$FM_ROOT" --scout --harness "$harness" )
+  spawn_tester_launch "$id" "$harness" "$model" "$effort"
+}
+
+# Launch the Tester scout of a filled brief. A Tester carries no plan, so it
+# passes the dispatch plan gate on the gate's own `verify` exemption.
+spawn_tester_launch() {  # <id> <harness> <model> <effort>
+  local id=$1 harness=$2 model=$3 effort=$4
+  local -a sargs=( "$id" "$FM_ROOT" --scout --plan-exempt verify --harness "$harness" )
   [ -z "$model" ] || sargs+=( --model "$model" )
   [ -z "$effort" ] || sargs+=( --effort "$effort" )
   if ! FM_HOME=$FM_HOME "$SPAWN_CMD" "${sargs[@]}" >/dev/null 2>&1; then

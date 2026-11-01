@@ -389,6 +389,7 @@ An approved launch prints its issue URL and records `plan_issue` in the task rec
 
 On a fresh single ship or scout, `--plan-exception "<captain words>"` skips the issue check and records those words, base64-encoded as `plan_exception`, and in the backlog body.
 The flag requires nonempty words and cannot be used in a batch or with an exempt launch.
+`--plan-exempt <name>` skips the issue check for a spawn that carries no plan, records the gate's line in the backlog body and `plan_exempt` in the task record, changes nothing in a home without `config/dispatch-plan-gate`, and is refused outside the scope `bin/fm-plan-gate-lib.sh` gives that name; `verify` covers the deploy-verify Tester scout.
 Refusals name the link or approval command and the exception flag.
 ### One ticket per repository and two specs in flight
 

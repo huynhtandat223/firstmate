@@ -52,6 +52,7 @@ new_lab() {  # <bin-dir>: a firstmate home with a Tester role and fake spawn, ta
 printf '%s\n' "\$*" >> "$LAB/spawn.calls"
 id=\$1
 [ ! -f "$H/state/\$id.meta" ] || exit 1
+[ ! -e "$LAB/spawn-fail" ] || exit 1
 printf 'kind=scout\n' > "$H/state/\$id.meta"
 if [ -f "$LAB/claim-race" ]; then
   printf 'kind=ship\n' > "$H/state/racer.meta"
@@ -329,7 +330,7 @@ scenario_spawn_brief() {
   [ "$id" = "verify-alpha-$(sha s2 | cut -c1-7)" ] || { echo "tester id: $id"; return 1; }
   [ -f "$H/state/$id.meta" ] || { echo 'the spawn left no task record'; return 1; }
   [ -d "$H/data/verify/alpha/$id" ] || { echo 'no evidence directory'; return 1; }
-  grep -qx -- "verify-alpha-$(sha s2 | cut -c1-7) $ROOT --scout --harness claude --model claude-sonnet --effort high" "$LAB/spawn.calls" \
+  grep -qx -- "verify-alpha-$(sha s2 | cut -c1-7) $ROOT --scout --plan-exempt verify --harness claude --model claude-sonnet --effort high" "$LAB/spawn.calls" \
     || { echo "spawn args: $(cat "$LAB/spawn.calls")"; return 1; }
   grep -q -- "add $id Verify alpha on $(sha s2) for https://github.com/$REPO/issues/500 --kind scout" "$LAB/tasks.calls" \
     || { echo "no backlog item: $(cat "$LAB/tasks.calls")"; return 1; }
@@ -340,6 +341,7 @@ scenario_spawn_brief() {
   jq -e --arg sha "$(sha s2)" '.schema == "fm-tester-verify.v1" and .round == "deploy" and .task == "alpha" and .issue == "cfw-modules#500" and .sha == $sha and (.prs == ["'"$RURL"'/pull/51"]) and .run == "https://example.test/runs/2"' <<<"$content" >/dev/null \
     || { echo "ask content: $content"; return 1; }
   grep -q 'Check each row and record its evidence.' "$brief" || { echo 'the Tester template did not reach the brief'; return 1; }
+  ! grep -q '{FIRSTMATE_SPEC}' "$brief" || { echo 'the filled brief keeps the spec placeholder'; return 1; }
   # A pre-T5 task's Tester record also joins the write paths when the old home names it.
   new_lab "$1"
   backlog_task alpha 52 501
@@ -402,6 +404,30 @@ scenario_failures() {
   cycle
   [ -e "$H/state/procevent-inbox/deploy-verify.$SEQ.handled" ] || { echo 'the GitHub failure result stayed open after recovery'; return 1; }
   [ ! -e "$H/data/deploy-verify/last-error" ] || { echo 'the failure reason was not cleared'; return 1; }
+}
+
+# A refused spawn leaves its filled brief; the next poll reuses that brief for the
+# same ask, spawns the Tester, records the ask and clears the failure.
+scenario_retry_brief() {
+  new_lab "$1"
+  backlog_task alpha 65 500
+  fx_issue 500 A1:user-visible
+  fx_runs "1:completed:success:s0" "2:completed:success:s2"
+  fx_jobs 2 success
+  fx_compare s0 s2 c1
+  fx_commit_prs c1 65:500
+  set_cursor 1 s0
+  touch "$LAB/spawn-fail"
+  cycle
+  [ "$CYCLE_AUTO" = 1 ] || { echo "refused spawn autohandle=$CYCLE_AUTO"; return 1; }
+  grep -q 'the Tester spawn was refused' "$H/data/deploy-verify/last-error" || { echo "last-error: $(cat "$H/data/deploy-verify/last-error" 2>/dev/null)"; return 1; }
+  rm "$LAB/spawn-fail"
+  cycle
+  [ "$CYCLE_AUTO" = 0 ] || { echo "retry autohandle=$CYCLE_AUTO: $(cat "$H/data/deploy-verify/last-error" 2>/dev/null)"; return 1; }
+  [ "$(ledger_count '.type == "ask" and .task == "alpha"')" = 1 ] || { echo "asks after retry: $(ledger)"; return 1; }
+  [ "$(spawn_count)" = 2 ] || { echo "spawn calls: $(spawn_count)"; return 1; }
+  [ ! -s "$H/data/deploy-verify/last-error" ] || { echo "the failure stayed: $(cat "$H/data/deploy-verify/last-error")"; return 1; }
+  [ "$(asked | jq -s length)" = 1 ] || { echo "the brief holds $(asked | jq -s length) asks"; return 1; }
 }
 
 # The real runner: a delivered ask wakes nobody, an undeliverable one wakes once.
@@ -1129,7 +1155,7 @@ scenario_task_native() {
 
 run_scenarios() {  # <bin-dir>
   local s rc=0
-  for s in ledger skips not_deployed draft spawn_brief failures runner live_tester cap skip_catchup rows refused replay replay_refused shadow rows_record carry rows_ask rows_lease rows_lease_two rows_lease_failed_send; do
+  for s in ledger skips not_deployed draft spawn_brief retry_brief failures runner live_tester cap skip_catchup rows refused replay replay_refused shadow rows_record carry rows_ask rows_lease rows_lease_two rows_lease_failed_send; do
     out=$(scenario_"$s" "$1" 2>&1) || { printf 'scenario %s: %s\n' "$s" "$out"; rc=1; }
   done
   return $rc
@@ -1137,7 +1163,7 @@ run_scenarios() {  # <bin-dir>
 
 # ---- real adapter -----------------------------------------------------------
 
-for s in task_native ledger skips not_deployed draft spawn_brief failures runner live_tester cap skip_catchup rows refused replay replay_refused shadow rows_record carry rows_ask rows_lease rows_lease_two rows_lease_failed_send; do
+for s in task_native ledger skips not_deployed draft spawn_brief retry_brief failures runner live_tester cap skip_catchup rows refused replay replay_refused shadow rows_record carry rows_ask rows_lease rows_lease_two rows_lease_failed_send; do
   out=$(scenario_"$s" "$ROOT/bin" 2>&1) || fail "scenario $s failed on the real adapter: $out"
   pass "deploy-verify $s"
 done
@@ -1320,6 +1346,12 @@ mutate 'a missing role refuses the spawn' failures \
   's/if \[ ! -f "\$role_md" \] \|\| \[ ! -f "\$role_json" \]; then/if false; then/; s/if \[ -z "\$harness" \]; then/if false; then/'
 mutate 'the spawn brief carries the ask' spawn_brief \
   's/fill_brief "\$brief" "\$intent" "\$spec"/true/'
+mutate 'the Tester spawn passes the plan gate on its verify exemption' spawn_brief \
+  's/ --scout --plan-exempt verify --harness/ --scout --harness/'
+mutate 'the filled brief drops the spec placeholder' spawn_brief \
+  's/^[^\n]*FIRSTMATE_SPEC[^\n]*\{ next \}\n//m'
+mutate 'a retry reuses the filled brief of the same ask' retry_brief \
+  's/if \[ -f "\$brief" \] && \[ "\$\(brief_ask "\$brief"\)" = "\$content" \]; then/if false; then/'
 mutate 'the spawn names the evidence directory' spawn_brief \
   's/args=\( "\$id" firstmate --scout --also-write "\$evidence" \)/args=( "$id" firstmate --scout )/'
 mutate 'legacy cap holds do not require a task record' cap \
