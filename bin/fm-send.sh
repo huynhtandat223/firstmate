@@ -1172,6 +1172,16 @@ else
       echo "error: steer not sent to $INBOX_TASK_ID: its inbox record could not be written under $STATE/$INBOX_TASK_ID.inbox" >&2
       exit 1
     fi
+    # Mirror the durable message under its stable record key. A retry reuses
+    # the event; failure must not turn an already delivered message into a resend.
+    if [ -f "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}/task-shadow" ]; then
+      (
+        . "$SCRIPT_DIR/fm-task-shadow-config-lib.sh"
+        fm_task_shadow_config "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}/task-shadow"
+        "$SCRIPT_DIR/fm-task.sh" event "$INBOX_TASK_ID" steer --note "$MESSAGE" \
+          --key "steer:$INBOX_TASK_ID:${INBOX_RECORD##*/}" --actor firstmate --role firstmate
+      ) >/dev/null || echo "warning: message delivered but task Timeline write failed; retry the same record key, not the message" >&2
+    fi
     # The steer is firstmate acting on this task, so a wait it owed is answered
     # (bin/fm-firstmate-wait-lib.sh).
     fm_firstmate_wait_ack "$STATE" "$INBOX_TASK_ID"

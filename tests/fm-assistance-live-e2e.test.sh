@@ -25,7 +25,7 @@ mkdir -p "$parent"/{data/sample,state,config/assistances,projects} "$shim"
 git clone -q --no-hardlinks "$ROOT" "$code"
 # Exercise this uncommitted artifact too; the final PR pins the committed head.
 cp -a "$ROOT/bin/." "$code/bin/"
-cp "$ROOT/.tasks.toml" "$parent/.tasks.toml"
+fm_test_tasks_toml "$parent/.tasks.toml"
 cat > "$shim/herdr" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail

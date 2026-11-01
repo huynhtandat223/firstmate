@@ -1031,9 +1031,50 @@ fm_busy_launch_prompt_parked() {  # <harness>
 # while the launch-prompt backstop below has no capture fallback of its own -
 # without a supplied tail40 it is skipped entirely and a record still pinned
 # at the fm-spawn seed keeps reading busy fm-spawn, unchanged.
+fm_busy_stop_text() {  # <plain pane tail>; prints the matching stop line
+  local pane
+  pane=$(printf '%s\n' "$1" | tail -40)
+  # Current vendor error surfaces, verified by firstmate's stopped-pane reads.
+  # Pair the error with its screen context; a quoted standalone line is not
+  # evidence of a stopped turn. Pi's JSON error wraps across several rows.
+  if printf '%s\n' "$pane" | grep -qE '^⚠ Individual quota reached\.' \
+    && printf '%s\n' "$pane" | grep -qE '^limits\. Resets in [0-9]+h' \
+    && printf '%s\n' "$pane" | grep -qE '^Error ID: ' \
+    && printf '%s\n' "$pane" | grep -qE '^\? for shortcuts.*Gemini'; then
+    printf '%s\n' "$pane" | grep -m 1 '^⚠ Individual quota reached\.'
+    return 0
+  fi
+  if printf '%s\n' "$pane" | grep -qE '^[┃[:space:]]*Build · .*OpenCode · ' \
+    && printf '%s\n' "$pane" | grep -qE '^[┃[:space:]]*⬝+ Free usage exceeded, subscribe to Go \[retrying in .*attempt #[0-9]+\]'; then
+    printf '%s\n' "$pane" | grep -m 1 -E '^[┃[:space:]]*⬝+ Free usage exceeded'
+    return 0
+  fi
+  if printf '%s\n' "$pane" | grep -qE '^[[:space:]]*Error: 402: \{"message":' \
+    && printf '%s\n' "$pane" | grep -qF 'Insufficient Balance (request_id:'; then
+    printf '%s\n' "$pane" | grep -m 1 -F 'Insufficient Balance (request_id:'
+    return 0
+  fi
+  # Preserve the existing generic rate-limit backstop.
+  printf '%s\n' "$pane" | grep -v '^[[:space:]]*$' | tail -6 \
+    | grep -iE '^[[:space:]]*(You have hit your (usage )?limit|Codex error: The usage limit has been reached|\[429\][^[:alnum:]]*usage limit|Request failed: rate limit|Error:.*rate limit)' -m 1
+}
+
 fm_busy_classify() {  # <backend> <target> <harness> <id> <state-dir> [tail40]
   local backend=$1 target=$2 harness=$3 id=$4 state=$5 tail40=${6-}
   local out rc r_state r_source native log
+  if [ -z "$tail40" ] && command -v fm_backend_capture >/dev/null 2>&1; then
+    tail40=$(fm_backend_capture "$backend" "$target" 40 2>/dev/null) || tail40=
+  fi
+  if [ -n "$tail40" ] && fm_busy_stop_text "$tail40" >/dev/null; then
+    printf 'stopped quota'
+    return 0
+  fi
+  # A relaunch can retain a semantic record from its previous harness. AGY
+  # has no semantic writer; its live footer must outrank that old record.
+  if [ "$harness" = agy ] && printf '%s' "$tail40" | fm_busy_agy_tail_busy; then
+    printf 'busy agy-regex'
+    return 0
+  fi
   case "$harness" in
     kimi*)
       if ! fm_busy_kimi_verified; then

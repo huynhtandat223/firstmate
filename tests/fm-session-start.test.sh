@@ -123,6 +123,8 @@ log=${FM_FAKE_TASKS_AXI_LOG:-}
 [ -n "$log" ] && printf '%s\n' "$*" >> "$log"
 ready_count=${FM_FAKE_TASKS_AXI_READY:-2}
 require_file() {
+  # bin/fm-tasks-axi.sh pins a markdown backlog through TASKS_AXI_FILE, not a trailing --file.
+  [ -z "${TASKS_AXI_FILE:-}" ] || return 0
   case "$*" in *'--file '*) return 0 ;; esac
   printf '%s\n' 'missing explicit backlog file' >&2
   exit 9
@@ -811,11 +813,11 @@ EOF
   assert_contains "$out" "data/secondmates.md" "digest did not label the secondmates.md section"
   assert_contains "$out" "data/learnings.md" "digest did not label the learnings.md section"
 
-  # Exactly four context ABSENT markers (secondmates.md, captain-shared.md,
-  # learnings.md; backlog.md is covered by its own test) - and the
-  # present-but-empty captain.md must NOT print ABSENT.
+  # Exactly three context ABSENT markers (secondmates.md, captain-shared.md,
+  # learnings.md; the backlog is read through bin/fm-tasks-axi.sh, never as a
+  # file) - and the present-but-empty captain.md must NOT print ABSENT.
   absent_count=$(printf '%s\n' "$out" | grep -c '^ABSENT$')
-  [ "$absent_count" -eq 4 ] || fail "expected 4 ABSENT markers (secondmates.md, captain-shared.md, learnings.md, backlog.md), got $absent_count: $out"
+  [ "$absent_count" -eq 3 ] || fail "expected 3 ABSENT markers (secondmates.md, captain-shared.md, learnings.md), got $absent_count: $out"
 
   cap_section=$(printf '%s\n' "$out" | awk '/^data\/captain\.md$/{flag=1;next}/^data\//{flag=0}flag')
   assert_contains "$cap_section" "(present, empty)" "empty-but-present captain.md was not distinguished from ABSENT"
@@ -1983,7 +1985,7 @@ EOF
   probes=$(grep -c -- 'update --help' "$log" || true)
   [ "$probes" -eq 1 ] \
     || fail "tasks-axi update --help ran $probes times in one session start: $(cat "$log")"
-  assert_grep 'ready --file' "$log" "the backlog listing never ran, so the verdict was not actually reused"
+  grep -qx 'ready' "$log" || fail "the backlog listing never ran, so the verdict was not actually reused: $(cat "$log")"
   pass "session start: the tasks-axi compatibility verdict is computed once and reused"
 }
 
@@ -2073,7 +2075,7 @@ EOF
     "session start did not ask tasks-axi for the held group"
   assert_grep "--state queued --blocked --fields blocked_by,hold_kind,hold_reason" "$log" \
     "session start did not ask tasks-axi for the blocked queued group"
-  assert_grep "ready --file $home/data/backlog.md" "$log" \
+  grep -qx "ready" "$log" || fail \
     "session start did not ask tasks-axi for the dispatchable queued set"
 
   pass "compatible tasks-axi backlog rendering drops done rows and keeps every in-flight and blocked row, with held rows summarized"
@@ -2150,12 +2152,12 @@ EOF
     "manual compact rendering did not report its bound accounting"
   assert_contains "$out" "(21 more queued - raise FM_SESSION_START_QUEUED_LIMIT or read data/backlog.md for the rest)" \
     "manual compact rendering did not disclose an exact queued remainder"
-  assert_contains "$out" "or data/backlog.md" "manual compact digest omitted the data/backlog.md full-body pointer"
+  assert_contains "$out" "in data/backlog.md (manual backend)" "manual compact digest omitted the data/backlog.md full-body pointer"
 
   pass "manual backlog rendering drops done rows, keeps every blocked title line, summarizes held ones, and bounds the rest"
 }
 
-test_backlog_compact_tasks_axi_unavailable_uses_manual_fallback() {
+test_backlog_compact_tasks_axi_unavailable_reads_no_file() {
   local rec root home fakebin out
   rec=$(new_world backlog-compact-unavailable)
   IFS='|' read -r root home fakebin <<EOF
@@ -2167,14 +2169,14 @@ EOF
 
   out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
 
-  assert_contains "$out" "compact backlog listing (tasks-axi unavailable or incompatible; done rows omitted;" \
-    "unavailable tasks-axi did not fall back to compact title-line rendering"
-  assert_contains "$out" "- [ ] compact-startup - Compact startup digest" \
-    "unavailable tasks-axi fallback omitted a backlog title line"
-  assert_not_contains "$out" "OVERSIZED-BODY-LINE" "unavailable tasks-axi fallback leaked an in-flight task body"
-  assert_not_contains "$out" "DONE-ROW-LINE" "unavailable tasks-axi fallback listed a done row at startup"
+  # The backlog is read only through bin/fm-tasks-axi.sh: without a compatible tasks-axi the digest names the gap and
+  # never parses the file instead.
+  assert_contains "$out" "tasks-axi unavailable or incompatible; run bin/fm-bootstrap.sh for the install command" \
+    "unavailable tasks-axi was not reported in the backlog section"
+  assert_not_contains "$out" "- [ ] compact-startup - Compact startup digest" \
+    "unavailable tasks-axi fell back to reading the backlog file"
 
-  pass "unavailable or incompatible tasks-axi falls back to compact manual backlog rendering"
+  pass "unavailable or incompatible tasks-axi is reported and the backlog file is not read"
 }
 
 # --- held items: one count per hold kind, plus only the due or changed ones ---
@@ -2695,7 +2697,7 @@ SESSION START - HOME
 SUPERVISION OPERATING INSTRUCTIONS - primary harness: claude
 WAKE QUEUE
 Work under way (state/*.meta)
-data/backlog.md
+backlog (bin/fm-tasks-axi.sh)
 data/captain-shared.md (shared, main-authoritative, read-only in secondmate homes)
 data/captain.md
 data/learnings.md
@@ -2715,7 +2717,7 @@ SESSION START (CONTEXT RE-EMIT) - HOME
 SUPERVISION OPERATING INSTRUCTIONS - primary harness: claude
 WAKE QUEUE
 Work under way (state/*.meta)
-data/backlog.md
+backlog (bin/fm-tasks-axi.sh)
 data/captain-shared.md (shared, main-authoritative, read-only in secondmate homes)
 data/captain.md
 data/learnings.md
@@ -3495,7 +3497,7 @@ test_session_start_seeds_the_outcome_display_tail_while_away
 test_backlog_compact_tasks_axi_omits_bodies_and_keeps_metadata
 test_backlog_queued_bound_discloses_its_remainder
 test_backlog_compact_manual_backend_skips_indented_bodies
-test_backlog_compact_tasks_axi_unavailable_uses_manual_fallback
+test_backlog_compact_tasks_axi_unavailable_reads_no_file
 test_held_summary_lists_only_changed_items_with_counts_per_kind
 test_held_summary_lists_a_due_item_even_when_unchanged
 test_held_summary_without_a_snapshot_lists_all_and_only_a_genuine_startup_records_one

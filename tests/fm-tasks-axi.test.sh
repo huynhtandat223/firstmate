@@ -239,37 +239,56 @@ test_wrapper_single_home() {
   pass "fm-tasks-axi.sh keeps the single-home layout addressing its own code-root backlog"
 }
 
-# T7 task record backlog view: with config/task-shadow on, every mutating call ends with one
-# `fm-task.sh backlog sync` of this home's file; a read, --help, or the flag off runs none, and a failing
-# sync never changes the wrapper's result.
-test_wrapper_view_sync() {
+# The backlog view sync is retired (a cfw5001 backlog is the Dev 5001 rows themselves): with config/task-shadow on,
+# a mutation runs no `fm-task.sh backlog` call, done/unhold run no shadow `backlog` hook, and the tasks-axi write lands.
+test_wrapper_no_view_sync() {
   local dir log
   dir=$(make_split wrapper-view)
   log="$dir/writer.log"
   cat > "$dir/fake-writer" <<SH
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "$log"
-exit "\${FAKE_WRITER_RC:-0}"
+exit 0
 SH
   chmod +x "$dir/fake-writer"
-  : > "$dir/home/config/task-shadow"
-  export FM_TASK_VIEW_WRITER="$dir/fake-writer" FM_TASK_SHADOW_WRITER="$dir/fake-writer"
+  : > "$dir/home/config/task-shadow"; : > "$log"
+  export FM_TASK_SHADOW_WRITER="$dir/fake-writer"
   wrapper_from_code "$dir" add view-1 "view one" >/dev/null || fail "add view-1 failed"
-  assert_equals "backlog sync --file $dir/home/data/backlog.md --actor backlog-view" "$(cat "$log")" "a mutation did not sync the backlog view once"
-  : > "$log"
-  wrapper_from_code "$dir" list >/dev/null || fail "list failed"
-  wrapper_from_code "$dir" add --help >/dev/null 2>&1
-  assert_equals "" "$(cat "$log")" "a read or --help synced the backlog view"
-  FAKE_WRITER_RC=3 wrapper_from_code "$dir" hold view-1 --reason "waits" --kind external >/dev/null \
-    || fail "a failing sync changed the wrapper's result"
-  assert_grep "backlog sync" "$log" "hold did not sync the backlog view"
-  assert_grep "backlog-view sync rc=3" "$dir/home/state/task-shadow.log" "a failing sync left no log line"
-  assert_grep "view-1" "$dir/home/data/backlog.md" "a failing sync lost the tasks-axi write"
-  rm "$dir/home/config/task-shadow"; : > "$log"
-  wrapper_from_code "$dir" add view-2 "view two" >/dev/null || fail "add view-2 failed"
-  assert_equals "" "$(cat "$log")" "the backlog view synced with config/task-shadow off"
-  unset FM_TASK_VIEW_WRITER FM_TASK_SHADOW_WRITER
-  pass "fm-tasks-axi.sh syncs the task record backlog view after each mutation while config/task-shadow is on"
+  wrapper_from_code "$dir" hold view-1 --reason "waits" --kind external >/dev/null || fail "hold failed"
+  wrapper_from_code "$dir" unhold view-1 >/dev/null || fail "unhold failed"
+  wrapper_from_code "$dir" 'done' view-1 >/dev/null || fail "done failed"
+  unset FM_TASK_SHADOW_WRITER
+  assert_grep "view-1" "$dir/home/data/backlog.md" "the tasks-axi write did not land"
+  if grep -q '^backlog ' "$log"; then fail "a mutation still ran a backlog view sync: $(grep '^backlog ' "$log")"; fi
+  if grep -q 'backlog-' "$log"; then fail "done or unhold still ran the shadow backlog hook: $(grep 'backlog-' "$log")"; fi
+  if [ -e "$dir/home/state/task-shadow.log" ] && grep -q 'backlog-view' "$dir/home/state/task-shadow.log"; then
+    fail "the shadow log still records a backlog-view sync"
+  fi
+  pass "fm-tasks-axi.sh runs no backlog view sync and no shadow backlog hook while config/task-shadow is on"
+}
+
+# `rows` is the structured read scripts use instead of parsing a backlog file: the list table as JSON objects, an
+# encoded hold reason decoded, "-" and "none" as null, a comma inside a quoted title kept, and --state passed through.
+test_wrapper_rows() {
+  local dir out
+  dir=$(make_split wrapper-rows)
+  wrapper_from_code "$dir" add rows-1 "first, with a comma" --kind ship --repo demo >/dev/null || fail "add rows-1 failed"
+  wrapper_from_code "$dir" add rows-2 "second" >/dev/null || fail "add rows-2 failed"
+  wrapper_from_code "$dir" hold rows-1 --reason "$(. "$ROOT/bin/fm-hold-reason-lib.sh"; fm_hold_reason_encode 'waits (on owner)')" --kind captain >/dev/null \
+    || fail "hold rows-1 failed"
+  wrapper_from_code "$dir" 'done' rows-2 >/dev/null || fail "done rows-2 failed"
+  out=$(wrapper_from_code "$dir" rows --state queued --fields hold_kind,hold_reason,hold_until) || fail "rows failed: $out"
+  assert_equals '[{"id":"rows-1","state":"queued","kind":"ship","repo":"demo","title":"first, with a comma","hold_kind":"captain","hold_reason":"waits (on owner)","hold_until":null}]' \
+    "$(printf '%s' "$out" | jq -c .)" "rows did not give the queued table as decoded JSON objects"
+  out=$(wrapper_from_code "$dir" rows --state 'done') || fail "rows --state done failed: $out"
+  assert_equals 'rows-2 done' "$(printf '%s' "$out" | jq -r '.[] | "\(.id) \(.state)"')" "rows --state done did not give the done row"
+  # A literal "none" is data in a scalar or text field; only a list field's `none` and a scalar's `-` are missing.
+  wrapper_from_code "$dir" add rows-3 "third" --repo none --body "none" >/dev/null || fail "add rows-3 failed"
+  out=$(wrapper_from_code "$dir" rows --state queued --fields body,links) || fail "rows with body failed: $out"
+  assert_equals '{"repo":"none","body":"none","links":null}' \
+    "$(printf '%s' "$out" | jq -c '.[] | select(.id == "rows-3") | {repo, body, links}')" \
+    "rows dropped a literal none or kept a missing list as text"
+  pass "fm-tasks-axi.sh rows reads the backlog as JSON objects with decoded hold reasons"
 }
 
 test_guard_reports_regular_code_root_backlog
@@ -282,7 +301,8 @@ if [ "$HAVE_TASKS_AXI" = 1 ]; then
   test_wrapper_refusals
   test_wrapper_refuses_add_start
   test_wrapper_single_home
-  test_wrapper_view_sync
+  test_wrapper_no_view_sync
+  test_wrapper_rows
 else
   echo "skip: tasks-axi not found; home-addressing cases not run"
 fi

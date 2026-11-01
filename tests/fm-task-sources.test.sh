@@ -17,11 +17,11 @@ cat > "$FM_HOME/data/backlog.md" <<'EOF'
 - [ ] probe - Probe task (repo: example/repo) (kind: ship)
   A note.
 ## Queued
-- [ ] owner - Owner task (hold-kind: captain) (hold: Pick A)
-- [ ] future - Later (hold-kind: future)
+- [ ] owner - Owner task (hold: Pick A) (hold-kind: captain)
+- [ ] future - Later (hold: later) (hold-kind: future)
 ## Done
-- [x] recent - Recent (done: 2026-10-25)
-- [x] old - Old (done: 2020-01-01)
+- [x] recent - Recent (done 2026-10-25)
+- [x] old - Old (done 2020-01-01)
 EOF
 printf 'working [at=123]: doing work\n' > "$FM_HOME/state/probe.status"
 printf 'one instruction\n' > "$FM_HOME/state/probe.inbox/handled/1.msg"
