@@ -1214,6 +1214,31 @@ EOF
   pass "fm-control-lib: only a runtime's own recorded session has a relaunch resume form"
 }
 
+# Plan v2 D1: with the task record on, exit ends the stopped incarnation's running workflow step through the record
+# hook, named by the task record's spawn generation; without the flag nothing reaches the writer.
+test_exit_ends_the_workflow_step_when_the_record_is_on() {
+  local dir out rc writer
+  dir=$(new_case exit-step)
+  add_task "$dir" t1 claude
+  echo "spawn_gen=s1700000000.42.7" >> "$dir/home/state/t1.meta"
+  mkdir -p "$dir/home/config"; : > "$dir/home/config/task-shadow"
+  writer="$dir/fake-writer"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s"\n' "$dir/writer.log" > "$writer"; chmod +x "$writer"
+  alive_as "$dir" claude
+  out=$(FM_TASK_SHADOW_WRITER="$writer" run_control "$dir" t1 exit); rc=$?
+  expect_code 0 "$rc" "exit with the record on should succeed"$'\n'"$out"
+  assert_contains "$(cat "$dir/writer.log" 2>/dev/null)" "step t1 end --generation s1700000000.42.7 --reason cleanup --key shadow:t1:step-end-s1700000000.42.7-" "exit should end the running step of the stopped incarnation"
+  dir=$(new_case exit-step-off)
+  add_task "$dir" t1 claude
+  alive_as "$dir" claude
+  writer="$dir/fake-writer"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s"\n' "$dir/writer.log" > "$writer"; chmod +x "$writer"
+  out=$(FM_TASK_SHADOW_WRITER="$writer" run_control "$dir" t1 exit); rc=$?
+  expect_code 0 "$rc" "exit with the record off should succeed"$'\n'"$out"
+  [ ! -e "$dir/writer.log" ] || fail "exit with the record off reached the writer: $(cat "$dir/writer.log")"
+  pass "exit ends the workflow step of its incarnation while the task record is on, and writes nothing while it is off"
+}
+
 test_exit_types_each_harness_verified_command
 test_interrupt_sends_each_harness_verified_key
 test_devin_interrupt_invalidates_busy
@@ -1260,3 +1285,4 @@ test_grok_interrupt_without_acknowledgement_reports_unconfirmed
 test_grok_idle_footer_does_not_confirm_cancellation
 test_secondmate_control_command_carries_no_marker
 test_fm_send_still_marks_the_same_secondmate_task
+test_exit_ends_the_workflow_step_when_the_record_is_on

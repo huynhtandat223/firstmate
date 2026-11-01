@@ -14,6 +14,19 @@
 //   assign   <task> --to ASSIGNEE            triage|todo|ready -> ready (todo while a parent is open)
 //   reassign <task> --to ASSIGNEE --reason WHY  changes only assignee; refused from done and archived
 //   start    <task>                          ready -> running
+//   setup    <task> --file JSON [--by firstmate|owner]   {"steps":[{state,harness,model,effort,fallbacks:[{harness,model,effort}]}]}:
+//            the states the task needs, in workflow order (plan implement testing merge verify; Merge has no model).
+//            Writes one fm_task_step row per state; a pending state left out becomes skipped. Once a state has
+//            started, the list of states is fixed (exit 5 otherwise); a state that has run keeps the runtime it ran
+//            with, and only pending states take a new harness, model, effort and fallbacks.
+//   move     <task> --to STATE               queued -> the first setup state -> the next one; testing|verify -> implement
+//            on a failed check row; a state outside the setup is refused (exit 5). The running attempt of the state
+//            left behind ends with the move. Done comes only through approve, which ends a running step and skips a
+//            state that never started; reopen returns to the last state that ran and lets the skipped states wait again.
+//   step     <task> start --harness H [--model M] [--effort E] [--account A] [--generation G]   the current state runs;
+//            without --model (a harness default) the setup's model and effort for the state stand
+//   step     <task> alive|dead [--generation G]   on a change only     step <task> end --reason R [--generation G]
+//            G is the spawn_gen of state/<task>.meta; a report from an older incarnation is refused (exit 5).
 //   heartbeat <task> [--note N]              running (today's `working:`)
 //   done     <task> --summary --changed-files --verification --residual-risk [--rows JSON]
 //            [--pr-url U] [--head H] [--next-actor tester|firstmate]       running -> review
@@ -81,10 +94,13 @@
 //            ci, mockup, tester, deploy; other kinds have none. off (only a cl: row, reason required, kept in evidence)
 //            closes an item; on sets it pending again. After every write a pending item passes by itself when the record
 //            holds its evidence, which names the event: plan a plan event or a done document (event:<seq>#document);
-//            mockup a comment image labelled mockup (event:<seq>#image:<n>); decision the unblock after the newest
-//            owner question (event:<seq>); ci the newest ci event when it reads CI green; tester every user-visible
-//            row pass (event:<seq> of the newest check); deploy the newest deploy with a head and every user-visible
-//            row pass on it. rows and gate skip cl: rows; approve refuses an open one like any open row.
+//            mockup a comment image labelled mockup (event:<seq>#image:<n>); decision the owner's approval of the
+//            current plan or the owner's unblock after the newest owner question (event:<seq>); ci the green ci event
+//            for the head of the newest done call (or of the newest ci result when that done has none); a passed ci or decision item goes pending again when its evidence no
+//            longer holds (a new head, a new plan, the owner's changes, a new open question); tester every
+//            user-visible row pass (event:<seq> of the newest check); deploy the newest deploy with a head and every
+//            user-visible row pass on it. An automatic write is refused when the row changed after it was read, so an
+//            owner's off or on wins. rows and gate skip cl: rows; approve refuses an open one like any open row.
 //   gate     <task> [--issue task:<id>|URL] --head SHA [--evidence-root DIR]   defaults to the task Description; read only: prints each reason the task is not
 //            complete (exit 5): a user-visible row of the issue not pass on the deployed head with its current
 //            digest and evidence, or no approved event newer than the last row event (bin/fm-verify-gate-lib.sh)
@@ -184,13 +200,17 @@ const TRANSITIONS = {
 const LIMITS = { title: 300, repo: 200, kind: 32, state: 32, assignee: 64, nextActor: 32, blockKind: 32, blockReason: 2000, issueUrl: 2048, prUrl: 2048, surface: 32, section: 32, planDecision: 16 };
 const PROJECTED = ['acceptanceDigest', 'title', 'repo', 'kind', 'state', 'assignee', 'nextActor', 'blockKind', 'blockReason', 'blockRepeats', 'issueUrl', 'prUrl', 'surface', 'holdUntil', 'row', 'notes', 'section', 'lastSeq',
   'stage', 'stageSince', 'lastEventAt', 'lastNote', 'reviewer', 'planSeq', 'planDecision', 'planDecidedAt',
+  'workflowState', 'workflowSince', 'stepHarness', 'stepModel', 'stepEffort', 'stepAlive', 'setupBy', 'setupAt',
   // the backlog columns the cfw5001 tasks-axi backend writes in each row event's set (tasks-axi src/backends/cfw5001-transport.ts BACKLOG_COLUMNS)
   'backlogHome', 'backlogKind', 'backlogHoldReason', 'backlogHoldKind', 'backlogHoldUntil', 'backlogPriority', 'backlogDeps', 'backlogSince',
   'backlogClosed', 'backlogSeq', 'backlogPublicFollowup'];
-// The board card's step (cfw-modules#1678 change 199): the writer owns the rule and the page only reads it.
+// The board card's step (cfw-modules#1678 change 199): the writer owns the rule and the page only reads it. The live
+// page still reads it; plan v2 D1 retires it once the board reads workflowState.
 const STEP_OF_STATE = { triage: 'queued', todo: 'queued', ready: 'queued', done: 'passed' };
+// The workflow states (plan v2 D1), in order; a task's setup names the ones it needs between queued and done.
+const WORKFLOW_STATES = ['queued', 'plan', 'implement', 'testing', 'merge', 'verify', 'done'];
 const REVIEWER_KINDS = ['check', 'owner-check', 'approved', 'changes'];
-const DATE_FIELDS = ['holdUntil', 'stageSince', 'lastEventAt', 'planDecidedAt'];
+const DATE_FIELDS = ['holdUntil', 'stageSince', 'lastEventAt', 'planDecidedAt', 'workflowSince', 'setupAt'];
 // the backlog row's text: kept in the record verbatim, too long and multi-line for `show`'s field=value lines
 const ROW_TEXT = ['row', 'notes'];
 const TASK_ID = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
@@ -311,6 +331,8 @@ function bodyOf(event) {
 }
 
 // The fold of every event's `set`; null while the task has no `created` event.
+// A created task starts in workflow state queued; setup, move, step, approve and reopen set workflowState,
+// workflowSince and the card's step fields (stepHarness, stepModel, stepEffort, stepAlive) in their own `set`.
 // The step follows the state: done is passed; review is dev once a deploy follows the newest done, else pr; running is
 // pr once a pr event follows the newest started or changes, else working; triage, todo and ready are queued; blocked
 // (and archived) keep the step they had. stageSince is the time of the event that set the step. lastEventAt and
@@ -342,6 +364,7 @@ function fold(events) {
     if (event.kind === 'started' || event.kind === 'changes') pullRequest = false;
     if (event.kind === 'pr') pullRequest = true;
     task = { ...task, ...set, lastSeq: event.seq };
+    if (event.kind === 'created' && !task.workflowState) Object.assign(task, { workflowState: 'queued', workflowSince: event.createdAt ?? null });
     const stage = STEP_OF_STATE[task.state] ?? (task.state === 'review' ? (deployed ? 'dev' : 'pr')
       : task.state === 'running' ? (pullRequest ? 'pr' : 'working') : task.stage ?? 'queued');
     if (stage !== task.stage) Object.assign(task, { stage, stageSince: event.createdAt ?? null });
@@ -402,6 +425,9 @@ async function project(taskId) {
 // ---- arguments --------------------------------------------------------------------------------------------
 const COMMON = { actor: 's', role: 's', key: 's', note: 's', task: 's', json: 'b' };
 const SPECS = {
+  setup: { pos: ['task'], flags: { file: 's', by: 's' } },
+  move: { pos: ['task'], flags: { to: 's' } },
+  step: { pos: ['task', 'action'], flags: { harness: 's', model: 's', effort: 's', account: 's', reason: 's', generation: 's' } },
   create: { pos: ['task'], flags: { title: 's', kind: 's', repo: 's', issue: 's', surface: 's', after: 'm' } },
   import: { pos: ['task'], flags: { title: 's', kind: 's', repo: 's', state: 's', assignee: 's', 'next-actor': 's', 'block-kind': 's', 'block-reason': 's', issue: 's', 'pr-url': 's', surface: 's', until: 's', since: 's' } },
   assign: { pos: ['task'], flags: { to: 's' } },
@@ -698,6 +724,16 @@ async function write(taskId, who, build, after, wait) {
   const result = await append(taskId, who, build);
   let projected;
   try {
+    const stepWrites = bodyOf(result.event).stepWrites;
+    if (Array.isArray(stepWrites)) {
+      // a replayed or late event writes only the fields of a state that no newer event has written since
+      const later = (await taskEvents(taskId)).filter(e => e.seq > result.event.seq).flatMap(e => bodyOf(e).stepWrites ?? []);
+      for (const step of stepWrites) {
+        const taken = new Set(later.filter(l => l.state === step.state).flatMap(l => Object.keys(l)));
+        const fields = Object.fromEntries(Object.entries(step).filter(([k]) => k === 'state' || !taken.has(k)));
+        if (Object.keys(fields).length > 1) await saveStep(taskId, fields);
+      }
+    }
     projected = await project(taskId);
     if (after) {
       await after(result);
@@ -854,6 +890,120 @@ async function verifyView(event) {
 // ---- commands ---------------------------------------------------------------------------------------------
 const noteOf = (args) => args.flags.note ?? '';
 
+const stepRows = (taskId) => listAll('fm_task_step', { filter: `taskId eq ${lit(taskId)}`, orderby: 'position' });
+const stepProjection = (step) => ({ stepHarness: step?.harness ?? null, stepModel: step?.model ?? null, stepEffort: step?.effort ?? null, stepAlive: step?.alive ?? null });
+async function saveStep(taskId, step) {
+  const old = await firstRow('fm_task_step', `taskId eq ${lit(taskId)} and state eq ${lit(step.state)}`);
+  return ok(await http(old ? 'PATCH' : 'POST', old ? `/api/fm_task_step/${old.id}` : '/api/fm_task_step', { taskId, ...step }), 'write step');
+}
+async function cmdSetup(args) {
+  const taskId = taskIdOf(args);
+  if (!args.flags.file) throw usage('setup needs --file');
+  const by = oneOf(['firstmate', 'owner'], args.flags.by ?? 'firstmate', 'setup by');
+  let input;
+  try { input = JSON.parse(fs.readFileSync(args.flags.file, 'utf8')); } catch { throw usage('setup file must contain JSON'); }
+  const steps = Array.isArray(input) ? input : input.steps;
+  if (!Array.isArray(steps) || !steps.length) throw usage('setup needs a nonempty steps array');
+  let position = -1;
+  const normalized = steps.map((s, index) => {
+    const p = WORKFLOW_STATES.indexOf(s.state);
+    if (p <= position || p < 1 || p > 5) throw rule('setup states must be unique and in workflow order');
+    position = p;
+    if (s.state !== 'merge' && (!s.harness || !s.model)) throw usage(`${s.state} needs harness and model`);
+    if (s.fallbacks !== undefined && !Array.isArray(s.fallbacks)) throw usage('fallbacks must be an array');
+    for (const candidate of s.fallbacks ?? []) {
+      if (!candidate || typeof candidate.harness !== 'string' || !candidate.harness.trim() || typeof candidate.model !== 'string' || !candidate.model.trim()) throw usage('each fallback needs harness and model');
+    }
+    return { state: s.state, position: index, harness: s.state === 'merge' ? null : s.harness, model: s.state === 'merge' ? null : s.model, effort: s.state === 'merge' ? null : s.effort ?? null, fallbacks: JSON.stringify(s.fallbacks ?? []), source: by, ruleIds: s.ruleIds ?? null };
+  });
+  return write(taskId, identity(args, 'firstmate'), async ({ task }) => {
+    if (!task || CLOSED.includes(task.state)) throw rule('setup requires an open task');
+    const old = await stepRows(taskId);
+    if (old.some(s => !['pending', 'skipped'].includes(s.status))) {
+      const active = old.filter(s => s.status !== 'skipped');
+      if (active.length !== normalized.length || active.some((s, i) => s.state !== normalized[i].state)) throw rule('a started setup keeps its states; only pending states take new runtimes');
+    }
+    // a state that has run keeps the runtime it ran with (it may be a fallback); only pending states take the new one
+    const ran = (state) => old.some(o => o.state === state && !['pending', 'skipped'].includes(o.status));
+    const removed = old.filter(s => !normalized.some(n => n.state === s.state));
+    const stepWrites = [...normalized.map(s => ran(s.state) ? { state: s.state, position: s.position }
+      : { ...s, ...(old.some(o => o.state === s.state && o.status !== 'skipped') ? {} : { status: 'pending', attempt: 0, endReason: null }) }),
+    ...removed.map(s => ({ state: s.state, status: 'skipped' }))];
+    // the card shows the current state's runtime: a setup edit of that state before it starts shows at once
+    const current = normalized.find(s => s.state === task.workflowState);
+    const card = current && !ran(current.state) ? stepProjection(current) : {};
+    return { kind: 'setup', extra: { stepWrites }, set: { setupBy: by, setupAt: new Date().toISOString(), ...card }, children: { documents: [{ title: 'Setup', mediaType: 'application/json', content: JSON.stringify(normalized) }] } };
+  });
+}
+async function cmdMove(args) {
+  const taskId = taskIdOf(args);
+  const to = oneOf(WORKFLOW_STATES, args.flags.to, 'workflow state');
+  return write(taskId, identity(args, 'firstmate'), async ({ task }) => {
+    if (!task || CLOSED.includes(task.state)) throw rule('move requires an open task');
+    const steps = (await stepRows(taskId)).filter(s => s.status !== 'skipped');
+    const index = steps.findIndex(s => s.state === task.workflowState);
+    const target = steps.find(s => s.state === to);
+    const next = task.workflowState === 'queued' ? steps[0] : steps[index + 1];
+    const retry = ['testing', 'verify'].includes(task.workflowState) && to === 'implement' && (await checkRows(taskId)).some(r => r.status === 'fail');
+    if (!target || (next?.state !== to && !retry)) throw rule('move must follow setup; Done requires approve');
+    // the state left behind stops running: its attempt ends with the move
+    const now = new Date().toISOString();
+    const left = steps.find(s => s.state === task.workflowState && s.status === 'running');
+    const stepWrites = left ? [{ state: left.state, status: 'done', alive: 'dead', endedAt: now, endReason: `moved to ${to}` }] : [];
+    return { kind: 'moved', extra: { stepWrites }, set: { workflowState: to, workflowSince: now, ...stepProjection(target) } };
+  });
+}
+// The spawn generation that started the running attempt of a state: the newest step event that set it running.
+const startGeneration = (events, state) => {
+  const starts = events.filter(e => e.kind === 'step' && bodyOf(e).stepWrites?.some(s => s.state === state && s.status === 'running'));
+  return starts.length ? bodyOf(starts.at(-1)).generation ?? null : null;
+};
+// step start, alive, dead and end. A --generation names the spawn incarnation that reports (state/<task>.meta spawn_gen):
+// a report from another incarnation than the one that started the running attempt is refused, so a late watcher pass of
+// a replaced worker cannot overwrite its successor. A start from a new incarnation while the state runs (a relaunch)
+// re-points the running attempt to the new runtime without counting another attempt; the same incarnation again is
+// unchanged. alive, dead and end on a state that is not running, and an unchanged liveness, write nothing.
+async function cmdStep(args) {
+  const taskId = taskIdOf(args);
+  const action = oneOf(['start', 'alive', 'dead', 'end'], args.pos.action, 'step action');
+  const generation = args.flags.generation ?? null;
+  const who = identity(args, 'firstmate');
+  if (action === 'start' && !args.flags.harness) throw usage('step start needs --harness');
+  if (action === 'end' && !args.flags.reason) throw usage('step end needs --reason');
+  // the decision on the record as it is now; the write repeats it against the events really before it
+  const decide = async (task, events) => {
+    if (!task) throw rule('no such task');
+    const current = (await stepRows(taskId)).find(s => s.state === task.workflowState && s.status !== 'skipped');
+    if (!current) throw rule(`current workflow state ${task.workflowState ?? 'none'} has no setup step`);
+    const started = startGeneration(events, current.state);
+    const now = new Date().toISOString();
+    if (action === 'start') {
+      if (current.state === 'merge') throw rule('Merge has no worker model');
+      // a spawn on the harness default names no model: the configured step's model and effort stand
+      const runtime = { harness: args.flags.harness, model: args.flags.model || current.model, effort: args.flags.effort || current.effort || null, account: args.flags.account || null };
+      if (!runtime.model) throw usage('step start needs --model: the setup names no model for this state');
+      if (current.status !== 'running') return { current, patch: { ...runtime, status: 'running', alive: 'alive', attempt: current.attempt + 1, startedAt: now, lastHeartbeatAt: now, endedAt: null, endReason: null } };
+      if (!generation || !started) throw rule('end the running step before starting another attempt');
+      if (generation === started) return { current, unchanged: true };
+      return { current, patch: { ...runtime, status: 'running', alive: 'alive', lastHeartbeatAt: now } };
+    }
+    if (current.status !== 'running') return { current, unchanged: true };
+    if (generation && started && generation !== started) throw rule(`step generation ${generation} is stale: the running attempt started at ${started}`);
+    if (action === 'end') return { current, patch: { status: args.flags.reason === 'failed' ? 'failed' : 'done', alive: 'dead', endedAt: now, endReason: args.flags.reason } };
+    if (current.alive === action) return { current, unchanged: true };
+    return { current, patch: { alive: action } };
+  };
+  const before = await taskEvents(taskId);
+  const first = await decide(fold(before), before);
+  if (first.unchanged) return out(`step ${taskId}: unchanged`);
+  if (['alive', 'dead'].includes(action)) who.key = args.flags.key ?? `step-live:${taskId}:${first.current.state}:${first.current.attempt}:${generation ?? '-'}:${action}:${fold(before).lastSeq}`;
+  return write(taskId, who, async ({ task, events }) => {
+    const { current, patch, unchanged } = await decide(task, events);
+    if (unchanged) throw rule('the step changed meanwhile; nothing to write');
+    return { kind: 'step', note: args.flags.reason ?? action, extra: { generation, stepWrites: [{ state: current.state, ...patch }] }, set: stepProjection({ ...current, ...patch }) };
+  });
+}
+
 async function cmdCreate(args) {
   const taskId = taskIdOf(args);
   const who = identity(args, 'firstmate');
@@ -935,7 +1085,8 @@ function simple(command, kind, setFor, { needNote = false } = {}) {
       who,
       async ({ task }) => {
         guard(command, task);
-        return { kind, note: noteOf(args), set: await setFor(task, args, taskId) };
+        const { stepWrites, ...set } = await setFor(task, args, taskId);
+        return { kind, note: noteOf(args), set, ...(stepWrites?.length ? { extra: { stepWrites } } : {}) };
       },
       ['approve', 'archive'].includes(command) ? () => release(taskId, who) : undefined,
     );
@@ -957,7 +1108,11 @@ const cmdStart = simple('start', 'started', async (task, args, taskId) => {
   if (parents.length) throw rule(`start is refused while the task waits on open parents: ${parents.join(', ')}`);
   return { state: 'running', nextActor: 'worker', holdUntil: null };
 });
-const cmdHeartbeat = simple('heartbeat', 'heartbeat', async () => ({}));
+const cmdHeartbeat = simple('heartbeat', 'heartbeat', async (task, args, taskId) => {
+  const step = (await stepRows(taskId)).find(s => s.state === task.workflowState && s.status === 'running');
+  if (step) await saveStep(taskId, { state: step.state, lastHeartbeatAt: new Date().toISOString() });
+  return {};
+});
 const cmdUnblock = simple('unblock', 'unblocked', async (task, args, taskId) => {
   const waiting = (await openParents(taskId)).length > 0;
   const set = { state: waiting ? 'todo' : 'ready', nextActor: 'worker', holdUntil: null, blockReason: null };
@@ -968,7 +1123,17 @@ const cmdChanges = simple('changes', 'changes', async () => ({ state: 'ready', n
 const cmdReopen = async (args) => {
   if (!args.flags.reason?.trim()) throw usage('reopen needs --reason');
   args.flags.note = args.flags.reason;
-  return simple('reopen', 'reopened', async () => ({state: 'ready', nextActor: 'firstmate', blockKind: null, blockReason: null, blockRepeats: 0, holdUntil: null}))(args);
+  // the workflow returns to the last state that ran, and the states approve skipped wait again
+  return simple('reopen', 'reopened', async (task, a, taskId) => {
+    const steps = await stepRows(taskId);
+    // the state that ran last in event order: after testing sends the task back, implement ran after testing
+    const lastRan = (await taskEvents(taskId)).filter(e => e.kind === 'step').flatMap(e => bodyOf(e).stepWrites ?? [])
+      .filter(w => w.status === 'running').at(-1)?.state;
+    const last = steps.find(s => s.state === lastRan);
+    const stepWrites = steps.filter(s => s.status === 'skipped' && s.endReason === 'approved').map(s => ({ state: s.state, status: 'pending', endReason: null }));
+    return { state: 'ready', nextActor: 'firstmate', blockKind: null, blockReason: null, blockRepeats: 0, holdUntil: null,
+      ...(task.workflowState === 'done' ? { workflowState: last?.state ?? 'queued', workflowSince: new Date().toISOString(), ...stepProjection(last) } : {}), stepWrites };
+  })(args);
 };
 const cmdArchive = simple('archive', 'archived', async () => ({ state: 'archived', nextActor: 'firstmate' }));
 // A user-visible pass counts for the head that was built or deployed last: the head of the newest done call, or of a
@@ -1091,7 +1256,13 @@ async function cmdApprove(args) {
       const events = await taskEvents(taskId);
       const rows = newestRows(await checkRows(taskId), events);
       await checkApproveReady(task, taskId, events, rows);
-      return { kind: 'approved', note: noteOf(args), set: { state: 'done', nextActor: 'firstmate', blockKind: null, blockReason: null, blockRepeats: 0, holdUntil: null } };
+      // approve closes the workflow from whatever state it is in (the legacy closers do not move): a running step ends
+      // and a state that never started is skipped
+      const now = new Date().toISOString();
+      const stepWrites = (await stepRows(taskId)).flatMap(s => s.status === 'running' ? [{ state: s.state, status: 'done', alive: 'dead', endedAt: now, endReason: 'approved' }]
+        : s.status === 'pending' ? [{ state: s.state, status: 'skipped', endReason: 'approved' }] : []);
+      return { kind: 'approved', note: noteOf(args), ...(stepWrites.length ? { extra: { stepWrites } } : {}),
+        set: { state: 'done', workflowState: 'done', workflowSince: now, stepAlive: null, nextActor: 'firstmate', blockKind: null, blockReason: null, blockRepeats: 0, holdUntil: null } };
     },
     async () => {
       await release(taskId, who);
@@ -1830,13 +2001,23 @@ async function checklistEvidence(item, task, events, visible) {
   }
   if (item === 'decision') {
     if (task.blockKind === 'needs-decision' && task.state === 'blocked') return null;
+    // the owner's own word: his approval of the current plan, or his answer to the newest owner question
+    // (an unblock by the owner; firstmate's unblock is not an answer)
+    const approval = task.planDecision === 'approve'
+      && newest((e) => e.kind === 'plan_decision' && e.actorRole === 'owner' && bodyOf(e).decision === 'approve' && bodyOf(e).planSeq === task.planSeq);
+    if (approval) return `event:${approval.seq}`;
     const question = newest((e) => e.kind === 'needs-decision' && bodyOf(e).set?.nextActor === 'owner');
-    const answer = question && events.find((e) => e.kind === 'unblocked' && e.seq > question.seq);
+    const answer = question && events.find((e) => e.kind === 'unblocked' && e.actorRole === 'owner' && e.seq > question.seq);
     return answer ? `event:${answer.seq}` : null;
   }
   if (item === 'ci') {
-    const ci = newest((e) => e.kind === 'ci');
-    return ci && bodyOf(ci).head && /\bCI green\b/.test(bodyOf(ci).note ?? '') ? `event:${ci.seq}` : null;
+    // green CI on the current head: the head the newest done call built (a ci result for another head, whenever
+    // it arrives, does not count); a done call without --head leaves the head the newest ci result reports
+    const done = newest((e) => e.kind === 'done');
+    const built = done ? (await firstRow('fm_event_done', `fmTaskEventId eq ${done.id}`))?.head ?? null : null;
+    const head = built ?? (newest((e) => e.kind === 'ci' && bodyOf(e).head) ? bodyOf(newest((e) => e.kind === 'ci' && bodyOf(e).head)).head : null);
+    const ci = head && newest((e) => e.kind === 'ci' && bodyOf(e).head === head);
+    return ci && /\bCI green\b/.test(bodyOf(ci).note ?? '') ? `event:${ci.seq}` : null;
   }
   if (item === 'tester') {
     if (!allPass) return null;
@@ -1852,7 +2033,11 @@ async function checklistEvidence(item, task, events, visible) {
   return null;
 }
 
-// Pass each pending item whose evidence the record now holds. Returns how many it passed.
+// Items whose evidence a later event can take back: a new head without green CI, a new plan or the owner's changes.
+const RECHECKED = [`${CHECKLIST_PREFIX}ci`, `${CHECKLIST_PREFIX}decision`];
+// Pass each pending item whose evidence the record now holds, and set a passed ci or decision item pending again when
+// its evidence no longer holds. Each write is refused when the row changed after it was read (an owner's off or on wins).
+// Returns how many rows it changed.
 async function syncChecklist(taskId) {
   const all = await checkRows(taskId);
   if (!all.some(isChecklist)) return 0;
@@ -1861,23 +2046,27 @@ async function syncChecklist(taskId) {
   if (!task || CLOSED.includes(task.state)) return 0;
   const rows = newestRows(all, events);
   const visible = rows.filter((r) => r.surface === 'user-visible');
-  let passed = 0;
-  for (const row of rows.filter((r) => isChecklist(r) && r.status === 'pending')) {
+  let changed = 0;
+  for (const row of rows.filter((r) => isChecklist(r) && (r.status === 'pending' || (r.status === 'pass' && RECHECKED.includes(r.scenarioId))))) {
     const evidence = await checklistEvidence(row.scenarioId.slice(CHECKLIST_PREFIX.length), task, events, visible);
-    if (!evidence) continue;
+    if (row.status === 'pending' ? !evidence : evidence === (row.evidence ?? null)) continue;
+    const status = evidence ? 'pass' : 'pending';
+    const seen = rowEvent(events, row)?.seq ?? 0;
     // one key per item, row value and evidence: a re-run finds its event, and an item set on again can pass again
-    const key = `checklist:${crypto.createHash('sha1').update(`${taskId}\0${rowKey(row)}\0${rowEvent(events, row)?.seq ?? 0}\0${evidence}`).digest('hex')}`;
-    const values = { status: 'pass', nextActor: 'firstmate', evidence, head: null, checkedAt: new Date().toISOString() };
-    await append(taskId, { ...CHECKLIST_WHO, key }, async ({ task: now }) => {
+    const key = `checklist:${crypto.createHash('sha1').update(`${taskId}\0${rowKey(row)}\0${seen}\0${status}\0${evidence}`).digest('hex')}`;
+    const values = { status, nextActor: 'firstmate', evidence, head: null, checkedAt: evidence ? new Date().toISOString() : null };
+    const wrote = await append(taskId, { ...CHECKLIST_WHO, key }, async ({ task: now, events: nowEvents }) => {
       if (!now || CLOSED.includes(now.state)) throw rule('the task is closed');
-      return { kind: 'checklist', note: `${rowKey(row)} pass: ${evidence}`, extra: { row: rowKey(row), values } };
-    }).catch((error) => {
+      if ((rowEvent(nowEvents, row)?.seq ?? 0) !== seen) throw rule(`${rowKey(row)} changed meanwhile`);
+      return { kind: 'checklist', note: `${rowKey(row)} ${status}${evidence ? `: ${evidence}` : ': its evidence no longer holds'}`, extra: { row: rowKey(row), values } };
+    }).then(() => true, (error) => {
       if (!(error instanceof Fail && error.code === 5)) throw error;
+      return false;
     });
     await applyNewestCheck(taskId, row);
-    passed++;
+    if (wrote) changed++;
   }
-  return passed;
+  return changed;
 }
 
 async function cmdChecklist(args) {
@@ -2289,6 +2478,7 @@ async function cmdRule(args) {
 }
 
 const COMMANDS = {
+  setup: cmdSetup, move: cmdMove, step: cmdStep,
   rules: cmdRules, rule: cmdRule, answer: cmdAnswer,
   'turn-end': cmdTurnEnd, deliver: cmdDeliver, 'read-mark': cmdReadMark, inbox: cmdInbox, describe: cmdDescribe, plan: cmdPlan, 'plan-decision': cmdPlanDecision, thread: cmdThread,
   create: cmdCreate, import: cmdImport, assign: cmdAssign, start: cmdStart, heartbeat: cmdHeartbeat, done: cmdDone, ask: cmdAsk, block: cmdBlock,

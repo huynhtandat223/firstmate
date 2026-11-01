@@ -55,6 +55,9 @@ s.fm_model_rule = {ops:['list','get','create','patch','delete'],f:{state:{t:'s',
 Object.assign(s.fm_task.f, {backlogHome:{t:'s',n:1,m:64},row:{t:'s',n:1},notes:{t:'s',n:1},section:{t:'s',n:1,m:32},
   stage:{t:'s',n:1,m:16},stageSince:{t:'d',n:1},lastEventAt:{t:'d',n:1},lastNote:{t:'s',n:1,m:300},reviewer:{t:'s',n:1,m:64},
   planSeq:{t:'i',n:1},planDecision:{t:'s',n:1,m:16},planDecidedAt:{t:'d',n:1}});
+Object.assign(s.fm_task.f, Object.fromEntries(['workflowState','stepHarness','stepModel','stepEffort','stepAlive','setupBy'].map(k => [k,{t:'s',n:1}])));
+Object.assign(s.fm_task.f, {workflowSince:{t:'d',n:1},setupAt:{t:'d',n:1}});
+s.fm_task_step = {ops:['list','get','create','patch','delete'],u:[['taskId','state']],f:{taskId:{t:'s'},state:{t:'s'},position:{t:'i'},attempt:{t:'i'},status:{t:'s'},...Object.fromEntries(['harness','model','effort','fallbacks','source','ruleIds','account','alive','endReason'].map(k=>[k,{t:'s',n:1}])),...Object.fromEntries(['startedAt','lastHeartbeatAt','endedAt'].map(k=>[k,{t:'d',n:1}]))}};
 fs.writeFileSync(file, JSON.stringify(s));
 JS
 
@@ -2099,6 +2102,36 @@ case_checklist() {
   ft checklist $t off decision --reason later >/dev/null && ft start $t >/dev/null && ft ask $t "${ASK_FLAGS[@]}" >/dev/null || return 1
   ft checklist $t on decision; must 'on with a question open' 0 || return 1
   [ "$(clrow $t decision | jq -r .status)" = pending ] || { echo "an open question passed the item: $(clrow $t decision)"; return 1; }
+  # firstmate's unblock is not the owner's answer; the owner's approval of the current plan is
+  t=tk-cl4
+  ft create $t --title 'Plan unblock' --kind plan >/dev/null && ft assign $t --to w1 >/dev/null && ft start $t >/dev/null || return 1
+  ft ask $t "${ASK_FLAGS[@]}" --next-actor owner >/dev/null && ft unblock $t >/dev/null || return 1
+  [ "$(clrow $t decision | jq -r .status)" = pending ] || { echo "firstmate's unblock passed the decision item: $(clrow $t decision)"; return 1; }
+  ft plan $t --document "$doc" >/dev/null || return 1
+  seq=$(seq_of)
+  ft plan-decision $t --decision approve --plan-seq "$seq"; must 'owner plan approval' 0 || return 1
+  clrow $t decision | jq -e --arg ev "event:$(seq_of)" '.status == "pass" and .evidence == $ev' >/dev/null || { echo "plan approval did not pass the decision item: $(clrow $t decision)"; return 1; }
+  # a revised plan takes the approval back; the owner's changes on it keep the item pending
+  ft plan $t --document "$doc" >/dev/null || return 1
+  [ "$(clrow $t decision | jq -r .status)" = pending ] || { echo "a revised plan kept the decision pass: $(clrow $t decision)"; return 1; }
+  ft plan-decision $t --decision changes --plan-seq "$(seq_of)" >/dev/null || return 1
+  [ "$(clrow $t decision | jq -r .status)" = pending ] || { echo "the owner's changes passed the decision item: $(clrow $t decision)"; return 1; }
+  # cl:ci follows the head of the newest done call, whatever order the ci results arrive in
+  t=tk-cl6
+  ft create $t --title 'Ship heads' --kind ship --surface user-visible >/dev/null && ft assign $t --to w1 >/dev/null && ft start $t >/dev/null || return 1
+  ft "done" $t "${DONE_FLAGS[@]}" --head h1 >/dev/null && ft event $t ci --head h1 --note 'CI green on the PR at head h1' >/dev/null || return 1
+  [ "$(clrow $t ci | jq -r .status)" = pass ] || { echo "green ci on the built head did not pass: $(clrow $t ci)"; return 1; }
+  ft changes $t --note 'push h2' >/dev/null && ft start $t >/dev/null && ft "done" $t "${DONE_FLAGS[@]}" --head h2 >/dev/null || return 1
+  [ "$(clrow $t ci | jq -r .status)" = pending ] || { echo "a new built head kept the old head's ci pass: $(clrow $t ci)"; return 1; }
+  ft event $t ci --head h2 --note 'CI green on the PR at head h2' >/dev/null || return 1
+  clrow $t ci | jq -e --arg ev "event:$(seq_of)" '.status == "pass" and .evidence == $ev' >/dev/null || { echo "green ci on the new head did not pass: $(clrow $t ci)"; return 1; }
+  ft event $t ci --head h1 --note 'CI failed on the PR at head h1: 1 check(s) did not pass' >/dev/null || return 1
+  [ "$(clrow $t ci | jq -r .status)" = pass ] || { echo "a late result for an older head reset the pass: $(clrow $t ci)"; return 1; }
+  # a done call without --head: the head the ci result reports
+  t=tk-cl7
+  ft create $t --title 'Ship no head' --kind ship --surface user-visible >/dev/null && ft assign $t --to w1 >/dev/null && ft start $t >/dev/null || return 1
+  ft "done" $t "${DONE_FLAGS[@]}" >/dev/null && ft event $t ci --head h9 --note 'CI green on the PR at head h9' >/dev/null || return 1
+  clrow $t ci | jq -e --arg ev "event:$(seq_of)" '.status == "pass" and .evidence == $ev' >/dev/null || { echo "green ci after a done without a head did not pass: $(clrow $t ci)"; return 1; }
   # a user-visible ship: rows and gate skip cl: rows; tester, deploy and ci pass from the record
   t=tk-cl2
   ft create $t --title 'Ship probe' --kind ship --surface user-visible >/dev/null || return 1
@@ -2131,6 +2164,113 @@ case_checklist() {
   [ "$(clrow $t tester | jq -r .status)" = pass ] || { echo "an item set on did not pass from the rows: $(clrow $t tester)"; return 1; }
   ft approve $t; must 'approve with every item closed' 0 || return 1
   ft checklist $t on mockup; must 'checklist on a closed task' 5 || return 1
+}
+
+# D1 (plan v2 section 3): setup writes one step row per state the task needs, move follows only that setup, and the
+# step calls carry the running state's runtime and liveness onto the card, keyed by the spawn generation.
+case_workflow() {
+  BIN=$1; reset_db
+  local step_of
+  step_of() { db fm_task_step | jq -c --arg s "$1" '.[] | select(.taskId == "tk-flow" and .state == $s)'; }
+  mk_running tk-flow >/dev/null || return 1
+  [ "$(task_row tk-flow | jq -r .workflowState)" = queued ] || { echo "a new task is not queued: $(task_row tk-flow)"; return 1; }
+  printf '%s' '{"steps":[{"state":"implement","harness":"pi","model":"example","effort":"high","fallbacks":[{"harness":"claude","model":"backup","effort":"low"}]},{"state":"merge"}]}' > "$TMP_ROOT/setup.json"
+  printf '%s' '{"steps":[{"state":"merge"},{"state":"implement","harness":"pi","model":"example"}]}' > "$TMP_ROOT/setup-order.json"
+  ft setup tk-flow --file "$TMP_ROOT/setup-order.json"; must 'states out of workflow order' 5 || return 1
+  ft setup tk-flow --file "$TMP_ROOT/setup.json"; must setup 0 || return 1
+  step_of implement | jq -e '.status == "pending" and .position == 0 and .attempt == 0 and (.fallbacks | fromjson | .[0].model == "backup")' >/dev/null || { echo "implement row: $(step_of implement)"; return 1; }
+  step_of merge | jq -e '.harness == null and .model == null' >/dev/null || { echo "merge carries a model: $(step_of merge)"; return 1; }
+  printf '%s' '{"steps":[{"state":"implement","harness":"pi","model":"example","effort":"high"}]}' > "$TMP_ROOT/setup-one.json"
+  ft setup tk-flow --file "$TMP_ROOT/setup-one.json"; must 'skip pending merge' 0 || return 1
+  step_of merge | jq -e '.status == "skipped"' >/dev/null || { echo "a removed pending state is not skipped: $(step_of merge)"; return 1; }
+  ft setup tk-flow --file "$TMP_ROOT/setup.json"; must 'restore setup selection' 0 || return 1
+  ft move tk-flow --to testing; must 'a state outside the setup' 5 || return 1
+  ft move tk-flow --to implement; must move 0 || return 1
+  printf '%s' '{"steps":[{"state":"implement","harness":"claude","model":"edited","effort":"low"},{"state":"merge"}]}' > "$TMP_ROOT/setup-edit.json"
+  ft setup tk-flow --file "$TMP_ROOT/setup-edit.json"; must 'edit the current pending state' 0 || return 1
+  task_row tk-flow | jq -e '.stepModel == "edited" and .stepHarness == "claude" and .stepEffort == "low"' >/dev/null || { echo "the card kept the old runtime of its pending state: $(task_row tk-flow)"; return 1; }
+  ft setup tk-flow --file "$TMP_ROOT/setup.json"; must 'restore the current pending state' 0 || return 1
+  ft step tk-flow start --harness pi --model example --effort high --generation g1; must start 0 || return 1
+  task_row tk-flow | jq -e '.workflowState == "implement" and .stepModel == "example" and .stepEffort == "high" and .stepAlive == "alive"' >/dev/null || { echo "card after start: $(task_row tk-flow)"; return 1; }
+  [ "$(db fm_task_step | jq '[.[] | select(.taskId == "tk-flow")] | length')" = 2 ] || { echo "a state outside the setup has a row"; return 1; }
+  printf '%s' '{"steps":[{"state":"implement","harness":"pi","model":"other"},{"state":"merge"}]}' > "$TMP_ROOT/setup-started.json"
+  ft setup tk-flow --file "$TMP_ROOT/setup-started.json"; must 'a setup edit after the start' 0 || return 1
+  step_of implement | jq -e '.model == "example" and .status == "running"' >/dev/null || { echo "a setup edit rewrote the running state: $(step_of implement)"; return 1; }
+  ft setup tk-flow --file "$TMP_ROOT/setup-one.json"; must 'a started setup keeps its states' 5 || return 1
+  ft move tk-flow --to testing; must 'unconfigured state refused while running' 5 || return 1
+  [ "$(task_row tk-flow | jq -r .workflowState)" = implement ] || { echo "a refused move moved the card"; return 1; }
+  ft step tk-flow start --harness pi --model example --generation g1; must 'the same incarnation again' 0 || return 1
+  [ "$OUT" = 'step tk-flow: unchanged' ] || { echo "a repeated start wrote: $OUT"; return 1; }
+  # a relaunch: the new incarnation takes the running attempt over; the old one can no longer report
+  ft step tk-flow start --harness claude --model opus --effort xhigh --generation g2; must 'relaunch start' 0 || return 1
+  step_of implement | jq -e '.attempt == 1 and .model == "opus" and .status == "running"' >/dev/null || { echo "relaunch did not re-point the attempt: $(step_of implement)"; return 1; }
+  [ "$(task_row tk-flow | jq -r .stepModel)" = opus ] || { echo "card model after relaunch: $(task_row tk-flow)"; return 1; }
+  ft step tk-flow dead --generation g1; must 'stale incarnation refused' 5 || return 1
+  [ "$(task_row tk-flow | jq -r .stepAlive)" = alive ] || { echo "a stale report changed the dot"; return 1; }
+  ft step tk-flow alive --generation g2; must 'unchanged liveness' 0 || return 1
+  [ "$OUT" = 'step tk-flow: unchanged' ] || { echo "an unchanged liveness wrote: $OUT"; return 1; }
+  ft step tk-flow dead --generation g2; must dead 0 || return 1
+  [ "$(task_row tk-flow | jq -r .stepAlive)" = dead ] || { echo "card dot after dead: $(task_row tk-flow)"; return 1; }
+  ft step tk-flow end --reason cleanup --generation g2; must cleanup 0 || return 1
+  step_of implement | jq -e '.status == "done" and .endReason == "cleanup" and .endedAt != null' >/dev/null || { echo "cleanup did not end the step: $(step_of implement)"; return 1; }
+  ft step tk-flow end --reason cleanup; must 'end with nothing running' 0 || return 1
+  [ "$OUT" = 'step tk-flow: unchanged' ] || { echo "a second end wrote: $OUT"; return 1; }
+  ft move tk-flow --to merge; must merge 0 || return 1
+  task_row tk-flow | jq -e '.workflowState == "merge" and .stepModel == null' >/dev/null || { echo "card at merge: $(task_row tk-flow)"; return 1; }
+  ft step tk-flow start --harness pi --model example --generation g3; must 'Merge has no worker' 5 || return 1
+  # the owner's Approve & start: setup by owner, then the task moves to its first state
+  export FM_HOME="$TMP_ROOT/workflow-home"; rm -rf "$FM_HOME"; mkdir -p "$FM_HOME/state"
+  mk_running tk-own >/dev/null || return 1
+  OUT=$("$BIN/fm-task-owner.sh" --action setup --task tk-own --setup "$(cat "$TMP_ROOT/setup.json")" --owner u-1 2>"$TMP_ROOT/err"); RC=$?; ERR=$(cat "$TMP_ROOT/err")
+  must 'owner setup' 0 || return 1
+  jq -e '.ok == true and (.writes | length) == 2' <<<"$OUT" >/dev/null || { echo "owner setup reply: $OUT"; return 1; }
+  task_row tk-own | jq -e '.workflowState == "implement" and .setupBy == "owner" and .stepModel == "example"' >/dev/null || { echo "owner setup did not start the flow: $(task_row tk-own)"; return 1; }
+  OUT=$("$BIN/fm-task-owner.sh" --action setup --task tk-own --setup "$(cat "$TMP_ROOT/setup-order.json")" --owner u-1 2>"$TMP_ROOT/err"); RC=$?
+  must 'owner setup refused' 5 || return 1
+  jq -e '.ok == false and (.error | length) > 0' <<<"$OUT" >/dev/null || { echo "a refused owner setup reply: $OUT"; return 1; }
+  # leaving a running state ends its attempt; a re-approved setup keeps the state the task is in
+  ft step tk-own start --harness pi --model example --effort high --generation o1; must 'owner task start' 0 || return 1
+  ft move tk-own --to merge; must 'move on' 0 || return 1
+  db fm_task_step | jq -e '.[] | select(.taskId == "tk-own" and .state == "implement") | .status == "done" and .alive == "dead" and .endReason == "moved to merge"' >/dev/null \
+    || { echo "the state left behind still runs: $(db fm_task_step | jq -c '.[] | select(.taskId == "tk-own")')"; return 1; }
+  OUT=$("$BIN/fm-task-owner.sh" --action setup --task tk-own --setup "$(cat "$TMP_ROOT/setup.json")" --owner u-1 2>"$TMP_ROOT/err"); RC=$?
+  must 'owner re-approves under way' 0 || return 1
+  jq -e '.ok == true and (.writes | length) == 1' <<<"$OUT" >/dev/null || { echo "a re-approval moved the task: $OUT"; return 1; }
+  [ "$(task_row tk-own | jq -r .workflowState)" = merge ] || { echo "a re-approval changed the state: $(task_row tk-own)"; return 1; }
+  # approve closes the flow from any state: a state that never started is skipped
+  printf '%s' '{"steps":[{"state":"implement","harness":"pi","model":"example","effort":"high"},{"state":"merge"},{"state":"verify","harness":"pi","model":"example"}]}' > "$TMP_ROOT/setup-verify.json"
+  mk_running tk-close >/dev/null || return 1
+  ft setup tk-close --file "$TMP_ROOT/setup-verify.json"; must 'close setup' 0 || return 1
+  ft move tk-close --to implement; must 'close move' 0 || return 1
+  ft step tk-close start --harness pi --generation c1; must 'start on the harness default model' 0 || return 1
+  db fm_task_step | jq -e '.[] | select(.taskId == "tk-close" and .state == "implement") | .model == "example" and .effort == "high"' >/dev/null \
+    || { echo "a start with no model lost the configured one: $(db fm_task_step | jq -c '.[] | select(.taskId == "tk-close")')"; return 1; }
+  ft "done" tk-close "${DONE_FLAGS[@]}"; must 'close done' 0 || return 1
+  ft approve tk-close; must 'approve before the last state' 0 || return 1
+  task_row tk-close | jq -e '.state == "done" and .workflowState == "done" and .stepAlive == null' >/dev/null || { echo "approve did not close the flow: $(task_row tk-close)"; return 1; }
+  db fm_task_step | jq -e '[.[] | select(.taskId == "tk-close")] | map({(.state): .status}) | add | .verify == "skipped" and .merge == "skipped" and .implement == "done"' >/dev/null \
+    || { echo "approve left steps open: $(db fm_task_step | jq -c '.[] | select(.taskId == "tk-close")')"; return 1; }
+  # testing fails back to implement: implement ran last although testing sits later in the setup
+  printf '%s' '{"steps":[{"state":"implement","harness":"pi","model":"example"},{"state":"testing","harness":"pi","model":"example"},{"state":"merge"}]}' > "$TMP_ROOT/setup-test.json"
+  mk_running tk-back >/dev/null || return 1
+  ft setup tk-back --file "$TMP_ROOT/setup-test.json"; must 'back setup' 0 || return 1
+  ft move tk-back --to implement; must 'back implement' 0 || return 1
+  ft step tk-back start --harness pi --generation b1; must 'back start implement' 0 || return 1
+  ft move tk-back --to testing; must 'back testing' 0 || return 1
+  ft step tk-back start --harness pi --generation b2; must 'back start testing' 0 || return 1
+  api -X POST "$BASE/api/fm_task_check" -d '{"taskId":"tk-back","scenarioId":"T1","width":"1440","status":"fail","nextActor":"worker","surface":"user-visible","page":"p","line":"l","controls":"-","data":"-","proof":"-","acceptanceDigest":"d"}' >/dev/null
+  ft move tk-back --to implement; must 'back to implement on a failed row' 0 || return 1
+  ft step tk-back start --harness pi --generation b3; must 'back start implement again' 0 || return 1
+  api -X PATCH "$BASE/api/fm_task_check/$(db fm_task_check | jq -r '.[] | select(.taskId == "tk-back") | .id')" -d '{"status":"pass"}' >/dev/null
+  ft "done" tk-back "${DONE_FLAGS[@]}"; must 'back done' 0 || return 1
+  ft approve tk-back; must 'back approve' 0 || return 1
+  ft reopen tk-back --reason 'again'; must 'back reopen' 0 || return 1
+  [ "$(task_row tk-back | jq -r .workflowState)" = implement ] || { echo "reopen picked the state by position, not by the last run: $(task_row tk-back)"; return 1; }
+  ft reopen tk-close --reason 'one more round'; must reopen 0 || return 1
+  [ "$(task_row tk-close | jq -r .workflowState)" = implement ] || { echo "reopen did not return to the last state that ran: $(task_row tk-close)"; return 1; }
+  db fm_task_step | jq -e '[.[] | select(.taskId == "tk-close")] | map({(.state): .status}) | add | .verify == "pending" and .merge == "pending"' >/dev/null \
+    || { echo "reopen left the approved skips: $(db fm_task_step | jq -c '.[] | select(.taskId == "tk-close")')"; return 1; }
+  export FM_HOME="$TMP_ROOT/home"
 }
 
 # SG1 (#176 Step 5): every write folds the board card's step onto the row: stage by the step rule, stageSince only
@@ -2514,7 +2654,7 @@ case_question_round() {
   return 0
 }
 
-CASES=${FM_TASK_CASES:-"description_thread terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed long_notes status_view verify_view owner_writer stage wait carry slice_c model_rules checklist question_round"}
+CASES=${FM_TASK_CASES:-"description_thread terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed long_notes status_view verify_view owner_writer workflow stage wait carry slice_c model_rules checklist question_round"}
 
 # ---- real command -------------------------------------------------------------------
 
@@ -2607,6 +2747,17 @@ mutate 'blocked keeps the step it had' stage "task.stage ?? 'queued'" "'queued'"
 mutate 'a deploy after the newest done is dev' stage "if (event.kind === 'deploy') deployed = true;" ";"
 mutate 'a pr event after the newest started is pr' stage "if (event.kind === 'pr') pullRequest = true;" ";"
 mutate 'stageSince moves only when the step changes' stage "if (stage !== task.stage) Object.assign(task, { stage, stageSince: event.createdAt ?? null });" "Object.assign(task, { stage, stageSince: event.createdAt ?? null });"
+mutate 'a move outside the setup is refused' workflow "if (!target || (next?.state !== to && !retry))" "if (!target && false)"
+mutate 'a report from an older incarnation is refused' workflow "if (generation && started && generation !== started) throw rule(" "if (false) throw rule("
+mutate 'a relaunch start marks its incarnation as the running one' workflow "patch: { ...runtime, status: 'running', alive: 'alive', lastHeartbeatAt: now }" "patch: { ...runtime, alive: 'alive', lastHeartbeatAt: now }"
+mutate 'a removed pending state is skipped' workflow "...removed.map(s => ({ state: s.state, status: 'skipped' }))" "...[]"
+mutate 'reopen lets the states approve skipped wait again' workflow "s.status === 'skipped' && s.endReason === 'approved').map(" "false).map("
+mutate 'a start with no model keeps the configured model' workflow "model: args.flags.model || current.model," "model: args.flags.model,"
+mutate 'a setup edit leaves a state that ran as it ran' workflow "ran(s.state) ? { state: s.state, position: s.position }" "false ? { state: s.state, position: s.position }"
+mutate 'a setup edit of the current pending state shows on the card' workflow "setupAt: new Date().toISOString(), ...card }" "setupAt: new Date().toISOString() }"
+mutate 'reopen returns to the state that ran last in event order' workflow "const last = steps.find(s => s.state === lastRan);" "const last = steps.filter(s => ['done', 'failed', 'running'].includes(s.status)).at(-1);"
+mutate 'approve skips the states that never started' workflow ": s.status === 'pending' ? [{ state: s.state, status: 'skipped', endReason: 'approved' }] : []);" ": []);"
+mutate 'a move ends the running attempt of the state left behind' workflow "const stepWrites = left ? [{ state: left.state, status: 'done'" "const stepWrites = false ? [{ state: left.state, status: 'done'"
 mutate 'the reviewer is the actor of the newest review event' stage "if (REVIEWER_KINDS.includes(event.kind)) task.reviewer = event.actor ?? null;" ";"
 mutate 'a row event does not move lastNote or lastEventAt' stage "if (event.kind !== 'row' && event.kind !== 'checklist') {" "if (event.kind !== 'checklist') {"
 mutate 'a machine record does not become lastNote' stage "if (!isMachineRecord(event, note)) task.lastNote" "task.lastNote"
@@ -2679,6 +2830,11 @@ mutate 'a write passes the items the record proves' checklist 'if (await syncChe
 mutate 'checklist off needs a reason' checklist "if (verb === 'off' && !reason?.trim()) throw usage" 'if (false) throw usage'
 mutate 'an open question keeps the decision item open' checklist "if (task.blockKind === 'needs-decision' && task.state === 'blocked') return null;" ''
 mutate 'only a green ci passes the ci item' checklist '/\bCI green\b/.test(bodyOf(ci).note' 'true || (bodyOf(ci).note'
+mutate 'firstmate'"'"'s unblock is not the owner'"'"'s answer' checklist "e.kind === 'unblocked' && e.actorRole === 'owner'" "e.kind === 'unblocked'"
+mutate 'the owner'"'"'s plan approval passes the decision item' checklist 'if (approval) return' 'if (false) return'
+mutate 'a passed ci or decision item is checked again' checklist "(r.status === 'pass' && RECHECKED.includes(r.scenarioId))" 'false'
+mutate 'a done without a head reads the ci result'"'"'s head' checklist "const head = built ?? (" "const head = built ?? (false && "
+mutate 'ci reads only the built head' checklist "newest((e) => e.kind === 'ci' && bodyOf(e).head === head)" "newest((e) => e.kind === 'ci')"
 mutate 'rules lists only enabled rules' model_rules "r.enabled === true && inHours(" "inHours("
 mutate 'an hour range wraps past midnight' model_rules ": hour >= from || hour < to;" ": false;"
 mutate 'a repo named in a scope uses only its scoped rules' model_rules "(scoped.length ? scoped : forState.filter((r) => !r.scope))" "forState"
