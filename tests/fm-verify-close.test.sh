@@ -372,6 +372,60 @@ test_teardown_holds_the_row_before_it_leaves_in_flight() {
   pass "teardown holds the row before it reopens it, so it is never queued and unheld"
 }
 
+# Dev 5001 stores a hold reason in fm_task.backlog_hold_reason, which holds 2000 characters;
+# a longer value refuses the row write after its event is stored (HTTP 400 VALIDATION_ERROR).
+# This shim refuses the same way, so a task with many missing rows shows whether teardown
+# still holds its row.
+shim_reason_limit() {  # prepends the shim dir to PATH
+  local real
+  real=$(command -v tasks-axi)
+  mkdir -p "$TMP_ROOT/limit-shim"
+  cat > "$TMP_ROOT/limit-shim/tasks-axi" <<SHIM
+#!/usr/bin/env bash
+prev=
+for arg in "\$@"; do
+  if [ "\$prev" = --reason ] && [ "\${#arg}" -gt 2000 ]; then
+    echo "HTTP 400 VALIDATION_ERROR: backlogHoldReason exceeds 2000 characters" >&2
+    exit 1
+  fi
+  prev=\$arg
+done
+exec $(printf '%q' "$real") "\$@"
+SHIM
+  chmod +x "$TMP_ROOT/limit-shim/tasks-axi"
+  PATH="$TMP_ROOT/limit-shim:$PATH"
+}
+
+test_teardown_holds_a_row_with_many_missing_items_within_the_reason_limit() {
+  local home saved=$PATH items='' n reason
+  home=$(make_home many-missing)
+  tasks-axi add "$ID" "landed UI change" --kind ship --file "$home/data/backlog.md" >/dev/null
+  tasks-axi start "$ID" --file "$home/data/backlog.md" >/dev/null
+  for n in $(seq 1 40); do
+    items="${items:+$items; }EN$n@1440 has no check row in the record; run rows"
+  done
+  shim_reason_limit
+  (
+    cd "$home" || exit 1
+    # shellcheck source=bin/fm-tasks-axi-lib.sh
+    . "$ROOT/bin/fm-tasks-axi-lib.sh"
+    # shellcheck source=bin/fm-backlog-transition-lib.sh
+    . "$ROOT/bin/fm-backlog-transition-lib.sh"
+    fm_backlog_verify_pending "$home/data" "$ID" "$(encode "$items")" --pr "$PR"
+  ) || { PATH=$saved; fail "teardown could not hold a row with 40 missing items: the reason is over the field limit"; }
+  PATH=$saved
+  [ "$(field "$home" held)" = yes ] && [ "$(field "$home" hold_kind)" = external ] \
+    || fail "the row did not end held as external: $(show "$home")"
+  reason=$(tasks-axi show "$ID" --file "$home/data/backlog.md" --full 2>/dev/null | sed -n 's/^  hold_reason: *//p' | tr -d '"')
+  [ "${#reason}" -le 2000 ] || fail "the stored reason is ${#reason} characters, over the 2000 limit"
+  reason=$(printf '%s' "${reason#fm-hold-v1:}" | perl -MMIME::Base64=decode_base64 -0777 -ne 'print decode_base64($_)')
+  case "$reason" in
+    "verification pending: EN1@1440 has no check row"*"; and "*" more (bin/fm-verify-close.sh $ID lists all)") ;;
+    *) fail "the cut reason does not keep the first items and count the rest: $reason" ;;
+  esac
+  pass "teardown holds a row with many missing items within the 5001 hold-reason limit"
+}
+
 test_complete_record_lifts_the_hold_and_closes_the_row
 test_local_evidence_cannot_replace_the_testers_own_record
 test_incomplete_record_refuses_lists_problems_and_refreshes_the_reason
@@ -386,3 +440,4 @@ test_a_body_edit_cannot_turn_a_verification_pending_call_into_done
 test_an_unrelated_body_line_without_the_marker_closes_normally
 test_a_repeated_keyed_answer_for_a_verification_pending_row_is_not_skipped
 test_a_crash_after_the_pending_close_record_does_not_bypass_verification
+test_teardown_holds_a_row_with_many_missing_items_within_the_reason_limit

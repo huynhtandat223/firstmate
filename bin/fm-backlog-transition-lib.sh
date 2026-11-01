@@ -689,6 +689,40 @@ fm_backlog_verify_items_decode() {  # <encoded-items>
     print $out;'
 }
 
+# The stored hold reason of a verify-pending row: "verification pending: <items>" in the
+# fm-hold-v1 form, cut to whole items so it fits the smallest hold-reason field a backend
+# stores (Dev 5001's fm_task.backlog_hold_reason holds 2000 characters, and a longer value
+# refuses the row write). A cut list ends with "and N more"; bin/fm-verify-close.sh prints
+# every item. The argument is the plain "; "-joined item list.
+fm_backlog_verify_reason() {  # <id> <items>
+  local text
+  text=$(printf '%s' "$2" | perl -e '
+    use strict; use warnings;
+    my ($id) = @ARGV;
+    my $in = do { local $/; <STDIN> };
+    # 1491 raw bytes encode to 2000 characters with the fm-hold-v1: prefix; keep a margin.
+    my $limit = 1400;
+    my $head = "verification pending: ";
+    my @items = split /; /, $in;
+    my $out = $head . join("; ", @items);
+    if (length($out) > $limit) {
+      my $kept = $head;
+      my $n = 0;
+      for my $item (@items) {
+        my $rest = @items - $n - 1;
+        my $tail = $rest ? "; and $rest more (bin/fm-verify-close.sh $id lists all)" : "";
+        my $next = $kept . ($n ? "; " : "") . $item;
+        last if length($next . $tail) > $limit;
+        $kept = $next;
+        $n++;
+      }
+      my $more = @items - $n;
+      $out = $kept . ($n ? "; and" : "and") . " $more more (bin/fm-verify-close.sh $id lists all)";
+    }
+    print $out;' "$1") || return 1
+  fm_hold_reason_encode "$text"
+}
+
 # data/<id>/verify-pending: written when teardown chooses verification pending, removed when the
 # row is closed (a normal teardown close, bin/fm-verify-close.sh, or an answer to a captain call
 # whose record is complete).
@@ -741,7 +775,7 @@ fm_backlog_verify_pending() {  # <data-dir> <id> <encoded-items> [flag...]
   # Hold before the reopen inside retain, so the row is never Queued and unheld: tasks-axi keeps
   # a hold across reopen.
   if [ "$FM_BACKLOG_ROW_HOLD_KIND" != captain ]; then
-    fm_backlog_mutate "$data" hold "$id" --reason "$(fm_hold_reason_encode "verification pending: $items")" --kind external || return 1
+    fm_backlog_mutate "$data" hold "$id" --reason "$(fm_backlog_verify_reason "$id" "$items")" --kind external || return 1
   fi
   fm_backlog_retain "$data" "$id" "$@" || return 1
   if [ "$FM_BACKLOG_ROW_HOLD_KIND" = captain ]; then
