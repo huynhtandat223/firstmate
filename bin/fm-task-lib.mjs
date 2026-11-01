@@ -74,6 +74,8 @@
 //            complete (exit 5): a user-visible row of the issue not pass on the deployed head with its current
 //            digest and evidence, or no approved event newer than the last row event (bin/fm-verify-gate-lib.sh)
 //   turn-end <task> --turn TOKEN             check a durable turn generation; heartbeat is not terminal
+//   inbox <notification-id> --action task|linked|delete [--target task-id] [--home main] resolve an inbox item
+//   read-mark <task> --key steer:<task>:<record>  mark one handled steer in fm_task_delivery (consumer read:<task>)
 //   deliver  <task> --consumer NAME           claim each event in fm_task_delivery, then append a wake
 //            FM_HOME is required; delivery is scoped to this task, never a whole foreign fleet.
 //            A crash between claim and queue append requires operator reconciliation (no duplicate claim).
@@ -405,6 +407,8 @@ const SPECS = {
   reproject: { pos: ['task'], flags: { all: 'b' } },
   'turn-end': { pos: ['task'], flags: { turn: 's' } },
   deliver: { pos: ['task'], flags: { consumer: 's' } },
+  'read-mark': { pos: ['task'], flags: {} },
+  inbox: { pos: ['task'], flags: { action: 's', target: 's', home: 's' } },
   document: { pos: ['task'], flags: {} },
   gate: { pos: ['task'], flags: { issue: 's', head: 's', 'evidence-root': 's' } },
 };
@@ -1821,6 +1825,59 @@ async function cmdTurnEnd(args) {
   out(verdict);
 }
 
+async function cmdInbox(args) {
+  const id = taskIdOf(args);
+  const action = args.flags.action;
+  if (!['task', 'linked', 'delete'].includes(action)) throw usage('inbox needs --action task|linked|delete');
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) throw usage('inbox requires a notification UUID');
+  const items = await listAll('notification', { filter: `id eq ${id}`, expand: 'actions,images($select=id),documents($select=id)' });
+  const item = items[0];
+  if (!item) throw new Fail(5, 'inbox item does not exist');
+  if (action === 'delete') {
+    ok(await http('PATCH', `/api/notification/${encodeURIComponent(id)}`, { state: 'dismissed' }), 'dismiss inbox item');
+    const retention = spawnSync('bash', [path.join(os.homedir(), '.local/share/cfw-scripts/notifications-retention.sh'), '--days', '0', '--only', id], { encoding: 'utf8', timeout: 30000 });
+    if (retention.status !== 0) throw new Fail(3, `inbox dismissed but retention failed: ${retention.stderr || retention.error?.message || 'unknown error'}`);
+    let receipt;
+    try { receipt = JSON.parse(retention.stdout); } catch { throw new Fail(3, 'retention returned no JSON receipt'); }
+    if (receipt.deleted !== 1) throw new Fail(3, 'inbox dismissed but retention did not confirm deletion');
+    out(`deleted inbox=${id}`);
+    return;
+  }
+  const target = action === 'task' ? `inbox-${id}` : args.flags.target;
+  if (!target) throw usage('linked needs --target task-id');
+  const home = args.flags.home || 'main';
+  if (!/^[A-Za-z0-9._-]{1,128}$/.test(home)) throw usage('inbox --home must be a valid backlog home');
+  if (item.resolution && item.taskId !== target) throw new Fail(5, 'inbox item was already handled');
+  if (action === 'task') {
+    await cmdCreate({ pos: { task: target }, flags: { title: item.title, kind: 'other', key: `inbox:${id}:create` } });
+    if (item.body) await cmdComment({ pos: { task: target }, flags: { note: item.body, key: `inbox:${id}:body` } });
+    await requireOpenTask(target, 'make inbox task');
+    await write(target, identity({ flags: { key: `inbox:${id}:home` } }, 'firstmate'), async () => ({
+      kind: 'row', note: 'Inbox task home', set: { backlogHome: home },
+    }));
+  } else {
+    await requireOpenTask(target, 'link inbox');
+  }
+  ok(await http('PATCH', `/api/notification/${encodeURIComponent(id)}`, { taskId: target, resolution: action }), 'resolve inbox item');
+  out(`inbox=${id} task=${target} resolution=${action}`);
+}
+
+async function cmdReadMark(args) {
+  const taskId = taskIdOf(args);
+  const key = args.flags.key;
+  if (!key?.startsWith(`steer:${taskId}:`)) throw usage('read-mark needs this task’s steer key');
+  const consumer = `read:${taskId}`;
+  if (consumer.length > 64) throw usage('read consumer exceeds 64 characters');
+  const event = (await taskEvents(taskId)).find((e) => e.kind === 'steer' && e.idempotencyKey === key);
+  if (!event) throw new Fail(5, 'steer event not stored yet');
+  const prior = await listAll('fm_task_delivery', { filter: `consumer eq ${lit(consumer)} and seq eq ${event.seq}` });
+  if (!prior.length) {
+    const res = await http('POST', '/api/fm_task_delivery', { consumer, seq: event.seq });
+    if (res.status !== 409) ok(res, 'mark steer read');
+  }
+  out(`read ${consumer} seq=${event.seq}`);
+}
+
 async function cmdDeliver(args) {
   const consumer = args.flags.consumer;
   if (!consumer || consumer.length > 64) throw usage('deliver needs --consumer (up to 64 characters)');
@@ -1859,7 +1916,7 @@ async function cmdDeliver(args) {
 }
 
 const COMMANDS = {
-  'turn-end': cmdTurnEnd, deliver: cmdDeliver, describe: cmdDescribe, plan: cmdPlan, 'plan-decision': cmdPlanDecision, thread: cmdThread,
+  'turn-end': cmdTurnEnd, deliver: cmdDeliver, 'read-mark': cmdReadMark, inbox: cmdInbox, describe: cmdDescribe, plan: cmdPlan, 'plan-decision': cmdPlanDecision, thread: cmdThread,
   create: cmdCreate, import: cmdImport, assign: cmdAssign, start: cmdStart, heartbeat: cmdHeartbeat, done: cmdDone, ask: cmdAsk, block: cmdBlock,
   unblock: cmdUnblock, approve: cmdApprove, changes: cmdChanges, reopen: cmdReopen, reassign: cmdReassign, archive: cmdArchive, comment: cmdComment, event: cmdEvent,
   document: cmdDocument, link: cmdLink, rows: cmdRows, check: cmdCheck, 'owner-check': cmdOwnerCheck, gate: cmdGate, show: cmdShow, list: cmdList, resume: cmdResume, reproject: cmdReproject,

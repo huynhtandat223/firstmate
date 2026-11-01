@@ -559,6 +559,22 @@ fm_task_inbox_clear_retry() {  # <state-dir> <task-id> <record-path>
 fm_task_inbox_due_action() {  # <state-dir> <task-id>
   local dir oldest base now grace max ladder rec_base count last
   dir=$(fm_task_inbox_dir "$1" "$2")
+  # Handled messages remain local runtime receipts; their read marks live in
+  # the task record. Only scan this task, and retry failed API writes next time.
+  if [ -f "${FM_CONFIG_OVERRIDE:-${FM_HOME:-}/config}/task-shadow" ]; then
+    local handled
+    for handled in "$dir/handled/"*.msg; do
+      [ -f "$handled" ] || continue
+      [ ! -f "$handled.read-mark" ] || continue
+      if (
+        . "$(dirname "${BASH_SOURCE[0]}")/fm-task-shadow-config-lib.sh"
+        fm_task_shadow_config "${FM_CONFIG_OVERRIDE:-${FM_HOME:-}/config}/task-shadow"
+        "$(dirname "${BASH_SOURCE[0]}")/fm-task.sh" read-mark "$2" --key "steer:$2:${handled##*/}"
+      ) >/dev/null 2>&1; then
+        : > "$handled.read-mark"
+      fi
+    done
+  fi
   if ! oldest=$(fm_task_inbox_oldest_unhandled "$1" "$2"); then
     rm -f "$dir/.ring-state" "$dir/.escalated" "$dir/.busy-state" 2>/dev/null || true
     # The one retry ring exists only while config/wait-no-turns is present.
