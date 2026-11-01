@@ -298,7 +298,7 @@ test_spawn_writes_the_record() {
   make_real_case spawn
   add_row "$TASK" 'Spawn shadow title' ship
   out=$(in_home "$SBIN/fm-spawn.sh" "$TASK" "$PROJ_DIR" --mode local-only --yolo off 2>&1) || fail "spawn failed: $out"
-  assert_equals "$(printf '%s\n' "create $TASK --title Spawn shadow title --kind ship --repo sample" "assign $TASK --to $TASK" "start $TASK" "step $TASK start --generation G --harness claude --model ")" "$(calls)" "the record calls of a fresh spawn"
+  assert_equals "$(printf '%s\n' "create $TASK --title Spawn shadow title --kind ship --repo sample" "assign $TASK --to $TASK" "start $TASK" "step $TASK start --generation G --harness claude")" "$(calls)" "the record calls of a fresh spawn"
   assert_contains "$(sed -n 4p "$CALLS")" "--generation $(sed -n 's/^spawn_gen=//p' "$HOME_DIR/state/$TASK.meta")" "the step start names the spawn generation of the task record"
   make_real_case spawn-off
   rm -f "$HOME_DIR/config/task-shadow"

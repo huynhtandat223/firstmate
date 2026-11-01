@@ -2213,7 +2213,9 @@ case_workflow() {
   task_row tk-flow | jq -e '.workflowState == "implement" and .stepModel == "example" and .stepEffort == "high" and .stepAlive == "alive"' >/dev/null || { echo "card after start: $(task_row tk-flow)"; return 1; }
   [ "$(db fm_task_step | jq '[.[] | select(.taskId == "tk-flow")] | length')" = 2 ] || { echo "a state outside the setup has a row"; return 1; }
   printf '%s' '{"steps":[{"state":"implement","harness":"pi","model":"other"},{"state":"merge"}]}' > "$TMP_ROOT/setup-started.json"
-  ft setup tk-flow --file "$TMP_ROOT/setup-started.json"; must 'a started state keeps its model' 5 || return 1
+  ft setup tk-flow --file "$TMP_ROOT/setup-started.json"; must 'a setup edit after the start' 0 || return 1
+  step_of implement | jq -e '.model == "example" and .status == "running"' >/dev/null || { echo "a setup edit rewrote the running state: $(step_of implement)"; return 1; }
+  ft setup tk-flow --file "$TMP_ROOT/setup-one.json"; must 'a started setup keeps its states' 5 || return 1
   ft move tk-flow --to testing; must 'unconfigured state refused while running' 5 || return 1
   [ "$(task_row tk-flow | jq -r .workflowState)" = implement ] || { echo "a refused move moved the card"; return 1; }
   ft step tk-flow start --harness pi --model example --generation g1; must 'the same incarnation again' 0 || return 1
@@ -2259,12 +2261,18 @@ case_workflow() {
   mk_running tk-close >/dev/null || return 1
   ft setup tk-close --file "$TMP_ROOT/setup-verify.json"; must 'close setup' 0 || return 1
   ft move tk-close --to implement; must 'close move' 0 || return 1
-  ft step tk-close start --harness pi --model example --generation c1; must 'close start' 0 || return 1
+  ft step tk-close start --harness pi --generation c1; must 'start on the harness default model' 0 || return 1
+  db fm_task_step | jq -e '.[] | select(.taskId == "tk-close" and .state == "implement") | .model == "example" and .effort == "high"' >/dev/null \
+    || { echo "a start with no model lost the configured one: $(db fm_task_step | jq -c '.[] | select(.taskId == "tk-close")')"; return 1; }
   ft "done" tk-close "${DONE_FLAGS[@]}"; must 'close done' 0 || return 1
   ft approve tk-close; must 'approve before the last state' 0 || return 1
   task_row tk-close | jq -e '.state == "done" and .workflowState == "done" and .stepAlive == null' >/dev/null || { echo "approve did not close the flow: $(task_row tk-close)"; return 1; }
   db fm_task_step | jq -e '[.[] | select(.taskId == "tk-close")] | map({(.state): .status}) | add | .verify == "skipped" and .merge == "skipped" and .implement == "done"' >/dev/null \
     || { echo "approve left steps open: $(db fm_task_step | jq -c '.[] | select(.taskId == "tk-close")')"; return 1; }
+  ft reopen tk-close --reason 'one more round'; must reopen 0 || return 1
+  [ "$(task_row tk-close | jq -r .workflowState)" = implement ] || { echo "reopen did not return to the last state that ran: $(task_row tk-close)"; return 1; }
+  db fm_task_step | jq -e '[.[] | select(.taskId == "tk-close")] | map({(.state): .status}) | add | .verify == "pending" and .merge == "pending"' >/dev/null \
+    || { echo "reopen left the approved skips: $(db fm_task_step | jq -c '.[] | select(.taskId == "tk-close")')"; return 1; }
   export FM_HOME="$TMP_ROOT/home"
 }
 
@@ -2416,7 +2424,10 @@ mutate 'a move outside the setup is refused' workflow "if (!target || (next?.sta
 mutate 'a report from an older incarnation is refused' workflow "if (generation && started && generation !== started) throw rule(" "if (false) throw rule("
 mutate 'a relaunch start marks its incarnation as the running one' workflow "patch: { ...runtime, status: 'running', alive: 'alive', lastHeartbeatAt: now }" "patch: { ...runtime, alive: 'alive', lastHeartbeatAt: now }"
 mutate 'a removed pending state is skipped' workflow "...removed.map(s => ({ state: s.state, status: 'skipped' }))" "...[]"
-mutate 'approve skips the states that never started' workflow ": s.status === 'pending' ? [{ state: s.state, status: 'skipped' }] : []);" ": []);"
+mutate 'reopen lets the states approve skipped wait again' workflow "s.status === 'skipped' && s.endReason === 'approved').map(" "false).map("
+mutate 'a start with no model keeps the configured model' workflow "model: args.flags.model || current.model," "model: args.flags.model,"
+mutate 'a setup edit leaves a state that ran as it ran' workflow "ran(s.state) ? { state: s.state, position: s.position }" "false ? { state: s.state, position: s.position }"
+mutate 'approve skips the states that never started' workflow ": s.status === 'pending' ? [{ state: s.state, status: 'skipped', endReason: 'approved' }] : []);" ": []);"
 mutate 'a move ends the running attempt of the state left behind' workflow "const stepWrites = left ? [{ state: left.state, status: 'done'" "const stepWrites = false ? [{ state: left.state, status: 'done'"
 mutate 'the reviewer is the actor of the newest review event' stage "if (REVIEWER_KINDS.includes(event.kind)) task.reviewer = event.actor ?? null;" ";"
 mutate 'a row event does not move lastNote or lastEventAt' stage "if (event.kind !== 'row') {" "if (true) {"

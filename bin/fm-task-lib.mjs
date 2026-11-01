@@ -17,12 +17,14 @@
 //   setup    <task> --file JSON [--by firstmate|owner]   {"steps":[{state,harness,model,effort,fallbacks:[{harness,model,effort}]}]}:
 //            the states the task needs, in workflow order (plan implement testing merge verify; Merge has no model).
 //            Writes one fm_task_step row per state; a pending state left out becomes skipped. Once a state has
-//            started, only a pending state's harness, model, effort and fallbacks may change (exit 5 otherwise).
+//            started, the list of states is fixed (exit 5 otherwise); a state that has run keeps the runtime it ran
+//            with, and only pending states take a new harness, model, effort and fallbacks.
 //   move     <task> --to STATE               queued -> the first setup state -> the next one; testing|verify -> implement
 //            on a failed check row; a state outside the setup is refused (exit 5). The running attempt of the state
 //            left behind ends with the move. Done comes only through approve, which ends a running step and skips a
-//            state that never started.
-//   step     <task> start --harness H --model M [--effort E] [--account A] [--generation G]   the current state runs
+//            state that never started; reopen returns to the last state that ran and lets the skipped states wait again.
+//   step     <task> start --harness H [--model M] [--effort E] [--account A] [--generation G]   the current state runs;
+//            without --model (a harness default) the setup's model and effort for the state stand
 //   step     <task> alive|dead [--generation G]   on a change only     step <task> end --reason R [--generation G]
 //            G is the spawn_gen of state/<task>.meta; a report from an older incarnation is refused (exit 5).
 //   heartbeat <task> [--note N]              running (today's `working:`)
@@ -649,9 +651,13 @@ async function write(taskId, who, build, after, wait) {
   try {
     const stepWrites = bodyOf(result.event).stepWrites;
     if (Array.isArray(stepWrites)) {
-      // a replayed or late event writes only the states no newer event has written since
-      const later = (await taskEvents(taskId)).filter(e => e.seq > result.event.seq).flatMap(e => bodyOf(e).stepWrites ?? []).map(s => s.state);
-      for (const step of stepWrites) if (!later.includes(step.state)) await saveStep(taskId, step);
+      // a replayed or late event writes only the fields of a state that no newer event has written since
+      const later = (await taskEvents(taskId)).filter(e => e.seq > result.event.seq).flatMap(e => bodyOf(e).stepWrites ?? []);
+      for (const step of stepWrites) {
+        const taken = new Set(later.filter(l => l.state === step.state).flatMap(l => Object.keys(l)));
+        const fields = Object.fromEntries(Object.entries(step).filter(([k]) => k === 'state' || !taken.has(k)));
+        if (Object.keys(fields).length > 1) await saveStep(taskId, fields);
+      }
     }
     projected = await project(taskId);
     if (after) {
@@ -836,11 +842,14 @@ async function cmdSetup(args) {
     const old = await stepRows(taskId);
     if (old.some(s => !['pending', 'skipped'].includes(s.status))) {
       const active = old.filter(s => s.status !== 'skipped');
-      if (active.length !== normalized.length || active.some((s, i) => s.state !== normalized[i].state || (s.status !== 'pending' && ['harness', 'model', 'effort', 'fallbacks'].some(k => s[k] !== normalized[i][k])))) throw rule('started setup permits only pending model changes');
+      if (active.length !== normalized.length || active.some((s, i) => s.state !== normalized[i].state)) throw rule('a started setup keeps its states; only pending states take new runtimes');
     }
+    // a state that has run keeps the runtime it ran with (it may be a fallback); only pending states take the new one
+    const ran = (state) => old.some(o => o.state === state && !['pending', 'skipped'].includes(o.status));
     const removed = old.filter(s => !normalized.some(n => n.state === s.state));
-    if (removed.some(s => !['pending', 'skipped'].includes(s.status))) throw rule('only pending setup states can be skipped');
-    const stepWrites = [...normalized.map(s => ({ ...s, ...(old.some(o => o.state === s.state && o.status !== 'skipped') ? {} : { status: 'pending', attempt: 0 }) })), ...removed.map(s => ({ state: s.state, status: 'skipped' }))];
+    const stepWrites = [...normalized.map(s => ran(s.state) ? { state: s.state, position: s.position }
+      : { ...s, ...(old.some(o => o.state === s.state && o.status !== 'skipped') ? {} : { status: 'pending', attempt: 0, endReason: null }) }),
+    ...removed.map(s => ({ state: s.state, status: 'skipped' }))];
     return { kind: 'setup', extra: { stepWrites }, set: { setupBy: by, setupAt: new Date().toISOString() }, children: { documents: [{ title: 'Setup', mediaType: 'application/json', content: JSON.stringify(normalized) }] } };
   });
 }
@@ -877,7 +886,7 @@ async function cmdStep(args) {
   const action = oneOf(['start', 'alive', 'dead', 'end'], args.pos.action, 'step action');
   const generation = args.flags.generation ?? null;
   const who = identity(args, 'firstmate');
-  if (action === 'start' && (!args.flags.harness || !args.flags.model)) throw usage('step start needs --harness and --model');
+  if (action === 'start' && !args.flags.harness) throw usage('step start needs --harness');
   if (action === 'end' && !args.flags.reason) throw usage('step end needs --reason');
   // the decision on the record as it is now; the write repeats it against the events really before it
   const decide = async (task, events) => {
@@ -888,7 +897,9 @@ async function cmdStep(args) {
     const now = new Date().toISOString();
     if (action === 'start') {
       if (current.state === 'merge') throw rule('Merge has no worker model');
-      const runtime = { harness: args.flags.harness, model: args.flags.model, effort: args.flags.effort ?? null, account: args.flags.account ?? null };
+      // a spawn on the harness default names no model: the configured step's model and effort stand
+      const runtime = { harness: args.flags.harness, model: args.flags.model || current.model, effort: args.flags.effort || current.effort || null, account: args.flags.account || null };
+      if (!runtime.model) throw usage('step start needs --model: the setup names no model for this state');
       if (current.status !== 'running') return { current, patch: { ...runtime, status: 'running', alive: 'alive', attempt: current.attempt + 1, startedAt: now, lastHeartbeatAt: now, endedAt: null, endReason: null } };
       if (!generation || !started) throw rule('end the running step before starting another attempt');
       if (generation === started) return { current, unchanged: true };
@@ -1029,7 +1040,14 @@ const cmdChanges = simple('changes', 'changes', async () => ({ state: 'ready', n
 const cmdReopen = async (args) => {
   if (!args.flags.reason?.trim()) throw usage('reopen needs --reason');
   args.flags.note = args.flags.reason;
-  return simple('reopen', 'reopened', async () => ({state: 'ready', nextActor: 'firstmate', blockKind: null, blockReason: null, blockRepeats: 0, holdUntil: null}))(args);
+  // the workflow returns to the last state that ran, and the states approve skipped wait again
+  return simple('reopen', 'reopened', async (task, a, taskId) => {
+    const steps = await stepRows(taskId);
+    const last = steps.filter(s => ['done', 'failed', 'running'].includes(s.status)).at(-1);
+    const stepWrites = steps.filter(s => s.status === 'skipped' && s.endReason === 'approved').map(s => ({ state: s.state, status: 'pending', endReason: null }));
+    return { state: 'ready', nextActor: 'firstmate', blockKind: null, blockReason: null, blockRepeats: 0, holdUntil: null,
+      ...(task.workflowState === 'done' ? { workflowState: last?.state ?? 'queued', workflowSince: new Date().toISOString(), ...stepProjection(last) } : {}), stepWrites };
+  })(args);
 };
 const cmdArchive = simple('archive', 'archived', async () => ({ state: 'archived', nextActor: 'firstmate' }));
 // A user-visible pass counts for the head that was built or deployed last: the head of the newest done call, or of a
@@ -1084,7 +1102,7 @@ const cmdApprove = simple('approve', 'approved', async (task, args, taskId) => {
   // and a state that never started is skipped
   const now = new Date().toISOString();
   const stepWrites = (await stepRows(taskId)).flatMap(s => s.status === 'running' ? [{ state: s.state, status: 'done', alive: 'dead', endedAt: now, endReason: 'approved' }]
-    : s.status === 'pending' ? [{ state: s.state, status: 'skipped' }] : []);
+    : s.status === 'pending' ? [{ state: s.state, status: 'skipped', endReason: 'approved' }] : []);
   return { state: 'done', workflowState: 'done', workflowSince: now, stepAlive: null, nextActor: 'firstmate', blockKind: null, blockReason: null, blockRepeats: 0, holdUntil: null, stepWrites };
 });
 

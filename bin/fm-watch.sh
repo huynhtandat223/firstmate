@@ -230,6 +230,8 @@ WATCH_HOME_EXISTED=0
 . "$SCRIPT_DIR/fm-pending-reply-lib.sh"
 # shellcheck source=bin/fm-busy-lib.sh
 . "$SCRIPT_DIR/fm-busy-lib.sh"
+# shellcheck source=bin/fm-task-shadow-config-lib.sh
+. "$SCRIPT_DIR/fm-task-shadow-config-lib.sh"
 # Steering-inbox loss detection: bin/fm-task-inbox-lib.sh owns the record,
 # doorbell, re-ring ladder, and unavailable-endpoint contracts; this watcher
 # supplies their live endpoint and busy checks plus wake emission
@@ -3531,6 +3533,8 @@ while :; do
     # Opt-in task record (plan v2 D1): the card's live dot follows this incarnation's endpoint; the writer stores a
     # change only, and refuses a report whose spawn generation is not the one that started the running step.
     if [ -e "$CONFIG/task-shadow" ]; then
+      # the writer settings the flag file carries (FM_TASK_BASE_URL, FM_TASK_AUTH, FM_TASK_TOKEN_FILE), as the hook reads them
+      fm_task_shadow_config "$CONFIG/task-shadow"
       task_step_generation=$(fm_meta_get "$task_meta" spawn_gen)
       task_step_live=$(fm_backend_agent_alive "$(fm_backend_of_meta "$task_meta")" "$(fm_backend_target_of_meta "$task_meta")" 2>/dev/null) || task_step_live=unknown
       case "$task_step_live" in

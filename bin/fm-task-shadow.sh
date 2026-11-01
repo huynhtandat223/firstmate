@@ -262,7 +262,8 @@ case "$EVENT" in
     w "deploy-$(short "${2:-}|${3:-}")" event "$TASK" deploy --note "deploy ${3:-} at ${2:-}: verify ask sent (${4:-})"
     ;;
   step-start)
-    w "step-start-${2:-none}" step "$TASK" start --generation "${2:-}" --harness "${3:-}" --model "${4:-}" ${5:+--effort "$5"} ${6:+--account "$6"}
+    # a spawn on the harness default model names none: the writer keeps the setup's model for the state
+    w "step-start-${2:-none}" step "$TASK" start --generation "${2:-}" --harness "${3:-}" ${4:+--model "$4"} ${5:+--effort "$5"} ${6:+--account "$6"}
     ;;
   step-end)
     w "step-end-${2:-none}-$(short "${3:-}")" step "$TASK" end --generation "${2:-}" --reason "${3:-cleanup}"
