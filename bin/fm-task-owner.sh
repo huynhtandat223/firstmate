@@ -26,7 +26,7 @@
 #            the owner on the board."); hold and release each tell firstmate through fm-inbox note
 #   comment delivers a new event in this call: --to firstmate uses fm-inbox note; a live task uses fm-send.
 #   Without --to, the task's live worker is selected, else firstmate. Invalid recipients write nothing.
-#   --ask on comment stores the skill name and delivers its invocation and the exact --reply-to command.
+#   --ask on comment stores the skill name and delivers its invocation and the exact --reply-to command (as role firstmate).
 #   Replayed comment keys do not deliver again.
 #   A pass or fail by role owner also sets the row's owner item (bin/fm-task-lib.mjs, check).
 #
@@ -156,7 +156,7 @@ case "$ACTION" in
       if [ "$RC" -eq 0 ]; then
         message="Owner comment on $TASK (seq $seq): $NOTE"
         if [ -n "$ASK" ]; then
-          message+=$'\n'"Run the $ASK skill on task $TASK. Reply with: bin/fm-task.sh comment $TASK --reply-to $seq --note <output>"
+          message+=$'\n'"Run the $ASK skill on task $TASK. Reply with: bin/fm-task.sh comment $TASK --reply-to $seq --role firstmate --note <output>"
         fi
         if [ "$TO" = firstmate ]; then
           "$SCRIPT_DIR/fm-inbox.sh" note --request-id "owner-comment-$seq" -- "$message" >/dev/null || { RC=$?; ERROR='comment stored but firstmate delivery failed'; }
