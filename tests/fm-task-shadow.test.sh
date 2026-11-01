@@ -29,7 +29,7 @@ if [ -n "${FAKE_FAIL:-}" ]; then
       if [ -z "${FAKE_FAIL_ONCE:-}" ] || [ ! -e "$FAKE_CALLS.failed" ]; then
         : > "$FAKE_CALLS.failed"
         echo 'refused by the writer' >&2
-        exit 5
+        exit "${FAKE_FAIL_CODE:-5}"
       fi ;;
   esac
 fi
@@ -425,26 +425,30 @@ test_watcher_writes_every_task_liveness_each_pass() {
   fm_test_track_watcher_state "$HOME_DIR/state"
   printf '%s\n' w1 w2 w3 w4 w5 > "$CASE_DIR/windows"
   for t in 1 2 3 4 5; do printf 'window=fmses:w%s\nharness=claude\nspawn_gen=g%s\n' "$t" "$t" > "$HOME_DIR/state/t$t.meta"; done
-  start_watcher
+  # t3's first write gets no answer from the API (3), so the next pass tries it again
+  FAKE_FAIL='step t3' FAKE_FAIL_ONCE=1 FAKE_FAIL_CODE=3 start_watcher
   # five tasks and a 1 s poll: one task per pass needs five passes, every task per pass needs one
   wait_calls 3 '^step t5 alive' || { stop_watcher; fail "the fifth task's liveness did not reach the record within one pass: $(cat "$CALLS")"; }
+  wait_calls 3 '^deliver t2 ' || true  # one more pass, which tries t3 again
   steps=$(grep -c '^step ' "$CALLS")
-  [ "$steps" -eq 5 ] || { stop_watcher; fail "five tasks should write five step calls, got $steps: $(cat "$CALLS")"; }
+  [ "$steps" -eq 6 ] || { stop_watcher; fail "five tasks and one unanswered call should make six step calls, got $steps: $(cat "$CALLS")"; }
   printf '%s\n' w1 w3 w4 w5 > "$CASE_DIR/windows"
   wait_calls 3 '^step t2 dead --generation g2$' || { stop_watcher; fail "a worker gone did not stop its dot within one pass: $(cat "$CALLS")"; }
   # delivery stays one task per pass: wait until it has visited every task, several passes after the change
   wait_calls 15 '^deliver t5 ' || { stop_watcher; fail "delivery did not reach t5: $(cat "$CALLS")"; }
   stop_watcher
-  assert_equals "$(printf '%s\n' 'step t1 alive --generation g1' 'step t2 alive --generation g2' 'step t3 alive --generation g3' 'step t4 alive --generation g4' 'step t5 alive --generation g5' 'step t2 dead --generation g2')" \
-    "$(grep '^step ' "$CALLS")" "the writer runs once per task and once per change"
+  assert_equals "$(printf '%s\n' 'step t1 alive --generation g1' 'step t2 alive --generation g2' 'step t3 alive --generation g3' 'step t4 alive --generation g4' 'step t5 alive --generation g5' 'step t3 alive --generation g3' 'step t2 dead --generation g2')" \
+    "$(grep '^step ' "$CALLS")" "the writer runs once per task and once per change, and again only after no answer"
   for t in 1 2 3 4 5; do grep -q "^deliver t$t --consumer" "$CALLS" || fail "delivery skipped t$t: $(cat "$CALLS")"; done
-  : > "$CALLS"
-  start_watcher
-  wait_calls 4 '^deliver ' || { stop_watcher; fail "the restarted watcher made no pass: $(cat "$CASE_DIR/watch.out")"; }
-  sleep 2
+  : > "$CALLS"; rm -f "$CALLS.failed"
+  # t1 relaunched as g1b, and the writer refuses its report by a rule (5): a refusal is settled, not tried every pass
+  sed -i.bak 's/^spawn_gen=g1$/spawn_gen=g1b/' "$HOME_DIR/state/t1.meta"
+  # restarted as the arm restarts it after a handled wake, so no recovery notice ends it after one pass
+  FAKE_FAIL='step t1' FM_WATCH_HANDLING_SUCCESSOR=1 start_watcher
+  wait_calls 15 '^deliver t4 ' || { stop_watcher; fail "the restarted watcher did not make four passes: $(cat "$CALLS" "$CASE_DIR/watch.out")"; }
   stop_watcher
-  assert_equals "" "$(grep '^step ' "$CALLS")" "a restarted watcher writes no unchanged liveness"
-  pass "watcher: every task's liveness reaches the record within one pass, once per change, across restarts; delivery still visits every task"
+  assert_equals 'step t1 alive --generation g1b' "$(grep '^step ' "$CALLS")" "a restarted watcher writes only the changed task, and a refused write once"
+  pass "watcher: every task's liveness reaches the record within one pass, once per change, across restarts; no answer is tried again, a refusal is not; delivery still visits every task"
 }
 
 test_watcher_writes_every_task_liveness_each_pass

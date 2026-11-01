@@ -3528,7 +3528,8 @@ TASK_STEP_WRITTEN="$STATE/.task-step-live"
 # Opt-in task record (plan v2 D1): each card's live dot follows its incarnation's endpoint. Every task is read on every
 # pass, so a stopped worker's dot stops within one pass; the writer is called only for a task whose liveness or spawn
 # generation differs from the last one written, so the API work is one call per change. The writer refuses a report
-# whose spawn generation is not the one that started the running step. A failed write keeps the old line and retries.
+# whose spawn generation is not the one that started the running step. A call the API did not answer is tried again on
+# the next pass; a refusal is settled like a write, so a task the record does not hold costs no call on every pass.
 task_step_pass() {
   local meta id generation live line written next=''
   [ -e "$CONFIG/task-shadow" ] || return 0
@@ -3543,9 +3544,10 @@ task_step_pass() {
     line=$(printf '%s\t%s\t%s' "$id" "$generation" "$live")
     case "$live" in
       alive|dead)
-        if ! printf '%s\n' "$written" | grep -Fqx -- "$line" \
-          && ! fm_run_timed 2 env FM_HOME="$FM_HOME" "$TASK_RECORD_WRITER" step "$id" "$live" --generation "$generation" >/dev/null 2>&1; then
-          line=''
+        if ! printf '%s\n' "$written" | grep -Fqx -- "$line"; then
+          fm_run_timed 2 env FM_HOME="$FM_HOME" "$TASK_RECORD_WRITER" step "$id" "$live" --generation "$generation" >/dev/null 2>&1
+          # the API did not answer (3) or the call ran out of time: try again next pass; any other answer is settled
+          case $? in 3|124|137) line='' ;; esac
         fi ;;
       *) line='' ;;
     esac
