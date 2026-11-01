@@ -642,7 +642,10 @@ async function write(taskId, who, build, after, wait) {
   let projected;
   try {
     const stepWrites = bodyOf(result.event).stepWrites;
-    if (Array.isArray(stepWrites)) for (const step of stepWrites) await saveStep(taskId, step);
+    if (Array.isArray(stepWrites)) {
+      const newer = (await taskEvents(taskId)).some(e => e.seq > result.event.seq && Array.isArray(bodyOf(e).stepWrites));
+      if (!newer) for (const step of stepWrites) await saveStep(taskId, step);
+    }
     projected = await project(taskId);
     if (after) {
       await after(result);
@@ -823,7 +826,7 @@ async function cmdSetup(args) {
     const old = await stepRows(taskId);
     if (old.some(s => s.status !== 'pending')) {
       if (old.length !== normalized.length || old.some((s, i) => s.state !== normalized[i].state || (s.status !== 'pending' && ['harness', 'model', 'effort', 'fallbacks'].some(k => s[k] !== normalized[i][k])))) throw rule('started setup permits only pending model changes');
-    } else if (old.some(s => !normalized.some(n => n.state === s.state))) throw rule('removing persisted setup states is not supported');
+    } else if (old.some(s => !normalized.some(n => n.state === s.state))) throw rule('removing persisted setup states is not supported; replace the pending state model instead');
     const stepWrites = normalized.map(s => ({ ...s, ...(old.some(o => o.state === s.state) ? {} : { status: 'pending', attempt: 0 }) }));
     return { kind: 'setup', extra: { stepWrites }, set: { setupBy: by, setupAt: new Date().toISOString() }, children: { documents: [{ title: 'Setup', mediaType: 'application/json', content: JSON.stringify(normalized) }] } };
   });
