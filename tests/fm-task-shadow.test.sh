@@ -29,7 +29,7 @@ if [ -n "${FAKE_FAIL:-}" ]; then
       if [ -z "${FAKE_FAIL_ONCE:-}" ] || [ ! -e "$FAKE_CALLS.failed" ]; then
         : > "$FAKE_CALLS.failed"
         echo 'refused by the writer' >&2
-        exit 5
+        exit "${FAKE_FAIL_CODE:-5}"
       fi ;;
   esac
 fi
@@ -375,6 +375,83 @@ test_captain_hold_writes_the_record() {
   pass "captain hold: the hold, the closing answer and the release reach the record"
 }
 
+# ---- the watcher's step liveness, driven for real --------------------------------
+
+# A fake tmux and ps: every window named in <dir>/windows has a claude in its foreground, a window not named is gone.
+make_live_fakebin() {  # <dir>
+  local fakebin
+  fakebin=$(fm_fakebin "$1")
+  cat > "$fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  list-windows) cat "$FAKE_WINDOWS" ;;
+  capture-pane) date +%s%N ;;  # a pane that changes on every poll is working, so no stale wake ends the watcher
+  display-message) case "$*" in *pane_tty*) printf '/dev/pts/fake\n' ;; *) printf 'claude\n' ;; esac ;;
+esac
+exit 0
+SH
+  cat > "$fakebin/ps" <<'SH'
+#!/usr/bin/env bash
+case "$*" in *pts/fake*) printf '1 1 1 claude\n' ;; *) exec /bin/ps "$@" ;; esac
+SH
+  chmod +x "$fakebin/tmux" "$fakebin/ps"
+  printf '%s\n' "$fakebin"
+}
+
+start_watcher() {  # runs bin/fm-watch.sh in the case home at a 1 s poll; sets WATCHER
+  env FM_ROOT_OVERRIDE='' FM_HOME="$HOME_DIR" FM_CONFIG_OVERRIDE="$HOME_DIR/config" FM_STATE_OVERRIDE="$HOME_DIR/state" \
+    FM_DATA_OVERRIDE="$HOME_DIR/data" FM_TASK_SHADOW_WRITER="$WRITER" FAKE_CALLS="$CALLS" FAKE_WINDOWS="$CASE_DIR/windows" \
+    PATH="$FAKEBIN:$PATH" FM_POLL=1 FM_SIGNAL_GRACE=0 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "${SBIN:-$ROOT/bin}/fm-watch.sh" > "$CASE_DIR/watch.out" 2>&1 &
+  WATCHER=$!
+}
+stop_watcher() { kill -TERM "$WATCHER" 2>/dev/null || true; wait "$WATCHER" 2>/dev/null || true; }
+
+wait_calls() {  # <seconds> <extended regex>: wait until a recorded writer call matches
+  local tries=$(($1 * 10))
+  while [ "$tries" -gt 0 ]; do
+    grep -Eq -- "$2" "$CALLS" 2>/dev/null && return 0
+    sleep 0.1; tries=$((tries - 1))
+  done
+  return 1
+}
+
+# Tester kdb-d1 D2: a stopped worker's dot stayed alive for minutes, because the watcher wrote one task's liveness per
+# pass. Every task's liveness reaches the record within one pass, and the writer runs only on a change, across restarts.
+test_watcher_writes_every_task_liveness_each_pass() {
+  local t steps
+  make_case watcher-step on
+  FAKEBIN=$(make_live_fakebin "$CASE_DIR")
+  fm_test_track_watcher_state "$HOME_DIR/state"
+  printf '%s\n' w1 w2 w3 w4 w5 > "$CASE_DIR/windows"
+  for t in 1 2 3 4 5; do printf 'window=fmses:w%s\nharness=claude\nspawn_gen=g%s\n' "$t" "$t" > "$HOME_DIR/state/t$t.meta"; done
+  # t3's first write gets no answer from the API (3), so the next pass tries it again
+  FAKE_FAIL='step t3' FAKE_FAIL_ONCE=1 FAKE_FAIL_CODE=3 start_watcher
+  # five tasks and a 1 s poll: one task per pass needs five passes, every task per pass needs one
+  wait_calls 3 '^step t5 alive' || { stop_watcher; fail "the fifth task's liveness did not reach the record within one pass: $(cat "$CALLS")"; }
+  wait_calls 3 '^deliver t2 ' || true  # one more pass, which tries t3 again
+  steps=$(grep -c '^step ' "$CALLS")
+  [ "$steps" -eq 6 ] || { stop_watcher; fail "five tasks and one unanswered call should make six step calls, got $steps: $(cat "$CALLS")"; }
+  printf '%s\n' w1 w3 w4 w5 > "$CASE_DIR/windows"
+  wait_calls 3 '^step t2 dead --generation g2$' || { stop_watcher; fail "a worker gone did not stop its dot within one pass: $(cat "$CALLS")"; }
+  # delivery stays one task per pass: wait until it has visited every task, several passes after the change
+  wait_calls 15 '^deliver t5 ' || { stop_watcher; fail "delivery did not reach t5: $(cat "$CALLS")"; }
+  stop_watcher
+  assert_equals "$(printf '%s\n' 'step t1 alive --generation g1' 'step t2 alive --generation g2' 'step t3 alive --generation g3' 'step t4 alive --generation g4' 'step t5 alive --generation g5' 'step t3 alive --generation g3' 'step t2 dead --generation g2')" \
+    "$(grep '^step ' "$CALLS")" "the writer runs once per task and once per change, and again only after no answer"
+  for t in 1 2 3 4 5; do grep -q "^deliver t$t --consumer" "$CALLS" || fail "delivery skipped t$t: $(cat "$CALLS")"; done
+  : > "$CALLS"; rm -f "$CALLS.failed"
+  # t1 relaunched as g1b, and the writer refuses its report by a rule (5): a refusal is settled, not tried every pass
+  sed -i.bak 's/^spawn_gen=g1$/spawn_gen=g1b/' "$HOME_DIR/state/t1.meta"
+  # restarted as the arm restarts it after a handled wake, so no recovery notice ends it after one pass
+  FAKE_FAIL='step t1' FM_WATCH_HANDLING_SUCCESSOR=1 start_watcher
+  wait_calls 15 '^deliver t4 ' || { stop_watcher; fail "the restarted watcher did not make four passes: $(cat "$CALLS" "$CASE_DIR/watch.out")"; }
+  stop_watcher
+  assert_equals 'step t1 alive --generation g1b' "$(grep '^step ' "$CALLS")" "a restarted watcher writes only the changed task, and a refused write once"
+  pass "watcher: every task's liveness reaches the record within one pass, once per change, across restarts; no answer is tried again, a refusal is not; delivery still visits every task"
+}
+
+test_watcher_writes_every_task_liveness_each_pass
 test_flag_absent_writes_nothing
 test_dispatched_creates_assigns_and_starts
 test_status_lines_map_to_writer_commands
@@ -448,3 +525,4 @@ mutate_script 'fm-verify-close.sh writes the verified close' test_verify_close_w
 mutate_script 'fm-captain-hold.sh writes the hold' test_captain_hold_writes_the_record fm-captain-hold.sh 'shadow_record held'
 mutate_script 'fm-captain-hold.sh writes the closing answer' test_captain_hold_writes_the_record fm-captain-hold.sh 'shadow_record answered "$1" closed'
 mutate_script 'fm-captain-hold.sh writes the release' test_captain_hold_writes_the_record fm-captain-hold.sh 'shadow_record answered "$1" released'
+mutate_script 'fm-watch.sh writes every task liveness each pass' test_watcher_writes_every_task_liveness_each_pass fm-watch.sh '  task_step_pass'
