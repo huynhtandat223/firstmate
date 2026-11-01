@@ -1043,6 +1043,33 @@ async function cmdStep(args) {
   });
 }
 
+// The backlog home a task made in this firstmate home belongs to, as tasks-axi reads it (bin/fm-tasks-axi-lib.sh
+// fm_tasks_axi_workdir): the home's config/tasks-axi/.tasks.toml, else its own .tasks.toml. Under the cfw5001 backend it is
+// [cfw5001] home, `main` when unset; under any other backend the task has none. The board reads tasks of one backlog home,
+// so a task created without it is not on any board.
+function backlogHomeOf() {
+  const root = process.env.FM_HOME || path.dirname(HERE);
+  const local = path.join(root, 'config', 'tasks-axi', '.tasks.toml');
+  const file = fs.existsSync(local) ? local : path.join(root, '.tasks.toml');
+  if (!fs.existsSync(file)) return null;
+  let backend = null;
+  let home = null;
+  let section = '';
+  for (const line of fs.readFileSync(file, 'utf8').split('\n')) {
+    const head = line.match(/^\s*\[([^\]]+)\]\s*(#.*)?$/);
+    if (head) { section = head[1].trim(); continue; }
+    const pair = line.match(/^\s*([A-Za-z0-9_-]+)\s*=\s*"([^"]*)"\s*(#.*)?$/);
+    if (!pair) continue;
+    if (section === '' && pair[1] === 'backend') backend = pair[2];
+    if (section === 'cfw5001' && pair[1] === 'home') home = pair[2];
+  }
+  if ((process.env.TASKS_AXI_BACKEND || backend) !== 'cfw5001') return null;
+  return home || 'main';
+}
+
+// The created row's backlog home, when this firstmate home has one.
+const homeSet = () => { const home = backlogHomeOf(); return home ? { backlogHome: home } : {}; };
+
 async function cmdCreate(args) {
   const taskId = taskIdOf(args);
   const who = identity(args, 'firstmate');
@@ -1072,7 +1099,7 @@ async function cmdCreate(args) {
       return {
         kind: 'created',
         note: noteOf(args),
-        set: { title: f.title, repo: f.repo ?? null, kind, state: waiting ? 'todo' : 'triage', assignee: '-', nextActor: 'firstmate', blockKind: null, blockReason: null, blockRepeats: 0, issueUrl: f.issue ?? null, prUrl: null, surface, holdUntil: null },
+        set: { title: f.title, repo: f.repo ?? null, kind, state: waiting ? 'todo' : 'triage', assignee: '-', nextActor: 'firstmate', blockKind: null, blockReason: null, blockRepeats: 0, issueUrl: f.issue ?? null, prUrl: null, surface, holdUntil: null, ...homeSet() },
       };
     },
     async () => {
@@ -1102,7 +1129,7 @@ async function cmdImport(args) {
     return {
       kind: 'created',
       note: `imported${f.since ? ` (open since ${f.since})` : ''}`,
-      set: { title: f.title, repo: f.repo ?? null, kind, state, assignee: f.assignee ?? '-', nextActor, blockKind, blockReason: f['block-reason'] ?? null, blockRepeats: 0, issueUrl: f.issue ?? null, prUrl: f['pr-url'] ?? null, surface, holdUntil: until },
+      set: { title: f.title, repo: f.repo ?? null, kind, state, assignee: f.assignee ?? '-', nextActor, blockKind, blockReason: f['block-reason'] ?? null, blockRepeats: 0, issueUrl: f.issue ?? null, prUrl: f['pr-url'] ?? null, surface, holdUntil: until, ...homeSet() },
     };
   }).catch((error) => {
     if (error instanceof Fail && error.code === 5 && /already present/.test(error.message)) {

@@ -2547,6 +2547,29 @@ case_slice_c() {
 
 # Plan v2 D2: the owner's model rules. rule writes fm_model_rule and logs a rules event on fm-model-rules; rules reads
 # the candidates of a state in rank order (enabled, in hours, account, scope), and with --task stops a task that has none.
+case_backlog_home() {
+  # create and import write this firstmate home's backlog home (config/tasks-axi/.tasks.toml, else .tasks.toml) under the
+  # cfw5001 backend, `main` when [cfw5001] names none, and none under another backend: the board reads one backlog home.
+  BIN=$1; reset_db
+  local cfg="$FM_HOME/config/tasks-axi" rc=0
+  mkdir -p "$cfg"
+  ft create tk-bh0 --title 'No config' --kind plan; must 'create without config' 0 || return 1
+  [ "$(task_row tk-bh0 | jq -r .backlogHome)" = null ] || { echo "no config: $(task_row tk-bh0)"; return 1; }
+  printf 'backend = "cfw5001"\n\n[cfw5001]\nhome = "probe-x"\n' > "$cfg/.tasks.toml"
+  ft create tk-bh1 --title 'Home probe-x' --kind plan; must 'create in probe-x' 0 || rc=1
+  [ "$(task_row tk-bh1 | jq -r .backlogHome)" = probe-x ] || { echo "create: $(task_row tk-bh1)"; rc=1; }
+  ft import tk-bh2 --title 'Imported' --kind ship --state ready --assignee - --next-actor worker; must 'import in probe-x' 0 || rc=1
+  [ "$(task_row tk-bh2 | jq -r .backlogHome)" = probe-x ] || { echo "import: $(task_row tk-bh2)"; rc=1; }
+  printf 'backend = "cfw5001"\n' > "$cfg/.tasks.toml"
+  ft create tk-bh3 --title 'Default home' --kind ship; must 'create with no home named' 0 || rc=1
+  [ "$(task_row tk-bh3 | jq -r .backlogHome)" = main ] || { echo "default: $(task_row tk-bh3)"; rc=1; }
+  printf 'backend = "markdown"\n\n[cfw5001]\nhome = "probe-x"\n' > "$cfg/.tasks.toml"
+  ft create tk-bh4 --title 'Markdown home' --kind ship; must 'create under markdown' 0 || rc=1
+  [ "$(task_row tk-bh4 | jq -r .backlogHome)" = null ] || { echo "markdown: $(task_row tk-bh4)"; rc=1; }
+  rm -rf "$FM_HOME/config"
+  return $rc
+}
+
 case_model_rules() {
   BIN=$1; reset_db
   export TZ=UTC
@@ -2714,7 +2737,7 @@ case_setup_rules() {
   return 0
 }
 
-CASES=${FM_TASK_CASES:-"plan_task description_thread terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed long_notes status_view verify_view owner_writer workflow stage wait carry slice_c model_rules checklist question_round setup_rules"}
+CASES=${FM_TASK_CASES:-"plan_task description_thread terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed long_notes status_view verify_view owner_writer workflow stage wait carry slice_c model_rules checklist question_round setup_rules backlog_home"}
 
 # ---- real command -------------------------------------------------------------------
 
