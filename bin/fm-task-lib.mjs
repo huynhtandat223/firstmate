@@ -79,7 +79,8 @@
 //            holds its evidence, which names the event: plan a plan event or a done document (event:<seq>#document);
 //            mockup a comment image labelled mockup (event:<seq>#image:<n>); decision the owner's approval of the
 //            current plan or the owner's unblock after the newest owner question (event:<seq>); ci the green ci event
-//            on the current head (a passed ci item goes pending again when the current head has none); tester every
+//            for the head of the newest done call; a passed ci or decision item goes pending again when its evidence no
+//            longer holds (a new head, a new plan, the owner's changes, a new open question); tester every
 //            user-visible row pass (event:<seq> of the newest check); deploy the newest deploy with a head and every
 //            user-visible row pass on it. An automatic write is refused when the row changed after it was read, so an
 //            owner's off or on wins. rows and gate skip cl: rows; approve refuses an open one like any open row.
@@ -1794,13 +1795,10 @@ async function checklistEvidence(item, task, events, visible) {
     return answer ? `event:${answer.seq}` : null;
   }
   if (item === 'ci') {
-    // green CI on the current head: the head of the newest done, pr or ci event that names one
-    const headOf = async (e) => (e.kind === 'done' ? (await firstRow('fm_event_done', `fmTaskEventId eq ${e.id}`))?.head ?? null : bodyOf(e).head ?? null);
-    let head = null;
-    for (const e of [...events].reverse().filter((x) => ['done', 'pr', 'ci'].includes(x.kind))) {
-      head = await headOf(e);
-      if (head) break;
-    }
+    // green CI on the current head: the head the newest done call built (a ci result for another head, whenever
+    // it arrives, does not count)
+    const done = newest((e) => e.kind === 'done');
+    const head = done ? (await firstRow('fm_event_done', `fmTaskEventId eq ${done.id}`))?.head ?? null : null;
     const ci = head && newest((e) => e.kind === 'ci' && bodyOf(e).head === head);
     return ci && /\bCI green\b/.test(bodyOf(ci).note ?? '') ? `event:${ci.seq}` : null;
   }
@@ -1818,8 +1816,10 @@ async function checklistEvidence(item, task, events, visible) {
   return null;
 }
 
-// Pass each pending item whose evidence the record now holds, and set a passed ci item pending again when the current
-// head has no green CI. Each write is refused when the row changed after it was read (an owner's off or on wins).
+// Items whose evidence a later event can take back: a new head without green CI, a new plan or the owner's changes.
+const RECHECKED = [`${CHECKLIST_PREFIX}ci`, `${CHECKLIST_PREFIX}decision`];
+// Pass each pending item whose evidence the record now holds, and set a passed ci or decision item pending again when
+// its evidence no longer holds. Each write is refused when the row changed after it was read (an owner's off or on wins).
 // Returns how many rows it changed.
 async function syncChecklist(taskId) {
   const all = await checkRows(taskId);
@@ -1830,7 +1830,7 @@ async function syncChecklist(taskId) {
   const rows = newestRows(all, events);
   const visible = rows.filter((r) => r.surface === 'user-visible');
   let changed = 0;
-  for (const row of rows.filter((r) => isChecklist(r) && (r.status === 'pending' || (r.status === 'pass' && r.scenarioId === `${CHECKLIST_PREFIX}ci`)))) {
+  for (const row of rows.filter((r) => isChecklist(r) && (r.status === 'pending' || (r.status === 'pass' && RECHECKED.includes(r.scenarioId))))) {
     const evidence = await checklistEvidence(row.scenarioId.slice(CHECKLIST_PREFIX.length), task, events, visible);
     if (row.status === 'pending' ? !evidence : evidence === (row.evidence ?? null)) continue;
     const status = evidence ? 'pass' : 'pending';
@@ -1841,7 +1841,7 @@ async function syncChecklist(taskId) {
     const wrote = await append(taskId, { ...CHECKLIST_WHO, key }, async ({ task: now, events: nowEvents }) => {
       if (!now || CLOSED.includes(now.state)) throw rule('the task is closed');
       if ((rowEvent(nowEvents, row)?.seq ?? 0) !== seen) throw rule(`${rowKey(row)} changed meanwhile`);
-      return { kind: 'checklist', note: `${rowKey(row)} ${status}${evidence ? `: ${evidence}` : ': no green CI on the current head'}`, extra: { row: rowKey(row), values } };
+      return { kind: 'checklist', note: `${rowKey(row)} ${status}${evidence ? `: ${evidence}` : ': its evidence no longer holds'}`, extra: { row: rowKey(row), values } };
     }).then(() => true, (error) => {
       if (!(error instanceof Fail && error.code === 5)) throw error;
       return false;
