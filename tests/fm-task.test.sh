@@ -373,6 +373,10 @@ ASK_FLAGS=(--question 'Which one?' --option 'Option A' --option 'Option B' --rec
 
 mk_ready() { ft create "$1" --title "Task $1" --kind ship --repo example/repo && ft assign "$1" --to worker-1; }
 mk_running() { mk_ready "$1" && ft start "$1"; }
+cl_off() {  # <task> <item>...: turn checklist items off, so a case about other rows can approve
+  local t=$1 item; shift
+  for item in "$@"; do ft checklist "$t" off "$item" --reason 'not this case' >/dev/null || return 1; done
+}
 
 test_steer_read_mark() {
   reset_db
@@ -1086,6 +1090,7 @@ case_approve_head() {
   local t=tk-ah r
   ft create tk-ah0 --title t --kind ship --surface user-visible >/dev/null; ft assign tk-ah0 --to w >/dev/null; ft start tk-ah0 >/dev/null
   ft "done" tk-ah0 "${DONE_FLAGS[@]}" >/dev/null
+  cl_off tk-ah0 ci mockup tester deploy || return 1
   ft approve tk-ah0
   must 'approve a user-visible task with no rows' 5 || return 1
   case $ERR in *'no check rows'*) ;; *) echo "the refusal does not say the rows are missing: $ERR"; return 1 ;; esac
@@ -2035,6 +2040,97 @@ case_owner_writer() {
   [ "$(db fm_task_check | jq -r '.[] | select(.taskId == "tk-ow2" and .scenarioId == "A1" and .width == "1440") | .status')" = fail ] || { echo "the check row did not take the fail"; return 1; }
 }
 
+# CL1-CL4 (task-checklist-template T3): create writes the kind's checklist, items pass from the record's evidence,
+# off needs a reason and only a cl: row takes it, rows and gate skip cl: rows, and approve refuses an open item.
+case_checklist() {
+  BIN=$1; reset_db
+  export FM_HOME="$TMP_ROOT/checklist-home"
+  rm -rf "$FM_HOME"; mkdir -p "$FM_HOME/state"
+  local t=tk-cl1 doc="$TMP_ROOT/cl-plan.md" img="$TMP_ROOT/cl-mock.png" cl seq rows
+  ow() { OUT=$("$BIN/fm-task-owner.sh" "$@" 2>"$TMP_ROOT/err"); RC=$?; ERR=$(cat "$TMP_ROOT/err"); }
+  clrow() { db fm_task_check | jq -c --arg t "$1" --arg id "cl:$2" '.[] | select(.taskId == $t and .scenarioId == $id)'; }
+  printf '# Plan\nok\n' > "$doc"
+  printf '\x89PNG\r\n\x1a\n' > "$img"
+  ft create $t --title 'Plan probe' --kind plan; must 'create plan' 0 || return 1
+  cl=$(db fm_task_check | jq -c --arg t $t '[.[] | select(.taskId == $t)]')
+  jq -e '(map(.scenarioId) | sort) == ["cl:decision","cl:mockup","cl:plan","cl:tester"] and all(.[]; .width == "-" and .surface == "checklist" and .nextActor == "firstmate")' <<<"$cl" >/dev/null || { echo "plan template rows: $cl"; return 1; }
+  jq -e '(map(select(.status == "pending") | .scenarioId) | sort) == ["cl:decision","cl:mockup","cl:plan"] and (.[] | select(.scenarioId == "cl:tester") | .status == "off" and .evidence == "Plan task: Tester verifies the ship slices it files")' <<<"$cl" >/dev/null || { echo "plan template values: $cl"; return 1; }
+  ft checklist $t apply; must 'apply again' 0 || return 1
+  [ "$OUT" = 'checklist added=0 total=4' ] && [ "$(count fm_task_check)" = 4 ] || { echo "apply is not idempotent: $OUT, $(count fm_task_check) rows"; return 1; }
+  ft create tk-cl0 --title 'No template' --kind ship >/dev/null; ft create tk-cl0b --title 'Other' --kind other >/dev/null
+  ft checklist tk-cl0 apply; must 'apply on an internal ship' 0 || return 1
+  [ "$OUT" = 'checklist added=0 total=0' ] && [ "$(count fm_task_check)" = 4 ] || { echo "a kind without a template got rows: $OUT"; return 1; }
+  # off needs a reason and an existing cl: item; check never writes off
+  ft checklist $t off mockup; must 'off without a reason' 2 || return 1
+  ft checklist $t off nothing --reason r; must 'off on a missing item' 5 || return 1
+  # CL2: a done document passes Plan document with the event that holds it
+  ft assign $t --to w1 >/dev/null && ft start $t >/dev/null || return 1
+  ft "done" $t "${DONE_FLAGS[@]}" --document "$doc" --document-title '[probe] T3 plan'; must 'done with a document' 0 || return 1
+  seq=$(seq_of)
+  clrow $t plan | jq -e --arg ev "event:$seq#document" '.status == "pass" and .evidence == $ev' >/dev/null || { echo "plan item: $(clrow $t plan)"; return 1; }
+  # a comment image labelled mockup passes Prototype / mockup
+  ft comment $t --image "$img" --image-label 'mockup 390'; must 'mockup comment' 0 || return 1
+  seq=$(seq_of)
+  clrow $t mockup | jq -e --arg ev "event:$seq#image:1" '.status == "pass" and .evidence == $ev' >/dev/null || { echo "mockup item: $(clrow $t mockup)"; return 1; }
+  # CL4: approve names the open item
+  ft approve $t; must 'approve with an open item' 5 || return 1
+  case $ERR in *'cl:decision'*) ;; *) echo "the refusal does not name cl:decision: $ERR"; return 1 ;; esac
+  # CL3 through the owner's button: off needs a note, and an off item no longer blocks approve
+  ow --action checklist --task $t --item decision --off --owner u-1; must 'owner off without a note' 2 || return 1
+  ow --action checklist --task $t --item decision --owner u-1; must 'owner checklist without on or off' 2 || return 1
+  ow --action checklist --task $t --item decision --off --note '[probe] no question' --owner u-1; must 'owner off' 0 || return 1
+  clrow $t decision | jq -e '.status == "off" and .evidence == "[probe] no question"' >/dev/null || { echo "decision item: $(clrow $t decision)"; return 1; }
+  db fm_task_event | jq -e --arg t $t '[.[] | select(.taskId == $t and .kind == "checklist" and .actor == "owner:u-1" and .actorRole == "owner")] | length == 1' >/dev/null || { echo "the owner's off is not an owner event"; return 1; }
+  ft approve $t; must 'approve after the items close' 0 || return 1
+  # an owner question passes Owner decision once answered; on sets it pending and the record passes it again
+  t=tk-cl3
+  ft create $t --title 'Plan question' --kind plan >/dev/null && ft assign $t --to w1 >/dev/null && ft start $t >/dev/null || return 1
+  ft ask $t "${ASK_FLAGS[@]}" --next-actor owner >/dev/null || return 1
+  [ "$(clrow $t decision | jq -r .status)" = pending ] || { echo "an open question passed the item"; return 1; }
+  ow --action answer --task $t --option 'Option A' --owner u-1; must 'owner answer' 0 || return 1
+  seq=$(db fm_task_event | jq --arg t $t '[.[] | select(.taskId == $t and .kind == "unblocked")] | max_by(.seq).seq')
+  clrow $t decision | jq -e --arg ev "event:$seq" '.status == "pass" and .evidence == $ev' >/dev/null || { echo "decision item: $(clrow $t decision)"; return 1; }
+  ft checklist $t on decision; must 'on' 0 || return 1
+  [ "$(clrow $t decision | jq -r .status)" = pass ] || { echo "an item set on did not pass again: $(clrow $t decision)"; return 1; }
+  [ "$(db fm_task_event | jq --arg t $t '[.[] | select(.taskId == $t and .kind == "checklist" and (.body | fromjson | .values.status == "pass"))] | length')" = 2 ] || { echo "the second pass is not its own event"; return 1; }
+  # any open question keeps the item open, also after an answered owner question
+  ft checklist $t off decision --reason later >/dev/null && ft start $t >/dev/null && ft ask $t "${ASK_FLAGS[@]}" >/dev/null || return 1
+  ft checklist $t on decision; must 'on with a question open' 0 || return 1
+  [ "$(clrow $t decision | jq -r .status)" = pending ] || { echo "an open question passed the item: $(clrow $t decision)"; return 1; }
+  # a user-visible ship: rows and gate skip cl: rows; tester, deploy and ci pass from the record
+  t=tk-cl2
+  ft create $t --title 'Ship probe' --kind ship --surface user-visible >/dev/null || return 1
+  [ "$(db fm_task_check | jq -c --arg t $t '[.[] | select(.taskId == $t) | .scenarioId] | sort')" = '["cl:ci","cl:deploy","cl:mockup","cl:tester"]' ] || { echo "ship template: $(db fm_task_check | jq -c --arg t $t '[.[] | select(.taskId == $t)]')"; return 1; }
+  use_issue v1
+  ft rows $t "$ISSUE"; must 'rows' 0 || return 1
+  case $OUT in *'total=4') ;; *) echo "rows counted cl: rows: $OUT"; return 1 ;; esac
+  use_issue v3
+  ft rows $t "$ISSUE" >/dev/null || return 1
+  [ "$(db fm_task_check | jq --arg t $t '[.[] | select(.taskId == $t and (.scenarioId | startswith("cl:")) and .status == "retired")] | length')" = 0 ] || { echo "rows retired a cl: row"; return 1; }
+  use_issue v1
+  ft rows $t "$ISSUE" >/dev/null || return 1
+  ft check $t cl:ci@- pass; must 'check on a cl: row' 2 || return 1
+  ft check $t A2@- off; must 'check off on a scenario row' 5 || return 1
+  ft assign $t --to w1 >/dev/null && ft start $t >/dev/null && ft "done" $t "${DONE_FLAGS[@]}" --head h1 >/dev/null || return 1
+  for rows in A1@1440 A1@390 A2@- A3@-; do ft check $t $rows pass --evidence https://example.com/e.png --head h1 >/dev/null || return 1; done
+  [ "$(clrow $t tester | jq -r .status)" = pass ] && [ "$(clrow $t deploy | jq -r .status)" = pending ] || { echo "tester/deploy before the deploy: $(clrow $t tester) $(clrow $t deploy)"; return 1; }
+  ft event $t deploy --head h1 --note deployed; must 'deploy' 0 || return 1
+  clrow $t deploy | jq -e --arg ev "event:$(seq_of)" '.status == "pass" and .evidence == $ev' >/dev/null || { echo "deploy item: $(clrow $t deploy)"; return 1; }
+  ft event $t ci --head h1 --note 'CI failed on the PR at head h1: 1 check(s) did not pass' >/dev/null || return 1
+  [ "$(clrow $t ci | jq -r .status)" = pending ] || { echo "a failed ci passed the item"; return 1; }
+  ft event $t ci --head h1 --note 'CI green on the PR at head h1' >/dev/null || return 1
+  [ "$(clrow $t ci | jq -r .status)" = pass ] || { echo "a green ci did not pass the item: $(clrow $t ci)"; return 1; }
+  ft gate $t --issue "$ISSUE" --head h1; must 'gate before approve' 5 || return 1
+  case $OUT in *cl:*) echo "gate names a cl: row: $OUT"; return 1 ;; esac
+  ft approve $t; must 'approve with mockup open' 5 || return 1
+  case $ERR in *'cl:mockup@- (pending)'*) ;; *) echo "the refusal does not name cl:mockup: $ERR"; return 1 ;; esac
+  ft checklist $t off mockup --reason '[probe] task không có UI' >/dev/null || return 1
+  ft checklist $t off tester --reason later >/dev/null && ft checklist $t on tester >/dev/null || return 1
+  [ "$(clrow $t tester | jq -r .status)" = pass ] || { echo "an item set on did not pass from the rows: $(clrow $t tester)"; return 1; }
+  ft approve $t; must 'approve with every item closed' 0 || return 1
+  ft checklist $t on mockup; must 'checklist on a closed task' 5 || return 1
+}
+
 # SG1 (#176 Step 5): every write folds the board card's step onto the row: stage by the step rule, stageSince only
 # when the step changes, lastEventAt and lastNote from the newest event that is not a backlog view row event,
 # reviewer from the newest check, owner-check, approved or changes event.
@@ -2189,6 +2285,7 @@ case_slice_c() {
   must 'done on plan without --document' 5 || return 1
   ft "done" "$tp" "${DONE_FLAGS[@]}" --document "$plan_file" --document-title 'Plan Deliverable'
   must 'done on plan with --document' 0 || return 1
+  cl_off "$tp" mockup decision || return 1
   ft approve "$tp" >/dev/null || return 1
   ft plan "$tp" --document "$plan_file"
   must 'plan on closed task' 5 || return 1
@@ -2209,6 +2306,7 @@ case_slice_c() {
   ft create "$tv" --title 'Video and evidence task' --kind ship --surface user-visible >/dev/null || return 1
   use_issue v1
   ft rows "$tv" "$ISSUE" >/dev/null || return 1
+  cl_off "$tv" ci mockup || return 1
   ft assign "$tv" --to w1 >/dev/null && ft start "$tv" >/dev/null || return 1
   ft comment "$tv" --video "$vid_file"
   must 'video without label' 2 || return 1
@@ -2271,6 +2369,7 @@ case_slice_c() {
   local tg=tk-sc-gate
   ft create "$tg" --title 'Gate bad event ref' --kind ship --surface user-visible >/dev/null || return 1
   ft rows "$tg" "$ISSUE" >/dev/null && ft assign "$tg" --to w1 >/dev/null && ft start "$tg" >/dev/null || return 1
+  cl_off "$tg" ci mockup || return 1
   ft "done" "$tg" "${DONE_FLAGS[@]}" --head h-g >/dev/null && ft event "$tg" deploy --note d --head h-g >/dev/null || return 1
   ft check "$tg" A1@1440 pass --evidence 'event:999999#image:1' --head h-g >/dev/null || return 1
   ft check "$tg" A1@390 pass --evidence https://example.com/1.png --head h-g >/dev/null || return 1
@@ -2282,7 +2381,7 @@ case_slice_c() {
   return 0
 }
 
-CASES=${FM_TASK_CASES:-"description_thread terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed long_notes status_view verify_view owner_writer stage wait carry slice_c"}
+CASES=${FM_TASK_CASES:-"description_thread terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed long_notes status_view verify_view owner_writer stage wait carry slice_c checklist"}
 
 # ---- real command -------------------------------------------------------------------
 
@@ -2440,6 +2539,13 @@ mutate 'approve replaces video evidence with Tester screenshot' slice_c 'if (!re
 mutate 'check --evidence-image records event:<seq>#image:1' slice_c 'evidence = `event:${imgRes.event.seq}#image:1`;' 'evidence = null;'
 mutate 'gate checks event:<seq>#image:<n> references' slice_c 'if (!(await eventEvidenceExists(events, ev))) problems.push' 'if (false) problems.push'
 mutate 'link event requires http or https --url' slice_c "if (kind === 'link' && (!url || !/^https?:\\/\\/\\S+\$/.test(url) || url.length > 2048)) throw rule" 'if (false) throw rule'
+mutate 'create writes the checklist template' checklist 'await applyChecklist(taskId);
+    },' '},'
+mutate 'rows leaves cl: rows alone' checklist '.filter((row) => !isChecklist(row)).map((row) => [rowKey(row), row]));' '.map((row) => [rowKey(row), row]));'
+mutate 'a write passes the items the record proves' checklist 'if (await syncChecklist(taskId)) projected = await project(taskId);' ';'
+mutate 'checklist off needs a reason' checklist "if (verb === 'off' && !reason?.trim()) throw usage" 'if (false) throw usage'
+mutate 'an open question keeps the decision item open' checklist "if (task.blockKind === 'needs-decision' && task.state === 'blocked') return null;" ''
+mutate 'only a green ci passes the ci item' checklist '/\bCI green\b/.test(bodyOf(ci).note' 'true || (bodyOf(ci).note'
 mutate_owner() {  # <label> <exact wrapper text> <replacement>: the owner_writer case goes red
   cp "$TMP_ROOT/fm-task-lib.mjs.orig" "$LIB"
   cp "$TMP_ROOT/fm-task-owner.sh.orig" "$MBIN/fm-task-owner.sh"
