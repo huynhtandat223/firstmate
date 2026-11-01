@@ -2703,7 +2703,7 @@ mutate 'the key makes a re-send return the first event' concurrent 'args.flags.k
 mutate 'a lost answer is looked up by its key' concurrent 'if (found) return { event: found, replayed: false };' 'if (false) return { event: found, replayed: false };'
 mutate 'a refused move is refused' transitions 'if (!TRANSITIONS[command].includes(task.state)) {' 'if (false) {'
 mutate 'the third block of one kind goes to triage' block_rules "const triage = kind !== 'dependency' && repeats >= 3;" 'const triage = false;'
-mutate 'a different kind starts the count again' block_rules 'task.blockKind === kind ? task.blockRepeats + 1 : 1' 'task.blockRepeats + 1'
+mutate 'a different kind starts the count again' block_rules 'streakKind(events) === kind ? task.blockRepeats + 1 : 1' 'task.blockRepeats + 1'
 mutate 'a dependency waits in todo on an open parent' parents "state: waiting ? 'todo' : 'ready'" "state: 'ready'"
 mutate 'a closed parent releases its children' parents 'if (!child || child.state !== '"'"'todo'"'"' || (await openParents(link.childTaskId)).length) continue;' 'continue;'
 mutate 'a dependency needs an open parent' parents 'if (CLOSED.includes(parent.state)) throw rule(`parent ${f.on}' 'if (false) throw rule(`parent ${f.on}'
