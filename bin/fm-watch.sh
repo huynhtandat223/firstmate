@@ -3520,7 +3520,44 @@ resurface_after_downtime() {
   wake "check: rearm-resurface"
 }
 
+# The task record writer; FM_TASK_SHADOW_WRITER replaces bin/fm-task.sh (the tests use a fake), as in bin/fm-task-shadow.sh.
+TASK_RECORD_WRITER=${FM_TASK_SHADOW_WRITER:-$SCRIPT_DIR/fm-task.sh}
+# The last liveness written per task, one `<task>\t<spawn generation>\t<alive|dead>` line each, kept across watcher restarts.
+TASK_STEP_WRITTEN="$STATE/.task-step-live"
+
+# Opt-in task record (plan v2 D1): each card's live dot follows its incarnation's endpoint. Every task is read on every
+# pass, so a stopped worker's dot stops within one pass; the writer is called only for a task whose liveness or spawn
+# generation differs from the last one written, so the API work is one call per change. The writer refuses a report
+# whose spawn generation is not the one that started the running step. A failed write keeps the old line and retries.
+task_step_pass() {
+  local meta id generation live line written next=''
+  [ -e "$CONFIG/task-shadow" ] || return 0
+  # the writer settings the flag file carries (FM_TASK_BASE_URL, FM_TASK_AUTH, FM_TASK_TOKEN_FILE), as the hook reads them
+  fm_task_shadow_config "$CONFIG/task-shadow"
+  written=$(cat "$TASK_STEP_WRITTEN" 2>/dev/null || true)
+  for meta in "$STATE"/*.meta; do
+    [ -f "$meta" ] || continue
+    id=${meta##*/}; id=${id%.meta}
+    generation=$(fm_meta_get "$meta" spawn_gen)
+    live=$(fm_backend_agent_alive "$(fm_backend_of_meta "$meta")" "$(fm_backend_target_of_meta "$meta")" 2>/dev/null) || live=unknown
+    line=$(printf '%s\t%s\t%s' "$id" "$generation" "$live")
+    case "$live" in
+      alive|dead)
+        if ! printf '%s\n' "$written" | grep -Fqx -- "$line" \
+          && ! fm_run_timed 2 env FM_HOME="$FM_HOME" "$TASK_RECORD_WRITER" step "$id" "$live" --generation "$generation" >/dev/null 2>&1; then
+          line=''
+        fi ;;
+      *) line='' ;;
+    esac
+    [ -n "$line" ] || line=$(printf '%s\n' "$written" | awk -F '\t' -v id="$id" '$1 == id { print; exit }')
+    [ -z "$line" ] || next+="$line"$'\n'
+  done
+  [ "$next" = "${written:+$written$'\n'}" ] && return 0
+  printf '%s' "$next" > "$TASK_STEP_WRITTEN.tmp.$$" && mv -f "$TASK_STEP_WRITTEN.tmp.$$" "$TASK_STEP_WRITTEN"
+}
+
 while :; do
+  task_step_pass
   # Scope delivery to this home's direct task records, never another home's events.
   task_delivery_processed=0
   for task_meta in "$STATE"/*.meta; do
@@ -3530,19 +3567,7 @@ while :; do
     TASK_DELIVERY_LAST=$task_id
     task_delivery_processed=1
     task_consumer="firstmate-${FM_HOME##*/}"
-    # Opt-in task record (plan v2 D1): the card's live dot follows this incarnation's endpoint; the writer stores a
-    # change only, and refuses a report whose spawn generation is not the one that started the running step.
-    if [ -e "$CONFIG/task-shadow" ]; then
-      # the writer settings the flag file carries (FM_TASK_BASE_URL, FM_TASK_AUTH, FM_TASK_TOKEN_FILE), as the hook reads them
-      fm_task_shadow_config "$CONFIG/task-shadow"
-      task_step_generation=$(fm_meta_get "$task_meta" spawn_gen)
-      task_step_live=$(fm_backend_agent_alive "$(fm_backend_of_meta "$task_meta")" "$(fm_backend_target_of_meta "$task_meta")" 2>/dev/null) || task_step_live=unknown
-      case "$task_step_live" in
-        alive|dead)
-          fm_run_timed 2 env FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task.sh" step "$task_id" "$task_step_live" --generation "$task_step_generation" >/dev/null 2>&1 || true ;;
-      esac
-    fi
-    fm_run_timed 2 env FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task.sh" deliver "$task_id" --consumer "$task_consumer" >/dev/null 2>&1 || true
+    fm_run_timed 2 env FM_HOME="$FM_HOME" "$TASK_RECORD_WRITER" deliver "$task_id" --consumer "$task_consumer" >/dev/null 2>&1 || true
     # One task per pass bounds API work independently of fleet size.
     break
   done
