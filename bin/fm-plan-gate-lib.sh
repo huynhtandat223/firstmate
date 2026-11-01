@@ -22,8 +22,35 @@ fm_plan_gate_read() {
   fm_run_timed "${FM_PLAN_GATE_TIMEOUT_SECS:-20}" gh api "$@" --hostname github.com
 }
 
+fm_plan_gate_task() (
+  . "$FM_PLAN_GATE_ROOT/bin/fm-task-shadow-config-lib.sh"
+  fm_task_shadow_config "${FM_CONFIG_OVERRIDE:-${FM_HOME:-$FM_PLAN_GATE_ROOT}/config}/task-shadow"
+  "${FM_PLAN_GATE_TASK_WRITER:-$FM_PLAN_GATE_ROOT/bin/fm-task.sh}" "$@"
+)
+
 fm_plan_gate_issue() {  # <issue-url> [--any-state]; a closed issue still yields its spec
   local any_state=${2:-}
+  FM_PLAN_GATE_VERDICT=error
+  if [[ $1 != https://github.com/*/issues/* ]]; then
+    FM_PLAN_GATE_TASK=$1
+    if [[ $1 == *task=* ]]; then FM_PLAN_GATE_TASK=${1##*task=}; FM_PLAN_GATE_TASK=${FM_PLAN_GATE_TASK%%&*}; fi
+    local description_error
+    if ! description_error=$(fm_plan_gate_task document "$FM_PLAN_GATE_TASK" 2>&1); then
+      FM_PLAN_GATE_BODY=
+      FM_PLAN_GATE_VERDICT=error
+      case "$description_error" in
+        *'task has no Description event'*) FM_PLAN_GATE_VERDICT=missing ;;
+      esac
+      FM_PLAN_GATE_REASON="task Description read failed: $description_error"
+      return 1
+    fi
+    FM_PLAN_GATE_BODY=$description_error
+    FM_PLAN_GATE_HASH=$(printf '%s' "$FM_PLAN_GATE_BODY" | shasum -a 256 | cut -d' ' -f1)
+    FM_PLAN_GATE_ISSUE_REPO=tasks
+    FM_PLAN_GATE_ISSUE_NUMBER=$FM_PLAN_GATE_TASK
+    return 0
+  fi
+  FM_PLAN_GATE_TASK=
   FM_PLAN_GATE_VERDICT=error
   FM_PLAN_GATE_REASON='GitHub issue read error'
   fm_plan_gate_url "$1" || { FM_PLAN_GATE_VERDICT=not-issue; FM_PLAN_GATE_REASON='not a GitHub issue URL'; return 1; }
@@ -49,6 +76,12 @@ fm_plan_gate_issue() {  # <issue-url> [--any-state]; a closed issue still yields
 
 fm_plan_gate_check() {
   fm_plan_gate_issue "$1" || return 1
+  if [ -n "${FM_PLAN_GATE_TASK:-}" ]; then
+    fm_plan_gate_task plan-check "$FM_PLAN_GATE_TASK" >/dev/null || { FM_PLAN_GATE_VERDICT=unapproved; FM_PLAN_GATE_REASON='task plan unapproved or changed'; return 1; }
+    FM_PLAN_GATE_VERDICT=approved
+    FM_PLAN_GATE_REASON=approved
+    return 0
+  fi
   local comments marker
   comments=$(fm_plan_gate_read "$FM_PLAN_GATE_PATH/comments" --paginate 2>&1) || {
     FM_PLAN_GATE_VERDICT=error
@@ -101,6 +134,10 @@ fm_plan_gate_spec_of_body() {  # <repo> <number> <body>; prints the canonical sp
 }
 
 fm_plan_gate_spec() {  # <issue-url> | reads the body fm_plan_gate_issue fetched; sets FM_PLAN_GATE_SPEC
+  if [ -n "${FM_PLAN_GATE_TASK:-}" ]; then
+    FM_PLAN_GATE_SPEC=$(fm_plan_gate_task plan-spec "$FM_PLAN_GATE_TASK") || return 1
+    return 0
+  fi
   [ -n "${FM_PLAN_GATE_ISSUE_REPO:-}" ] && [ -n "${FM_PLAN_GATE_ISSUE_NUMBER:-}" ] || return 1
   FM_PLAN_GATE_SPEC=$(fm_plan_gate_spec_of_body "$FM_PLAN_GATE_ISSUE_REPO" "$FM_PLAN_GATE_ISSUE_NUMBER" "${FM_PLAN_GATE_BODY:-}")
   [ -n "$FM_PLAN_GATE_SPEC" ]
@@ -124,6 +161,7 @@ fm_plan_gate_repos() {  # <approved-issue-repo>; prints each counted repository 
 
 fm_plan_gate_one_per_repo() {  # <approved-issue-repo> <spec-url>; refuses a split spec, prints one line per repository
   local approved_repo=$1 spec=$2 repo list number body spec_of status=0 spec_repo spec_number
+  [ "$approved_repo" != tasks ] || return 0
   [ -n "$approved_repo" ] && [ -n "$spec" ] || return 1
   spec_repo=$(printf '%s' "$spec" | sed 's#^https://github.com/##; s#/issues/.*$##')
   spec_number=${spec##*/}

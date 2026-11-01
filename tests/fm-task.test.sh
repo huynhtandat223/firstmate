@@ -1924,6 +1924,27 @@ case_carry() {
 # cfw-modules#1678 TR52 (change 194): the board's writer operation runs the one writer as the signed-in owner. An
 # answer comments and unblocks, a pass or fail by the owner also sets the row's owner item, and a call without the
 # owner the script row appends writes nothing.
+case_plan_task() {
+  BIN=$1; reset_db
+  local doc="$TMP_ROOT/plan.md"
+  printf '## Context\nA plan.\n' > "$doc"
+  ft create plan-probe --title plan --kind plan --repo demo; must create 0 || return 1
+  ft describe plan-probe --document "$doc"; must describe 0 || return 1
+  ft plan-check plan-probe; must unapproved 5 || return 1
+  ft plan-approve plan-probe; must approve 0 || return 1
+  ft plan-check plan-probe; must approved 0 || return 1
+  printf '## Context\nChanged plan.\n' > "$doc"
+  ft describe plan-probe --document "$doc"; must edit 0 || return 1
+  ft plan-check plan-probe; must changed 5 || return 1
+  printf '%s\n' '- Parent: shared-spec' > "$doc"
+  ft describe plan-probe --document "$doc"; must parent 0 || return 1
+  ft plan-spec plan-probe; must spec 0 || return 1
+  [ "$OUT" = shared-spec ] || return 1
+  ft create sibling --title sibling --kind ship --repo demo; must sibling 0 || return 1
+  ft describe sibling --document "$doc"; must description 0 || return 1
+  ft plan-approve plan-probe; must split 5 || return 1
+}
+
 case_description_thread() {
   BIN=$1; reset_db
   local t=tk-description before
@@ -2655,7 +2676,7 @@ case_question_round() {
   return 0
 }
 
-CASES=${FM_TASK_CASES:-"description_thread terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed long_notes status_view verify_view owner_writer workflow stage wait carry slice_c model_rules checklist question_round"}
+CASES=${FM_TASK_CASES:-"plan_task description_thread terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed long_notes status_view verify_view owner_writer workflow stage wait carry slice_c model_rules checklist question_round"}
 
 # ---- real command -------------------------------------------------------------------
 
@@ -2709,6 +2730,7 @@ mutate 'a closed parent releases its children' parents 'if (!child || child.stat
 mutate 'a dependency needs an open parent' parents 'if (CLOSED.includes(parent.state)) throw rule(`parent ${f.on}' 'if (false) throw rule(`parent ${f.on}'
 mutate 'a link cannot make a cycle' parents 'if (!existing && (await wouldCycle(parent, child)))' 'if (false)'
 mutate 'a value outside its list is refused' value_lists 'if (!list.includes(value))' 'if (false)'
+mutate 'plan approval binds the current Description' plan_task 'bodyOf(approval).descriptionSha256 !== hash' 'false'
 mutate 'a changed digest resets a passed row' rows 'row.line !== want.line || row.acceptanceDigest !== want.acceptanceDigest' 'row.line !== want.line'
 mutate 'a changed line resets a passed row' rows "changed && row.status === 'pass'" 'false'
 mutate 'a removed id is retired' rows "if (wanted.has(key) || row.status === 'retired' ||" "if (true ||"

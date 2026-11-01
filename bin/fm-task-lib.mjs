@@ -462,6 +462,9 @@ const SPECS = {
   'read-mark': { pos: ['task'], flags: {} },
   inbox: { pos: ['task'], flags: { action: 's', target: 's', home: 's' } },
   document: { pos: ['task'], flags: {} },
+  'plan-approve': { pos: ['task'], flags: {} },
+  'plan-check': { pos: ['task'], flags: {} },
+  'plan-spec': { pos: ['task'], flags: {} },
   gate: { pos: ['task'], flags: { issue: 's', head: 's', 'evidence-root': 's' } },
   rules: { pos: [], flags: { state: 's', repo: 's', at: 's', account: 's' } },
   answer: { pos: ['task'], flags: { question: 's', option: 's' } },
@@ -1329,6 +1332,60 @@ async function cmdPlanDecision(args) {
       extra: { planSeq, decision },
     };
   });
+}
+
+async function descriptionContent(taskId) {
+  const event = (await taskEvents(taskId)).filter((e) => e.kind === 'description').at(-1);
+  if (!event) throw rule('task has no Description event');
+  const doc = await firstRow('fm_event_document', `fmTaskEventId eq ${event.id}`);
+  if (!doc?.content) throw rule('task Description document is missing');
+  return doc.content;
+}
+
+async function taskPlanSpec(taskId) {
+  const body = await descriptionContent(taskId);
+  const parents = [...body.matchAll(/^- Parent:\s*(\S+)\s*$/gm)].map((m) => m[1]);
+  if (parents.length > 1) throw rule('plan ticket must have only one Parent line');
+  if (!parents.length) return taskId;
+  const parent = parents[0];
+  if (!/^[A-Za-z0-9_.-]+$/.test(parent)) throw rule('Parent must be one task id');
+  return parent;
+}
+
+async function cmdPlanSpec(args) {
+  out(await taskPlanSpec(taskIdOf(args)));
+}
+
+async function cmdPlanApprove(args) {
+  const taskId = taskIdOf(args);
+  const who = identity(args, 'firstmate');
+  return write(taskId, who, async ({ task }) => {
+    if (!task || CLOSED.includes(task.state)) throw rule('plan approval needs an open task');
+    const spec = await taskPlanSpec(taskId);
+    const active = await listAll('fm_task', { filter: "state ne 'done' and state ne 'archived'" });
+    let count = 0;
+    for (const candidate of active) {
+      if (candidate.repo !== task.repo || candidate.taskId === spec || candidate.taskId === taskId) continue;
+      const candidateEvents = await taskEvents(candidate.taskId);
+      if (!candidateEvents.some((e) => e.kind === 'description')) continue;
+      if (await taskPlanSpec(candidate.taskId) === spec) count++;
+    }
+    const childCount = count + (taskId === spec ? 0 : 1);
+    if (childCount > 1) throw rule('spec has more than one open ticket in this repository');
+    const hash = crypto.createHash('sha256').update(await descriptionContent(taskId)).digest('hex');
+    return { kind: 'plan-approved', note: args.flags.note || hash, extra: { descriptionSha256: hash } };
+  });
+}
+
+async function cmdPlanCheck(args) {
+  const taskId = taskIdOf(args);
+  const events = await taskEvents(taskId);
+  const task = fold(events);
+  if (!task || CLOSED.includes(task.state)) throw rule('plan approval needs an open task');
+  const hash = crypto.createHash('sha256').update(await descriptionContent(taskId)).digest('hex');
+  const approval = events.filter((e) => e.kind === 'plan-approved' && e.actorRole === 'firstmate').at(-1);
+  if (!approval || bodyOf(approval).descriptionSha256 !== hash) throw rule('plan is unapproved or Description changed since approval');
+  out(hash);
 }
 
 async function cmdDocument(args) {
@@ -2496,7 +2553,7 @@ const COMMANDS = {
   'turn-end': cmdTurnEnd, deliver: cmdDeliver, 'read-mark': cmdReadMark, inbox: cmdInbox, describe: cmdDescribe, plan: cmdPlan, 'plan-decision': cmdPlanDecision, thread: cmdThread,
   create: cmdCreate, import: cmdImport, assign: cmdAssign, start: cmdStart, heartbeat: cmdHeartbeat, done: cmdDone, ask: cmdAsk, block: cmdBlock,
   unblock: cmdUnblock, approve: cmdApprove, changes: cmdChanges, reopen: cmdReopen, reassign: cmdReassign, archive: cmdArchive, comment: cmdComment, event: cmdEvent,
-  document: cmdDocument, link: cmdLink, rows: cmdRows, check: cmdCheck, 'owner-check': cmdOwnerCheck, gate: cmdGate, show: cmdShow, list: cmdList, resume: cmdResume, reproject: cmdReproject,
+  'plan-spec': cmdPlanSpec, 'plan-approve': cmdPlanApprove, 'plan-check': cmdPlanCheck, document: cmdDocument, link: cmdLink, rows: cmdRows, check: cmdCheck, 'owner-check': cmdOwnerCheck, gate: cmdGate, show: cmdShow, list: cmdList, resume: cmdResume, reproject: cmdReproject,
   checks: cmdChecks, checklist: cmdChecklist,
 };
 

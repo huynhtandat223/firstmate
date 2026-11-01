@@ -21,6 +21,10 @@ if ! fm_plan_gate_issue "$url"; then
   printf 'error: %s\n' "$FM_PLAN_GATE_REASON" >&2
   exit 1
 fi
+if [ -n "${FM_PLAN_GATE_TASK:-}" ]; then
+  fm_plan_gate_task plan-approve "$FM_PLAN_GATE_TASK" --note "$note"
+  exit $?
+fi
 if ! fm_plan_gate_spec; then
   echo 'error: plan gate: cannot resolve the spec of the issue' >&2
   exit 1

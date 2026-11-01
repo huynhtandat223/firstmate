@@ -15,8 +15,12 @@
 # backlog mutations, but validated secondmate handoffs always use `tasks-axi mv`.
 # Absent or any other value keeps the default tasks-axi backend path, falling
 # back to manual mutation when the tool is not compatible.
+# fm_tasks_axi_workdir owns where tasks-axi runs for a backlog root: the home's
+# gitignored config/tasks-axi/ when it holds a .tasks.toml, else the root itself.
+# That home config overrides the tracked .tasks.toml without editing it; tasks-axi
+# resolves any relative path in it against config/tasks-axi/.
 # fm_tasks_axi_backend_resolve owns backend precedence: TASKS_AXI_BACKEND when
-# set, then a backend in the working root's .tasks.toml, then one in
+# set, then a backend in the working directory's .tasks.toml, then one in
 # $HOME/.tasks-axi/config.toml, then markdown. Lower-priority sources are read
 # only when no earlier source supplies a backend; absent files keep that fallback.
 # A detected unreadable or nonregular configuration file, including a dangling
@@ -140,9 +144,19 @@ fm_tasks_axi_backend_from_toml() {  # <toml-path>
   ' "$toml"
 }
 
+# The directory tasks-axi runs from for a backlog root (header).
+fm_tasks_axi_workdir() {  # <backlog-root>
+  if [ -e "$1/config/tasks-axi/.tasks.toml" ] || [ -L "$1/config/tasks-axi/.tasks.toml" ]; then
+    printf '%s/config/tasks-axi\n' "$1"
+  else
+    printf '%s\n' "$1"
+  fi
+}
+
 # Resolve the active tasks-axi backend with the same precedence as tasks-axi.
-fm_tasks_axi_backend_resolve() {  # <tasks-axi-working-directory>
-  local root=$1 backend
+fm_tasks_axi_backend_resolve() {  # <backlog-root>
+  local root backend
+  root=$(fm_tasks_axi_workdir "$1")
   if [ "${TASKS_AXI_BACKEND+x}" = x ]; then
     printf '%s\n' "$TASKS_AXI_BACKEND"
     return 0
@@ -172,7 +186,7 @@ fm_tasks_axi_backend_resolve() {  # <tasks-axi-working-directory>
   printf '%s\n' markdown
 }
 
-fm_tasks_axi_backend() {  # <tasks-axi-working-directory>
+fm_tasks_axi_backend() {  # <backlog-root>
   fm_tasks_axi_backend_resolve "$1"
 }
 
