@@ -2724,7 +2724,7 @@ mutate 'a removed pending state is skipped' workflow "...removed.map(s => ({ sta
 mutate 'reopen lets the states approve skipped wait again' workflow "s.status === 'skipped' && s.endReason === 'approved').map(" "false).map("
 mutate 'a start with no model keeps the configured model' workflow "model: args.flags.model || current.model," "model: args.flags.model,"
 mutate 'a setup edit leaves a state that ran as it ran' workflow "ran(s.state) ? { state: s.state, position: s.position }" "false ? { state: s.state, position: s.position }"
-mutate 'a setup edit of the current pending state shows on the card' workflow "setAt: new Date().toISOString(), ...card }" "setAt: new Date().toISOString() }"
+mutate 'a setup edit of the current pending state shows on the card' workflow "setupAt: new Date().toISOString(), ...card }" "setupAt: new Date().toISOString() }"
 mutate 'reopen returns to the state that ran last in event order' workflow "const last = steps.find(s => s.state === lastRan);" "const last = steps.filter(s => ['done', 'failed', 'running'].includes(s.status)).at(-1);"
 mutate 'approve skips the states that never started' workflow ": s.status === 'pending' ? [{ state: s.state, status: 'skipped', endReason: 'approved' }] : []);" ": []);"
 mutate 'a move ends the running attempt of the state left behind' workflow "const stepWrites = left ? [{ state: left.state, status: 'done'" "const stepWrites = false ? [{ state: left.state, status: 'done'"
