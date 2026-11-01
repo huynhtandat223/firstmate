@@ -74,6 +74,17 @@
 //            (status, decidedAt, note = --evidence)
 //   owner-check <task> <id>@<width> --page-title --url --steps --data --expected   (sets next actor owner;
 //            a row that has an item needs --url and --steps again; a re-sent --key never writes the item twice)
+//   checklist <task> apply | off <item> --reason R | on <item> [--reason R]
+//            the task kind's checklist (TEMPLATES): one check row cl:<item>@- per item, surface checklist, written on
+//            create and by apply for a task created earlier (apply adds only the missing items). plan and scout: plan,
+//            mockup, decision, tester (off: "Plan task: Tester verifies the ship slices it files"); a user-visible ship:
+//            ci, mockup, tester, deploy; other kinds have none. off (only a cl: row, reason required, kept in evidence)
+//            closes an item; on sets it pending again. After every write a pending item passes by itself when the record
+//            holds its evidence, which names the event: plan a plan event or a done document (event:<seq>#document);
+//            mockup a comment image labelled mockup (event:<seq>#image:<n>); decision the unblock after the newest
+//            owner question (event:<seq>); ci the newest ci event when it reads CI green; tester every user-visible
+//            row pass (event:<seq> of the newest check); deploy the newest deploy with a head and every user-visible
+//            row pass on it. rows and gate skip cl: rows; approve refuses an open one like any open row.
 //   gate     <task> [--issue task:<id>|URL] --head SHA [--evidence-root DIR]   defaults to the task Description; read only: prints each reason the task is not
 //            complete (exit 5): a user-visible row of the issue not pass on the deployed head with its current
 //            digest and evidence, or no approved event newer than the last row event (bin/fm-verify-gate-lib.sh)
@@ -145,6 +156,8 @@ const ACTORS = ['worker', 'tester', 'firstmate', 'owner'];
 const ROLES = ['worker', 'firstmate', 'tester', 'planner', 'owner', 'assistance', 'system'];
 const BLOCK_KINDS = ['transient', 'dependency', 'external', 'credential', 'failure'];
 const CHECK_STATUSES = ['pending', 'pass', 'fail'];
+// A checklist row (cl:<item>) also takes `off`, with its reason in evidence; `check` never writes it.
+const CHECKLIST_PREFIX = 'cl:';
 const FREE_KINDS = ['steer', 'comment', 'pr', 'deploy', 'ci', 'protocol_violation', 'divergence', 'link'];
 const WAIT_ACTORS = ['tester', 'owner', 'merge', 'ci'];
 const WAIT_CLEARS = ['rows', 'answer', 'merge', 'ci'];
@@ -332,7 +345,7 @@ function fold(events) {
     const stage = STEP_OF_STATE[task.state] ?? (task.state === 'review' ? (deployed ? 'dev' : 'pr')
       : task.state === 'running' ? (pullRequest ? 'pr' : 'working') : task.stage ?? 'queued');
     if (stage !== task.stage) Object.assign(task, { stage, stageSince: event.createdAt ?? null });
-    if (event.kind !== 'row') {
+    if (event.kind !== 'row' && event.kind !== 'checklist') {
       const note = String(bodyOf(event).note ?? '');
       task.lastEventAt = event.createdAt ?? null;
       if (!isMachineRecord(event, note)) task.lastNote = note.slice(0, 300) || null;
@@ -427,6 +440,7 @@ const SPECS = {
   rules: { pos: [], flags: { state: 's', repo: 's', at: 's', account: 's' } },
   answer: { pos: ['task'], flags: { question: 's', option: 's' } },
   rule: { pos: ['action', 'id'], flags: { state: 's', harness: 's', model: 's', effort: 's', rank: 's', account: 's', hours: 's', scope: 's', enabled: 's', warning: 's' } },
+  checklist: { pos: ['task', 'verb', 'item'], flags: { reason: 's' } },
 };
 
 function parseArgs(command, argv) {
@@ -689,6 +703,7 @@ async function write(taskId, who, build, after, wait) {
       await after(result);
       projected = await project(taskId);
     }
+    if (await syncChecklist(taskId)) projected = await project(taskId);
   } catch (error) {
     if (error instanceof Fail) {
       out(`seq=${result.event.seq} task=${taskId} event=${result.event.kind} (stored; the follow-up write failed)`);
@@ -873,6 +888,7 @@ async function cmdCreate(args) {
     },
     async () => {
       for (const parent of parents) await ensureLink(parent, taskId);
+      await applyChecklist(taskId);
     },
   );
   return task;
@@ -1041,6 +1057,8 @@ async function checkApproveReady(task, taskId, events, rows) {
 async function cmdApprove(args) {
   const taskId = taskIdOf(args);
   const who = identity(args, 'firstmate');
+  // an item the record already proves passes first, so approve reads it closed
+  if (await syncChecklist(taskId)) await project(taskId);
   const initialEvents = await taskEvents(taskId);
   const initialTask = fold(initialEvents);
   const replay = await eventByKey(who.key);
@@ -1451,7 +1469,7 @@ async function cmdRows(args) {
   if (CLOSED.includes(task.state)) throw rule(`rows is refused: ${taskId} is ${task.state}, and new rows or resets would sit under a closed task`);
   const surface = oneOf(['all', 'user-visible'], args.flags.surface ?? 'all', 'surface');
   const wanted = new Map([...(await wantedRows(issue))].filter(([, want]) => surface === 'all' || want.surface === surface));
-  const have = new Map((await checkRows(taskId)).map((row) => [rowKey(row), row]));
+  const have = new Map((await checkRows(taskId)).filter((row) => !isChecklist(row)).map((row) => [rowKey(row), row]));
   const counts = { added: 0, reset: 0, retired: 0, updated: 0, unchanged: 0 };
   const fresh = { status: 'pending', evidence: null, head: null, checkedAt: null };
   const actorFor = (surface) => (surface === 'user-visible' ? 'tester' : 'worker');
@@ -1516,7 +1534,7 @@ async function requireOpenTask(taskId, command) {
 }
 
 // The newest event that sets the values of a check row: a check call, a reset by rows or an owner-check.
-const rowEvent = (events, row) => [...events].reverse().find((e) => (e.kind === 'check' || e.kind === 'owner-check') && bodyOf(e).row === rowKey(row) && bodyOf(e).values);
+const rowEvent = (events, row) => [...events].reverse().find((e) => ['check', 'owner-check', 'checklist'].includes(e.kind) && bodyOf(e).row === rowKey(row) && bodyOf(e).values);
 
 async function cmdCheck(args) {
   const taskId = taskIdOf(args);
@@ -1743,6 +1761,153 @@ async function cmdOwnerCheck(args) {
     await applyNewestCheck(taskId, row);
     await routeReview(taskId, who);
   });
+}
+
+// ---- the checklist ----------------------------------------------------------------------------------------
+// One fixed list per task kind, changed by PR (plan task-checklist-template P2); the approved round-2 templates.
+// `passes` is the row's proof text; `off` is the reason of an item that starts off.
+const TEMPLATES = {
+  plan: [
+    { id: 'plan', label: 'Plan document', passes: 'a plan event or a done document' },
+    { id: 'mockup', label: 'Prototype / mockup', passes: 'a comment image labelled mockup' },
+    { id: 'decision', label: 'Owner decision', passes: 'an answered owner question and none open' },
+    { id: 'tester', label: 'Tester evidence', passes: 'every user-visible row passes', off: 'Plan task: Tester verifies the ship slices it files' },
+  ],
+  ship: [
+    { id: 'ci', label: 'PR & CI green', passes: 'a ci event green on the PR head' },
+    { id: 'mockup', label: 'Prototype / mockup', passes: 'a comment image labelled mockup' },
+    { id: 'tester', label: 'Tester evidence', passes: 'every user-visible row passes' },
+    { id: 'deploy', label: 'Deployed SHA', passes: 'a deploy event with a head, and every user-visible row passes on it' },
+  ],
+};
+const isChecklist = (row) => String(row.scenarioId ?? '').startsWith(CHECKLIST_PREFIX);
+const templateOf = (task) => (task?.kind === 'plan' || task?.kind === 'scout' ? TEMPLATES.plan : task?.kind === 'ship' && task.surface === 'user-visible' ? TEMPLATES.ship : null);
+const CHECKLIST_WHO = { actor: 'checklist', role: 'system' };
+
+// Add the template's missing items; a present item keeps its values. Returns [added, total].
+async function applyChecklist(taskId) {
+  const template = templateOf(fold(await taskEvents(taskId)));
+  if (!template) return [0, 0];
+  const have = new Set((await checkRows(taskId)).map(rowKey));
+  let added = 0;
+  for (const item of template) {
+    const scenarioId = `${CHECKLIST_PREFIX}${item.id}`;
+    if (have.has(`${scenarioId}@-`)) continue;
+    const res = await http('POST', '/api/fm_task_check', {
+      taskId, scenarioId, width: '-', line: item.label, surface: 'checklist', page: '-', controls: '-', data: '-', env: null, mock: null, proof: item.passes,
+      acceptanceDigest: crypto.createHash('sha256').update(JSON.stringify(item)).digest('hex'),
+      status: item.off ? 'off' : 'pending', evidence: item.off ?? null, nextActor: 'firstmate', head: null, checkedAt: null,
+    });
+    if (res.status === 409) continue; // another apply wrote it first
+    ok(res, `create the checklist row ${scenarioId}`);
+    added++;
+  }
+  return [added, template.length];
+}
+
+async function hasDocument(event) {
+  const docs = await listAll('fm_event_document', { filter: `fmTaskEventId eq ${event.id}`, orderby: 'id', select: 'id,title' });
+  return docs.some((d) => d.title !== 'Event note');
+}
+
+// The evidence that passes an item, naming its event, or null while the record holds none.
+async function checklistEvidence(item, task, events, visible) {
+  const newest = (test) => [...events].reverse().find(test);
+  const allPass = visible.length > 0 && visible.every((r) => r.status === 'pass');
+  if (item === 'plan') {
+    for (const e of [...events].reverse()) {
+      if (e.kind === 'plan' || (e.kind === 'done' && (await hasDocument(e)))) return `event:${e.seq}#document`;
+    }
+    return null;
+  }
+  if (item === 'mockup') {
+    for (const e of [...events].reverse().filter((x) => x.kind === 'comment')) {
+      const images = await listAll('fm_event_image', { filter: `fmTaskEventId eq ${e.id}`, orderby: 'position', select: 'id,label,position' });
+      const image = images.find((i) => /\bmockup\b/i.test(i.label || ''));
+      if (image) return `event:${e.seq}#image:${image.position || images.indexOf(image) + 1}`;
+    }
+    return null;
+  }
+  if (item === 'decision') {
+    if (task.blockKind === 'needs-decision' && task.state === 'blocked') return null;
+    const question = newest((e) => e.kind === 'needs-decision' && bodyOf(e).set?.nextActor === 'owner');
+    const answer = question && events.find((e) => e.kind === 'unblocked' && e.seq > question.seq);
+    return answer ? `event:${answer.seq}` : null;
+  }
+  if (item === 'ci') {
+    const ci = newest((e) => e.kind === 'ci');
+    return ci && bodyOf(ci).head && /\bCI green\b/.test(bodyOf(ci).note ?? '') ? `event:${ci.seq}` : null;
+  }
+  if (item === 'tester') {
+    if (!allPass) return null;
+    const last = visible.map((r) => rowEvent(events, r)).filter(Boolean).sort((a, b) => a.seq - b.seq).at(-1);
+    return last ? `event:${last.seq}` : null;
+  }
+  if (item === 'deploy') {
+    const deploy = newest((e) => e.kind === 'deploy' && bodyOf(e).head);
+    if (!deploy || !allPass) return null;
+    const head = bodyOf(deploy).head;
+    return visible.every((r) => (r.head ?? null) === head || carried(r, events)) ? `event:${deploy.seq}` : null;
+  }
+  return null;
+}
+
+// Pass each pending item whose evidence the record now holds. Returns how many it passed.
+async function syncChecklist(taskId) {
+  const all = await checkRows(taskId);
+  if (!all.some(isChecklist)) return 0;
+  const events = await taskEvents(taskId);
+  const task = fold(events);
+  if (!task || CLOSED.includes(task.state)) return 0;
+  const rows = newestRows(all, events);
+  const visible = rows.filter((r) => r.surface === 'user-visible');
+  let passed = 0;
+  for (const row of rows.filter((r) => isChecklist(r) && r.status === 'pending')) {
+    const evidence = await checklistEvidence(row.scenarioId.slice(CHECKLIST_PREFIX.length), task, events, visible);
+    if (!evidence) continue;
+    // one key per item, row value and evidence: a re-run finds its event, and an item set on again can pass again
+    const key = `checklist:${crypto.createHash('sha1').update(`${taskId}\0${rowKey(row)}\0${rowEvent(events, row)?.seq ?? 0}\0${evidence}`).digest('hex')}`;
+    const values = { status: 'pass', nextActor: 'firstmate', evidence, head: null, checkedAt: new Date().toISOString() };
+    await append(taskId, { ...CHECKLIST_WHO, key }, async ({ task: now }) => {
+      if (!now || CLOSED.includes(now.state)) throw rule('the task is closed');
+      return { kind: 'checklist', note: `${rowKey(row)} pass: ${evidence}`, extra: { row: rowKey(row), values } };
+    }).catch((error) => {
+      if (!(error instanceof Fail && error.code === 5)) throw error;
+    });
+    await applyNewestCheck(taskId, row);
+    passed++;
+  }
+  return passed;
+}
+
+async function cmdChecklist(args) {
+  const taskId = taskIdOf(args);
+  const who = identity(args, 'firstmate');
+  const verb = oneOf(['apply', 'off', 'on'], args.pos.verb, 'checklist command');
+  const reason = args.flags.reason;
+  if (verb === 'apply') {
+    if (args.pos.item !== undefined) throw usage('checklist apply takes no item');
+    await requireOpenTask(taskId, 'checklist apply');
+    const [added, total] = await applyChecklist(taskId);
+    if (added && (await syncChecklist(taskId))) await project(taskId);
+    out(`checklist added=${added} total=${total}`);
+    return;
+  }
+  const item = args.pos.item;
+  if (!item || !/^[a-z0-9-]+$/.test(item)) throw usage(`checklist ${verb} needs an item id, for example plan`);
+  if (verb === 'off' && !reason?.trim()) throw usage('checklist off needs --reason');
+  await requireOpenTask(taskId, `checklist ${verb}`);
+  const target = { scenarioId: `${CHECKLIST_PREFIX}${item}`, width: '-' };
+  const row = await firstRow('fm_task_check', `taskId eq ${lit(taskId)} and scenarioId eq ${lit(target.scenarioId)} and width eq '-'`);
+  if (!row) throw rule(`task ${taskId} has no checklist item ${item}; run checklist ${taskId} apply`);
+  const values = verb === 'off'
+    ? { status: 'off', nextActor: 'firstmate', evidence: reason.trim(), head: null, checkedAt: new Date().toISOString() }
+    : { status: 'pending', nextActor: 'firstmate', evidence: null, head: null, checkedAt: null };
+  await write(taskId, who, async ({ task }) => {
+    if (!task) throw rule('no such task');
+    if (CLOSED.includes(task.state)) throw rule(`checklist is refused: ${taskId} is ${task.state}`);
+    return { kind: 'checklist', note: `${rowKey(row)} ${verb}${reason ? `: ${reason.trim()}` : ''}`, extra: { row: rowKey(row), values } };
+  }, () => applyNewestCheck(taskId, row));
 }
 
 async function cmdShow(args) {
@@ -2129,7 +2294,7 @@ const COMMANDS = {
   create: cmdCreate, import: cmdImport, assign: cmdAssign, start: cmdStart, heartbeat: cmdHeartbeat, done: cmdDone, ask: cmdAsk, block: cmdBlock,
   unblock: cmdUnblock, approve: cmdApprove, changes: cmdChanges, reopen: cmdReopen, reassign: cmdReassign, archive: cmdArchive, comment: cmdComment, event: cmdEvent,
   document: cmdDocument, link: cmdLink, rows: cmdRows, check: cmdCheck, 'owner-check': cmdOwnerCheck, gate: cmdGate, show: cmdShow, list: cmdList, resume: cmdResume, reproject: cmdReproject,
-  checks: cmdChecks,
+  checks: cmdChecks, checklist: cmdChecklist,
 };
 
 async function main(argv) {
