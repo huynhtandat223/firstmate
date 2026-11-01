@@ -17,9 +17,14 @@
 //   heartbeat <task> [--note N]              running (today's `working:`)
 //   done     <task> --summary --changed-files --verification --residual-risk [--rows JSON]
 //            [--pr-url U] [--head H] [--next-actor tester|firstmate]       running -> review
-//            [--document FILE] [--document-title TITLE] attaches one documents child in the same request.
+//            [--document FILE] [--document-title TITLE] attaches one documents child in the same request
+//            (required when task kind is scout or plan; refused exit 5 otherwise).
 //            Document: UTF-8 .md/.markdown or .html/.htm, 1 byte to 2 MiB; one-line title 1..200
 //            characters (default file name). Invalid files/options exit 2 before any API write.
+//   plan     <task> --document FILE [--document-title T] [--note N]        attaches a plan document and sets
+//            planSeq = seq, planDecision = null, planDecidedAt = null (default role planner)
+//   plan-decision <task> --decision approve|changes --plan-seq N [--note WHY]
+//            sets planDecision and planDecidedAt (refused exit 5 when N !== task.planSeq or task has no plan)
 //   ask      <task> --question Q --option O (2 to 6 times) --recommendation R --why W
 //            [--document D] [--next-actor firstmate|owner]                  running -> blocked (needs-decision)
 //   block    <kind> <task> --reason R --next-actor A [--until ISO] [--on PARENT]
@@ -30,17 +35,19 @@
 //            An unreadable forge never refuses, because blocking is what a worker needs then.
 //   unblock  <task>                          blocked|triage -> ready
 //   approve  <task>                          review -> done (refused while a check row is pending or failed, and
-//            on a task with a deploy event until its user-visible rows pass on a deployed head)
+//            on a task with a deploy event until its user-visible rows pass on a deployed head; deletes any
+//            fm_event_video rows of the task after replacing video check evidence with its Tester screenshot, and
+//            writes a comment "N video đã xóa sau Verify")
 //   changes  <task> --note WHY               review -> ready
 //   reopen   <task> --reason WHY             done -> ready, next actor firstmate; archived stays final
 //   archive  <task>                          triage|todo|ready|blocked|review|done -> archived
 //   describe <task> --document FILE.md [--document-title T]              any state; default title Description
 //   thread   <task> [--since SEQ]                                       full comments, oldest first
-//   comment  <task> --note T [--image PATH --image-label L]... [--ask why|how|wait-what] [--reply-to SEQ]
-//            any state; reply-to must name a comment of this task
-//   event    <task> <kind> [--note N] [--pr-url U] [--head H]   kinds: steer comment pr deploy ci protocol_violation
-//            divergence; --head on deploy (the deployed head, which user-visible passes count on from then) or on ci
-//            (the head the CI result read); no other kind takes it
+//   comment  <task> [--note T] [--image PATH --image-label L]... [--video PATH --video-label L]...
+//            [--ask why|how|wait-what] [--reply-to SEQ]                 any state; reply-to must name a comment of this task
+//   event    <task> <kind> [--note N] [--pr-url U] [--head H] [--url U] kinds: steer comment pr deploy ci
+//            protocol_violation divergence link; --head on deploy (the deployed head, which user-visible passes count on
+//            from then) or on ci (the head the CI result read); --url on link; no other kind takes them
 //   event    <task> wait --next-actor tester|owner|merge|ci --clears-on rows|answer|merge|ci --note WHY [--rows ID@W,...]
 //            a declared wait (G1); `ask --next-actor owner` (answer) and `done --pr-url` (rows on the Tester, else merge)
 //            write one too. Its status line is `paused [at=E] [key=wait-<seq>]: waiting on <actor>: WHY (clears on X)`; the
@@ -56,9 +63,11 @@
 //   link     <parent> <child>                the child waits in todo while the parent is open
 //   rows     <task> [task:<id>|issue-url] [--surface all|user-visible]   defaults to the task Description; one check row per scenario x width from
 //            fm-acceptance.mjs; user-visible adds, resets and retires the Tester's rows only
-//   check    <task> <id>@<width> pass|fail|pending [--evidence E] [--head H] [--next-actor A]
-//            (--status S is the same as the result word); next actor firstmate on a pass, worker on a fail;
-//            with --role owner a pass or fail also sets the row's owner item (status, decidedAt, note = --evidence)
+//   check    <task> <id>@<width> pass|fail|pending [--evidence E | --evidence-image PATH [--evidence-label L]]
+//            [--head H] [--next-actor A] (--status S is the same as the result word); next actor firstmate on a pass,
+//            worker on a fail; --evidence-image writes a comment event with the image first and records
+//            evidence = event:<seq>#image:1; with --role owner a pass or fail also sets the row's owner item
+//            (status, decidedAt, note = --evidence)
 //   owner-check <task> <id>@<width> --page-title --url --steps --data --expected   (sets next actor owner;
 //            a row that has an item needs --url and --steps again; a re-sent --key never writes the item twice)
 //   gate     <task> [--issue task:<id>|URL] --head SHA [--evidence-root DIR]   defaults to the task Description; read only: prints each reason the task is not
@@ -121,7 +130,7 @@ const ACTORS = ['worker', 'tester', 'firstmate', 'owner'];
 const ROLES = ['worker', 'firstmate', 'tester', 'planner', 'owner', 'assistance', 'system'];
 const BLOCK_KINDS = ['transient', 'dependency', 'external', 'credential', 'failure'];
 const CHECK_STATUSES = ['pending', 'pass', 'fail'];
-const FREE_KINDS = ['steer', 'comment', 'pr', 'deploy', 'ci', 'protocol_violation', 'divergence'];
+const FREE_KINDS = ['steer', 'comment', 'pr', 'deploy', 'ci', 'protocol_violation', 'divergence', 'link'];
 const WAIT_ACTORS = ['tester', 'owner', 'merge', 'ci'];
 const WAIT_CLEARS = ['rows', 'answer', 'merge', 'ci'];
 const CLOSED = ['done', 'archived'];
@@ -144,22 +153,24 @@ const TRANSITIONS = {
 };
 
 // the fm_task columns the projection holds, with the lengths the API enforces on them
-const LIMITS = { title: 300, repo: 200, kind: 32, state: 32, assignee: 64, nextActor: 32, blockKind: 32, blockReason: 2000, issueUrl: 2048, prUrl: 2048, surface: 32, section: 32 };
+const LIMITS = { title: 300, repo: 200, kind: 32, state: 32, assignee: 64, nextActor: 32, blockKind: 32, blockReason: 2000, issueUrl: 2048, prUrl: 2048, surface: 32, section: 32, planDecision: 16 };
 const PROJECTED = ['acceptanceDigest', 'title', 'repo', 'kind', 'state', 'assignee', 'nextActor', 'blockKind', 'blockReason', 'blockRepeats', 'issueUrl', 'prUrl', 'surface', 'holdUntil', 'row', 'notes', 'section', 'lastSeq',
-  'stage', 'stageSince', 'lastEventAt', 'lastNote', 'reviewer',
+  'stage', 'stageSince', 'lastEventAt', 'lastNote', 'reviewer', 'planSeq', 'planDecision', 'planDecidedAt',
   // the backlog columns the cfw5001 tasks-axi backend writes in each row event's set (tasks-axi src/backends/cfw5001-transport.ts BACKLOG_COLUMNS)
   'backlogHome', 'backlogKind', 'backlogHoldReason', 'backlogHoldKind', 'backlogHoldUntil', 'backlogPriority', 'backlogDeps', 'backlogSince',
   'backlogClosed', 'backlogSeq', 'backlogPublicFollowup'];
 // The board card's step (cfw-modules#1678 change 199): the writer owns the rule and the page only reads it.
 const STEP_OF_STATE = { triage: 'queued', todo: 'queued', ready: 'queued', done: 'passed' };
 const REVIEWER_KINDS = ['check', 'owner-check', 'approved', 'changes'];
-const DATE_FIELDS = ['holdUntil', 'stageSince', 'lastEventAt'];
+const DATE_FIELDS = ['holdUntil', 'stageSince', 'lastEventAt', 'planDecidedAt'];
 // the backlog row's text: kept in the record verbatim, too long and multi-line for `show`'s field=value lines
 const ROW_TEXT = ['row', 'notes'];
 const TASK_ID = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
 const MAX_ATTEMPTS = 300;
 const IMAGE_TYPES = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp' };
 const MAX_IMAGE = 2 * 1024 * 1024;
+const VIDEO_TYPES = { '.mp4': 'video/mp4', '.webm': 'video/webm' };
+const MAX_VIDEO = 20 * 1024 * 1024;
 
 class Fail extends Error {
   constructor(code, message, extra = {}) {
@@ -198,7 +209,7 @@ async function http(method, pathname, body) {
   if (body !== undefined) headers['content-type'] = 'application/json';
   let res;
   try {
-    res = await fetch(base + pathname, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(20000) });
+    res = await fetch(base + pathname, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(60000) });
   } catch (error) {
     const why = error?.cause?.code || error?.cause?.message || error?.message || 'no answer';
     throw new Fail(3, `${method} ${pathname}: no answer from ${base} (${why})`, { network: true });
@@ -229,11 +240,12 @@ const ok = (res, what) => {
 const unwrap = (json) => (json && typeof json === 'object' && 'data' in json && 'success' in json ? json.data : json);
 const lit = (value) => `'${String(value).replaceAll("'", "''")}'`;
 
-async function listAll(table, { filter, orderby = 'id', limit = Infinity } = {}) {
+async function listAll(table, { filter, orderby = 'id', limit = Infinity, select } = {}) {
   const out = [];
   for (let skip = 0; out.length < limit; skip += 100) {
     const query = [`$top=100`, `$skip=${skip}`, `$orderby=${encodeURIComponent(orderby)}`];
     if (filter) query.push(`$filter=${encodeURIComponent(filter)}`);
+    if (select) query.push(`$select=${encodeURIComponent(select)}`);
     const page = ok(await http('GET', `/api/${table}?${query.join('&')}`), `list ${table}`).value || [];
     out.push(...page);
     if (page.length < 100) break;
@@ -377,13 +389,15 @@ const SPECS = {
   reassign: { pos: ['task'], flags: { to: 's', reason: 's' } },
   archive: { pos: ['task'], flags: {} },
   describe: { pos: ['task'], flags: { document: 's', 'document-title': 's' } },
+  plan: { pos: ['task'], flags: { document: 's', 'document-title': 's' } },
+  'plan-decision': { pos: ['task'], flags: { decision: 's', 'plan-seq': 's' } },
   thread: { pos: ['task'], flags: { since: 's' } },
-  comment: { pos: ['task'], flags: { image: 'm', 'image-label': 'm', ask: 's', 'reply-to': 's' } },
-  event: { pos: ['task', 'kind'], flags: { 'pr-url': 's', head: 's', touched: 's', 'next-actor': 's', 'clears-on': 's', rows: 's' } },
+  comment: { pos: ['task'], flags: { image: 'm', 'image-label': 'm', video: 'm', 'video-label': 'm', ask: 's', 'reply-to': 's' } },
+  event: { pos: ['task', 'kind'], flags: { 'pr-url': 's', head: 's', touched: 's', 'next-actor': 's', 'clears-on': 's', rows: 's', url: 's' } },
   checks: { pos: ['task'], flags: { 'as-deployed': 's', touched: 's' } },
   link: { pos: ['parent', 'child'], flags: {} },
   rows: { pos: ['task', 'issue'], flags: { surface: 's' } },
-  check: { pos: ['task', 'target', 'status'], flags: { status: 's', evidence: 's', head: 's', 'next-actor': 's' } },
+  check: { pos: ['task', 'target', 'status'], flags: { status: 's', evidence: 's', 'evidence-image': 's', 'evidence-label': 's', head: 's', 'next-actor': 's' } },
   'owner-check': { pos: ['task', 'target'], flags: { 'page-title': 's', url: 's', steps: 's', data: 's', expected: 's' } },
   show: { pos: ['task'], flags: {} },
   list: { pos: [], flags: { state: 's', actor: 's' } },
@@ -479,7 +493,7 @@ async function append(taskId, who, build) {
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     const high = await highestSeq();
     const events = await taskEvents(taskId);
-    const spec = await build({ task: fold(events), events });
+    const spec = await build({ task: fold(events), events, seq: high + 1 });
     checkSet(spec.set || {});
     if (spec.note && JSON.stringify({ v: 1, note: spec.note, set: spec.set || {}, ...spec.extra }).length > 8000 - EVENT_STAGE_BUDGET) {
       spec.children = { ...spec.children, documents: [...(spec.children?.documents || []), { title: 'Event note', mediaType: 'text/plain', content: spec.note }] };
@@ -593,6 +607,25 @@ function imagesOf(args) {
   });
 }
 const withImages = (children, images) => (images.length ? { ...children, images } : children);
+
+function videosOf(args) {
+  const paths = args.flags.video || [];
+  const labels = args.flags['video-label'] || [];
+  if (paths.length !== labels.length) throw usage('give one --video-label for each --video');
+  return paths.map((file, i) => {
+    const mediaType = VIDEO_TYPES[path.extname(file).toLowerCase()];
+    if (!mediaType) throw rule(`${file}: a video is an mp4 or webm file`);
+    let data;
+    try {
+      data = fs.readFileSync(file);
+    } catch {
+      throw rule(`${file}: cannot read the video`);
+    }
+    if (!data.length || data.length > MAX_VIDEO) throw rule(`${file}: a video is 1 byte to 20 MiB`);
+    return { label: labels[i], mediaType, size: data.length, content: data.toString('base64') };
+  });
+}
+const withVideos = (children, videos) => (videos.length ? { ...children, videos } : children);
 
 const surfaceActor = (surface) => (surface === 'user-visible' ? 'tester' : 'worker');
 const rowKey = (row) => `${row.scenarioId}@${row.width}`;
@@ -931,9 +964,42 @@ const newestRows = (rows, events) =>
     return v ? { ...r, status: v.status, nextActor: v.nextActor, evidence: v.evidence ?? null, head: v.head ?? null } : r;
   });
 
-const cmdApprove = simple('approve', 'approved', async (task, args, taskId) => {
-  const events = await taskEvents(taskId);
-  const rows = newestRows(await checkRows(taskId), events);
+async function taskVideos(events) {
+  const out = [];
+  for (const event of events.filter((e) => e.kind === 'comment')) {
+    const vids = await listAll('fm_event_video', { filter: `fmTaskEventId eq ${event.id}`, orderby: 'id', select: 'id,fmTaskEventId,label,mediaType,size' });
+    for (const v of vids) out.push({ ...v, eventSeq: event.seq });
+  }
+  return out;
+}
+
+const isVideoEvidence = (ev, videos) => {
+  if (!ev) return false;
+  if (/^event:\d+#video(?::\d+)?$/.test(ev) || /\.(?:mp4|webm)$/i.test(ev) || /\/fm_event_video\//.test(ev)) return true;
+  const m = /^event:(\d+)$/.exec(ev);
+  return Boolean(m && videos.some((v) => v.eventSeq === Number(m[1])));
+};
+
+async function findTesterScreenshot(events, row) {
+  const candidates = [];
+  const round = lastHeadEvent(events);
+  for (const event of [...events].reverse()) {
+    if (event.actorRole !== 'tester') continue;
+    // Only captures attached during the row's current built/deployed round qualify.
+    if (!round || bodyOf(round).head !== row.head || event.seq <= round.seq) continue;
+    const imgs = await listAll('fm_event_image', { filter: `fmTaskEventId eq ${event.id}`, orderby: 'position', select: 'id,fmTaskEventId,label,mediaType,position' });
+    for (const img of imgs) {
+      // A screenshot belongs to one scenario/width pair, never to the scenario alone.
+      const escapedKey = rowKey(row).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      if (!new RegExp(`(^|[^A-Za-z0-9_@.-])${escapedKey}(?=$|[^A-Za-z0-9_@.-])`).test(img.label || '')) continue;
+      candidates.push({ event, img, ref: `event:${event.seq}#image:${img.position || 1}` });
+    }
+  }
+  if (!candidates.length) return null;
+  return candidates[0]?.ref ?? null;
+}
+
+async function checkApproveReady(task, taskId, events, rows) {
   const open = openRows(rows);
   if (open.length) throw rule(`approve is refused while check rows are open: ${open.map((r) => `${rowKey(r)} (${r.status})`).join(', ')}`);
   const visible = rows.filter((r) => r.surface === 'user-visible');
@@ -947,8 +1013,59 @@ const cmdApprove = simple('approve', 'approved', async (task, args, taskId) => {
     const stale = visible.filter((r) => (r.head ?? null) !== head && !carried(r, events));
     if (stale.length) throw rule(`approve is refused: these user-visible rows passed on another head than the latest built or deployed head (${head ?? 'none'}): ${stale.map((r) => `${rowKey(r)} (${r.head ?? 'none'})`).join(', ')}`);
   }
-  return { state: 'done', nextActor: 'firstmate', blockKind: null, blockReason: null, blockRepeats: 0, holdUntil: null };
-});
+}
+
+async function cmdApprove(args) {
+  const taskId = taskIdOf(args);
+  const who = identity(args, 'firstmate');
+  const initialEvents = await taskEvents(taskId);
+  const initialTask = fold(initialEvents);
+  const replay = await eventByKey(who.key);
+  if (!replay) guard('approve', initialTask);
+  const initialRows = newestRows(await checkRows(taskId), initialEvents);
+  await checkApproveReady(initialTask, taskId, initialEvents, initialRows);
+  const videos = await taskVideos(initialEvents);
+  for (const row of initialRows) {
+    if (!isVideoEvidence(row.evidence, videos)) continue;
+    const replacement = await findTesterScreenshot(initialEvents, row);
+    if (!replacement) throw rule(`approve is refused: check row ${rowKey(row)} references a video (${row.evidence}) and has no Tester screenshot to replace it`);
+    const values = { status: row.status, nextActor: row.nextActor, evidence: replacement, head: row.head ?? null, checkedAt: row.checkedAt ?? new Date().toISOString() };
+    await append(taskId, { ...who, key: `${who.key}:video-ev:${rowKey(row)}` }, async ({ task }) => {
+      // append retries after a sequence conflict with a fresh fold. A competing approval
+      // therefore prevents this evidence check from being stored after Done.
+      guard('approve', task);
+      return {
+        kind: 'check',
+        note: `${rowKey(row)} ${row.status}: ${replacement} (replaced video evidence)`,
+        extra: { row: rowKey(row), values },
+      };
+    });
+    await applyNewestCheck(taskId, row);
+  }
+  return write(
+    taskId,
+    who,
+    async ({ task }) => {
+      guard('approve', task);
+      const events = await taskEvents(taskId);
+      const rows = newestRows(await checkRows(taskId), events);
+      await checkApproveReady(task, taskId, events, rows);
+      return { kind: 'approved', note: noteOf(args), set: { state: 'done', nextActor: 'firstmate', blockKind: null, blockReason: null, blockRepeats: 0, holdUntil: null } };
+    },
+    async () => {
+      await release(taskId, who);
+      const currentVideos = await taskVideos(await taskEvents(taskId));
+      const count = videos.length || currentVideos.length;
+      for (const v of currentVideos) ok(await http('DELETE', `/api/fm_event_video/${v.id}`), 'delete event video');
+      if (count > 0) {
+        await append(taskId, { ...who, key: `${who.key}:video-cleanup` }, async () => ({
+          kind: 'comment',
+          note: `${count} video đã xóa sau Verify`,
+        }));
+      }
+    },
+  );
+}
 
 // Reserve 64 characters for the stage metadata append adds, without duplicating its fold rules.
 const EVENT_STAGE_BUDGET = 64;
@@ -960,6 +1077,44 @@ async function cmdDescribe(args) {
   return write(taskIdOf(args), identity(args, 'firstmate'), async ({ task }) => {
     if (!task) throw rule('no such task');
     return { kind: 'description', children: { documents: [document] } };
+  });
+}
+
+async function cmdPlan(args) {
+  const f = args.flags;
+  if (!f.document) throw usage('plan needs --document FILE');
+  const document = documentOf(f);
+  const taskId = taskIdOf(args);
+  return write(taskId, identity(args, 'planner'), async ({ task, seq }) => {
+    if (!task) throw rule('no such task');
+    if (CLOSED.includes(task.state)) throw rule(`plan is refused: ${taskId} is ${task.state}`);
+    return {
+      kind: 'plan',
+      note: noteOf(args) || document.title,
+      set: { planSeq: seq, planDecision: null, planDecidedAt: null },
+      children: { documents: [document] },
+    };
+  });
+}
+
+async function cmdPlanDecision(args) {
+  const taskId = taskIdOf(args);
+  const f = args.flags;
+  if (!f.decision) throw usage('plan-decision needs --decision approve|changes');
+  const decision = oneOf(['approve', 'changes'], f.decision, 'decision');
+  const seqText = f['plan-seq'];
+  if (!seqText || !/^[1-9][0-9]*$/.test(seqText) || !Number.isSafeInteger(Number(seqText))) throw usage('plan-decision needs --plan-seq N');
+  const planSeq = Number(seqText);
+  return write(taskId, identity(args, 'owner'), async ({ task }) => {
+    if (!task) throw rule('no such task');
+    if (!task.planSeq) throw rule(`task ${taskId} has no plan`);
+    if (task.planSeq !== planSeq) throw rule(`plan-decision is for plan seq ${planSeq}, but task ${taskId} is at plan seq ${task.planSeq}`);
+    return {
+      kind: 'plan_decision',
+      note: noteOf(args) || `plan #${planSeq}: ${decision}`,
+      set: { planDecision: decision, planDecidedAt: new Date().toISOString() },
+      extra: { planSeq, decision },
+    };
   });
 }
 
@@ -984,7 +1139,8 @@ async function cmdComment(args) {
   const taskId = taskIdOf(args);
   const who = identity(args, 'worker');
   const images = imagesOf(args);
-  if (!args.flags.note && !images.length) throw usage('comment needs --note or --image');
+  const videos = videosOf(args);
+  if (!args.flags.note && !images.length && !videos.length) throw usage('comment needs --note, --image or --video');
   const ask = args.flags.ask;
   if (ask !== undefined && !['why', 'how', 'wait-what'].includes(ask)) throw usage('--ask must be why, how or wait-what');
   const reply = args.flags['reply-to'];
@@ -992,7 +1148,7 @@ async function cmdComment(args) {
   return write(taskId, who, async ({ task, events }) => {
     guard('comment', task);
     if (reply !== undefined && !events.some((event) => event.seq === Number(reply) && event.kind === 'comment')) throw rule('--reply-to must name an existing comment of this task');
-    const spec = { kind: 'comment', note: noteOf(args), extra: { ...(ask ? { ask } : {}), ...(reply !== undefined ? { replyTo: Number(reply) } : {}) }, children: withImages({}, images) };
+    const spec = { kind: 'comment', note: noteOf(args), extra: { ...(ask ? { ask } : {}), ...(reply !== undefined ? { replyTo: Number(reply) } : {}) }, children: withVideos(withImages({}, images), videos) };
     return spec;
   });
 }
@@ -1003,9 +1159,12 @@ async function cmdEvent(args) {
   const kind = oneOf([...FREE_KINDS, 'wait'], args.pos.kind, 'event kind');
   const prUrl = args.flags['pr-url'];
   const head = args.flags.head;
+  const url = args.flags.url;
   const headKind = kind === 'deploy' || kind === 'ci';
   if (head !== undefined && !headKind) throw usage('--head names a head a deploy or a ci event reports: give it only on one of those');
   if (args.flags.touched !== undefined && !(kind === 'deploy' && head)) throw usage('--touched names the scenarios a deploy touched: give it only on a deploy event with --head');
+  if (url !== undefined && kind !== 'link') throw usage('--url goes only on a link event');
+  if (kind === 'link' && (!url || !/^https?:\/\/\S+$/.test(url) || url.length > 2048)) throw rule('a link event needs --url with an http or https URL up to 2048 characters');
   const touched = touchedOf(args.flags.touched);
   if (kind === 'wait') {
     const f = args.flags;
@@ -1021,7 +1180,7 @@ async function cmdEvent(args) {
   } else if (['next-actor', 'clears-on', 'rows'].some((n) => args.flags[n] !== undefined)) throw usage('--next-actor, --clears-on and --rows go only on a wait event');
   return write(taskId, who, async ({ task }) => {
     if (!task) throw rule('no such task');
-    return { kind, note: noteOf(args), set: kind === 'pr' && prUrl ? { prUrl } : {}, ...(head ? { extra: { head, ...(touched ? { touched } : {}) } } : {}) };
+    return { kind, note: noteOf(args) || (kind === 'link' ? url : ''), set: kind === 'pr' && prUrl ? { prUrl } : {}, ...(head ? { extra: { head, ...(touched ? { touched } : {}) } } : kind === 'link' ? { extra: { url } } : {}) };
   }, kind === 'deploy' && head ? () => routeReview(taskId, who) : undefined);
 }
 
@@ -1052,6 +1211,7 @@ async function cmdDone(args) {
   const nextActor = f['next-actor'] === undefined ? null : oneOf(['tester', 'firstmate'], f['next-actor'], 'next actor');
   return write(taskId, who, async ({ task }) => {
     guard('done', task);
+    if ((task.kind === 'scout' || task.kind === 'plan') && !documents && !/^(shadow|backfill):/.test(who.key)) throw rule(`done on a ${task.kind} task requires --document`);
     const rows = await checkRows(taskId);
     const waitingOnTester = rows.some((r) => r.surface === 'user-visible' && r.status !== 'retired' && !(r.status === 'pass' && (r.head ?? null) === (f.head ?? null)));
     const child = { summary: f.summary, changedFiles: f['changed-files'], verification: f.verification, residualRisk: f['residual-risk'], rows: f.rows ?? rowsJson(rows), prUrl: f['pr-url'], head: f.head };
@@ -1302,11 +1462,22 @@ async function cmdCheck(args) {
   const target = targetOf(args.pos.target);
   if (args.pos.status !== undefined && f.status !== undefined && args.pos.status !== f.status) throw usage(`give the result once: ${args.pos.status} or --status ${f.status}`);
   const status = oneOf(CHECK_STATUSES, args.pos.status ?? f.status, 'status');
+  if (f['evidence-label'] !== undefined && !f['evidence-image']) throw usage('--evidence-label requires --evidence-image');
+  if (f['evidence-image'] && f.evidence !== undefined) throw usage('give either --evidence or --evidence-image, not both');
+  const evImages = f['evidence-image'] ? imagesOf({ flags: { image: [f['evidence-image']], 'image-label': [f['evidence-label'] ?? `${rowKey(target)} evidence`] } }) : [];
   await requireOpenTask(taskId, 'check');
   const row = await checkRow(taskId, target);
   const nextActor = oneOf(ACTORS, f['next-actor'] ?? (status === 'pass' ? 'firstmate' : status === 'fail' ? 'worker' : row.nextActor === 'firstmate' ? surfaceActor(row.surface) : row.nextActor), 'next actor');
   if (nextActor === 'owner' && !(await ownerItem(taskId, target))) throw rule(`${rowKey(row)} cannot read next actor owner without its owner item; run owner-check first`);
-  const values = { status, nextActor, evidence: f.evidence ?? null, head: f.head ?? null, checkedAt: status === 'pending' ? null : new Date().toISOString() };
+  let evidence = f.evidence ?? null;
+  if (evImages.length) {
+    const imgRes = await append(taskId, { ...who, key: `${who.key}:evidence-image` }, async ({ task }) => {
+      guard('comment', task);
+      return { kind: 'comment', note: f['evidence-label'] ?? `${rowKey(row)} evidence`, children: withImages({}, evImages) };
+    });
+    evidence = `event:${imgRes.event.seq}#image:1`;
+  }
+  const values = { status, nextActor, evidence, head: f.head ?? null, checkedAt: status === 'pending' ? null : new Date().toISOString() };
   // a re-sent key means the call it already recorded: other values are another call and need another key
   const prior = await eventByKey(who.key);
   if (prior) {
@@ -1319,10 +1490,10 @@ async function cmdCheck(args) {
   await write(taskId, who, async ({ task }) => {
     if (!task) throw rule('no such task');
     if (CLOSED.includes(task.state)) throw rule(`check is refused: ${taskId} is ${task.state}`);
-    return { kind: 'check', note: `${rowKey(row)} ${status}${f.evidence ? `: ${f.evidence}` : ''}`, extra: { row: rowKey(row), values } };
+    return { kind: 'check', note: `${rowKey(row)} ${status}${evidence ? `: ${evidence}` : ''}`, extra: { row: rowKey(row), values } };
   }, async () => {
     await applyNewestCheck(taskId, row);
-    if (who.role === 'owner' && status !== 'pending') await ownerVerdict(taskId, target, status, f.evidence);
+    if (who.role === 'owner' && status !== 'pending') await ownerVerdict(taskId, target, status, evidence);
     await routeReview(taskId, who);
   });
 }
@@ -1405,6 +1576,21 @@ async function cmdChecks(args) {
   out(JSON.stringify({ task: taskId, state: task.state, nextActor: task.nextActor, issueUrl: task.issueUrl ?? null, head, rows }));
 }
 
+async function eventEvidenceExists(events, ev) {
+  const m = /^event:([1-9][0-9]*)#(image:([1-9][0-9]*)|document)$/.exec(ev);
+  if (!m) return false;
+  const event = events.find((e) => e.seq === Number(m[1]));
+  if (!event) return false;
+  if (m[2] === 'document') {
+    const doc = await firstRow('fm_event_document', `fmTaskEventId eq ${event.id}`);
+    return Boolean(doc && doc.content);
+  }
+  const pos = Number(m[3]);
+  const images = await listAll('fm_event_image', { filter: `fmTaskEventId eq ${event.id}`, orderby: 'position' });
+  const img = images.find((r) => r.position === pos) ?? images[pos - 1];
+  return Boolean(img && img.content);
+}
+
 // The verify gate's read of the record (bin/fm-verify-gate-lib.sh calls it for a task begun after T5). It writes nothing,
 // prints one problem per line and exits 5 when there is any. The task passes when every user-visible row the issue asks
 // for now is `pass` with evidence on the deployed --head and with its scenario's current digest, and an approved event is
@@ -1439,7 +1625,9 @@ async function cmdGate(args) {
     }
     const ev = row.evidence ?? '';
     if (!ev || ev === '-') problems.push(`${key} is pass without evidence`);
-    else if (!/^https?:\/\/./.test(ev) && !fs.existsSync(path.resolve(f['evidence-root'] || '.', ev))) problems.push(`${key} evidence path does not exist: ${ev}`);
+    else if (/^event:/.test(ev)) {
+      if (!(await eventEvidenceExists(events, ev))) problems.push(`${key} evidence reference does not exist: ${ev}`);
+    } else if (!/^https?:\/\/./.test(ev) && !fs.existsSync(path.resolve(f['evidence-root'] || '.', ev))) problems.push(`${key} evidence path does not exist: ${ev}`);
     if ((row.head ?? null) !== f.head && f.head === deployedHead && carried(row, events)) out(`${key} carried: pass on head ${row.head}, and no later deployed PR names ${row.scenarioId}`);
     else if ((row.head ?? null) !== f.head) problems.push(`${key} passed on head ${row.head ?? 'none'}, not the deployed head ${f.head}`);
   }
@@ -1671,7 +1859,7 @@ async function cmdDeliver(args) {
 }
 
 const COMMANDS = {
-  'turn-end': cmdTurnEnd, deliver: cmdDeliver, describe: cmdDescribe, thread: cmdThread,
+  'turn-end': cmdTurnEnd, deliver: cmdDeliver, describe: cmdDescribe, plan: cmdPlan, 'plan-decision': cmdPlanDecision, thread: cmdThread,
   create: cmdCreate, import: cmdImport, assign: cmdAssign, start: cmdStart, heartbeat: cmdHeartbeat, done: cmdDone, ask: cmdAsk, block: cmdBlock,
   unblock: cmdUnblock, approve: cmdApprove, changes: cmdChanges, reopen: cmdReopen, reassign: cmdReassign, archive: cmdArchive, comment: cmdComment, event: cmdEvent,
   document: cmdDocument, link: cmdLink, rows: cmdRows, check: cmdCheck, 'owner-check': cmdOwnerCheck, gate: cmdGate, show: cmdShow, list: cmdList, resume: cmdResume, reproject: cmdReproject,
