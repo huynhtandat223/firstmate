@@ -9,7 +9,9 @@
 # Usage: fm-task-owner.sh --action ACTION --task TASK [--option O] [--row ID@W] [--item I --on|--off] [--decision approve|changes] [--plan-seq N] [--note N] [--to RECIPIENT] [--ask why|how|wait-what] [--rule ID --state S ...] --owner ID
 #   inbox-task|inbox-link|inbox-delete resolve a notification (--task is its id; link needs --option task-id)
 #   comment  a task comment: store the note once per owner, note and minute              needs --note
-#   answer   a question:     comment "answer: <option>" (and " - <note>"), then unblock    needs --option
+#   answer   a question:     with --question SEQ, answer TASK --question SEQ --option O [--note N] (one card of a
+#            round; the last answer returns the task to its worker); without it, comment "answer: <option>"
+#            (and " - <note>"), then unblock                                                 needs --option
 #   unblock  a block:        comment "<note>", then unblock                                needs --note
 #   pass     an owner row:   check TASK ROW pass --evidence "<note>" (or "owner pass")     needs --row
 #   fail     an owner row:   check TASK ROW fail --evidence "<note>"                        needs --row and --note
@@ -36,7 +38,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export FM_HOME="${FM_HOME:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 WRITER="${FM_TASK_OWNER_WRITER:-$SCRIPT_DIR/fm-task.sh}"
 
-ACTION='' TASK='' OPTION='' ROW='' DECISION='' PLAN_SEQ='' NOTE='' OWNER='' TO='' ASK='' RULE='' ITEM='' SWITCH=''
+ACTION='' TASK='' OPTION='' ROW='' DECISION='' PLAN_SEQ='' NOTE='' OWNER='' TO='' ASK='' RULE='' ITEM='' SWITCH='' QUESTION=''
 declare -A RULE_FIELD=()
 RULE_FLAGS='state harness model effort rank account hours scope enabled warning'
 WRITES='[]'
@@ -65,6 +67,7 @@ while [ "$#" -gt 0 ]; do
     --to) TO=$2 ;;
     --ask) ASK=$2 ;;
     --rule) RULE=$2 ;;
+    --question) QUESTION=$2 ;;
     --state|--harness|--model|--effort|--rank|--account|--hours|--scope|--enabled|--warning) RULE_FIELD[${1#--}]=$2 ;;
     --item) ITEM=$2 ;;
     *) usage "unknown argument $1" ;;
@@ -151,8 +154,15 @@ case "$ACTION" in
     ;;
   answer)
     [ -n "$OPTION" ] || usage 'answer needs --option'
-    text="answer: $OPTION${NOTE:+ - $NOTE}"
-    run comment "$TASK" --note "$text" && run unblock "$TASK" || RC=$?
+    if [ -n "$QUESTION" ]; then
+      [[ "$QUESTION" =~ ^[1-9][0-9]*$ ]] || usage 'answer --question must be an event seq'
+      note_args=()
+      [ -z "$NOTE" ] || note_args=(--note "$NOTE")
+      run answer "$TASK" --question "$QUESTION" --option "$OPTION" "${note_args[@]}" --key "owner-answer:$TASK:$QUESTION" || RC=$?
+    else
+      text="answer: $OPTION${NOTE:+ - $NOTE}"
+      run comment "$TASK" --note "$text" && run unblock "$TASK" || RC=$?
+    fi
     ;;
   unblock)
     [ -n "$NOTE" ] || usage 'unblock needs --note'

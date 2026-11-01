@@ -2457,7 +2457,64 @@ case_model_rules() {
   return 0
 }
 
-CASES=${FM_TASK_CASES:-"description_thread terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed long_notes status_view verify_view owner_writer stage wait carry slice_c model_rules checklist"}
+# Plan v2 D3: a round of owner questions on one task, each answered by its seq; owner questions never go to triage,
+# while a worker's third block of one kind to firstmate still does (D8, D9, D12).
+case_question_round() {
+  BIN=$1; reset_db
+  export FM_HOME="$TMP_ROOT/round-home"
+  rm -rf "$FM_HOME"; mkdir -p "$FM_HOME/state"
+  local t=tk-qr q1 q2 q3 row f ow_out
+  q() { ft ask $t --question "$1" --option 'Yes' --option 'No' --recommendation 'Yes' --why 'probe' --next-actor owner; }
+  mk_running $t >/dev/null || return 1
+  q '[probe] Q1'; must 'first owner ask' 0 || return 1; q1=$(seq_of)
+  q '[probe] Q2'; must 'second owner ask from blocked' 0 || return 1; q2=$(seq_of)
+  q '[probe] Q3'; must 'third owner ask from blocked' 0 || return 1; q3=$(seq_of)
+  row=$(task_row $t)
+  [ "$(jq -r .state <<<"$row")" = blocked ] && [ "$(jq -r .nextActor <<<"$row")" = owner ] && [ "$(jq -r .blockRepeats <<<"$row")" = 0 ] \
+    || { echo "a round of owner asks left: $row"; return 1; }
+  [ "$(db fm_task_event | jq --arg t $t '[.[] | select(.taskId == $t and .kind == "needs-decision")] | length')" = 3 ] || { echo "the round is not three questions"; return 1; }
+  ft resume $t
+  [[ $OUT == *'OPEN QUESTIONS (3)'*'[probe] Q1'*'[probe] Q2'*'[probe] Q3'* ]] || { echo "resume: $OUT"; return 1; }
+  # only an owner question joins the round
+  ft ask $t "${ASK_FLAGS[@]}"; must 'a question to firstmate from blocked' 5 || return 1
+  # an answer names an open question and one of its options
+  ft answer $t --question 999999 --option Yes; must 'answer to no open question' 5 || return 1
+  ft answer $t --question "$q1" --option Maybe; must 'answer with an option the question lacks' 5 || return 1
+  ft answer $t --question "$q1"; must 'answer with neither option nor note' 2 || return 1
+  ft answer $t --question "$q1" --option Yes --key a1; must 'answer one' 0 || return 1
+  [ "$(task_state $t)" = blocked ] && [ "$(task_row $t | jq -r .nextActor)" = owner ] || { echo "the first answer moved the task: $(task_row $t)"; return 1; }
+  [ "$(task_row $t | jq -r .blockReason)" = '[probe] Q2' ] || { echo "the reason is not the next open question: $(task_row $t)"; return 1; }
+  ft answer $t --question "$q1" --option No; must 'a second answer to an answered question' 5 || return 1
+  f="$FM_HOME/state/$t.status"
+  [ "$(grep -c '^resolved .*the wait on owner cleared: answered' "$f")" = 1 ] || { echo "the first answer cleared $(grep -c '^resolved' "$f") waits"; return 1; }
+  ft answer $t --question "$q2" --option No --note 'not now'; must 'answer two' 0 || return 1
+  [ "$(task_state $t)" = blocked ] || { echo "the second answer moved the task"; return 1; }
+  # the board's one tap: the owner script answers by seq
+  ow_out=$("$BIN/fm-task-owner.sh" --action answer --task $t --question "$q3" --option Yes --owner u-1 2>&1)
+  jq -e '.ok == true' <<<"$ow_out" >/dev/null || { echo "owner answer: $ow_out"; return 1; }
+  row=$(task_row $t)
+  [ "$(jq -r .state <<<"$row")" = ready ] && [ "$(jq -r .nextActor <<<"$row")" = worker ] || { echo "the last answer did not return the task: $row"; return 1; }
+  db fm_task_event | jq -e --arg t $t --argjson q1 "$q1" --argjson q2 "$q2" --argjson q3 "$q3" '[.[] | select(.taskId == $t and .kind == "answered") | (.body | fromjson | .answer.question)] == [$q1, $q2, $q3]' >/dev/null \
+    || { echo "answered events: $(db fm_task_event | jq -c --arg t $t '[.[] | select(.taskId == $t and .kind == "answered") | .body]')"; return 1; }
+  db fm_task_event | jq -e --arg t $t '[.[] | select(.taskId == $t and .kind == "answered")][-1] | .actor == "owner:u-1" and .actorRole == "owner"' >/dev/null || { echo "the owner answer is not the owner's"; return 1; }
+  [ "$(grep -c '^resolved .*the wait on owner cleared: answered' "$f")" = 3 ] || { echo "not every question's wait cleared"; return 1; }
+  ft resume $t; [[ $OUT == *'OPEN QUESTIONS (0)'* ]] || { echo "resume after the round: $OUT"; return 1; }
+  # a transient block is no owner round: an owner ask is refused there
+  ft start $t >/dev/null; ft block transient $t --reason waiting --next-actor firstmate >/dev/null
+  q '[probe] Q4'; must 'an owner ask on a transient block' 5 || return 1
+  # D12: a worker's third failure block to firstmate still goes to triage
+  ft unblock $t >/dev/null; ft start $t >/dev/null
+  local i
+  for i in 1 2; do
+    ft block failure $t --reason 'same blocker' --next-actor firstmate >/dev/null; ft unblock $t >/dev/null; ft start $t >/dev/null
+  done
+  ft block failure $t --reason 'same blocker' --next-actor firstmate; must 'third failure block' 0 || return 1
+  row=$(task_row $t)
+  [ "$(jq -r .state <<<"$row")" = triage ] && [ "$(jq -r .nextActor <<<"$row")" = firstmate ] || { echo "the third failure block did not go to triage: $row"; return 1; }
+  return 0
+}
+
+CASES=${FM_TASK_CASES:-"description_thread terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed long_notes status_view verify_view owner_writer stage wait carry slice_c model_rules checklist question_round"}
 
 # ---- real command -------------------------------------------------------------------
 
@@ -2595,7 +2652,7 @@ mutate 'a wait writes its keyed paused line' wait "if (event.kind === 'wait') {"
 mutate 'a cleared wait gets its resolved line' wait "    if (!by) continue;" "    continue;"
 mutate 'rows clear a wait only when every asked row has a result' wait "asked.every((key) =>" "asked.some((key) =>"
 mutate 'deliver resolves a wait that another home cleared' wait "  await waitView(taskIdOf(args), taskStream);" ""
-mutate 'a question to the owner waits on the answer' wait "nextActor === 'owner' ? () => waitOn(" "false ? () => waitOn("
+mutate 'a question to the owner waits on the answer' wait "nextActor === 'owner' ? (result) => waitOn(" "false ? (result) => waitOn("
 mutate 'a PR-ready done waits after its own line' wait "  if (wait) await wait(result);
   await waitView(taskId);" "  await waitView(taskId);"
 mutate 'only a merged pr event clears a merge wait' wait "e.kind === 'pr' && /\\bmerged\\b/i.test(" "e.kind === 'pr' && /./.test("
@@ -2632,6 +2689,14 @@ mutate 'a re-sent rule key writes nothing again' model_rules "  const prior = aw
     out(" "  const prior = null;
   if (prior) {
     out("
+mutate 'an owner ask joins a round of open owner questions' question_round "    if (!round) guard('ask', task);" "    guard('ask', task);"
+mutate 'an owner question leaves blockRepeats as it was' question_round "    const set = nextActor === 'owner'" "    const set = false"
+mutate 'an answered event closes only its question' question_round "    else if (e.kind === 'answered') open = open.filter((call) => call.seq !== bodyOf(e).answer?.question);" ""
+mutate 'only the last answer returns the task to its worker' question_round "    const set = left.length
+      ?" "    const set = false
+      ?"
+mutate 'an answer must be one of the question options' question_round "if (!options.includes(f.option)) throw rule" "if (false) throw rule"
+mutate 'each owner question waits on its own answer' question_round "(question ? bodyOf(e).answer?.question === question :" "(question ? true :"
 mutate_owner() {  # <label> <exact wrapper text> <replacement>: the owner_writer case goes red
   cp "$TMP_ROOT/fm-task-lib.mjs.orig" "$LIB"
   cp "$TMP_ROOT/fm-task-owner.sh.orig" "$MBIN/fm-task-owner.sh"

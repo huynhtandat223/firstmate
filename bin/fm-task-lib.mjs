@@ -27,6 +27,10 @@
 //            sets planDecision and planDecidedAt (refused exit 5 when N !== task.planSeq or task has no plan)
 //   ask      <task> --question Q --option O (2 to 6 times) --recommendation R --why W
 //            [--document D] [--next-actor firstmate|owner]                  running -> blocked (needs-decision)
+//            --next-actor owner also asks from blocked while every open call is an owner question (a round), and leaves
+//            blockRepeats as it was; each owner question waits on its own answer
+//   answer   <task> --question SEQ [--option O] [--note N]   one open question of the task (role owner by default):
+//            event answered; the last answer moves blocked -> ready, next actor worker (todo while a parent is open)
 //   block    <kind> <task> --reason R --next-actor A [--until ISO] [--on PARENT]
 //            kind: transient|dependency|external|credential|failure; running -> blocked,
 //            a dependency waits in todo on --on PARENT; a third block of one kind goes to triage.
@@ -434,6 +438,7 @@ const SPECS = {
   document: { pos: ['task'], flags: {} },
   gate: { pos: ['task'], flags: { issue: 's', head: 's', 'evidence-root': 's' } },
   rules: { pos: [], flags: { state: 's', repo: 's', at: 's', account: 's' } },
+  answer: { pos: ['task'], flags: { question: 's', option: 's' } },
   rule: { pos: ['action', 'id'], flags: { state: 's', harness: 's', model: 's', effort: 's', rank: 's', account: 's', hours: 's', scope: 's', enabled: 's', warning: 's' } },
   checklist: { pos: ['task', 'verb', 'item'], flags: { reason: 's' } },
 };
@@ -750,7 +755,10 @@ function clearingEvent(wait, events) {
   const { clearsOn, rows = [] } = bodyOf(wait).wait || {};
   const later = events.filter((e) => e.seq > wait.seq);
   const closing = later.find((e) => e.kind === 'approved' || e.kind === 'archived');
-  if (clearsOn === 'answer') return later.find((e) => e.kind === 'unblocked') ?? closing;
+  if (clearsOn === 'answer') {
+    const { question } = bodyOf(wait).wait || {};
+    return later.find((e) => e.kind === 'unblocked' || (e.kind === 'answered' && (question ? bodyOf(e).answer?.question === question : bodyOf(e).set?.state !== undefined))) ?? closing;
+  }
   if (clearsOn === 'merge') return later.find((e) => e.kind === 'pr' && /\bmerged\b/i.test(bodyOf(e).note ?? '')) ?? closing;
   // The pr-review source writes one ci event for the PR's current head once its checks finish, green or failed,
   // so the delivered CI result is that event whatever head the worker was waiting on.
@@ -1298,12 +1306,52 @@ async function cmdAsk(args) {
   if (options.length < 2 || options.length > 6) throw rule(`a question has 2 to 6 options, not ${options.length}`);
   const nextActor = f['next-actor'] === undefined ? 'firstmate' : oneOf(['firstmate', 'owner'], f['next-actor'], 'next actor');
   const images = imagesOf(args);
-  return write(taskId, who, async ({ task }) => {
-    guard('ask', task);
+  return write(taskId, who, async ({ task, events }) => {
+    // A round of owner questions: another owner ask joins a task blocked only on open owner questions.
+    const round = nextActor === 'owner' && task?.state === 'blocked' && openCalls(events).length > 0
+      && openCalls(events).every((e) => e.kind === 'needs-decision' && bodyOf(e).set?.nextActor === 'owner');
+    if (!round) guard('ask', task);
     const child = { question: f.question, options: JSON.stringify(options), recommendation: f.recommendation, why: f.why, document: f.document };
     for (const key of Object.keys(child)) if (child[key] === undefined) delete child[key];
-    return { kind: 'needs-decision', note: noteOf(args), set: blockSet(task, 'needs-decision', f.question, nextActor, null), children: withImages({ question: [child] }, images) };
-  }, undefined, nextActor === 'owner' ? () => waitOn(taskId, who, { actor: 'owner', clearsOn: 'answer', note: String(f.question).replace(/\s+/g, ' ').slice(0, 300) }) : undefined);
+    // An owner question does not count toward repeat-to-triage; a question to firstmate still does.
+    const set = nextActor === 'owner'
+      ? { state: 'blocked', nextActor: 'owner', blockKind: 'needs-decision', blockReason: String(f.question).slice(0, LIMITS.blockReason), blockRepeats: task.blockRepeats, holdUntil: null }
+      : blockSet(task, 'needs-decision', f.question, nextActor, null);
+    return { kind: 'needs-decision', note: noteOf(args), set, children: withImages({ question: [child] }, images) };
+  }, undefined, nextActor === 'owner' ? (result) => waitOn(taskId, who, { actor: 'owner', clearsOn: 'answer', note: String(f.question).replace(/\s+/g, ' ').slice(0, 300), question: result.event.seq }) : undefined);
+}
+
+// The owner answers one open question of a round (plan v2 D3): an `answered` event names the question seq, the option
+// and the note. The task leaves blocked (ready, next actor worker; todo while a parent is open) only when its last open
+// question is answered; until then it stays blocked on the owner with the next open question as its reason.
+async function cmdAnswer(args) {
+  const taskId = taskIdOf(args);
+  const who = identity(args, 'owner');
+  const f = args.flags;
+  if (!/^[1-9]\d*$/.test(f.question ?? '')) throw usage('answer needs --question SEQ');
+  if (f.option === undefined && !f.note) throw usage('answer needs --option or --note');
+  const question = Number(f.question);
+  return write(taskId, who, async ({ task, events }) => {
+    if (!task) throw rule('no such task');
+    const open = openQuestions(events);
+    const asked = open.find((e) => e.seq === question);
+    if (!asked) throw rule(`#${question} is not an open question of ${taskId}`);
+    if (f.option !== undefined) {
+      const child = await firstRow('fm_event_question', `fmTaskEventId eq ${asked.id}`);
+      let options = [];
+      try {
+        options = JSON.parse(child?.options ?? '[]');
+      } catch { /* an unreadable list accepts no option */ }
+      if (!options.includes(f.option)) throw rule(`option ${JSON.stringify(f.option)} is not one of question #${question}: ${options.join(', ')}`);
+    }
+    const left = open.filter((e) => e.seq !== question);
+    const waiting = !left.length && (await openParents(taskId)).length > 0;
+    const set = left.length
+      ? { blockReason: bodyOf(left[0]).set?.blockReason ?? null }
+      : { state: waiting ? 'todo' : 'ready', nextActor: 'worker', blockReason: null, holdUntil: null };
+    const answer = { question, ...(f.option !== undefined ? { option: f.option } : {}), ...(f.note ? { note: f.note } : {}) };
+    return { kind: 'answered', note: [f.option, f.note].filter(Boolean).join(' - '), set, extra: { answer } };
+  });
 }
 
 async function cmdBlock(args) {
@@ -1916,6 +1964,7 @@ function openCalls(events) {
   for (const e of events) {
     if (e.kind === 'blocked' || e.kind === 'needs-decision') open.push(e);
     else if (e.kind === 'unblocked' || e.kind === 'started') open = [];
+    else if (e.kind === 'answered') open = open.filter((call) => call.seq !== bodyOf(e).answer?.question);
   }
   return open;
 }
@@ -1959,7 +2008,7 @@ async function cmdResume(args) {
   const questions = calls.filter((e) => e.kind === 'needs-decision');
   const blocks = calls.filter((e) => e.kind === 'blocked');
   lines.push(`OPEN QUESTIONS (${questions.length})`);
-  for (const e of questions.slice(-3)) lines.push(`  #${e.seq} ${cut(bodyOf(e).set?.blockReason, 130)} -> ${bodyOf(e).set?.nextActor ?? '-'}`);
+  for (const e of questions.slice(-6)) lines.push(`  #${e.seq} ${cut(bodyOf(e).set?.blockReason, 130)} -> ${bodyOf(e).set?.nextActor ?? '-'}`);
   lines.push(`OPEN BLOCKS (${blocks.length})`);
   for (const e of blocks.slice(-3)) lines.push(`  #${e.seq} ${bodyOf(e).set?.blockKind ?? '-'}: ${cut(bodyOf(e).set?.blockReason, 110)} -> ${bodyOf(e).set?.nextActor ?? '-'}`);
   lines.push('LAST 10 EVENTS');
@@ -2240,7 +2289,7 @@ async function cmdRule(args) {
 }
 
 const COMMANDS = {
-  rules: cmdRules, rule: cmdRule,
+  rules: cmdRules, rule: cmdRule, answer: cmdAnswer,
   'turn-end': cmdTurnEnd, deliver: cmdDeliver, 'read-mark': cmdReadMark, inbox: cmdInbox, describe: cmdDescribe, plan: cmdPlan, 'plan-decision': cmdPlanDecision, thread: cmdThread,
   create: cmdCreate, import: cmdImport, assign: cmdAssign, start: cmdStart, heartbeat: cmdHeartbeat, done: cmdDone, ask: cmdAsk, block: cmdBlock,
   unblock: cmdUnblock, approve: cmdApprove, changes: cmdChanges, reopen: cmdReopen, reassign: cmdReassign, archive: cmdArchive, comment: cmdComment, event: cmdEvent,
