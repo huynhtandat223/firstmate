@@ -97,7 +97,12 @@ case "$ACTION" in
     setup_file=$(mktemp "${TMPDIR:-/tmp}/fm-owner-setup.XXXXXX") || usage 'no temporary file'
     trap 'rm -f "$setup_file"' EXIT
     printf '%s' "$SETUP" > "$setup_file"
-    run setup "$TASK" --file "$setup_file" --by owner || RC=$?
+    if run setup "$TASK" --file "$setup_file" --by owner; then
+      first_state=$(jq -r '(if type == "array" then . else .steps end)[0].state' "$setup_file")
+      run move "$TASK" --to "$first_state" || RC=$?
+    else
+      RC=$?
+    fi
     ;;
   comment)
     [[ "$NOTE" =~ [^[:space:]] ]] || usage 'comment needs a nonblank --note'
