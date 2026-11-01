@@ -2436,7 +2436,7 @@ TURNEND_COMMITS=''
 # The one list of quota and limit texts, matched on the ANSI-stripped pane tail.
 # Each pattern has one test sample in tests/fm-watch-triage.test.sh.
 turnend_quota_text() {  # <plain pane tail>
-  printf '%s\n' "$1" | grep -qiE 'hit your (usage )?limit|usage limit has been reached|\[429\][^[:alnum:]]*usage limit|rate limit'
+  fm_busy_stop_text "$1" >/dev/null
 }
 
 # The fixed ping text. It names the task's status file and the verbs with their
@@ -3961,6 +3961,16 @@ EOF
     fi
     watcher_capture "$(window_backend "$w")" "$w" 40 "$(window_label "$w")" || continue
     tail40=$WATCHER_CAPTURE
+    stop_text=$(fm_busy_stop_text "$tail40") || stop_text=
+    if [ -n "$stop_text" ]; then
+      if [ "$(cat "$STATE/.quota-$key" 2>/dev/null || true)" != "$stop_text" ]; then
+        fm_wake_append check "$task" "check: worker stopped: $task: $stop_text" || exit 1
+        printf '%s' "$stop_text" > "$STATE/.quota-$key"
+        wake "check: worker stopped: $task: $stop_text"
+      fi
+      continue
+    fi
+    rm -f "$STATE/.quota-$key"
     # The matcher is already defined in this shell. It reads the capture this
     # poll already takes, and a miss drops a name the away daemon saved.
     dialog=$(fm_composer_blocking_dialog "$tail40") || dialog=
