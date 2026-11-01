@@ -432,6 +432,34 @@ test_teardown_holds_a_row_with_many_missing_items_within_the_reason_limit() {
   pass "teardown holds a row with many missing items within the 5001 hold-reason limit"
 }
 
+# A pending-close record written before items went one per line holds them "; "-joined; replaying
+# one whose items fit the field keeps every item rather than counting them as one.
+test_a_legacy_joined_record_keeps_its_items() {
+  local home items='' n reason kept more
+  home=$(make_home legacy-joined)
+  tasks-axi add "$ID" "landed UI change" --kind ship --file "$home/data/backlog.md" >/dev/null
+  tasks-axi start "$ID" --file "$home/data/backlog.md" >/dev/null
+  for n in $(seq 1 40); do items="${items:+$items; }EN$n@1440 has no check row in the record"; done
+  (
+    cd "$home" || exit 1
+    # shellcheck source=bin/fm-tasks-axi-lib.sh
+    . "$ROOT/bin/fm-tasks-axi-lib.sh"
+    # shellcheck source=bin/fm-backlog-transition-lib.sh
+    . "$ROOT/bin/fm-backlog-transition-lib.sh"
+    fm_backlog_verify_pending "$home/data" "$ID" "$(encode "$items")" --pr "$PR"
+  ) || fail "a legacy joined record could not be held"
+  reason=$(tasks-axi show "$ID" --file "$home/data/backlog.md" --full 2>/dev/null | sed -n 's/^  hold_reason: *//p' | tr -d '"')
+  reason=$(printf '%s' "${reason#fm-hold-v1:}" | perl -MMIME::Base64=decode_base64 -0777 -ne 'print decode_base64($_)')
+  case "$reason" in
+    *"EN1@1440 has no check row"*"; and "*" more ("*) ;;
+    *) fail "a legacy joined record lost its items: $reason" ;;
+  esac
+  kept=$(printf '%s' "$reason" | grep -o 'EN[0-9]*@1440 has no check row in the record' | wc -l)
+  more=$(printf '%s' "$reason" | sed -n 's/.*; and \([0-9]*\) more (bin.*/\1/p')
+  [ "$kept" -gt 1 ] && [ "$((kept + more))" -eq 40 ] || fail "a legacy record keeps $kept items and counts $more more, not 40 in all: $reason"
+  pass "a legacy \"; \"-joined record keeps its items in the cut reason"
+}
+
 test_complete_record_lifts_the_hold_and_closes_the_row
 test_local_evidence_cannot_replace_the_testers_own_record
 test_incomplete_record_refuses_lists_problems_and_refreshes_the_reason
@@ -447,3 +475,4 @@ test_an_unrelated_body_line_without_the_marker_closes_normally
 test_a_repeated_keyed_answer_for_a_verification_pending_row_is_not_skipped
 test_a_crash_after_the_pending_close_record_does_not_bypass_verification
 test_teardown_holds_a_row_with_many_missing_items_within_the_reason_limit
+test_a_legacy_joined_record_keeps_its_items

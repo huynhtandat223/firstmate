@@ -704,6 +704,8 @@ fm_backlog_verify_reason() {  # <id> <items>
     my $limit = 1400;
     my $head = "verification pending: ";
     my @items = grep { length } split /\n/, $in;
+    # A pending-close record written before items went one per line holds them "; "-joined.
+    @items = split /; /, $items[0] if @items == 1 && $items[0] =~ /; /;
     my $out = $head . join("; ", @items);
     if (length($out) > $limit) {
       my $kept = $head;
