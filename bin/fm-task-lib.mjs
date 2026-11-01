@@ -824,12 +824,13 @@ async function cmdSetup(args) {
   return write(taskId, identity(args, 'firstmate'), async ({ task }) => {
     if (!task || CLOSED.includes(task.state)) throw rule('setup requires an open task');
     const old = await stepRows(taskId);
-    if (old.some(s => s.status !== 'pending')) {
-      if (old.length !== normalized.length || old.some((s, i) => s.state !== normalized[i].state || (s.status !== 'pending' && ['harness', 'model', 'effort', 'fallbacks'].some(k => s[k] !== normalized[i][k])))) throw rule('started setup permits only pending model changes');
+    if (old.some(s => !['pending', 'skipped'].includes(s.status))) {
+      const active = old.filter(s => s.status !== 'skipped');
+      if (active.length !== normalized.length || active.some((s, i) => s.state !== normalized[i].state || (s.status !== 'pending' && ['harness', 'model', 'effort', 'fallbacks'].some(k => s[k] !== normalized[i][k])))) throw rule('started setup permits only pending model changes');
     }
     const removed = old.filter(s => !normalized.some(n => n.state === s.state));
-    if (removed.length) throw rule('setup state removal needs a new task; published steps permit deletion only for probe cleanup');
-    const stepWrites = normalized.map(s => ({ ...s, ...(old.some(o => o.state === s.state) ? {} : { status: 'pending', attempt: 0 }) }));
+    if (removed.some(s => !['pending', 'skipped'].includes(s.status))) throw rule('only pending setup states can be skipped');
+    const stepWrites = [...normalized.map(s => ({ ...s, ...(old.some(o => o.state === s.state) ? {} : { status: 'pending', attempt: 0 }) })), ...removed.map(s => ({ state: s.state, status: 'skipped' }))];
     return { kind: 'setup', extra: { stepWrites }, set: { setupBy: by, setupAt: new Date().toISOString() }, children: { documents: [{ title: 'Setup', mediaType: 'application/json', content: JSON.stringify(normalized) }] } };
   });
 }
@@ -838,7 +839,7 @@ async function cmdMove(args) {
   const to = oneOf(WORKFLOW_STATES, args.flags.to, 'workflow state');
   return write(taskId, identity(args, 'firstmate'), async ({ task }) => {
     if (!task || CLOSED.includes(task.state)) throw rule('move requires an open task');
-    const steps = await stepRows(taskId);
+    const steps = (await stepRows(taskId)).filter(s => s.status !== 'skipped');
     const index = steps.findIndex(s => s.state === task.workflowState);
     const target = steps.find(s => s.state === to);
     const next = task.workflowState === 'queued' ? steps[0] : steps[index + 1];
@@ -1047,7 +1048,7 @@ const cmdApprove = simple('approve', 'approved', async (task, args, taskId) => {
     const stale = visible.filter((r) => (r.head ?? null) !== head && !carried(r, events));
     if (stale.length) throw rule(`approve is refused: these user-visible rows passed on another head than the latest built or deployed head (${head ?? 'none'}): ${stale.map((r) => `${rowKey(r)} (${r.head ?? 'none'})`).join(', ')}`);
   }
-  const steps = await stepRows(taskId);
+  const steps = (await stepRows(taskId)).filter(s => s.status !== 'skipped');
   if (steps.length && steps.at(-1).state !== task.workflowState) throw rule('approve requires the last configured workflow state');
   return { state: 'done', workflowState: 'done', workflowSince: new Date().toISOString(), stepAlive: null, nextActor: 'firstmate', blockKind: null, blockReason: null, blockRepeats: 0, holdUntil: null };
 });
