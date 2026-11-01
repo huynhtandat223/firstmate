@@ -2012,10 +2012,11 @@ case_owner_writer() {
     must "question $skill" 0 || return 1
     question=$(db fm_task_event | jq -r --arg skill "$skill" '.[] | select((.body | fromjson | .ask) == $skill) | .seq')
     [ -n "$question" ] || return 1
-    grep -R -F -- "Run the $skill skill on task $t. Reply with: bin/fm-task.sh comment $t --reply-to $question --note <output>" "$FM_HOME/state/inbox" >/dev/null || { echo 'missing skill delivery'; return 1; }
-    ft comment $t --reply-to "$question" --note 'Skill output'; must 'linked reply' 0 || return 1
+    grep -R -F -- "Run the $skill skill on task $t. Reply with: bin/fm-task.sh comment $t --reply-to $question --role firstmate --note <output>" "$FM_HOME/state/inbox" >/dev/null || { echo 'missing skill delivery'; return 1; }
+    ft comment $t --reply-to "$question" --role firstmate --note 'Skill output'; must 'linked reply' 0 || return 1
     reply_seq=$(seq_of)
-    db fm_task_event | jq -e --argjson seq "$reply_seq" --argjson q "$question" '.[] | select(.seq == $seq) | (.body | fromjson | .replyTo) == $q' >/dev/null || return 1
+    # the printed reply is drawn as Firstmate's on the board, not a worker's
+    db fm_task_event | jq -e --argjson seq "$reply_seq" --argjson q "$question" '.[] | select(.seq == $seq) | (.body | fromjson | .replyTo) == $q and .actorRole == "firstmate"' >/dev/null || return 1
   done
   before=$(count fm_task_event)
   ft comment $t --reply-to 1 --note 'not a comment'; must 'noncomment target' 5 || return 1
