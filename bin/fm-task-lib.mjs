@@ -81,10 +81,13 @@
 //            ci, mockup, tester, deploy; other kinds have none. off (only a cl: row, reason required, kept in evidence)
 //            closes an item; on sets it pending again. After every write a pending item passes by itself when the record
 //            holds its evidence, which names the event: plan a plan event or a done document (event:<seq>#document);
-//            mockup a comment image labelled mockup (event:<seq>#image:<n>); decision the unblock after the newest
-//            owner question (event:<seq>); ci the newest ci event when it reads CI green; tester every user-visible
-//            row pass (event:<seq> of the newest check); deploy the newest deploy with a head and every user-visible
-//            row pass on it. rows and gate skip cl: rows; approve refuses an open one like any open row.
+//            mockup a comment image labelled mockup (event:<seq>#image:<n>); decision the owner's approval of the
+//            current plan or the owner's unblock after the newest owner question (event:<seq>); ci the green ci event
+//            for the head of the newest done call (or of the newest ci result when that done has none); a passed ci or decision item goes pending again when its evidence no
+//            longer holds (a new head, a new plan, the owner's changes, a new open question); tester every
+//            user-visible row pass (event:<seq> of the newest check); deploy the newest deploy with a head and every
+//            user-visible row pass on it. An automatic write is refused when the row changed after it was read, so an
+//            owner's off or on wins. rows and gate skip cl: rows; approve refuses an open one like any open row.
 //   gate     <task> [--issue task:<id>|URL] --head SHA [--evidence-root DIR]   defaults to the task Description; read only: prints each reason the task is not
 //            complete (exit 5): a user-visible row of the issue not pass on the deployed head with its current
 //            digest and evidence, or no approved event newer than the last row event (bin/fm-verify-gate-lib.sh)
@@ -1830,13 +1833,23 @@ async function checklistEvidence(item, task, events, visible) {
   }
   if (item === 'decision') {
     if (task.blockKind === 'needs-decision' && task.state === 'blocked') return null;
+    // the owner's own word: his approval of the current plan, or his answer to the newest owner question
+    // (an unblock by the owner; firstmate's unblock is not an answer)
+    const approval = task.planDecision === 'approve'
+      && newest((e) => e.kind === 'plan_decision' && e.actorRole === 'owner' && bodyOf(e).decision === 'approve' && bodyOf(e).planSeq === task.planSeq);
+    if (approval) return `event:${approval.seq}`;
     const question = newest((e) => e.kind === 'needs-decision' && bodyOf(e).set?.nextActor === 'owner');
-    const answer = question && events.find((e) => e.kind === 'unblocked' && e.seq > question.seq);
+    const answer = question && events.find((e) => e.kind === 'unblocked' && e.actorRole === 'owner' && e.seq > question.seq);
     return answer ? `event:${answer.seq}` : null;
   }
   if (item === 'ci') {
-    const ci = newest((e) => e.kind === 'ci');
-    return ci && bodyOf(ci).head && /\bCI green\b/.test(bodyOf(ci).note ?? '') ? `event:${ci.seq}` : null;
+    // green CI on the current head: the head the newest done call built (a ci result for another head, whenever
+    // it arrives, does not count); a done call without --head leaves the head the newest ci result reports
+    const done = newest((e) => e.kind === 'done');
+    const built = done ? (await firstRow('fm_event_done', `fmTaskEventId eq ${done.id}`))?.head ?? null : null;
+    const head = built ?? (newest((e) => e.kind === 'ci' && bodyOf(e).head) ? bodyOf(newest((e) => e.kind === 'ci' && bodyOf(e).head)).head : null);
+    const ci = head && newest((e) => e.kind === 'ci' && bodyOf(e).head === head);
+    return ci && /\bCI green\b/.test(bodyOf(ci).note ?? '') ? `event:${ci.seq}` : null;
   }
   if (item === 'tester') {
     if (!allPass) return null;
@@ -1852,7 +1865,11 @@ async function checklistEvidence(item, task, events, visible) {
   return null;
 }
 
-// Pass each pending item whose evidence the record now holds. Returns how many it passed.
+// Items whose evidence a later event can take back: a new head without green CI, a new plan or the owner's changes.
+const RECHECKED = [`${CHECKLIST_PREFIX}ci`, `${CHECKLIST_PREFIX}decision`];
+// Pass each pending item whose evidence the record now holds, and set a passed ci or decision item pending again when
+// its evidence no longer holds. Each write is refused when the row changed after it was read (an owner's off or on wins).
+// Returns how many rows it changed.
 async function syncChecklist(taskId) {
   const all = await checkRows(taskId);
   if (!all.some(isChecklist)) return 0;
@@ -1861,23 +1878,27 @@ async function syncChecklist(taskId) {
   if (!task || CLOSED.includes(task.state)) return 0;
   const rows = newestRows(all, events);
   const visible = rows.filter((r) => r.surface === 'user-visible');
-  let passed = 0;
-  for (const row of rows.filter((r) => isChecklist(r) && r.status === 'pending')) {
+  let changed = 0;
+  for (const row of rows.filter((r) => isChecklist(r) && (r.status === 'pending' || (r.status === 'pass' && RECHECKED.includes(r.scenarioId))))) {
     const evidence = await checklistEvidence(row.scenarioId.slice(CHECKLIST_PREFIX.length), task, events, visible);
-    if (!evidence) continue;
+    if (row.status === 'pending' ? !evidence : evidence === (row.evidence ?? null)) continue;
+    const status = evidence ? 'pass' : 'pending';
+    const seen = rowEvent(events, row)?.seq ?? 0;
     // one key per item, row value and evidence: a re-run finds its event, and an item set on again can pass again
-    const key = `checklist:${crypto.createHash('sha1').update(`${taskId}\0${rowKey(row)}\0${rowEvent(events, row)?.seq ?? 0}\0${evidence}`).digest('hex')}`;
-    const values = { status: 'pass', nextActor: 'firstmate', evidence, head: null, checkedAt: new Date().toISOString() };
-    await append(taskId, { ...CHECKLIST_WHO, key }, async ({ task: now }) => {
+    const key = `checklist:${crypto.createHash('sha1').update(`${taskId}\0${rowKey(row)}\0${seen}\0${status}\0${evidence}`).digest('hex')}`;
+    const values = { status, nextActor: 'firstmate', evidence, head: null, checkedAt: evidence ? new Date().toISOString() : null };
+    const wrote = await append(taskId, { ...CHECKLIST_WHO, key }, async ({ task: now, events: nowEvents }) => {
       if (!now || CLOSED.includes(now.state)) throw rule('the task is closed');
-      return { kind: 'checklist', note: `${rowKey(row)} pass: ${evidence}`, extra: { row: rowKey(row), values } };
-    }).catch((error) => {
+      if ((rowEvent(nowEvents, row)?.seq ?? 0) !== seen) throw rule(`${rowKey(row)} changed meanwhile`);
+      return { kind: 'checklist', note: `${rowKey(row)} ${status}${evidence ? `: ${evidence}` : ': its evidence no longer holds'}`, extra: { row: rowKey(row), values } };
+    }).then(() => true, (error) => {
       if (!(error instanceof Fail && error.code === 5)) throw error;
+      return false;
     });
     await applyNewestCheck(taskId, row);
-    passed++;
+    if (wrote) changed++;
   }
-  return passed;
+  return changed;
 }
 
 async function cmdChecklist(args) {

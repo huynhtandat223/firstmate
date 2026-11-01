@@ -2099,6 +2099,36 @@ case_checklist() {
   ft checklist $t off decision --reason later >/dev/null && ft start $t >/dev/null && ft ask $t "${ASK_FLAGS[@]}" >/dev/null || return 1
   ft checklist $t on decision; must 'on with a question open' 0 || return 1
   [ "$(clrow $t decision | jq -r .status)" = pending ] || { echo "an open question passed the item: $(clrow $t decision)"; return 1; }
+  # firstmate's unblock is not the owner's answer; the owner's approval of the current plan is
+  t=tk-cl4
+  ft create $t --title 'Plan unblock' --kind plan >/dev/null && ft assign $t --to w1 >/dev/null && ft start $t >/dev/null || return 1
+  ft ask $t "${ASK_FLAGS[@]}" --next-actor owner >/dev/null && ft unblock $t >/dev/null || return 1
+  [ "$(clrow $t decision | jq -r .status)" = pending ] || { echo "firstmate's unblock passed the decision item: $(clrow $t decision)"; return 1; }
+  ft plan $t --document "$doc" >/dev/null || return 1
+  seq=$(seq_of)
+  ft plan-decision $t --decision approve --plan-seq "$seq"; must 'owner plan approval' 0 || return 1
+  clrow $t decision | jq -e --arg ev "event:$(seq_of)" '.status == "pass" and .evidence == $ev' >/dev/null || { echo "plan approval did not pass the decision item: $(clrow $t decision)"; return 1; }
+  # a revised plan takes the approval back; the owner's changes on it keep the item pending
+  ft plan $t --document "$doc" >/dev/null || return 1
+  [ "$(clrow $t decision | jq -r .status)" = pending ] || { echo "a revised plan kept the decision pass: $(clrow $t decision)"; return 1; }
+  ft plan-decision $t --decision changes --plan-seq "$(seq_of)" >/dev/null || return 1
+  [ "$(clrow $t decision | jq -r .status)" = pending ] || { echo "the owner's changes passed the decision item: $(clrow $t decision)"; return 1; }
+  # cl:ci follows the head of the newest done call, whatever order the ci results arrive in
+  t=tk-cl6
+  ft create $t --title 'Ship heads' --kind ship --surface user-visible >/dev/null && ft assign $t --to w1 >/dev/null && ft start $t >/dev/null || return 1
+  ft "done" $t "${DONE_FLAGS[@]}" --head h1 >/dev/null && ft event $t ci --head h1 --note 'CI green on the PR at head h1' >/dev/null || return 1
+  [ "$(clrow $t ci | jq -r .status)" = pass ] || { echo "green ci on the built head did not pass: $(clrow $t ci)"; return 1; }
+  ft changes $t --note 'push h2' >/dev/null && ft start $t >/dev/null && ft "done" $t "${DONE_FLAGS[@]}" --head h2 >/dev/null || return 1
+  [ "$(clrow $t ci | jq -r .status)" = pending ] || { echo "a new built head kept the old head's ci pass: $(clrow $t ci)"; return 1; }
+  ft event $t ci --head h2 --note 'CI green on the PR at head h2' >/dev/null || return 1
+  clrow $t ci | jq -e --arg ev "event:$(seq_of)" '.status == "pass" and .evidence == $ev' >/dev/null || { echo "green ci on the new head did not pass: $(clrow $t ci)"; return 1; }
+  ft event $t ci --head h1 --note 'CI failed on the PR at head h1: 1 check(s) did not pass' >/dev/null || return 1
+  [ "$(clrow $t ci | jq -r .status)" = pass ] || { echo "a late result for an older head reset the pass: $(clrow $t ci)"; return 1; }
+  # a done call without --head: the head the ci result reports
+  t=tk-cl7
+  ft create $t --title 'Ship no head' --kind ship --surface user-visible >/dev/null && ft assign $t --to w1 >/dev/null && ft start $t >/dev/null || return 1
+  ft "done" $t "${DONE_FLAGS[@]}" >/dev/null && ft event $t ci --head h9 --note 'CI green on the PR at head h9' >/dev/null || return 1
+  clrow $t ci | jq -e --arg ev "event:$(seq_of)" '.status == "pass" and .evidence == $ev' >/dev/null || { echo "green ci after a done without a head did not pass: $(clrow $t ci)"; return 1; }
   # a user-visible ship: rows and gate skip cl: rows; tester, deploy and ci pass from the record
   t=tk-cl2
   ft create $t --title 'Ship probe' --kind ship --surface user-visible >/dev/null || return 1
@@ -2679,6 +2709,11 @@ mutate 'a write passes the items the record proves' checklist 'if (await syncChe
 mutate 'checklist off needs a reason' checklist "if (verb === 'off' && !reason?.trim()) throw usage" 'if (false) throw usage'
 mutate 'an open question keeps the decision item open' checklist "if (task.blockKind === 'needs-decision' && task.state === 'blocked') return null;" ''
 mutate 'only a green ci passes the ci item' checklist '/\bCI green\b/.test(bodyOf(ci).note' 'true || (bodyOf(ci).note'
+mutate 'firstmate'"'"'s unblock is not the owner'"'"'s answer' checklist "e.kind === 'unblocked' && e.actorRole === 'owner'" "e.kind === 'unblocked'"
+mutate 'the owner'"'"'s plan approval passes the decision item' checklist 'if (approval) return' 'if (false) return'
+mutate 'a passed ci or decision item is checked again' checklist "(r.status === 'pass' && RECHECKED.includes(r.scenarioId))" 'false'
+mutate 'a done without a head reads the ci result'"'"'s head' checklist "const head = built ?? (" "const head = built ?? (false && "
+mutate 'ci reads only the built head' checklist "newest((e) => e.kind === 'ci' && bodyOf(e).head === head)" "newest((e) => e.kind === 'ci')"
 mutate 'rules lists only enabled rules' model_rules "r.enabled === true && inHours(" "inHours("
 mutate 'an hour range wraps past midnight' model_rules ": hour >= from || hour < to;" ": false;"
 mutate 'a repo named in a scope uses only its scoped rules' model_rules "(scoped.length ? scoped : forState.filter((r) => !r.scope))" "forState"
