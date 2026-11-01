@@ -291,6 +291,35 @@ test_wrapper_rows() {
   pass "fm-tasks-axi.sh rows reads the backlog as JSON objects with decoded hold reasons"
 }
 
+# A home selects its backlog backend from the gitignored config/tasks-axi/.tasks.toml, which
+# takes the place of the tracked .tasks.toml beside the data directory without editing it.
+# The home config here names a cfw5001 backlog at an address that answers nothing, so a read
+# that used it fails naming that backend; the tracked file and its markdown backlog stay as they were.
+test_wrapper_home_config_selects_backend() {
+  local dir out tracked
+  dir="$TMP_ROOT/home-config"
+  mkdir -p "$dir/data" "$dir/config/tasks-axi"
+  fm_test_tasks_toml "$dir/.tasks.toml"
+  tracked=$(cat "$dir/.tasks.toml")
+  empty_backlog "$dir/data/backlog.md"
+  (cd "$dir" && FM_ROOT_OVERRIDE="$dir" "$WRAPPER" add md-1 "markdown row" >/dev/null) \
+    || fail "add before the home config failed"
+  printf '%s\n' 'backend = "cfw5001"' '' '[cfw5001]' 'home = "probe-home-config"' 'base_url = "http://127.0.0.1:9"' \
+    > "$dir/config/tasks-axi/.tasks.toml"
+  if out=$(cd "$dir" && FM_ROOT_OVERRIDE="$dir" "$WRAPPER" list 2>&1); then
+    fail "list still read the tracked markdown backlog with a home config present: $out"
+  fi
+  case "$out" in
+    *127.0.0.1:9*|*'Unsupported backend "cfw5001"'*) ;;
+    *) fail "list did not run the home config's backend: $out" ;;
+  esac
+  assert_equals "$tracked" "$(cat "$dir/.tasks.toml")" "the tracked .tasks.toml changed"
+  rm "$dir/config/tasks-axi/.tasks.toml"
+  out=$(cd "$dir" && FM_ROOT_OVERRIDE="$dir" "$WRAPPER" list 2>&1) || fail "list without the home config failed: $out"
+  case "$out" in *md-1*) ;; *) fail "list without the home config lost the markdown backlog: $out" ;; esac
+  pass "fm-tasks-axi.sh takes the backend from config/tasks-axi/.tasks.toml when it exists, else the tracked .tasks.toml"
+}
+
 test_guard_reports_regular_code_root_backlog
 test_guard_reports_foreign_link_and_archive
 test_guard_silent_for_single_home
@@ -303,6 +332,7 @@ if [ "$HAVE_TASKS_AXI" = 1 ]; then
   test_wrapper_single_home
   test_wrapper_no_view_sync
   test_wrapper_rows
+  test_wrapper_home_config_selects_backend
 else
   echo "skip: tasks-axi not found; home-addressing cases not run"
 fi

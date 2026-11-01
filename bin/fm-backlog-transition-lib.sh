@@ -29,9 +29,10 @@
 #
 # ADDRESSING. Every call runs from the configured data directory's parent so
 # that home's `.tasks.toml` supplies the adapter selection, done_keep, and the
-# archive path. A markdown backlog also passes `--file <data>/backlog.md` so the
-# change lands in the home that owns the task regardless of the caller's working
-# directory. A configured non-markdown adapter is addressed by that root alone,
+# archive path; a home config under that parent's config/tasks-axi/ takes the
+# tracked file's place (bin/fm-tasks-axi-lib.sh fm_tasks_axi_workdir). A
+# markdown backlog also passes `--file <data>/backlog.md` so the change lands
+# in the home that owns the task regardless of the caller's working directory. A configured non-markdown adapter is addressed by that root alone,
 # because `--file` would override the adapter's own workspace path. The parent of
 # the data directory is the addressing root rather than FM_HOME, so a home whose
 # data directory is relocated keeps its backlog and its archive together. A root
@@ -223,7 +224,8 @@ fm_backlog_authorized_root() {  # <authorized-data-dir>
 # Any adapter selection or exemption derived from a home's `.tasks.toml` is only
 # as safe as that file, so validate it before reading it.
 fm_backlog_config_present() {  # <root> <authorized-root>
-  local root=$1 authorized_root=$2 tasks_config="$1/.tasks.toml"
+  local root=$1 authorized_root=$2 tasks_config
+  tasks_config="$(fm_tasks_axi_workdir "$1")/.tasks.toml"
   if [ -e "$tasks_config" ] || [ -L "$tasks_config" ]; then
     # Leave a dangling config symlink for the backend resolver to diagnose as
     # unreadable; reject an existing special file through the home-bound
@@ -282,7 +284,7 @@ fm_backlog_tasks_axi_addressing() {  # <data-dir>
     FM_BACKLOG_TRANSITION_ERROR=$backend
     return 2
   }
-  FM_BACKLOG_AXI_ROOT=$root
+  FM_BACKLOG_AXI_ROOT=$(fm_tasks_axi_workdir "$root")
   if [ "$backend" = markdown ]; then
     FM_BACKLOG_AXI_FILE=$(fm_backlog_file "$data") || return 1
   fi
