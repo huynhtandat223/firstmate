@@ -2124,6 +2124,11 @@ case_checklist() {
   clrow $t ci | jq -e --arg ev "event:$(seq_of)" '.status == "pass" and .evidence == $ev' >/dev/null || { echo "green ci on the new head did not pass: $(clrow $t ci)"; return 1; }
   ft event $t ci --head h1 --note 'CI failed on the PR at head h1: 1 check(s) did not pass' >/dev/null || return 1
   [ "$(clrow $t ci | jq -r .status)" = pass ] || { echo "a late result for an older head reset the pass: $(clrow $t ci)"; return 1; }
+  # a done call without --head: the head the ci result reports
+  t=tk-cl7
+  ft create $t --title 'Ship no head' --kind ship --surface user-visible >/dev/null && ft assign $t --to w1 >/dev/null && ft start $t >/dev/null || return 1
+  ft "done" $t "${DONE_FLAGS[@]}" >/dev/null && ft event $t ci --head h9 --note 'CI green on the PR at head h9' >/dev/null || return 1
+  clrow $t ci | jq -e --arg ev "event:$(seq_of)" '.status == "pass" and .evidence == $ev' >/dev/null || { echo "green ci after a done without a head did not pass: $(clrow $t ci)"; return 1; }
   # a user-visible ship: rows and gate skip cl: rows; tester, deploy and ci pass from the record
   t=tk-cl2
   ft create $t --title 'Ship probe' --kind ship --surface user-visible >/dev/null || return 1
@@ -2650,6 +2655,7 @@ mutate 'only a green ci passes the ci item' checklist '/\bCI green\b/.test(bodyO
 mutate 'firstmate'"'"'s unblock is not the owner'"'"'s answer' checklist "e.kind === 'unblocked' && e.actorRole === 'owner'" "e.kind === 'unblocked'"
 mutate 'the owner'"'"'s plan approval passes the decision item' checklist 'if (approval) return' 'if (false) return'
 mutate 'a passed ci or decision item is checked again' checklist "(r.status === 'pass' && RECHECKED.includes(r.scenarioId))" 'false'
+mutate 'a done without a head reads the ci result'"'"'s head' checklist "const head = built ?? (" "const head = built ?? (false && "
 mutate 'ci reads only the built head' checklist "newest((e) => e.kind === 'ci' && bodyOf(e).head === head)" "newest((e) => e.kind === 'ci')"
 mutate 'rules lists only enabled rules' model_rules "r.enabled === true && inHours(" "inHours("
 mutate 'an hour range wraps past midnight' model_rules ": hour >= from || hour < to;" ": false;"

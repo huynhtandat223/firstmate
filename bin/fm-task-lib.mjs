@@ -79,7 +79,7 @@
 //            holds its evidence, which names the event: plan a plan event or a done document (event:<seq>#document);
 //            mockup a comment image labelled mockup (event:<seq>#image:<n>); decision the owner's approval of the
 //            current plan or the owner's unblock after the newest owner question (event:<seq>); ci the green ci event
-//            for the head of the newest done call; a passed ci or decision item goes pending again when its evidence no
+//            for the head of the newest done call (or of the newest ci result when that done has none); a passed ci or decision item goes pending again when its evidence no
 //            longer holds (a new head, a new plan, the owner's changes, a new open question); tester every
 //            user-visible row pass (event:<seq> of the newest check); deploy the newest deploy with a head and every
 //            user-visible row pass on it. An automatic write is refused when the row changed after it was read, so an
@@ -1796,9 +1796,10 @@ async function checklistEvidence(item, task, events, visible) {
   }
   if (item === 'ci') {
     // green CI on the current head: the head the newest done call built (a ci result for another head, whenever
-    // it arrives, does not count)
+    // it arrives, does not count); a done call without --head leaves the head the newest ci result reports
     const done = newest((e) => e.kind === 'done');
-    const head = done ? (await firstRow('fm_event_done', `fmTaskEventId eq ${done.id}`))?.head ?? null : null;
+    const built = done ? (await firstRow('fm_event_done', `fmTaskEventId eq ${done.id}`))?.head ?? null : null;
+    const head = built ?? (newest((e) => e.kind === 'ci' && bodyOf(e).head) ? bodyOf(newest((e) => e.kind === 'ci' && bodyOf(e).head)).head : null);
     const ci = head && newest((e) => e.kind === 'ci' && bodyOf(e).head === head);
     return ci && /\bCI green\b/.test(bodyOf(ci).note ?? '') ? `event:${ci.seq}` : null;
   }
