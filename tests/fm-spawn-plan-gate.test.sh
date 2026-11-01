@@ -83,11 +83,17 @@ expect 'plan gate: EXCEPTION "skip the plan for this task"'
 pass 'exception skips GitHub'
 
 # A deploy-verify Tester carries no plan: the gate's verify exemption launches it
-# with no Description and no GitHub read, and records the exemption.
+# with no Description and no GitHub read, and records the exemption. Its brief holds
+# the adapter's ask for the task and sha its id names.
 tester=verify-alpha-1234567
-for label in verify-gated verify-exempt verify-exempt-nogate verify-exempt-ship verify-exempt-name verify-exempt-loose verify-exempt-unknown; do
+tester_brief() {  # <id> <task>: a Tester brief whose ask names <task> on sha 1234567...
+  fm_test_spawn_brief "$home" "$1" "Verify $2."
+  printf '\n### The ask\n\n```json\n%s\n```\n' \
+    "$(jq -cn --arg t "$2" '{schema: "fm-tester-verify.v1", round: "deploy", task: $t, sha: "1234567abcdef1234567abcdef1234567abcdef1", head: null}')" >> "$home/data/$1/brief.md"
+}
+for label in verify-gated verify-exempt verify-exempt-nogate verify-exempt-ship verify-exempt-name verify-exempt-loose verify-exempt-noask verify-exempt-otherask verify-exempt-unknown; do
   new_case "$label" ''
-  fm_test_spawn_brief "$home" "$tester"
+  tester_brief "$tester" alpha
   tasks-axi add "$tester" 'Verify alpha' --kind scout --file "$home/data/backlog.md" >/dev/null
   case "$label" in
     verify-gated) args=("$tester" "$home/projects/demo" --scout) ;;
@@ -101,9 +107,17 @@ for label in verify-gated verify-exempt verify-exempt-nogate verify-exempt-ship 
     verify-exempt-ship) args=(gate "$home/projects/demo" --mode direct-PR --yolo off --plan-exempt verify) ;;
     verify-exempt-name) args=(gate "$home/projects/demo" --scout --plan-exempt verify) ;;
     verify-exempt-loose)
-      fm_test_spawn_brief "$home" verify-foo
+      tester_brief verify-foo alpha
       tasks-axi add verify-foo 'Not a Tester' --kind scout --file "$home/data/backlog.md" >/dev/null
       args=(verify-foo "$home/projects/demo" --scout --plan-exempt verify)
+      ;;
+    verify-exempt-noask)
+      fm_test_spawn_brief "$home" "$tester"
+      args=("$tester" "$home/projects/demo" --scout --plan-exempt verify)
+      ;;
+    verify-exempt-otherask)
+      tester_brief "$tester" beta
+      args=("$tester" "$home/projects/demo" --scout --plan-exempt verify)
       ;;
     verify-exempt-unknown) args=("$tester" "$home/projects/demo" --scout --plan-exempt other) ;;
   esac

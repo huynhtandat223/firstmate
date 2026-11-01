@@ -1146,7 +1146,7 @@ if [ "$PLAN_EXEMPT_SET" = 1 ]; then
   fi
   # shellcheck source=bin/fm-plan-gate-lib.sh
   . "$SCRIPT_DIR/fm-plan-gate-lib.sh"
-  if ! fm_plan_gate_exemption "$PLAN_EXEMPT" "$KIND" "${POS[0]:-}"; then
+  if ! fm_plan_gate_exemption "$PLAN_EXEMPT" "$KIND" "${POS[0]:-}" "$DATA/${POS[0]:-}/brief.md"; then
     echo "error: --plan-exempt: $FM_PLAN_GATE_REASON" >&2
     exit 1
   fi
