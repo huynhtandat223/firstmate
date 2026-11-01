@@ -2522,7 +2522,7 @@ case_slice_c() {
   [ "$(count fm_event_video)" = 0 ] || { echo "expected 0 fm_event_video rows after approve, got $(count fm_event_video)"; return 1; }
   db fm_task_check | jq -e --arg ev "$img_ev" '.[] | select(.taskId == "tk-sc-vid" and .scenarioId == "A1" and .width == "1440") | .evidence == $ev' >/dev/null \
     || { echo "video evidence was not replaced by Tester screenshot: $(db fm_task_check)"; return 1; }
-  db fm_task_event | jq -e '.[] | select(.taskId == "tk-sc-vid" and .kind == "comment") | (.body | fromjson | .note == "1 video đã xóa sau Verify")' >/dev/null \
+  db fm_task_event | jq -e '.[] | select(.taskId == "tk-sc-vid" and .kind == "comment") | (.body | fromjson | .note == "1 video deleted after Verify")' >/dev/null \
     || { echo "missing video cleanup comment event"; return 1; }
 
   # Gate resolves event:<seq>#image:1 even after local img_file was deleted
