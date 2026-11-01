@@ -1215,9 +1215,12 @@ BASE_BRANCH=$(grep '^base_branch=' "$META" | cut -d= -f2- || true)
 # firstmate's verification record, only its move to Done does. The missing items are read
 # here, before any destructive step, and carried by the backlog transition chosen below.
 # --force never changes that: it authorizes discarding work, never an unverified Done.
+# The record carries the items one per line, because an item's own text can hold "; ".
 TEARDOWN_VERIFY_ITEMS=
+TEARDOWN_VERIFY_LINES=
 if [ "$KIND" = ship ] && [ "$(fm_meta_get "$META" surface)" = user-visible ]; then
-  TEARDOWN_VERIFY_ITEMS=$(fm_verify_gate_problems "$DATA" "$ID" "$FM_HOME" | awk '{ printf "%s%s", sep, $0; sep = "; " }') || TEARDOWN_VERIFY_ITEMS=
+  TEARDOWN_VERIFY_LINES=$(fm_verify_gate_problems "$DATA" "$ID" "$FM_HOME") || :
+  TEARDOWN_VERIFY_ITEMS=$(printf '%s\n' "$TEARDOWN_VERIFY_LINES" | awk 'NF { printf "%s%s", sep, $0; sep = "; " }')
 fi
 
 # An incomplete verification record keeps the row out of Done: the verify-pending transition
@@ -1225,7 +1228,7 @@ fi
 TEARDOWN_VERIFY_ENC=
 if [ "$TEARDOWN_BACKLOG_APPLIES" = 1 ] && [ -n "$TEARDOWN_VERIFY_ITEMS" ]; then
   TEARDOWN_BACKLOG_TRANSITION='verify-pending'
-  TEARDOWN_VERIFY_ENC=$(fm_hold_reason_encode "$TEARDOWN_VERIFY_ITEMS")
+  TEARDOWN_VERIFY_ENC=$(fm_hold_reason_encode "$TEARDOWN_VERIFY_LINES")
 fi
 
 # A record accepted as a legacy incarnation (no spawn_gen, and either
