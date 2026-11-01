@@ -74,6 +74,26 @@ fm_plan_gate_issue() {  # <issue-url> [--any-state]; a closed issue still yields
   FM_PLAN_GATE_HASH=$(printf '%s' "$issue" | jq -j '.body // ""' | shasum -a 256 | cut -d' ' -f1)
 }
 
+# A plan exemption names a spawn that carries no plan, so no approval applies.
+# `verify` covers only a deploy-verify Tester: a scout whose id is verify-<task>-<sha>.
+# On success FM_PLAN_GATE_EXEMPTION holds the backlog line the spawn records.
+fm_plan_gate_exemption() {  # <name> <kind> <task-id>
+  FM_PLAN_GATE_EXEMPTION=
+  case "$1" in
+    verify)
+      if [ "$2" != scout ] || [[ $3 != verify-?* ]]; then
+        FM_PLAN_GATE_REASON='the verify exemption covers only a verify-<task>-<sha> scout'
+        return 1
+      fi
+      FM_PLAN_GATE_EXEMPTION='Plan exemption (verify): a deploy-verify Tester checks delivered work and carries no plan'
+      ;;
+    *)
+      FM_PLAN_GATE_REASON="unknown plan exemption '$1'; known: verify"
+      return 1
+      ;;
+  esac
+}
+
 fm_plan_gate_check() {
   fm_plan_gate_issue "$1" || return 1
   if [ -n "${FM_PLAN_GATE_TASK:-}" ]; then

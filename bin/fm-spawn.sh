@@ -77,6 +77,9 @@
 #        fm-spawn.sh <task-id> --relaunch [--harness <name>] [--model <name>] [--effort <level>]
 #   --plan-exception <words> records captain words to bypass the dispatch plan gate
 #   on a fresh single ship or scout only (not relaunch or persistent launches).
+#   --plan-exempt <name> skips the same gate for a spawn that carries no plan;
+#   bin/fm-plan-gate-lib.sh's fm_plan_gate_exemption owns the names and what each
+#   covers, and the spawn records its line in the backlog body and plan_exempt=.
 #   --allow-third-spec <words> records captain words that let a fresh single ship
 #   start while two specs are already in flight; it is never firstmate's own call.
 #   --relaunch launches a replacement agent for an EXISTING task into that
@@ -879,6 +882,8 @@ WORKDIR_SET=0
 RELAUNCH=0
 PLAN_EXCEPTION=
 PLAN_EXCEPTION_SET=0
+PLAN_EXEMPT=
+PLAN_EXEMPT_SET=0
 ALLOW_THIRD_SPEC=
 ALLOW_THIRD_SPEC_SET=0
 PLAN_SPEC=
@@ -945,6 +950,10 @@ for a in "$@"; do
       PLAN_EXCEPTION=$a
       PLAN_EXCEPTION_SET=1
       ;;
+    plan-exempt)
+      PLAN_EXEMPT=$a
+      PLAN_EXEMPT_SET=1
+      ;;
     allow-third-spec)
       ALLOW_THIRD_SPEC=$a
       ALLOW_THIRD_SPEC_SET=1
@@ -979,6 +988,7 @@ for a in "$@"; do
     SUB_HOME_MARKER=.fm-assistance-home
     ;;
   --plan-exception) want_value=plan-exception ;;
+  --plan-exempt) want_value=plan-exempt ;;
   --allow-third-spec) want_value=allow-third-spec ;;
   --relaunch) RELAUNCH=1 ;;
   --herdr-resume-lock-wait) HERDR_RESUME_LOCK_WAIT=1 ;;
@@ -1123,6 +1133,19 @@ esac
 if [ "$PLAN_EXCEPTION_SET" = 1 ]; then
   if [ -z "${PLAN_EXCEPTION//[[:space:]]/}" ] || [ "$RELAUNCH" = 1 ] || [ "$KIND" = secondmate ] || [[ ${POS[0]:-} = *=* ]]; then
     echo 'error: --plan-exception requires nonempty captain words on a fresh single ship or scout; not a batch, --relaunch, --secondmate or --assistance' >&2
+    exit 1
+  fi
+fi
+
+if [ "$PLAN_EXEMPT_SET" = 1 ]; then
+  if [ "$PLAN_EXCEPTION_SET" = 1 ] || [ "$RELAUNCH" = 1 ] || [ "$KIND" = secondmate ] || [[ ${POS[0]:-} = *=* ]]; then
+    echo 'error: --plan-exempt is for a fresh single ship or scout without --plan-exception; not a batch, --relaunch, --secondmate or --assistance' >&2
+    exit 1
+  fi
+  # shellcheck source=bin/fm-plan-gate-lib.sh
+  . "$SCRIPT_DIR/fm-plan-gate-lib.sh"
+  if ! fm_plan_gate_exemption "$PLAN_EXEMPT" "$KIND" "${POS[0]:-}"; then
+    echo "error: --plan-exempt: $FM_PLAN_GATE_REASON" >&2
     exit 1
   fi
 fi
@@ -4385,7 +4408,7 @@ else
   fi
 fi
 
-if [ "$RELAUNCH" != 1 ] && [ "$KIND" != secondmate ] && { [ -e "$CONFIG/dispatch-plan-gate" ] || [ "$PLAN_EXCEPTION_SET" = 1 ]; }; then
+if [ "$RELAUNCH" != 1 ] && [ "$KIND" != secondmate ] && { [ -e "$CONFIG/dispatch-plan-gate" ] || [ "$PLAN_EXCEPTION_SET" = 1 ] || [ "$PLAN_EXEMPT_SET" = 1 ]; }; then
   # shellcheck source=bin/fm-plan-gate-lib.sh
   . "$SCRIPT_DIR/fm-plan-gate-lib.sh"
   plan_fix='--plan-exception "<captain words>"'
@@ -4399,6 +4422,12 @@ if [ "$RELAUNCH" != 1 ] && [ "$KIND" != secondmate ] && { [ -e "$CONFIG/dispatch
       exit 1
     fi
     printf 'plan gate: EXCEPTION "%s"\n' "$PLAN_EXCEPTION"
+  elif [ "$PLAN_EXEMPT_SET" = 1 ]; then
+    if ! fm_backlog_body_append_line "$DATA" "$ID" "$FM_PLAN_GATE_EXEMPTION"; then
+      echo "error: plan gate: cannot record exemption $PLAN_EXEMPT ($FM_BACKLOG_TRANSITION_ERROR)" >&2
+      exit 1
+    fi
+    printf 'plan gate: EXEMPT %s\n' "$PLAN_EXEMPT"
   else
     plan_reason='task plan is not approved'
     plan_links="doc:$ID"
@@ -6224,6 +6253,7 @@ preserve_relaunch_meta() {
   [ -z "$PLAN_SPEC" ] || echo "plan_spec=$PLAN_SPEC"
   [ "$ALLOW_THIRD_SPEC_SET" != 1 ] || printf 'spec_limit_override=%s\n' "$(printf '%s' "$ALLOW_THIRD_SPEC" | base64 | tr -d '\n')"
   [ "$PLAN_EXCEPTION_SET" != 1 ] || printf 'plan_exception=%s\n' "$(printf '%s' "$PLAN_EXCEPTION" | base64 | tr -d '\n')"
+  [ "$PLAN_EXEMPT_SET" != 1 ] || echo "plan_exempt=$PLAN_EXEMPT"
   echo "worktree=$WT"
   echo "project=$PROJ_ABS"
   echo "harness=$HARNESS"
