@@ -2475,7 +2475,7 @@ mutate 'a deploy after the newest done is dev' stage "if (event.kind === 'deploy
 mutate 'a pr event after the newest started is pr' stage "if (event.kind === 'pr') pullRequest = true;" ";"
 mutate 'stageSince moves only when the step changes' stage "if (stage !== task.stage) Object.assign(task, { stage, stageSince: event.createdAt ?? null });" "Object.assign(task, { stage, stageSince: event.createdAt ?? null });"
 mutate 'the reviewer is the actor of the newest review event' stage "if (REVIEWER_KINDS.includes(event.kind)) task.reviewer = event.actor ?? null;" ";"
-mutate 'a row event does not move lastNote or lastEventAt' stage "if (event.kind !== 'row') {" "if (true) {"
+mutate 'a row event does not move lastNote or lastEventAt' stage "if (event.kind !== 'row' && event.kind !== 'checklist') {" "if (event.kind !== 'checklist') {"
 mutate 'a machine record does not become lastNote' stage "if (!isMachineRecord(event, note)) task.lastNote" "task.lastNote"
 mutate 'a machine record is one only under its own key' stage "if (!Object.hasOwn(MACHINE_RECORDS, prefix) || taskId !== event.taskId) return false;" ";"
 mutate 'a reconcile divergence is a machine record' stage "{ backfill: 'sha256,source', reconcile: 'field,oldSource,record' }" "{ backfill: 'sha256,source' }"
