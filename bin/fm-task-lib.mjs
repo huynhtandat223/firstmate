@@ -60,6 +60,8 @@
 //   changes  <task> --note WHY               review -> ready
 //   reopen   <task> --reason WHY             done -> ready, next actor firstmate; archived stays final
 //   archive  <task>                          triage|todo|ready|blocked|review|done -> archived
+//   home     <task> --home H                 sets the backlog home of a task that has none (any state but archived);
+//            the same home again is a no-op, another home is refused: a task belongs to one board
 //   describe <task> --document FILE.md [--document-title T]              any state; default title Description
 //   thread   <task> [--since SEQ]                                       full comments, oldest first
 //   comment  <task> [--note T] [--image PATH --image-label L]... [--video PATH --video-label L]...
@@ -444,6 +446,7 @@ const SPECS = {
   reopen: { pos: ['task'], flags: { reason: 's' } },
   reassign: { pos: ['task'], flags: { to: 's', reason: 's' } },
   archive: { pos: ['task'], flags: {} },
+  home: { pos: ['task'], flags: { home: 's' } },
   describe: { pos: ['task'], flags: { document: 's', 'document-title': 's' } },
   plan: { pos: ['task'], flags: { document: 's', 'document-title': 's' } },
   'plan-decision': { pos: ['task'], flags: { decision: 's', 'plan-seq': 's' } },
@@ -1202,6 +1205,30 @@ const cmdReopen = async (args) => {
       ...(task.workflowState === 'done' ? { workflowState: last?.state ?? 'queued', workflowSince: new Date().toISOString(), ...stepProjection(last) } : {}), stepWrites };
   })(args);
 };
+// home: the backfill for a task written before create and import set the backlog home; the board reads one home.
+async function cmdHome(args) {
+  const taskId = taskIdOf(args);
+  const home = args.flags.home;
+  if (!home || !/^[A-Za-z0-9._-]{1,128}$/.test(home)) throw usage('home needs --home with a valid backlog home');
+  const who = identity(args, 'firstmate');
+  const check = (task) => {
+    if (!task) throw rule(`no such task ${taskId}`);
+    if (task.state === 'archived') throw rule(`home is refused: ${taskId} is archived`);
+    if (task.backlogHome && task.backlogHome !== home) throw rule(`home is refused: ${taskId} is already in home ${task.backlogHome}`);
+    return task.backlogHome === home;
+  };
+  if (check(fold(await taskEvents(taskId)))) {
+    out(`task=${taskId} home=${home} (already)`);
+    return null;
+  }
+  const result = await write(taskId, who, async ({ task }) => {
+    if (check(task)) throw rule(`home is refused: ${taskId} was set to ${home} meanwhile`);
+    return { kind: 'row', note: 'Backlog home', set: { backlogHome: home } };
+  });
+  out(`task=${taskId} home=${home}`);
+  return result;
+}
+
 const cmdArchive = simple('archive', 'archived', async () => ({ state: 'archived', nextActor: 'firstmate' }));
 // A user-visible pass counts for the head that was built or deployed last: the head of the newest done call, or of a
 // newer deploy event that names one (the Tester checks the deployed head, which a merge makes differ from the worker's).
@@ -2615,7 +2642,7 @@ const COMMANDS = {
   rules: cmdRules, rule: cmdRule, answer: cmdAnswer,
   'turn-end': cmdTurnEnd, deliver: cmdDeliver, 'read-mark': cmdReadMark, inbox: cmdInbox, describe: cmdDescribe, plan: cmdPlan, 'plan-decision': cmdPlanDecision, thread: cmdThread,
   create: cmdCreate, import: cmdImport, assign: cmdAssign, start: cmdStart, heartbeat: cmdHeartbeat, done: cmdDone, ask: cmdAsk, block: cmdBlock,
-  unblock: cmdUnblock, approve: cmdApprove, changes: cmdChanges, reopen: cmdReopen, reassign: cmdReassign, archive: cmdArchive, comment: cmdComment, event: cmdEvent,
+  unblock: cmdUnblock, approve: cmdApprove, changes: cmdChanges, reopen: cmdReopen, reassign: cmdReassign, archive: cmdArchive, home: cmdHome, comment: cmdComment, event: cmdEvent,
   'plan-spec': cmdPlanSpec, 'plan-approve': cmdPlanApprove, 'plan-check': cmdPlanCheck, document: cmdDocument, link: cmdLink, rows: cmdRows, check: cmdCheck, 'owner-check': cmdOwnerCheck, gate: cmdGate, show: cmdShow, list: cmdList, resume: cmdResume, reproject: cmdReproject,
   checks: cmdChecks, checklist: cmdChecklist,
 };

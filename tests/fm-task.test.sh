@@ -2567,6 +2567,15 @@ case_backlog_home() {
   ft create tk-bh4 --title 'Markdown home' --kind ship; must 'create under markdown' 0 || rc=1
   [ "$(task_row tk-bh4 | jq -r .backlogHome)" = null ] || { echo "markdown: $(task_row tk-bh4)"; rc=1; }
   rm -rf "$FM_HOME/config"
+  # home: the backfill sets the home of a task that has none, once; another home or an archived task is refused
+  ft home tk-bh0 --home main; must 'home on a task with none' 0 || rc=1
+  [ "$(task_row tk-bh0 | jq -r .backlogHome)" = main ] || { echo "home: $(task_row tk-bh0)"; rc=1; }
+  ft home tk-bh0 --home main; must 'the same home again' 0 || rc=1
+  [[ $OUT == *'(already)'* ]] || { echo "same home: $OUT"; rc=1; }
+  ft home tk-bh1 --home main; must 'another home' 5 || rc=1
+  [ "$(task_row tk-bh1 | jq -r .backlogHome)" = probe-x ] || { echo "another home: $(task_row tk-bh1)"; rc=1; }
+  ft archive tk-bh4 >/dev/null; ft home tk-bh4 --home main; must 'home on an archived task' 5 || rc=1
+  [ "$(task_row tk-bh4 | jq -r .backlogHome)" = null ] || { echo "archived: $(task_row tk-bh4)"; rc=1; }
   return $rc
 }
 
@@ -2940,6 +2949,8 @@ mutate 'only the last answer returns the task to its worker' question_round "   
       ?"
 mutate 'an answer must be one of the question options' question_round "if (!options.includes(f.option)) throw rule" "if (false) throw rule"
 mutate 'each owner question waits on its own answer' question_round "(question ? bodyOf(e).answer?.question === question :" "(question ? true :"
+mutate 'home refuses a task that is in another home' backlog_home "if (task.backlogHome && task.backlogHome !== home) throw rule" "if (false) throw rule"
+mutate 'home refuses an archived task' backlog_home "if (task.state === 'archived') throw rule(\`home is refused" "if (false) throw rule(\`home is refused"
 mutate_owner() {  # <label> <exact wrapper text> <replacement>: the owner_writer case goes red
   cp "$TMP_ROOT/fm-task-lib.mjs.orig" "$LIB"
   cp "$TMP_ROOT/fm-task-owner.sh.orig" "$MBIN/fm-task-owner.sh"
