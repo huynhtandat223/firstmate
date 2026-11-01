@@ -622,11 +622,11 @@ captain_migration_scan_load() {  # <resolved-data-dir>
     printf 'fm-captain-hold: the beads backend carries no graph path in %s, so a migrated hold cannot be found\n' "$(fm_tasks_axi_workdir "$root")/.tasks.toml" >&2
     return 2
   fi
-  # A relative [beads] path resolves against the backlog root, the same rule
-  # every other .tasks.toml path consumer uses, never against the process CWD.
+  # A relative [beads] path resolves against the directory tasks-axi runs from,
+  # the same rule tasks-axi itself uses, never against the process CWD.
   case "$bd_path" in
     /*) ;;
-    *) bd_path="$root/$bd_path" ;;
+    *) bd_path="$(fm_tasks_axi_workdir "$root")/$bd_path" ;;
   esac
   command -v "$bd_bin" >/dev/null 2>&1 || {
     printf 'fm-captain-hold: the beads binary %s is not on PATH, so a migrated hold cannot be found\n' "$bd_bin" >&2
