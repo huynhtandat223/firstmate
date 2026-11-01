@@ -704,22 +704,25 @@ fm_backlog_verify_reason() {  # <id> <items>
     my $limit = 1400;
     my $head = "verification pending: ";
     my @items = grep { length } split /\n/, $in;
-    # A pending-close record written before items went one per line holds them "; "-joined.
-    @items = split /; /, $items[0] if @items == 1 && $items[0] =~ /; /;
+    # A pending-close record written before items went one per line holds them "; "-joined, and an
+    # item may itself hold "; ", so its pieces are cut points, not a count: the tail names no number.
+    my $legacy = @items == 1 && $items[0] =~ /; /;
+    @items = split /; /, $items[0] if $legacy;
+    my $more_of = sub { $legacy ? "more" : "$_[0] more" };
     my $out = $head . join("; ", @items);
     if (length($out) > $limit) {
       my $kept = $head;
       my $n = 0;
       for my $item (@items) {
         my $rest = @items - $n - 1;
-        my $tail = $rest ? "; and $rest more (bin/fm-verify-close.sh $id lists all)" : "";
+        my $tail = $rest ? "; and " . $more_of->($rest) . " (bin/fm-verify-close.sh $id lists all)" : "";
         my $next = $kept . ($n ? "; " : "") . $item;
         last if length($next . $tail) > $limit;
         $kept = $next;
         $n++;
       }
       my $more = @items - $n;
-      $out = $kept . ($n ? "; and" : "and") . " $more more (bin/fm-verify-close.sh $id lists all)";
+      $out = $kept . ($n ? "; and " : "and ") . $more_of->($more) . " (bin/fm-verify-close.sh $id lists all)";
     }
     print $out;' "$1") || return 1
   fm_hold_reason_encode "$text"

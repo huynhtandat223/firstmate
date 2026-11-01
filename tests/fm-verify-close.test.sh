@@ -435,11 +435,12 @@ test_teardown_holds_a_row_with_many_missing_items_within_the_reason_limit() {
 # A pending-close record written before items went one per line holds them "; "-joined; replaying
 # one whose items fit the field keeps every item rather than counting them as one.
 test_a_legacy_joined_record_keeps_its_items() {
-  local home items='' n reason kept more
+  local home items='' n reason
   home=$(make_home legacy-joined)
   tasks-axi add "$ID" "landed UI change" --kind ship --file "$home/data/backlog.md" >/dev/null
   tasks-axi start "$ID" --file "$home/data/backlog.md" >/dev/null
-  for n in $(seq 1 40); do items="${items:+$items; }EN$n@1440 has no check row in the record"; done
+  # Each legacy item holds "; " itself, so its pieces cannot be counted as items.
+  for n in $(seq 1 40); do items="${items:+$items; }EN$n@1440 has no check row in the record; run rows"; done
   (
     cd "$home" || exit 1
     # shellcheck source=bin/fm-tasks-axi-lib.sh
@@ -451,12 +452,10 @@ test_a_legacy_joined_record_keeps_its_items() {
   reason=$(tasks-axi show "$ID" --file "$home/data/backlog.md" --full 2>/dev/null | sed -n 's/^  hold_reason: *//p' | tr -d '"')
   reason=$(printf '%s' "${reason#fm-hold-v1:}" | perl -MMIME::Base64=decode_base64 -0777 -ne 'print decode_base64($_)')
   case "$reason" in
-    *"EN1@1440 has no check row"*"; and "*" more ("*) ;;
-    *) fail "a legacy joined record lost its items: $reason" ;;
+    "verification pending: EN1@1440 has no check row in the record; run rows; EN2@1440"*"; and more (bin/fm-verify-close.sh $ID lists all)") ;;
+    *) fail "a legacy joined record lost its items or claimed a count it cannot know: $reason" ;;
   esac
-  kept=$(printf '%s' "$reason" | grep -o 'EN[0-9]*@1440 has no check row in the record' | wc -l)
-  more=$(printf '%s' "$reason" | sed -n 's/.*; and \([0-9]*\) more (bin.*/\1/p')
-  [ "$kept" -gt 1 ] && [ "$((kept + more))" -eq 40 ] || fail "a legacy record keeps $kept items and counts $more more, not 40 in all: $reason"
+  [ "${#reason}" -le 1400 ] || fail "a legacy cut reason is ${#reason} characters, over its limit"
   pass "a legacy \"; \"-joined record keeps its items in the cut reason"
 }
 
