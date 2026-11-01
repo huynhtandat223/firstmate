@@ -2676,7 +2676,45 @@ case_question_round() {
   return 0
 }
 
-CASES=${FM_TASK_CASES:-"plan_task description_thread terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed long_notes status_view verify_view owner_writer workflow stage wait carry slice_c model_rules checklist question_round"}
+# Plan v2 D2 x D1: a setup built from the model rules; a rule switched off leaves the next setup's candidates (D6), and a
+# state with no candidate stops the task with the owner question (D7).
+case_setup_rules() {
+  BIN=$1; reset_db
+  export FM_HOME="$TMP_ROOT/setup-rules-home" TZ=UTC
+  rm -rf "$FM_HOME"; mkdir -p "$FM_HOME/state"
+  local at=2026-11-03T10:00:00Z ida idb idc row step
+  rid() { sed -n 's/^rule=\([^ ]*\) .*/\1/p' <<<"$OUT"; }
+  step() { db fm_task_step | jq -c --arg t "$1" --arg s "$2" '.[] | select(.taskId == $t and .state == $s)'; }
+  ft rule add --state implement --harness opencode --model m-a --rank 1; ida=$(rid)
+  ft rule add --state implement --harness pi --model m-b --effort high --rank 2; idb=$(rid)
+  ft rule add --state implement --harness claude --model m-c --rank 3 --scope other-repo; idc=$(rid)
+  ft rule add --state implement --harness claude --model m-d --rank 4 >/dev/null
+  mk_ready tk-sr1 >/dev/null || return 1
+  ft setup tk-sr1 --from-rules --states implement,merge --at "$at"; must 'setup from rules' 0 || return 1
+  step tk-sr1 implement | jq -e --arg a "$ida" --arg b "$idb" '.harness == "opencode" and .model == "m-a" and .source == "rule"
+    and (.fallbacks | fromjson) == [{"harness":"pi","model":"m-b","effort":"high"},{"harness":"claude","model":"m-d"}]
+    and (.ruleIds | split(",") | .[0] == $a and .[1] == $b)' >/dev/null || { echo "implement step: $(step tk-sr1 implement)"; return 1; }
+  step tk-sr1 merge | jq -e '.harness == null and .model == null' >/dev/null || { echo "merge step: $(step tk-sr1 merge)"; return 1; }
+  ft setup tk-sr1 --from-rules --file x --states implement; must 'both --file and --from-rules' 2 || return 1
+  ft setup tk-sr1 --from-rules; must 'from rules without states' 2 || return 1
+  # D6: the first rule switched off, the next setup leaves it out of the step and the fallbacks
+  ft rule set "$ida" --enabled false >/dev/null || return 1
+  mk_ready tk-sr2 >/dev/null || return 1
+  ft setup tk-sr2 --from-rules --states implement,merge --at "$at"; must 'setup after switch-off' 0 || return 1
+  step tk-sr2 implement | jq -e '.model == "m-b" and ([.fallbacks | fromjson | .[].model] | index("m-a") | not)' >/dev/null || { echo "switched-off rule still a candidate: $(step tk-sr2 implement)"; return 1; }
+  # D7: no candidate for a state stops the task with the owner question
+  ft rule set "$idb" --enabled false >/dev/null; ft rule add --state implement --harness h --model m-off --rank 9 --enabled false >/dev/null
+  db fm_model_rule | jq -r '.[] | select(.model == "m-d") | .id' | while read -r id; do ft rule set "$id" --enabled false >/dev/null; done
+  mk_ready tk-sr3 >/dev/null || return 1
+  ft setup tk-sr3 --from-rules --states implement,merge --at "$at"; must 'setup with no candidate' 5 || return 1
+  row=$(task_row tk-sr3)
+  [ "$(jq -r .state <<<"$row")" = blocked ] && [ "$(jq -r .nextActor <<<"$row")" = owner ] && [ "$(jq -r .blockReason <<<"$row")" = 'Không còn model cho Implement' ] || { echo "no-model stop: $row"; return 1; }
+  [ -z "$(step tk-sr3 implement)" ] || { echo "a stopped setup wrote a step row"; return 1; }
+  [ -n "$idc" ] || return 1
+  return 0
+}
+
+CASES=${FM_TASK_CASES:-"plan_task description_thread terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed long_notes status_view verify_view owner_writer workflow stage wait carry slice_c model_rules checklist question_round setup_rules"}
 
 # ---- real command -------------------------------------------------------------------
 
@@ -2869,6 +2907,8 @@ mutate 'a re-sent rule key writes nothing again' model_rules "  const prior = aw
   if (prior) {
     out("
 mutate 'a block streak survives the unblock that clears blockKind' block_rules "const repeats = streakKind(events) === kind ?" "const repeats = task.blockKind === kind ?"
+mutate 'a setup from rules takes the first candidate and the rest as fallbacks' setup_rules "const [first, ...rest] = live;" "const [first, ...rest] = [...live].reverse();"
+mutate 'a setup from rules stops a state with no candidate' setup_rules "    if (!live.length) {" "    if (false) {"
 mutate 'an owner ask joins a round of open owner questions' question_round "    if (!round) guard('ask', task);" "    guard('ask', task);"
 mutate 'an owner question leaves blockRepeats as it was' question_round "    const set = nextActor === 'owner'" "    const set = false"
 mutate 'an answered event closes only its question' question_round "    else if (e.kind === 'answered') open = open.filter((call) => call.seq !== bodyOf(e).answer?.question);" ""
