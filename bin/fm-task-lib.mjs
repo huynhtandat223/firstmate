@@ -56,7 +56,7 @@
 //   approve  <task>                          review -> done (refused while a check row is pending or failed, and
 //            on a task with a deploy event until its user-visible rows pass on a deployed head; deletes any
 //            fm_event_video rows of the task after replacing video check evidence with its Tester screenshot, and
-//            writes a comment "N video đã xóa sau Verify")
+//            writes a comment "N video(s) deleted after Verify")
 //   changes  <task> --note WHY               review -> ready
 //   reopen   <task> --reason WHY             done -> ready, next actor firstmate; archived stays final
 //   archive  <task>                          triage|todo|ready|blocked|review|done -> archived
@@ -1366,7 +1366,7 @@ async function cmdApprove(args) {
       if (count > 0) {
         await append(taskId, { ...who, key: `${who.key}:video-cleanup` }, async () => ({
           kind: 'comment',
-          note: `${count} video đã xóa sau Verify`,
+          note: `${count} ${count === 1 ? 'video' : 'videos'} deleted after Verify`,
         }));
       }
     },
