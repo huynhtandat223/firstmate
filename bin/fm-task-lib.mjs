@@ -85,7 +85,16 @@
 //            complete (exit 5): a user-visible row of the issue not pass on the deployed head with its current
 //            digest and evidence, or no approved event newer than the last row event (bin/fm-verify-gate-lib.sh)
 //   turn-end <task> --turn TOKEN             check a durable turn generation; heartbeat is not terminal
-//   inbox <notification-id> --action task|linked|delete [--target task-id] [--home main] resolve an inbox item
+//   rules    [--state plan|implement|testing|merge|verify [--repo R] [--account A] [--at ISO] [--task T]] [--json]
+//            read only: the owner's model rules (fm_model_rule), every rule without --state; with --state the
+//            candidates now in rank order: enabled, in --hours at --at (local time, default now), account null or
+//            --account, and fitting --repo (a repo some rule of that state names in its scope uses only those rules,
+//            any other repo the rules with no scope). With --task and no candidate, the task stops with the owner
+//            question "Không còn model cho <State>" (once while it is open) and the call exits 5.
+//   rule     add --state S --harness H --model M --rank N [--effort E] [--account A] [--hours 17-07,sat,sun]
+//            [--scope REPO,...] [--enabled true|false] [--warning W] [--note WHY]   |   rule set <id> [the same flags]
+//            |   rule delete <id>     writes fm_model_rule, then a `rules` event on task fm-model-rules (created
+//            on first use in backlog home system); a re-sent --key writes nothing again
 //   read-mark <task> --key steer:<task>:<record>  mark one handled steer in fm_task_delivery (consumer read:<task>)
 //   deliver  <task> --consumer NAME           claim each event in fm_task_delivery, then append a wake
 //            FM_HOME is required; delivery is scoped to this task, never a whole foreign fleet.
@@ -424,6 +433,8 @@ const SPECS = {
   inbox: { pos: ['task'], flags: { action: 's', target: 's', home: 's' } },
   document: { pos: ['task'], flags: {} },
   gate: { pos: ['task'], flags: { issue: 's', head: 's', 'evidence-root': 's' } },
+  rules: { pos: [], flags: { state: 's', repo: 's', at: 's', account: 's' } },
+  rule: { pos: ['action', 'id'], flags: { state: 's', harness: 's', model: 's', effort: 's', rank: 's', account: 's', hours: 's', scope: 's', enabled: 's', warning: 's' } },
   checklist: { pos: ['task', 'verb', 'item'], flags: { reason: 's' } },
 };
 
@@ -793,11 +804,11 @@ async function waitView(taskId, known) {
 }
 
 // Append a wait for a task, keyed on the call that asks for it, and write its paused line.
-async function waitOn(taskId, who, { actor, clearsOn, note, rows = [] }) {
+async function waitOn(taskId, who, { actor, clearsOn, note, rows = [], question }) {
   const result = await append(taskId, { ...who, key: `${who.key}:wait` }, async ({ task }) => {
     if (!task) throw rule('no such task');
     if (CLOSED.includes(task.state)) throw rule(`wait is refused: ${taskId} is ${task.state}`);
-    return { kind: 'wait', note, extra: { wait: { actor, clearsOn, rows } } };
+    return { kind: 'wait', note, extra: { wait: { actor, clearsOn, rows, ...(question ? { question } : {}) } } };
   });
   await statusView(result.event);
   return result;
@@ -1898,6 +1909,8 @@ const TEMPLATE_FIELDS = {
   blocked: ['blockKind', 'reason', 'nextActor', 'until'],
 };
 
+const openQuestions = (events) => openCalls(events).filter((e) => e.kind === 'needs-decision');
+
 function openCalls(events) {
   let open = [];
   for (const e of events) {
@@ -2080,7 +2093,154 @@ async function cmdDeliver(args) {
   }
 }
 
+// ---- model rules (plan v2 D2) ------------------------------------------------------------------------------
+// fm_model_rule holds the owner's rules; the board edits them through fm-task-owner.sh, firstmate only reads them.
+// A rule matches a dispatch when it is enabled, its hours hold at the dispatch time (local time), its account is
+// null or the asked one, and its scope fits the repo: a repo that a rule of that state names in its scope uses only
+// the rules that name it, every other repo uses the rules with no scope. Lower rank runs first.
+const RULE_STATES = ['plan', 'implement', 'testing', 'merge', 'verify'];
+const RULES_TASK = 'fm-model-rules';
+const RULES_HOME = 'system';
+const DAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+const RULE_TEXT = ['state', 'harness', 'model', 'effort', 'account', 'hours', 'scope', 'warning', 'note'];
+
+// hours: comma-separated tokens; `H-H` is a local hour range (17-07 wraps past midnight), a day name is that whole day.
+function hourTokens(hours) {
+  const tokens = String(hours).toLowerCase().split(',').map((t) => t.trim());
+  for (const token of tokens) {
+    const range = /^(\d{1,2})-(\d{1,2})$/.exec(token);
+    if (range ? Number(range[1]) > 24 || Number(range[2]) > 24 || range[1] === range[2] : !DAYS.includes(token)) {
+      throw rule(`hours ${JSON.stringify(hours)} is not a list of hour ranges (17-07) and days (${DAYS.join(',')})`);
+    }
+  }
+  return tokens;
+}
+function inHours(hours, at) {
+  if (!hours) return true;
+  const hour = at.getHours();
+  return hourTokens(hours).some((token) => {
+    const range = /^(\d{1,2})-(\d{1,2})$/.exec(token);
+    if (!range) return token === DAYS[at.getDay()];
+    const [from, to] = [Number(range[1]) % 24, Number(range[2]) % 24];
+    return from < to ? hour >= from && hour < to : hour >= from || hour < to;
+  });
+}
+const scopeFits = (scope, repo) => {
+  const name = String(repo).split('/').pop();
+  return String(scope).split(',').map((t) => t.trim()).some((t) => t && (t === repo || t === name || name.startsWith(`${t}-`)));
+};
+const byRank = (a, b) => (a.rank ?? 0) - (b.rank ?? 0) || RULE_STATES.indexOf(a.state) - RULE_STATES.indexOf(b.state) || String(a.id).localeCompare(String(b.id));
+
+// The rules that apply to one state and repo (pool), and those of them that can run now (live), in rank order.
+function ruleCandidates(rows, { state, repo, account, at }) {
+  const forState = rows.filter((r) => r.state === state);
+  const scoped = repo ? forState.filter((r) => r.scope && scopeFits(r.scope, repo)) : [];
+  const pool = (scoped.length ? scoped : forState.filter((r) => !r.scope)).sort(byRank);
+  const live = pool.filter((r) => r.enabled === true && inHours(r.hours, at) && (!account || !r.account || r.account === account));
+  return { pool, live };
+}
+const ruleLine = (r) => `rank=${r.rank ?? 0} state=${r.state} harness=${r.harness} model=${r.model} effort=${r.effort ?? '-'} account=${r.account ?? '-'} hours=${r.hours ?? '-'}`
+  + ` scope=${r.scope ?? '-'} enabled=${r.enabled === true} id=${r.id}${r.warning ? ` warning=${JSON.stringify(r.warning)}` : ''}`;
+
+async function cmdRules(args) {
+  const f = args.flags;
+  const rows = await listAll('fm_model_rule', { orderby: 'id' });
+  if (f.state === undefined) {
+    if (f.task || f.repo || f.at || f.account) throw usage('rules --repo, --at, --account and --task need --state');
+    const all = rows.sort(byRank);
+    if (f.json) out(JSON.stringify(all));
+    else for (const r of all) out(ruleLine(r));
+    return;
+  }
+  const state = oneOf(RULE_STATES, f.state, 'state');
+  const at = f.at === undefined ? new Date() : new Date(isoOf(f.at, '--at'));
+  const { pool, live } = ruleCandidates(rows, { state, repo: f.repo, account: f.account, at });
+  if (f.json) out(JSON.stringify(live));
+  else for (const r of live) out(ruleLine(r));
+  if (live.length || !f.task) return;
+  await stopForNoModel(taskIdOf(args), { state, repo: f.repo, at, pool }, identity(args, 'firstmate'));
+  throw rule(`no ${state} rule can run for ${f.repo ?? 'every repo'} now; ${f.task} waits on the owner`);
+}
+
+// Every candidate of a state is off or out of hours: the task stops with a question card for the owner, once per open
+// question. Its options are the rules that would fit if switched on or run out of hours, then "Chờ quota".
+async function stopForNoModel(taskId, { state, repo, at, pool }, who) {
+  const question = `Không còn model cho ${state[0].toUpperCase()}${state.slice(1)}`;
+  const options = [...new Set(pool.map((r) => `${r.enabled === true ? 'Dùng ngoài giờ' : 'Bật'} ${r.harness} ${r.model}`.slice(0, 200)))].slice(0, 5);
+  options.push('Chờ quota');
+  if (options.length < 2) options.unshift('Thêm rule trong Settings → Models');
+  const why = `Mọi rule ${state} cho ${repo ?? 'mọi repo'} đang tắt hoặc ngoài giờ lúc ${at.toISOString()}.`;
+  return write(taskId, who, async ({ task, events }) => {
+    if (!task) throw rule('no such task');
+    if (['review', ...CLOSED].includes(task.state)) throw rule(`${taskId} is ${task.state}; a missing model stops only an open task`);
+    if (openQuestions(events).some((e) => bodyOf(e).set?.blockReason === question)) throw rule(`${taskId} already asks the owner: ${question}`);
+    const set = { state: 'blocked', nextActor: 'owner', blockKind: 'needs-decision', blockReason: question, blockRepeats: task.blockRepeats, holdUntil: null };
+    return { kind: 'needs-decision', note: why, set, children: { question: [{ question, options: JSON.stringify(options), recommendation: options[0], why }] } };
+  }, undefined, (result) => waitOn(taskId, who, { actor: 'owner', clearsOn: 'answer', note: question, question: result.event.seq }));
+}
+
+// The fields of a rule from the flags; `add` needs state, harness, model and rank.
+function ruleFields(f, adding) {
+  const fields = {};
+  for (const name of RULE_TEXT) if (f[name] !== undefined) fields[name] = f[name];
+  if (fields.state !== undefined) oneOf(RULE_STATES, fields.state, 'state');
+  if (fields.hours !== undefined) hourTokens(fields.hours);
+  if (f.rank !== undefined) {
+    if (!/^\d{1,6}$/.test(f.rank)) throw rule(`rank ${JSON.stringify(f.rank)} is not a whole number`);
+    fields.rank = Number(f.rank);
+  }
+  if (f.enabled !== undefined) fields.enabled = oneOf(['true', 'false'], f.enabled, 'enabled') === 'true';
+  if (adding) {
+    for (const need of ['state', 'harness', 'model', 'rank']) if (fields[need] === undefined) throw usage(`rule add needs --${need}`);
+    fields.enabled ??= true;
+  }
+  return fields;
+}
+
+// The record task the rule changes are logged on, kept in a backlog home the board does not show.
+async function rulesTask(who) {
+  if (await taskRow(RULES_TASK)) return;
+  await append(RULES_TASK, { ...who, key: `${RULES_TASK}:create` }, async ({ task }) => (task ? { kind: 'row', note: '', set: {} } : {
+    kind: 'created', note: 'The owner model rules log', set: { title: 'Model rules', repo: null, kind: 'other', state: 'triage', assignee: '-', nextActor: 'firstmate', blockKind: null, blockReason: null, blockRepeats: 0, issueUrl: null, prUrl: null, surface: 'internal', holdUntil: null, backlogHome: RULES_HOME },
+  }));
+  await project(RULES_TASK);
+}
+
+async function cmdRule(args) {
+  const action = oneOf(['add', 'set', 'delete'], args.pos.action, 'rule action');
+  const who = identity(args, 'firstmate');
+  const prior = await eventByKey(who.key);
+  if (prior) {
+    out(`seq=${prior.seq} task=${prior.taskId} event=${prior.kind} (already recorded)`);
+    return;
+  }
+  const id = args.pos.id;
+  if (action === 'add' ? id !== undefined : !id) throw usage(action === 'add' ? 'rule add takes no id' : `rule ${action} needs the rule id`);
+  const fields = action === 'delete' ? {} : ruleFields(args.flags, action === 'add');
+  if (action === 'set' && !Object.keys(fields).length) throw usage('rule set needs a field to change');
+  let before = null;
+  if (id) {
+    const res = await http('GET', `/api/fm_model_rule/${encodeURIComponent(id)}`);
+    if (res.status === 404) throw rule(`no rule ${id}`);
+    before = unwrap(ok(res, 'read the rule'));
+  }
+  let after = null;
+  if (action === 'add') after = unwrap(ok(await http('POST', '/api/fm_model_rule', fields), 'add the rule'));
+  else if (action === 'set') after = unwrap(ok(await http('PATCH', `/api/fm_model_rule/${encodeURIComponent(id)}`, fields), 'change the rule'));
+  else ok(await http('DELETE', `/api/fm_model_rule/${encodeURIComponent(id)}`), 'delete the rule');
+  const ruleId = after?.id ?? id;
+  const shown = after ?? before;
+  const note = `${action} ${shown.state} ${shown.harness} ${shown.model} rank ${shown.rank ?? 0}${shown.enabled === false ? ' off' : ''}`;
+  await rulesTask(who);
+  await write(RULES_TASK, who, async ({ task }) => {
+    if (!task) throw rule(`the record task ${RULES_TASK} is missing`);
+    return { kind: 'rules', note, extra: { rule: { action, id: ruleId, changed: fields } } };
+  });
+  out(`rule=${ruleId} action=${action}`);
+}
+
 const COMMANDS = {
+  rules: cmdRules, rule: cmdRule,
   'turn-end': cmdTurnEnd, deliver: cmdDeliver, 'read-mark': cmdReadMark, inbox: cmdInbox, describe: cmdDescribe, plan: cmdPlan, 'plan-decision': cmdPlanDecision, thread: cmdThread,
   create: cmdCreate, import: cmdImport, assign: cmdAssign, start: cmdStart, heartbeat: cmdHeartbeat, done: cmdDone, ask: cmdAsk, block: cmdBlock,
   unblock: cmdUnblock, approve: cmdApprove, changes: cmdChanges, reopen: cmdReopen, reassign: cmdReassign, archive: cmdArchive, comment: cmdComment, event: cmdEvent,

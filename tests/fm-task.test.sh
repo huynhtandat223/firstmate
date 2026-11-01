@@ -51,7 +51,8 @@ const fs = require('fs');
 const file = process.argv[2]; const s = JSON.parse(fs.readFileSync(file));
 s.fm_event_document = {ops:['list','get','create'],f:{title:{t:'s',m:200},mediaType:{t:'s',m:100},content:{t:'s'}},u:[['fmTaskEventId']],parent:['fmTaskEvent','documents']};
 s.fm_event_video = {ops:['list','get','create','delete'],f:{label:{t:'s',m:200},mediaType:{t:'s',m:32},size:{t:'i'},content:{t:'s'}},u:[],parent:['fmTaskEvent','videos']};
-Object.assign(s.fm_task.f, {row:{t:'s',n:1},notes:{t:'s',n:1},section:{t:'s',n:1,m:32},
+s.fm_model_rule = {ops:['list','get','create','patch','delete'],f:{state:{t:'s',n:1,m:16},harness:{t:'s',n:1,m:32},model:{t:'s',n:1,m:128},effort:{t:'s',n:1,m:16},rank:{t:'i',n:1},account:{t:'s',n:1,m:64},hours:{t:'s',n:1,m:64},scope:{t:'s',n:1,m:200},enabled:{t:'b',n:1},warning:{t:'s',n:1,m:200},note:{t:'s',n:1,m:300}},u:[]};
+Object.assign(s.fm_task.f, {backlogHome:{t:'s',n:1,m:64},row:{t:'s',n:1},notes:{t:'s',n:1},section:{t:'s',n:1,m:32},
   stage:{t:'s',n:1,m:16},stageSince:{t:'d',n:1},lastEventAt:{t:'d',n:1},lastNote:{t:'s',n:1,m:300},reviewer:{t:'s',n:1,m:64},
   planSeq:{t:'i',n:1},planDecision:{t:'s',n:1,m:16},planDecidedAt:{t:'d',n:1}});
 fs.writeFileSync(file, JSON.stringify(s));
@@ -2382,7 +2383,81 @@ case_slice_c() {
   return 0
 }
 
-CASES=${FM_TASK_CASES:-"description_thread terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed long_notes status_view verify_view owner_writer stage wait carry slice_c checklist"}
+# Plan v2 D2: the owner's model rules. rule writes fm_model_rule and logs a rules event on fm-model-rules; rules reads
+# the candidates of a state in rank order (enabled, in hours, account, scope), and with --task stops a task that has none.
+case_model_rules() {
+  BIN=$1; reset_db
+  export TZ=UTC
+  local night=2026-11-03T20:00:00Z day=2026-11-03T10:00:00Z sat=2026-10-31T10:00:00Z id1 id2 id3 n row q
+  rid() { sed -n 's/^rule=\([^ ]*\) .*/\1/p' <<<"$OUT"; }
+  ft rule add --state implement --harness opencode --model ds-flash --rank 1 --hours 17-07,sat,sun --note '[probe] D5'
+  must 'rule add' 0 || return 1
+  id1=$(rid)
+  ft rule add --state implement --harness pi --model sol --effort high --rank 2; id2=$(rid)
+  ft rule add --state implement --harness claude --model sonnet --rank 3 --account claude3; id3=$(rid)
+  ft rule add --state plan --harness claude --model opus --rank 1 >/dev/null
+  [ "$(count fm_model_rule)" = 4 ] || { echo "rules stored: $(count fm_model_rule)"; return 1; }
+  # the change log: a rules event per change on the record task, kept out of the board's home
+  [ "$(db fm_task_event | jq '[.[] | select(.taskId == "fm-model-rules" and .kind == "rules")] | length')" = 4 ] || { echo "rules events: $(db fm_task_event | jq -c '[.[] | select(.taskId == "fm-model-rules")]')"; return 1; }
+  [ "$(task_row fm-model-rules | jq -r .backlogHome)" = system ] || { echo "record task home: $(task_row fm-model-rules)"; return 1; }
+  # candidates: rank order, hours wrap past midnight, a day token, the account filter
+  ft rules --state implement --repo firstmate --at "$night"; must 'rules at night' 0 || return 1
+  [ "$(cut -d" " -f1 <<<"$OUT" | tr '\n' ' ')" = 'rank=1 rank=2 rank=3 ' ] && [[ $(head -1 <<<"$OUT") == *"model=ds-flash"*"id=$id1"* ]] || { echo "night: $OUT"; return 1; }
+  ft rules --state implement --repo firstmate --at "$day"
+  [[ $OUT != *ds-flash* ]] && [[ $(head -1 <<<"$OUT") == *"id=$id2"* ]] || { echo "an out-of-hours rule ran by day: $OUT"; return 1; }
+  ft rules --state implement --repo firstmate --at "$sat"
+  [[ $(head -1 <<<"$OUT") == *"id=$id1"* ]] || { echo "the sat token did not hold: $OUT"; return 1; }
+  ft rules --state implement --at "$night" --account claude2
+  [[ $OUT != *"id=$id3"* ]] || { echo "an account-bound rule ran for another account: $OUT"; return 1; }
+  # switched off, it is no candidate; the replayed key changes nothing again
+  ft rule set "$id1" --enabled false --key off-1; must 'rule set' 0 || return 1
+  ft rule set "$id1" --enabled true --key off-1; must 'rule set replay' 0 || return 1
+  [ "$(db fm_model_rule | jq -r --arg id "$id1" '.[] | select(.id == $id) | .enabled')" = false ] || { echo "a replayed key wrote the rule again"; return 1; }
+  ft rules --state implement --repo firstmate --at "$night"
+  [[ $OUT != *ds-flash* ]] || { echo "an off rule is still a candidate: $OUT"; return 1; }
+  # value checks: nothing stored
+  n=$(count fm_model_rule)
+  ft rule add --state implement --harness h --model m; must 'rule add without rank' 2 || return 1
+  ft rule add --state build --harness h --model m --rank 1; must 'rule add of an unknown state' 5 || return 1
+  ft rule add --state implement --harness h --model m --rank 1 --hours 'noon'; must 'rule add of bad hours' 5 || return 1
+  ft rule set no-such-id --rank 2; must 'rule set of a missing rule' 5 || return 1
+  [ "$(count fm_model_rule)" = "$n" ] || { echo "a refused rule was stored"; return 1; }
+  # a repo some rule names in its scope uses only those rules; all off, the task stops with the owner question
+  ft rule add --state implement --harness opencode --model ds-flash --rank 1 --scope probe-kdb --enabled false >/dev/null
+  ft rules --state implement --repo probe-kdb --at "$night"
+  [ -z "$OUT" ] || { echo "a scoped repo used the general rules: $OUT"; return 1; }
+  ft rules --state implement --repo firstmate --at "$night"
+  [[ $OUT == *"id=$id2"* ]] || { echo "the scoped rule hid the general rules from another repo: $OUT"; return 1; }
+  mk_ready tk-nm >/dev/null
+  ft rules --state implement --repo probe-kdb --at "$night" --task tk-nm
+  must 'no candidate with --task' 5 || return 1
+  row=$(task_row tk-nm)
+  [ "$(jq -r .state <<<"$row")" = blocked ] && [ "$(jq -r .nextActor <<<"$row")" = owner ] && [ "$(jq -r .blockReason <<<"$row")" = 'Không còn model cho Implement' ] \
+    || { echo "the task did not stop for the owner: $row"; return 1; }
+  q=$(db fm_event_question | jq -c '.[-1]')
+  jq -e '(.options | fromjson) == ["Bật opencode ds-flash", "Chờ quota"]' <<<"$q" >/dev/null || { echo "question options: $q"; return 1; }
+  grep -q 'waiting on owner: Không còn model cho Implement' "$FM_HOME/state/tk-nm.status" || { echo "no owner wait line"; return 1; }
+  n=$(count fm_task_event)
+  ft rules --state implement --repo probe-kdb --at "$night" --task tk-nm
+  must 'no candidate again' 5 || return 1
+  [ "$(count fm_task_event)" = "$n" ] || { echo "a second stop asked the owner twice"; return 1; }
+  # the board's owner actions run the same writer as the owner; empty values are left out
+  local ow_out
+  ow_out=$("$BIN/fm-task-owner.sh" --action rule-add --task fm-model-rules --state verify --harness claude --model opus --rank 4 --effort '' --hours '' --note '[probe] owner' --owner u-1 2>&1)
+  jq -e '.ok == true' <<<"$ow_out" >/dev/null || { echo "owner rule-add: $ow_out"; return 1; }
+  db fm_model_rule | jq -e '[.[] | select(.state == "verify" and .model == "opus" and .rank == 4 and .enabled == true and .effort == null and .note == "[probe] owner")] | length == 1' >/dev/null || { echo "owner rule row: $(db fm_model_rule)"; return 1; }
+  db fm_task_event | jq -e '.[-1] | .kind == "rules" and .actor == "owner:u-1" and .actorRole == "owner"' >/dev/null || { echo "owner rules event: $(db fm_task_event | jq -c '.[-1]')"; return 1; }
+  ow_out=$("$BIN/fm-task-owner.sh" --action rule-set --task fm-model-rules --rule "$id2" --enabled false --owner u-1 2>&1)
+  jq -e '.ok == true' <<<"$ow_out" >/dev/null && [ "$(db fm_model_rule | jq -r --arg id "$id2" '.[] | select(.id == $id) | .enabled')" = false ] || { echo "owner rule-set: $ow_out"; return 1; }
+  ow_out=$("$BIN/fm-task-owner.sh" --action rule-set --task tk-nm --rule "$id2" --enabled true --owner u-1 2>&1)
+  jq -e '.ok == false' <<<"$ow_out" >/dev/null || { echo "a rule action on another task ran: $ow_out"; return 1; }
+  # delete
+  ft rule delete "$id3"; must 'rule delete' 0 || return 1
+  db fm_model_rule | jq -e --arg id "$id3" 'all(.[]; .id != $id)' >/dev/null || { echo "the deleted rule is still stored"; return 1; }
+  return 0
+}
+
+CASES=${FM_TASK_CASES:-"description_thread terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed long_notes status_view verify_view owner_writer stage wait carry slice_c model_rules checklist"}
 
 # ---- real command -------------------------------------------------------------------
 
@@ -2547,6 +2622,16 @@ mutate 'a write passes the items the record proves' checklist 'if (await syncChe
 mutate 'checklist off needs a reason' checklist "if (verb === 'off' && !reason?.trim()) throw usage" 'if (false) throw usage'
 mutate 'an open question keeps the decision item open' checklist "if (task.blockKind === 'needs-decision' && task.state === 'blocked') return null;" ''
 mutate 'only a green ci passes the ci item' checklist '/\bCI green\b/.test(bodyOf(ci).note' 'true || (bodyOf(ci).note'
+mutate 'rules lists only enabled rules' model_rules "r.enabled === true && inHours(" "inHours("
+mutate 'an hour range wraps past midnight' model_rules ": hour >= from || hour < to;" ": false;"
+mutate 'a repo named in a scope uses only its scoped rules' model_rules "(scoped.length ? scoped : forState.filter((r) => !r.scope))" "forState"
+mutate 'rules with --task stops a task that has no candidate' model_rules "  await stopForNoModel(taskIdOf(args)" "  if (false) await stopForNoModel(taskIdOf(args)"
+mutate 'a missing model asks the owner once while it is open' model_rules ".some((e) => bodyOf(e).set?.blockReason === question)) throw rule" ".some(() => false)) throw rule"
+mutate 'a re-sent rule key writes nothing again' model_rules "  const prior = await eventByKey(who.key);
+  if (prior) {
+    out(" "  const prior = null;
+  if (prior) {
+    out("
 mutate_owner() {  # <label> <exact wrapper text> <replacement>: the owner_writer case goes red
   cp "$TMP_ROOT/fm-task-lib.mjs.orig" "$LIB"
   cp "$TMP_ROOT/fm-task-owner.sh.orig" "$MBIN/fm-task-owner.sh"
