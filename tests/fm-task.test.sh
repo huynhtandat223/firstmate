@@ -2090,7 +2090,8 @@ case_checklist() {
   ow --action answer --task $t --option 'Option A' --owner u-1; must 'owner answer' 0 || return 1
   seq=$(db fm_task_event | jq --arg t $t '[.[] | select(.taskId == $t and .kind == "unblocked")] | max_by(.seq).seq')
   clrow $t decision | jq -e --arg ev "event:$seq" '.status == "pass" and .evidence == $ev' >/dev/null || { echo "decision item: $(clrow $t decision)"; return 1; }
-  ft checklist $t on decision; must 'on' 0 || return 1
+  ow --action checklist --task $t --item decision --off --note '[probe] later' --owner u-1; must 'owner off before on' 0 || return 1
+  ow --action checklist --task $t --item decision --on --owner u-1; must 'owner on' 0 || return 1
   [ "$(clrow $t decision | jq -r .status)" = pass ] || { echo "an item set on did not pass again: $(clrow $t decision)"; return 1; }
   [ "$(db fm_task_event | jq --arg t $t '[.[] | select(.taskId == $t and .kind == "checklist" and (.body | fromjson | .values.status == "pass"))] | length')" = 2 ] || { echo "the second pass is not its own event"; return 1; }
   # any open question keeps the item open, also after an answered owner question
