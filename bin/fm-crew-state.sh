@@ -1346,6 +1346,7 @@ fi
 if [ "$KIND" != secondmate ]; then
   BUSY_VERDICT=$(crew_busy_verdict "$BACKEND_TARGET")
   case "${BUSY_VERDICT%% *}" in
+    stopped) emit blocked pane "worker stopped: quota or balance exhausted" ;;
     busy) emit working pane "harness busy (${BUSY_VERDICT#* })" ;;
     idle) ;;
     *) emit unknown pane "harness state unavailable ($BUSY_VERDICT)" ;;
