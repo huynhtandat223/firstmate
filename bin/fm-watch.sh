@@ -3529,12 +3529,13 @@ while :; do
     task_delivery_processed=1
     task_consumer="firstmate-${FM_HOME##*/}"
     if [ -e "$CONFIG/task-shadow" ]; then
+      task_step_generation=$(awk -F= '$1 == "spawn_gen" {print substr($0, index($0, "=") + 1); exit}' "$task_meta")
       task_live_line=$(fm_run_timed 2 "$SCRIPT_DIR/fm-crew-state.sh" "$task_id" 2>/dev/null) || task_live_line=''
       case "$task_live_line" in
         'state: stopped '*|'state: torn-down '*)
-          fm_run_timed 2 env FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task.sh" step "$task_id" dead >/dev/null 2>&1 || true ;;
+          fm_run_timed 2 env FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task.sh" step "$task_id" dead --generation "$task_step_generation" >/dev/null 2>&1 || true ;;
         'state: working '*|'state: paused '*|'state: parked '*|'state: idle '*)
-          fm_run_timed 2 env FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task.sh" step "$task_id" alive >/dev/null 2>&1 || true ;;
+          fm_run_timed 2 env FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task.sh" step "$task_id" alive --generation "$task_step_generation" >/dev/null 2>&1 || true ;;
       esac
     fi
     fm_run_timed 2 env FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task.sh" deliver "$task_id" --consumer "$task_consumer" >/dev/null 2>&1 || true

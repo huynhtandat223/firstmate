@@ -7034,7 +7034,7 @@ if [ -e "$CONFIG/task-shadow" ]; then
   workflow=$(FM_HOME=$FM_HOME "$SCRIPT_DIR/fm-task.sh" show "$ID" --json 2>/dev/null | jq -r '.workflowState // "queued"')
   case "$workflow" in
     plan|implement|testing|verify)
-      FM_HOME=$FM_HOME "$SCRIPT_DIR/fm-task.sh" step "$ID" start --harness "$HARNESS" --model "${MODEL:-}" --effort "${EFFORT:-}" --account "${WORKER_ACCOUNT_DECLARED:-}" || true
+      FM_HOME=$FM_HOME "$SCRIPT_DIR/fm-task.sh" step "$ID" start --harness "$HARNESS" --model "${MODEL:-}" --effort "${EFFORT:-}" --account "${WORKER_ACCOUNT_DECLARED:-}" --generation "$SPAWN_GEN" || true
       ;;
   esac
 fi

@@ -819,6 +819,9 @@ async function cmdSetup(args) {
     position = p;
     if (s.state !== 'merge' && (!s.harness || !s.model)) throw usage(`${s.state} needs harness and model`);
     if (s.fallbacks !== undefined && !Array.isArray(s.fallbacks)) throw usage('fallbacks must be an array');
+    for (const candidate of s.fallbacks ?? []) {
+      if (!candidate || typeof candidate.harness !== 'string' || !candidate.harness.trim() || typeof candidate.model !== 'string' || !candidate.model.trim()) throw usage('each fallback needs harness and model');
+    }
     return { state: s.state, position: index, harness: s.state === 'merge' ? null : s.harness, model: s.state === 'merge' ? null : s.model, effort: s.state === 'merge' ? null : s.effort ?? null, fallbacks: JSON.stringify(s.fallbacks ?? []), source: by, ruleIds: s.ruleIds ?? null };
   });
   return write(taskId, identity(args, 'firstmate'), async ({ task }) => {
@@ -863,6 +866,10 @@ async function cmdStep(args) {
     const current = (await stepRows(taskId)).find(s => s.state === task.workflowState);
     if (!current) throw rule('current workflow state has no setup step');
     const now = new Date().toISOString();
+    if (action !== 'start' && args.flags.generation) {
+      const starts = (await taskEvents(taskId)).filter(e => e.kind === 'step' && bodyOf(e).generation && bodyOf(e).stepWrites?.some(s => s.state === current.state && s.status === 'running'));
+      if (starts.at(-1) && bodyOf(starts.at(-1)).generation !== args.flags.generation) throw rule('step generation is stale');
+    }
     let patch;
     if (action === 'start') {
       if (current.status === 'running') throw rule('end the running step before starting another attempt');
@@ -876,7 +883,7 @@ async function cmdStep(args) {
       if (current.status !== 'running') throw rule('liveness requires a running step');
       patch = { alive: action };
     }
-    return { kind: 'step', note: args.flags.reason ?? action, extra: { stepWrites: [{ state: current.state, ...patch }] }, set: stepProjection({ ...current, ...patch }) };
+    return { kind: 'step', note: args.flags.reason ?? action, extra: { generation: args.flags.generation ?? null, stepWrites: [{ state: current.state, ...patch }] }, set: stepProjection({ ...current, ...patch }) };
   });
 }
 
