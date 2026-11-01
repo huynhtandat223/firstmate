@@ -1032,10 +1032,31 @@ fm_busy_launch_prompt_parked() {  # <harness>
 # without a supplied tail40 it is skipped entirely and a record still pinned
 # at the fm-spawn seed keeps reading busy fm-spawn, unchanged.
 fm_busy_stop_text() {  # <plain pane tail>; prints the matching stop line
-  # Accept terminal error rows, not prose, shell commands, or source excerpts.
-  # Only the latest rendered content is evidence of a current stop.
-  printf '%s\n' "$1" | grep -v '^[[:space:]]*$' | tail -6 \
-    | grep -iE '^[[:space:]]*(Individual quota reached|Free usage exceeded|Error:[[:space:]]*402.*Insufficient Balance|You have hit your (usage )?limit|Codex error: The usage limit has been reached|\[429\][^[:alnum:]]*usage limit|Request failed: rate limit|Error:.*rate limit)' -m 1
+  local pane
+  pane=$(printf '%s\n' "$1" | tail -40)
+  # Current vendor error surfaces, verified by firstmate's stopped-pane reads.
+  # Pair the error with its screen context; a quoted standalone line is not
+  # evidence of a stopped turn. Pi's JSON error wraps across several rows.
+  if printf '%s\n' "$pane" | grep -qE '^⚠ Individual quota reached\.' \
+    && printf '%s\n' "$pane" | grep -qE '^limits\. Resets in [0-9]+h' \
+    && printf '%s\n' "$pane" | grep -qE '^Error ID: ' \
+    && printf '%s\n' "$pane" | grep -qE '^\? for shortcuts.*Gemini'; then
+    printf '%s\n' "$pane" | grep -m 1 '^⚠ Individual quota reached\.'
+    return 0
+  fi
+  if printf '%s\n' "$pane" | grep -qE '^Build · .*OpenCode · ' \
+    && printf '%s\n' "$pane" | grep -qE '^⬝+ Free usage exceeded, subscribe to Go \[retrying in .*attempt #[0-9]+\] esc interrupt'; then
+    printf '%s\n' "$pane" | grep -m 1 -E '^⬝+ Free usage exceeded'
+    return 0
+  fi
+  if printf '%s\n' "$pane" | grep -qE '^[[:space:]]*Error: 402: \{"message":' \
+    && printf '%s\n' "$pane" | grep -qF 'Insufficient Balance (request_id:'; then
+    printf '%s\n' "$pane" | grep -m 1 -F 'Insufficient Balance (request_id:'
+    return 0
+  fi
+  # Preserve the existing generic rate-limit backstop.
+  printf '%s\n' "$pane" | grep -v '^[[:space:]]*$' | tail -6 \
+    | grep -iE '^[[:space:]]*(You have hit your (usage )?limit|Codex error: The usage limit has been reached|\[429\][^[:alnum:]]*usage limit|Request failed: rate limit|Error:.*rate limit)' -m 1
 }
 
 fm_busy_classify() {  # <backend> <target> <harness> <id> <state-dir> [tail40]

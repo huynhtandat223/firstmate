@@ -37,6 +37,8 @@ printf "Free usage exceeded"
 # Individual quota reached
 rate limit is handled in this test')
   [ "$out" = 'busy opencode-plugin' ] || fail "quoted quota text classified $out"
+  out=$(fm_busy_classify tmux w1 opencode t1 "$state" 'Individual quota reached')
+  [ "$out" = 'busy opencode-plugin' ] || fail "standalone fixture line classified $out"
   out=$(fm_busy_classify tmux w1 opencode t1 "$state" 'Individual quota reached
 new turn
 running tool
@@ -45,10 +47,8 @@ writing code
 checking tests
 still working')
   [ "$out" = 'busy opencode-plugin' ] || fail "historical stop classified $out"
-  for text in 'Individual quota reached ... Resets in 163h' \
-    'Free usage exceeded, subscribe to Go [retrying in 9h 2m attempt #1]' \
-    'Error: 402 ... Insufficient Balance'; do
-    out=$(fm_busy_classify tmux w1 opencode t1 "$state" "$text")
+  for text in agy opencode pi; do
+    out=$(fm_busy_classify tmux w1 opencode t1 "$state" "$(<"$ROOT/tests/fixtures/quota-stop/$text.txt")")
     [ "$out" = 'stopped quota' ] || fail "quota pane classified $out"
   done
   pass 'quota panes override a busy semantic record'
