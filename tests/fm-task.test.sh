@@ -742,6 +742,7 @@ case_block_rules() {
     ft block transient $t --reason "try $i" --next-actor firstmate; must "block $i" 0 || return 1
     [ "$(task_state $t)" = blocked ] || { echo "block $i: $(task_state $t)"; return 1; }
     ft unblock $t; must "unblock $i" 0 || return 1
+    [ "$(task_row $t | jq -r .blockKind)" = null ] || { echo "unblock $i left blockKind: $(task_row $t)"; return 1; }
     ft start $t; must "start $i" 0 || return 1
   done
   ft block transient $t --reason 'try 3' --next-actor firstmate; must 'block 3' 0 || return 1
@@ -2633,7 +2634,7 @@ case_question_round() {
   ow_out=$("$BIN/fm-task-owner.sh" --action answer --task $t --question "$q3" --option Yes --owner u-1 2>&1)
   jq -e '.ok == true' <<<"$ow_out" >/dev/null || { echo "owner answer: $ow_out"; return 1; }
   row=$(task_row $t)
-  [ "$(jq -r .state <<<"$row")" = ready ] && [ "$(jq -r .nextActor <<<"$row")" = worker ] || { echo "the last answer did not return the task: $row"; return 1; }
+  [ "$(jq -r .state <<<"$row")" = ready ] && [ "$(jq -r .nextActor <<<"$row")" = worker ] && [ "$(jq -r .blockKind <<<"$row")" = null ] || { echo "the last answer did not return the task: $row"; return 1; }
   db fm_task_event | jq -e --arg t $t --argjson q1 "$q1" --argjson q2 "$q2" --argjson q3 "$q3" '[.[] | select(.taskId == $t and .kind == "answered") | (.body | fromjson | .answer.question)] == [$q1, $q2, $q3]' >/dev/null \
     || { echo "answered events: $(db fm_task_event | jq -c --arg t $t '[.[] | select(.taskId == $t and .kind == "answered") | .body]')"; return 1; }
   db fm_task_event | jq -e --arg t $t '[.[] | select(.taskId == $t and .kind == "answered")][-1] | .actor == "owner:u-1" and .actorRole == "owner"' >/dev/null || { echo "the owner answer is not the owner's"; return 1; }
@@ -2845,6 +2846,7 @@ mutate 'a re-sent rule key writes nothing again' model_rules "  const prior = aw
     out(" "  const prior = null;
   if (prior) {
     out("
+mutate 'a block streak survives the unblock that clears blockKind' block_rules "const repeats = streakKind(events) === kind ?" "const repeats = task.blockKind === kind ?"
 mutate 'an owner ask joins a round of open owner questions' question_round "    if (!round) guard('ask', task);" "    guard('ask', task);"
 mutate 'an owner question leaves blockRepeats as it was' question_round "    const set = nextActor === 'owner'" "    const set = false"
 mutate 'an answered event closes only its question' question_round "    else if (e.kind === 'answered') open = open.filter((call) => call.seq !== bodyOf(e).answer?.question);" ""

@@ -1115,8 +1115,9 @@ const cmdHeartbeat = simple('heartbeat', 'heartbeat', async (task, args, taskId)
 });
 const cmdUnblock = simple('unblock', 'unblocked', async (task, args, taskId) => {
   const waiting = (await openParents(taskId)).length > 0;
-  const set = { state: waiting ? 'todo' : 'ready', nextActor: 'worker', holdUntil: null, blockReason: null };
-  if (task.state === 'triage') Object.assign(set, { blockKind: null, blockRepeats: 0 });
+  // blockKind clears with the block; the repeat count keeps its streak in the events (streakKind).
+  const set = { state: waiting ? 'todo' : 'ready', nextActor: 'worker', holdUntil: null, blockReason: null, blockKind: null };
+  if (task.state === 'triage') Object.assign(set, { blockRepeats: 0 });
   return set;
 });
 const cmdChanges = simple('changes', 'changes', async () => ({ state: 'ready', nextActor: 'worker' }), { needNote: true });
@@ -1462,9 +1463,21 @@ function prChecksRunning(prUrl) {
   return rows.some((row) => RUNNING_CHECK_STATES.includes(String(row?.state ?? '').toLowerCase()));
 }
 
+// The kind of the task's current block streak, read from the events: a block, or a question to firstmate, sets it; an
+// event that resets blockRepeats ends it. An owner question leaves it, and so does an unblock, which clears blockKind.
+function streakKind(events) {
+  let kind = null;
+  for (const e of [...events].sort((a, b) => a.seq - b.seq)) {
+    const set = bodyOf(e).set || {};
+    if (set.blockRepeats === 0) kind = null;
+    else if (e.kind === 'blocked' || (e.kind === 'needs-decision' && set.nextActor !== 'owner')) kind = set.blockKind ?? kind;
+  }
+  return kind;
+}
+
 // Count a block of `kind` against the task: the third in a row of one kind goes to triage.
-function blockSet(task, kind, reason, nextActor, until) {
-  const repeats = task.blockKind === kind ? task.blockRepeats + 1 : 1;
+function blockSet(task, events, kind, reason, nextActor, until) {
+  const repeats = streakKind(events) === kind ? task.blockRepeats + 1 : 1;
   const triage = kind !== 'dependency' && repeats >= 3;
   return { state: triage ? 'triage' : 'blocked', nextActor: triage ? 'firstmate' : nextActor, blockKind: kind, blockReason: String(reason ?? '').slice(0, LIMITS.blockReason), blockRepeats: repeats, holdUntil: until };
 }
@@ -1487,7 +1500,7 @@ async function cmdAsk(args) {
     // An owner question does not count toward repeat-to-triage; a question to firstmate still does.
     const set = nextActor === 'owner'
       ? { state: 'blocked', nextActor: 'owner', blockKind: 'needs-decision', blockReason: String(f.question).slice(0, LIMITS.blockReason), blockRepeats: task.blockRepeats, holdUntil: null }
-      : blockSet(task, 'needs-decision', f.question, nextActor, null);
+      : blockSet(task, events, 'needs-decision', f.question, nextActor, null);
     return { kind: 'needs-decision', note: noteOf(args), set, children: withImages({ question: [child] }, images) };
   }, undefined, nextActor === 'owner' ? (result) => waitOn(taskId, who, { actor: 'owner', clearsOn: 'answer', note: String(f.question).replace(/\s+/g, ' ').slice(0, 300), question: result.event.seq }) : undefined);
 }
@@ -1519,7 +1532,7 @@ async function cmdAnswer(args) {
     const waiting = !left.length && (await openParents(taskId)).length > 0;
     const set = left.length
       ? { blockReason: bodyOf(left[0]).set?.blockReason ?? null }
-      : { state: waiting ? 'todo' : 'ready', nextActor: 'worker', blockReason: null, holdUntil: null };
+      : { state: waiting ? 'todo' : 'ready', nextActor: 'worker', blockReason: null, blockKind: null, holdUntil: null };
     const answer = { question, ...(f.option !== undefined ? { option: f.option } : {}), ...(f.note ? { note: f.note } : {}) };
     return { kind: 'answered', note: [f.option, f.note].filter(Boolean).join(' - '), set, extra: { answer } };
   });
@@ -1546,7 +1559,7 @@ async function cmdBlock(args) {
   return write(
     taskId,
     who,
-    async ({ task }) => {
+    async ({ task, events }) => {
       guard('block', task);
       let set;
       if (kind === 'dependency') {
@@ -1555,9 +1568,9 @@ async function cmdBlock(args) {
         if (!parent) throw rule(`parent ${f.on} does not exist`);
         if (CLOSED.includes(parent.state)) throw rule(`parent ${f.on} is ${parent.state}; a dependency waits on an open parent`);
         if (await wouldCycle(f.on, taskId)) throw rule(`${f.on} already waits on ${taskId}`);
-        set = { ...blockSet(task, kind, f.reason, f['next-actor'] ?? 'worker', null), state: 'todo', nextActor: 'worker' };
+        set = { ...blockSet(task, events, kind, f.reason, f['next-actor'] ?? 'worker', null), state: 'todo', nextActor: 'worker' };
       } else {
-        set = blockSet(task, kind, f.reason, f['next-actor'] ?? 'firstmate', until);
+        set = blockSet(task, events, kind, f.reason, f['next-actor'] ?? 'firstmate', until);
       }
       const child = { blockKind: kind, reason: f.reason, nextActor: f['next-actor'], until };
       for (const key of Object.keys(child)) if (child[key] === undefined) delete child[key];
