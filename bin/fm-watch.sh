@@ -3528,14 +3528,14 @@ while :; do
     TASK_DELIVERY_LAST=$task_id
     task_delivery_processed=1
     task_consumer="firstmate-${FM_HOME##*/}"
+    # Opt-in task record (plan v2 D1): the card's live dot follows this incarnation's endpoint; the writer stores a
+    # change only, and refuses a report whose spawn generation is not the one that started the running step.
     if [ -e "$CONFIG/task-shadow" ]; then
-      task_step_generation=$(awk -F= '$1 == "spawn_gen" {print substr($0, index($0, "=") + 1); exit}' "$task_meta")
-      task_live_line=$(fm_run_timed 2 "$SCRIPT_DIR/fm-crew-state.sh" "$task_id" 2>/dev/null) || task_live_line=''
-      case "$task_live_line" in
-        'state: stopped '*|'state: torn-down '*)
-          fm_run_timed 2 env FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task.sh" step "$task_id" dead --generation "$task_step_generation" >/dev/null 2>&1 || true ;;
-        'state: working '*|'state: paused '*|'state: parked '*|'state: idle '*)
-          fm_run_timed 2 env FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task.sh" step "$task_id" alive --generation "$task_step_generation" >/dev/null 2>&1 || true ;;
+      task_step_generation=$(fm_meta_get "$task_meta" spawn_gen)
+      task_step_live=$(fm_backend_agent_alive "$(fm_backend_of_meta "$task_meta")" "$(fm_backend_target_of_meta "$task_meta")" 2>/dev/null) || task_step_live=unknown
+      case "$task_step_live" in
+        alive|dead)
+          fm_run_timed 2 env FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task.sh" step "$task_id" "$task_step_live" --generation "$task_step_generation" >/dev/null 2>&1 || true ;;
       esac
     fi
     fm_run_timed 2 env FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task.sh" deliver "$task_id" --consumer "$task_consumer" >/dev/null 2>&1 || true

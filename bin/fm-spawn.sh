@@ -7029,17 +7029,10 @@ SPAWN_ACCOUNT=
 [ -z "$WORKER_ACCOUNT_PROVIDER" ] || SPAWN_ACCOUNT="$SPAWN_ACCOUNT account_provider=$WORKER_ACCOUNT_PROVIDER"
 # Opt-in fleet activity ledger (docs/fleet-ledger.md); off costs one file test.
 [ ! -e "$CONFIG/fleet-ledger" ] || [ "$RELAUNCH" -eq 1 ] || FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_CONFIG_OVERRIDE=$CONFIG "$SCRIPT_DIR/fm-fleet-ledger.sh" dispatched "$ID" "$SPAWN_REPORTED_KIND" "${PROJ_ABS##*/}" "$HARNESS" "$MODEL" || true
-# A configured workflow step records the chosen runtime independently of the local runtime record.
-if [ -e "$CONFIG/task-shadow" ]; then
-  workflow=$(FM_HOME=$FM_HOME "$SCRIPT_DIR/fm-task.sh" show "$ID" --json 2>/dev/null | jq -r '.workflowState // "queued"')
-  case "$workflow" in
-    plan|implement|testing|verify)
-      FM_HOME=$FM_HOME "$SCRIPT_DIR/fm-task.sh" step "$ID" start --harness "$HARNESS" --model "${MODEL:-}" --effort "${EFFORT:-}" --account "${WORKER_ACCOUNT_DECLARED:-}" --generation "$SPAWN_GEN" || true
-      ;;
-  esac
-fi
 # Opt-in task record shadow (bin/fm-task-shadow.sh): the fresh task is written to the record too; off costs one file test.
 [ ! -e "$CONFIG/task-shadow" ] || [ "$RELAUNCH" -eq 1 ] || FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_CONFIG_OVERRIDE=$CONFIG FM_DATA_OVERRIDE=$DATA "$SCRIPT_DIR/fm-task-shadow.sh" dispatched "$ID" "$SPAWN_REPORTED_KIND" "${PROJ_ABS##*/}" "$HARNESS" || true
+# The task's current workflow state records this incarnation's runtime (plan v2 D1); a relaunch re-points it.
+[ ! -e "$CONFIG/task-shadow" ] || FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_CONFIG_OVERRIDE=$CONFIG FM_DATA_OVERRIDE=$DATA "$SCRIPT_DIR/fm-task-shadow.sh" step-start "$ID" "$SPAWN_GEN" "$HARNESS" "${MODEL:-}" "${EFFORT:-}" "${WORKER_ACCOUNT_DECLARED:-}" || true
 # Opt-in Herdr project groups (docs/herdr-backend.md "Project groups") tag the
 # new endpoint now rather than at the next watcher poll; off costs one file test.
 [ ! -e "$CONFIG/herdr-project-groups" ] || [ "$BACKEND" != herdr ] || FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_CONFIG_OVERRIDE=$CONFIG "$SCRIPT_DIR/fm-herdr-groups.sh" sync "$ID" || true

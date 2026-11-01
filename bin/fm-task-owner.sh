@@ -6,7 +6,9 @@
 # a page value. Each action runs bin/fm-task.sh, the one writer, with that owner as actor (`owner:<id>`, role
 # owner); the writer keeps seq, the transitions and the projection, and this file adds no rule of its own.
 #
-# Usage: fm-task-owner.sh --action ACTION --task TASK [--option O] [--row ID@W] [--note N] [--to RECIPIENT] [--ask why|how|wait-what] --owner ID
+# Usage: fm-task-owner.sh --action ACTION --task TASK [--option O] [--row ID@W] [--note N] [--to RECIPIENT] [--ask why|how|wait-what]
+#        [--setup JSON] --owner ID
+#   setup    Approve & start: setup TASK --file <the JSON> --by owner, then a queued TASK moves to its first state   needs --setup
 #   comment  a task comment: store the note once per owner, note and minute              needs --note
 #   answer   a question:     comment "answer: <option>" (and " - <note>"), then unblock    needs --option
 #   unblock  a block:        comment "<note>", then unblock                                needs --note
@@ -20,7 +22,7 @@
 #
 # Prints one JSON line for the page: {"ok":true|false,"action","task","writes":[writer lines],"error"?}.
 # Exits 0, 2 for a usage refusal (nothing written), or the first refusing writer call's code; a refused comment
-# stops before the unblock.
+# stops before the unblock; a refused setup stops before the move.
 # Environment: FM_HOME defaults to this file's home (its parent directory), so the status view lands where the
 # watcher reads it. FM_TASK_OWNER_WRITER replaces bin/fm-task.sh (the tests); the writer's own settings
 # (FM_TASK_BASE_URL, FM_TASK_TOKEN_FILE) keep their defaults.
@@ -98,8 +100,11 @@ case "$ACTION" in
     trap 'rm -f "$setup_file"' EXIT
     printf '%s' "$SETUP" > "$setup_file"
     if run setup "$TASK" --file "$setup_file" --by owner; then
-      first_state=$(jq -r '(if type == "array" then . else .steps end)[0].state' "$setup_file")
-      run move "$TASK" --to "$first_state" || RC=$?
+      # a task already under way keeps its state: only a queued task starts its flow here
+      if [ "$("$WRITER" show "$TASK" --json 2>/dev/null </dev/null | jq -r '.workflowState // "queued"')" = queued ]; then
+        first_state=$(jq -r '(if type == "array" then . else .steps end)[0].state' "$setup_file")
+        run move "$TASK" --to "$first_state" || RC=$?
+      fi
     else
       RC=$?
     fi

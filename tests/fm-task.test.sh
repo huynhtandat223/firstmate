@@ -2189,28 +2189,87 @@ case_owner_writer() {
   [ "$(db fm_task_check | jq -r '.[] | select(.taskId == "tk-ow2" and .scenarioId == "A1" and .width == "1440") | .status')" = fail ] || { echo "the check row did not take the fail"; return 1; }
 }
 
-# SG1 (#176 Step 5): every write folds the board card's step onto the row: stage by the step rule, stageSince only
-# when the step changes, lastEventAt and lastNote from the newest event that is not a backlog view row event,
-# reviewer from the newest check, owner-check, approved or changes event.
+# D1 (plan v2 section 3): setup writes one step row per state the task needs, move follows only that setup, and the
+# step calls carry the running state's runtime and liveness onto the card, keyed by the spawn generation.
 case_workflow() {
   BIN=$1; reset_db
+  local step_of
+  step_of() { db fm_task_step | jq -c --arg s "$1" '.[] | select(.taskId == "tk-flow" and .state == $s)'; }
   mk_running tk-flow >/dev/null || return 1
-  printf '%s' '{"steps":[{"state":"implement","harness":"pi","model":"example","effort":"high"},{"state":"merge"}]}' > "$TMP_ROOT/setup.json"
+  [ "$(task_row tk-flow | jq -r .workflowState)" = queued ] || { echo "a new task is not queued: $(task_row tk-flow)"; return 1; }
+  printf '%s' '{"steps":[{"state":"implement","harness":"pi","model":"example","effort":"high","fallbacks":[{"harness":"claude","model":"backup","effort":"low"}]},{"state":"merge"}]}' > "$TMP_ROOT/setup.json"
+  printf '%s' '{"steps":[{"state":"merge"},{"state":"implement","harness":"pi","model":"example"}]}' > "$TMP_ROOT/setup-order.json"
+  ft setup tk-flow --file "$TMP_ROOT/setup-order.json"; must 'states out of workflow order' 5 || return 1
   ft setup tk-flow --file "$TMP_ROOT/setup.json"; must setup 0 || return 1
+  step_of implement | jq -e '.status == "pending" and .position == 0 and .attempt == 0 and (.fallbacks | fromjson | .[0].model == "backup")' >/dev/null || { echo "implement row: $(step_of implement)"; return 1; }
+  step_of merge | jq -e '.harness == null and .model == null' >/dev/null || { echo "merge carries a model: $(step_of merge)"; return 1; }
   printf '%s' '{"steps":[{"state":"implement","harness":"pi","model":"example","effort":"high"}]}' > "$TMP_ROOT/setup-one.json"
   ft setup tk-flow --file "$TMP_ROOT/setup-one.json"; must 'skip pending merge' 0 || return 1
-  db fm_task_step | jq -e '.[]|select(.taskId == "tk-flow" and .state == "merge")|.status == "skipped"' >/dev/null || return 1
+  step_of merge | jq -e '.status == "skipped"' >/dev/null || { echo "a removed pending state is not skipped: $(step_of merge)"; return 1; }
   ft setup tk-flow --file "$TMP_ROOT/setup.json"; must 'restore setup selection' 0 || return 1
+  ft move tk-flow --to testing; must 'a state outside the setup' 5 || return 1
   ft move tk-flow --to implement; must move 0 || return 1
-  ft step tk-flow start --harness pi --model example --effort high; must start 0 || return 1
-  task_row tk-flow | jq -e '.workflowState == "implement" and .stepModel == "example" and .stepAlive == "alive"' >/dev/null || return 1
-  ft move tk-flow --to testing; must 'unconfigured state refused' 5 || return 1
-  ft step tk-flow dead; must dead 0 || return 1
-  ft step tk-flow end --reason cleanup; must cleanup 0 || return 1
-  db fm_task_step | jq -e '[.[]|select(.taskId == "tk-flow")]|length == 2' >/dev/null || return 1
+  ft step tk-flow start --harness pi --model example --effort high --generation g1; must start 0 || return 1
+  task_row tk-flow | jq -e '.workflowState == "implement" and .stepModel == "example" and .stepEffort == "high" and .stepAlive == "alive"' >/dev/null || { echo "card after start: $(task_row tk-flow)"; return 1; }
+  [ "$(db fm_task_step | jq '[.[] | select(.taskId == "tk-flow")] | length')" = 2 ] || { echo "a state outside the setup has a row"; return 1; }
+  printf '%s' '{"steps":[{"state":"implement","harness":"pi","model":"other"},{"state":"merge"}]}' > "$TMP_ROOT/setup-started.json"
+  ft setup tk-flow --file "$TMP_ROOT/setup-started.json"; must 'a started state keeps its model' 5 || return 1
+  ft move tk-flow --to testing; must 'unconfigured state refused while running' 5 || return 1
+  [ "$(task_row tk-flow | jq -r .workflowState)" = implement ] || { echo "a refused move moved the card"; return 1; }
+  ft step tk-flow start --harness pi --model example --generation g1; must 'the same incarnation again' 0 || return 1
+  [ "$OUT" = 'step tk-flow: unchanged' ] || { echo "a repeated start wrote: $OUT"; return 1; }
+  # a relaunch: the new incarnation takes the running attempt over; the old one can no longer report
+  ft step tk-flow start --harness claude --model opus --effort xhigh --generation g2; must 'relaunch start' 0 || return 1
+  step_of implement | jq -e '.attempt == 1 and .model == "opus" and .status == "running"' >/dev/null || { echo "relaunch did not re-point the attempt: $(step_of implement)"; return 1; }
+  [ "$(task_row tk-flow | jq -r .stepModel)" = opus ] || { echo "card model after relaunch: $(task_row tk-flow)"; return 1; }
+  ft step tk-flow dead --generation g1; must 'stale incarnation refused' 5 || return 1
+  [ "$(task_row tk-flow | jq -r .stepAlive)" = alive ] || { echo "a stale report changed the dot"; return 1; }
+  ft step tk-flow alive --generation g2; must 'unchanged liveness' 0 || return 1
+  [ "$OUT" = 'step tk-flow: unchanged' ] || { echo "an unchanged liveness wrote: $OUT"; return 1; }
+  ft step tk-flow dead --generation g2; must dead 0 || return 1
+  [ "$(task_row tk-flow | jq -r .stepAlive)" = dead ] || { echo "card dot after dead: $(task_row tk-flow)"; return 1; }
+  ft step tk-flow end --reason cleanup --generation g2; must cleanup 0 || return 1
+  step_of implement | jq -e '.status == "done" and .endReason == "cleanup" and .endedAt != null' >/dev/null || { echo "cleanup did not end the step: $(step_of implement)"; return 1; }
+  ft step tk-flow end --reason cleanup; must 'end with nothing running' 0 || return 1
+  [ "$OUT" = 'step tk-flow: unchanged' ] || { echo "a second end wrote: $OUT"; return 1; }
   ft move tk-flow --to merge; must merge 0 || return 1
-  task_row tk-flow | jq -e '.workflowState == "merge" and .stepModel == null' >/dev/null || return 1
+  task_row tk-flow | jq -e '.workflowState == "merge" and .stepModel == null' >/dev/null || { echo "card at merge: $(task_row tk-flow)"; return 1; }
+  ft step tk-flow start --harness pi --model example --generation g3; must 'Merge has no worker' 5 || return 1
+  # the owner's Approve & start: setup by owner, then the task moves to its first state
+  export FM_HOME="$TMP_ROOT/workflow-home"; rm -rf "$FM_HOME"; mkdir -p "$FM_HOME/state"
+  mk_running tk-own >/dev/null || return 1
+  OUT=$("$BIN/fm-task-owner.sh" --action setup --task tk-own --setup "$(cat "$TMP_ROOT/setup.json")" --owner u-1 2>"$TMP_ROOT/err"); RC=$?; ERR=$(cat "$TMP_ROOT/err")
+  must 'owner setup' 0 || return 1
+  jq -e '.ok == true and (.writes | length) == 2' <<<"$OUT" >/dev/null || { echo "owner setup reply: $OUT"; return 1; }
+  task_row tk-own | jq -e '.workflowState == "implement" and .setupBy == "owner" and .stepModel == "example"' >/dev/null || { echo "owner setup did not start the flow: $(task_row tk-own)"; return 1; }
+  OUT=$("$BIN/fm-task-owner.sh" --action setup --task tk-own --setup "$(cat "$TMP_ROOT/setup-order.json")" --owner u-1 2>"$TMP_ROOT/err"); RC=$?
+  must 'owner setup refused' 5 || return 1
+  jq -e '.ok == false and (.error | length) > 0' <<<"$OUT" >/dev/null || { echo "a refused owner setup reply: $OUT"; return 1; }
+  # leaving a running state ends its attempt; a re-approved setup keeps the state the task is in
+  ft step tk-own start --harness pi --model example --effort high --generation o1; must 'owner task start' 0 || return 1
+  ft move tk-own --to merge; must 'move on' 0 || return 1
+  db fm_task_step | jq -e '.[] | select(.taskId == "tk-own" and .state == "implement") | .status == "done" and .alive == "dead" and .endReason == "moved to merge"' >/dev/null \
+    || { echo "the state left behind still runs: $(db fm_task_step | jq -c '.[] | select(.taskId == "tk-own")')"; return 1; }
+  OUT=$("$BIN/fm-task-owner.sh" --action setup --task tk-own --setup "$(cat "$TMP_ROOT/setup.json")" --owner u-1 2>"$TMP_ROOT/err"); RC=$?
+  must 'owner re-approves under way' 0 || return 1
+  jq -e '.ok == true and (.writes | length) == 1' <<<"$OUT" >/dev/null || { echo "a re-approval moved the task: $OUT"; return 1; }
+  [ "$(task_row tk-own | jq -r .workflowState)" = merge ] || { echo "a re-approval changed the state: $(task_row tk-own)"; return 1; }
+  # approve closes the flow from any state: a state that never started is skipped
+  printf '%s' '{"steps":[{"state":"implement","harness":"pi","model":"example","effort":"high"},{"state":"merge"},{"state":"verify","harness":"pi","model":"example"}]}' > "$TMP_ROOT/setup-verify.json"
+  mk_running tk-close >/dev/null || return 1
+  ft setup tk-close --file "$TMP_ROOT/setup-verify.json"; must 'close setup' 0 || return 1
+  ft move tk-close --to implement; must 'close move' 0 || return 1
+  ft step tk-close start --harness pi --model example --generation c1; must 'close start' 0 || return 1
+  ft "done" tk-close "${DONE_FLAGS[@]}"; must 'close done' 0 || return 1
+  ft approve tk-close; must 'approve before the last state' 0 || return 1
+  task_row tk-close | jq -e '.state == "done" and .workflowState == "done" and .stepAlive == null' >/dev/null || { echo "approve did not close the flow: $(task_row tk-close)"; return 1; }
+  db fm_task_step | jq -e '[.[] | select(.taskId == "tk-close")] | map({(.state): .status}) | add | .verify == "skipped" and .merge == "skipped" and .implement == "done"' >/dev/null \
+    || { echo "approve left steps open: $(db fm_task_step | jq -c '.[] | select(.taskId == "tk-close")')"; return 1; }
+  export FM_HOME="$TMP_ROOT/home"
 }
+
+# SG1 (#176 Step 5): every write folds lastEventAt and lastNote from the newest event that is not a backlog view row
+# event, and reviewer from the newest check, owner-check, approved or changes event.
 case_stage() {
   BIN=$1; reset_db
   local t=tk-sg2 long
@@ -2353,6 +2412,12 @@ mutate 'a re-sent owner-check does not write its item again' owner_replay "const
 mutate 'a re-sent owner-check key with another call is refused' owner_replay "if (prior && (prior.taskId !== taskId ||" "if (false && (prior.taskId !== taskId ||"
 mutate 'a new result clears the head and evidence of an older one' check_nulls "evidence: v.evidence ?? null, head: v.head ?? null };" "...(v.evidence ? { evidence: v.evidence } : {}), ...(v.head ? { head: v.head } : {}) };"
 mutate 'a check on a task that closed meanwhile is refused' check_close "if (CLOSED.includes(task.state)) throw rule(\`check is refused:" "if (false) throw rule(\`check is refused:"
+mutate 'a move outside the setup is refused' workflow "if (!target || (next?.state !== to && !retry))" "if (!target && false)"
+mutate 'a report from an older incarnation is refused' workflow "if (generation && started && generation !== started) throw rule(" "if (false) throw rule("
+mutate 'a relaunch start marks its incarnation as the running one' workflow "patch: { ...runtime, status: 'running', alive: 'alive', lastHeartbeatAt: now }" "patch: { ...runtime, alive: 'alive', lastHeartbeatAt: now }"
+mutate 'a removed pending state is skipped' workflow "...removed.map(s => ({ state: s.state, status: 'skipped' }))" "...[]"
+mutate 'approve skips the states that never started' workflow ": s.status === 'pending' ? [{ state: s.state, status: 'skipped' }] : []);" ": []);"
+mutate 'a move ends the running attempt of the state left behind' workflow "const stepWrites = left ? [{ state: left.state, status: 'done'" "const stepWrites = false ? [{ state: left.state, status: 'done'"
 mutate 'the reviewer is the actor of the newest review event' stage "if (REVIEWER_KINDS.includes(event.kind)) task.reviewer = event.actor ?? null;" ";"
 mutate 'a row event does not move lastNote or lastEventAt' stage "if (event.kind !== 'row') {" "if (true) {"
 mutate 'a machine record does not become lastNote' stage "if (!isMachineRecord(event, note)) task.lastNote" "task.lastNote"

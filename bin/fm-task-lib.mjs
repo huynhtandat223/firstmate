@@ -14,10 +14,17 @@
 //   assign   <task> --to ASSIGNEE            triage|todo|ready -> ready (todo while a parent is open)
 //   reassign <task> --to ASSIGNEE --reason WHY  changes only assignee; refused from done and archived
 //   start    <task>                          ready -> running
-//   setup <task> --file JSON [--by firstmate|owner]   ordered {steps:[{state,harness,model,effort,fallbacks}]}
-//   move <task> --to STATE                   advance through the approved setup
-//   step <task> start --harness H --model M [--effort E] [--account A]
-//   step <task> alive|dead|end [--reason R]   record the current setup step's runtime
+//   setup    <task> --file JSON [--by firstmate|owner]   {"steps":[{state,harness,model,effort,fallbacks:[{harness,model,effort}]}]}:
+//            the states the task needs, in workflow order (plan implement testing merge verify; Merge has no model).
+//            Writes one fm_task_step row per state; a pending state left out becomes skipped. Once a state has
+//            started, only a pending state's harness, model, effort and fallbacks may change (exit 5 otherwise).
+//   move     <task> --to STATE               queued -> the first setup state -> the next one; testing|verify -> implement
+//            on a failed check row; a state outside the setup is refused (exit 5). The running attempt of the state
+//            left behind ends with the move. Done comes only through approve, which ends a running step and skips a
+//            state that never started.
+//   step     <task> start --harness H --model M [--effort E] [--account A] [--generation G]   the current state runs
+//   step     <task> alive|dead [--generation G]   on a change only     step <task> end --reason R [--generation G]
+//            G is the spawn_gen of state/<task>.meta; a report from an older incarnation is refused (exit 5).
 //   heartbeat <task> [--note N]              running (today's `working:`)
 //   done     <task> --summary --changed-files --verification --residual-risk [--rows JSON]
 //            [--pr-url U] [--head H] [--next-actor tester|firstmate]       running -> review
@@ -284,9 +291,8 @@ function bodyOf(event) {
 }
 
 // The fold of every event's `set`; null while the task has no `created` event.
-// The step follows the state: done is passed; review is dev once a deploy follows the newest done, else pr; running is
-// pr once a pr event follows the newest started or changes, else working; triage, todo and ready are queued; blocked
-// (and archived) keep the step they had. stageSince is the time of the event that set the step. lastEventAt and
+// A created task starts in workflow state queued; setup, move, step and approve set workflowState, workflowSince and
+// the card's step fields (stepHarness, stepModel, stepEffort, stepAlive) in their own `set`. lastEventAt and
 // lastNote come from the newest real event: a backlog view `row` event is not one. A machine record is not a note
 // either, so it leaves lastNote as it was: an import's source stamp (`{"source","sha256"}` under a `backfill:<task>:`
 // key, fm-task-backfill-lib.mjs) and a reconcile divergence (`{"field","oldSource","record"}` under a `reconcile:<task>:`
@@ -643,8 +649,9 @@ async function write(taskId, who, build, after, wait) {
   try {
     const stepWrites = bodyOf(result.event).stepWrites;
     if (Array.isArray(stepWrites)) {
-      const newer = (await taskEvents(taskId)).some(e => e.seq > result.event.seq && Array.isArray(bodyOf(e).stepWrites));
-      if (!newer) for (const step of stepWrites) await saveStep(taskId, step);
+      // a replayed or late event writes only the states no newer event has written since
+      const later = (await taskEvents(taskId)).filter(e => e.seq > result.event.seq).flatMap(e => bodyOf(e).stepWrites ?? []).map(s => s.state);
+      for (const step of stepWrites) if (!later.includes(step.state)) await saveStep(taskId, step);
     }
     projected = await project(taskId);
     if (after) {
@@ -848,42 +855,59 @@ async function cmdMove(args) {
     const next = task.workflowState === 'queued' ? steps[0] : steps[index + 1];
     const retry = ['testing', 'verify'].includes(task.workflowState) && to === 'implement' && (await checkRows(taskId)).some(r => r.status === 'fail');
     if (!target || (next?.state !== to && !retry)) throw rule('move must follow setup; Done requires approve');
-    return { kind: 'moved', set: { workflowState: to, workflowSince: new Date().toISOString(), ...stepProjection(target) } };
+    // the state left behind stops running: its attempt ends with the move
+    const now = new Date().toISOString();
+    const left = steps.find(s => s.state === task.workflowState && s.status === 'running');
+    const stepWrites = left ? [{ state: left.state, status: 'done', alive: 'dead', endedAt: now, endReason: `moved to ${to}` }] : [];
+    return { kind: 'moved', extra: { stepWrites }, set: { workflowState: to, workflowSince: now, ...stepProjection(target) } };
   });
 }
+// The spawn generation that started the running attempt of a state: the newest step event that set it running.
+const startGeneration = (events, state) => {
+  const starts = events.filter(e => e.kind === 'step' && bodyOf(e).stepWrites?.some(s => s.state === state && s.status === 'running'));
+  return starts.length ? bodyOf(starts.at(-1)).generation ?? null : null;
+};
+// step start, alive, dead and end. A --generation names the spawn incarnation that reports (state/<task>.meta spawn_gen):
+// a report from another incarnation than the one that started the running attempt is refused, so a late watcher pass of
+// a replaced worker cannot overwrite its successor. A start from a new incarnation while the state runs (a relaunch)
+// re-points the running attempt to the new runtime without counting another attempt; the same incarnation again is
+// unchanged. alive, dead and end on a state that is not running, and an unchanged liveness, write nothing.
 async function cmdStep(args) {
   const taskId = taskIdOf(args);
   const action = oneOf(['start', 'alive', 'dead', 'end'], args.pos.action, 'step action');
+  const generation = args.flags.generation ?? null;
   const who = identity(args, 'firstmate');
-  if (['alive', 'dead'].includes(action)) {
-    const currentTask = fold(await taskEvents(taskId));
-    const step = (await stepRows(taskId)).find(s => s.state === currentTask?.workflowState);
-    if (!step || step.status !== 'running' || step.alive === action) return out(`step ${taskId}: unchanged`);
-    who.key = args.flags.key ?? `step-live:${taskId}:${step.state}:${step.attempt}:${currentTask.lastSeq}:${action}`;
-  }
-  return write(taskId, who, async ({ task }) => {
+  if (action === 'start' && (!args.flags.harness || !args.flags.model)) throw usage('step start needs --harness and --model');
+  if (action === 'end' && !args.flags.reason) throw usage('step end needs --reason');
+  // the decision on the record as it is now; the write repeats it against the events really before it
+  const decide = async (task, events) => {
     if (!task) throw rule('no such task');
-    const current = (await stepRows(taskId)).find(s => s.state === task.workflowState);
-    if (!current) throw rule('current workflow state has no setup step');
+    const current = (await stepRows(taskId)).find(s => s.state === task.workflowState && s.status !== 'skipped');
+    if (!current) throw rule(`current workflow state ${task.workflowState ?? 'none'} has no setup step`);
+    const started = startGeneration(events, current.state);
     const now = new Date().toISOString();
-    if (action !== 'start' && args.flags.generation) {
-      const starts = (await taskEvents(taskId)).filter(e => e.kind === 'step' && bodyOf(e).generation && bodyOf(e).stepWrites?.some(s => s.state === current.state && s.status === 'running'));
-      if (starts.at(-1) && bodyOf(starts.at(-1)).generation !== args.flags.generation) throw rule('step generation is stale');
-    }
-    let patch;
     if (action === 'start') {
-      if (current.status === 'running') throw rule('end the running step before starting another attempt');
       if (current.state === 'merge') throw rule('Merge has no worker model');
-      if (!args.flags.harness || !args.flags.model) throw usage('step start needs --harness and --model');
-      patch = { harness: args.flags.harness, model: args.flags.model, effort: args.flags.effort ?? null, account: args.flags.account ?? null, status: 'running', alive: 'alive', attempt: current.attempt + 1, startedAt: now, lastHeartbeatAt: now, endedAt: null, endReason: null };
-    } else if (action === 'end') {
-      if (!args.flags.reason) throw usage('step end needs --reason');
-      patch = { status: args.flags.reason === 'failed' ? 'failed' : 'done', alive: 'dead', endedAt: now, endReason: args.flags.reason };
-    } else {
-      if (current.status !== 'running') throw rule('liveness requires a running step');
-      patch = { alive: action };
+      const runtime = { harness: args.flags.harness, model: args.flags.model, effort: args.flags.effort ?? null, account: args.flags.account ?? null };
+      if (current.status !== 'running') return { current, patch: { ...runtime, status: 'running', alive: 'alive', attempt: current.attempt + 1, startedAt: now, lastHeartbeatAt: now, endedAt: null, endReason: null } };
+      if (!generation || !started) throw rule('end the running step before starting another attempt');
+      if (generation === started) return { current, unchanged: true };
+      return { current, patch: { ...runtime, status: 'running', alive: 'alive', lastHeartbeatAt: now } };
     }
-    return { kind: 'step', note: args.flags.reason ?? action, extra: { generation: args.flags.generation ?? null, stepWrites: [{ state: current.state, ...patch }] }, set: stepProjection({ ...current, ...patch }) };
+    if (current.status !== 'running') return { current, unchanged: true };
+    if (generation && started && generation !== started) throw rule(`step generation ${generation} is stale: the running attempt started at ${started}`);
+    if (action === 'end') return { current, patch: { status: args.flags.reason === 'failed' ? 'failed' : 'done', alive: 'dead', endedAt: now, endReason: args.flags.reason } };
+    if (current.alive === action) return { current, unchanged: true };
+    return { current, patch: { alive: action } };
+  };
+  const before = await taskEvents(taskId);
+  const first = await decide(fold(before), before);
+  if (first.unchanged) return out(`step ${taskId}: unchanged`);
+  if (['alive', 'dead'].includes(action)) who.key = args.flags.key ?? `step-live:${taskId}:${first.current.state}:${first.current.attempt}:${generation ?? '-'}:${action}:${fold(before).lastSeq}`;
+  return write(taskId, who, async ({ task, events }) => {
+    const { current, patch, unchanged } = await decide(task, events);
+    if (unchanged) throw rule('the step changed meanwhile; nothing to write');
+    return { kind: 'step', note: args.flags.reason ?? action, extra: { generation, stepWrites: [{ state: current.state, ...patch }] }, set: stepProjection({ ...current, ...patch }) };
   });
 }
 
@@ -967,7 +991,8 @@ function simple(command, kind, setFor, { needNote = false } = {}) {
       who,
       async ({ task }) => {
         guard(command, task);
-        return { kind, note: noteOf(args), set: await setFor(task, args, taskId) };
+        const { stepWrites, ...set } = await setFor(task, args, taskId);
+        return { kind, note: noteOf(args), set, ...(stepWrites?.length ? { extra: { stepWrites } } : {}) };
       },
       ['approve', 'archive'].includes(command) ? () => release(taskId, who) : undefined,
     );
@@ -1055,9 +1080,12 @@ const cmdApprove = simple('approve', 'approved', async (task, args, taskId) => {
     const stale = visible.filter((r) => (r.head ?? null) !== head && !carried(r, events));
     if (stale.length) throw rule(`approve is refused: these user-visible rows passed on another head than the latest built or deployed head (${head ?? 'none'}): ${stale.map((r) => `${rowKey(r)} (${r.head ?? 'none'})`).join(', ')}`);
   }
-  const steps = (await stepRows(taskId)).filter(s => s.status !== 'skipped');
-  if (steps.length && steps.at(-1).state !== task.workflowState) throw rule('approve requires the last configured workflow state');
-  return { state: 'done', workflowState: 'done', workflowSince: new Date().toISOString(), stepAlive: null, nextActor: 'firstmate', blockKind: null, blockReason: null, blockRepeats: 0, holdUntil: null };
+  // approve closes the workflow from whatever state it is in (the legacy closers do not move): a running step ends
+  // and a state that never started is skipped
+  const now = new Date().toISOString();
+  const stepWrites = (await stepRows(taskId)).flatMap(s => s.status === 'running' ? [{ state: s.state, status: 'done', alive: 'dead', endedAt: now, endReason: 'approved' }]
+    : s.status === 'pending' ? [{ state: s.state, status: 'skipped' }] : []);
+  return { state: 'done', workflowState: 'done', workflowSince: now, stepAlive: null, nextActor: 'firstmate', blockKind: null, blockReason: null, blockRepeats: 0, holdUntil: null, stepWrites };
 });
 
 // ---- the backlog view (T7) ------------------------------------------------------------------------------

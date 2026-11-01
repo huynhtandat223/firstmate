@@ -20,6 +20,11 @@
 #   fm-task-shadow.sh deploy-verify <task> <sha> <round> <issue>     a deploy event                (bin/fm-procevent-deploy-verify.sh)
 #   fm-task-shadow.sh backlog <verb> <task> [<hold-kind> <reason>]   done | reopen | hold | unhold (bin/fm-backlog-transition-lib.sh;
 #                                                                    a captain hold is left to bin/fm-captain-hold.sh)
+#   fm-task-shadow.sh step-start <task> <generation> <harness> <model> [<effort> [<account>]]
+#                                                                    step start: the current workflow state runs (bin/fm-spawn.sh,
+#                                                                    a relaunch too); queued, merge and done have no worker and
+#                                                                    the writer refuses it, which is logged like any refusal
+#   fm-task-shadow.sh step-end <task> <generation> <reason>          step end, when a state runs     (bin/fm-teardown.sh, fm-control.sh exit)
 #
 # Status line to writer command: working -> heartbeat (after unblock and start when the record holds the task blocked);
 # done -> done (the line is the summary; the other template fields read "-"); needs-decision -> ask with the options
@@ -255,6 +260,12 @@ case "$EVENT" in
     ;;
   deploy-verify)
     w "deploy-$(short "${2:-}|${3:-}")" event "$TASK" deploy --note "deploy ${3:-} at ${2:-}: verify ask sent (${4:-})"
+    ;;
+  step-start)
+    w "step-start-${2:-none}" step "$TASK" start --generation "${2:-}" --harness "${3:-}" --model "${4:-}" ${5:+--effort "$5"} ${6:+--account "$6"}
+    ;;
+  step-end)
+    w "step-end-${2:-none}-$(short "${3:-}")" step "$TASK" end --generation "${2:-}" --reason "${3:-cleanup}"
     ;;
   backlog)
     case "${1:-}" in
