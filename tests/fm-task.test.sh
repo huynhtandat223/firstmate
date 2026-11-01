@@ -2099,6 +2099,15 @@ case_checklist() {
   ft checklist $t off decision --reason later >/dev/null && ft start $t >/dev/null && ft ask $t "${ASK_FLAGS[@]}" >/dev/null || return 1
   ft checklist $t on decision; must 'on with a question open' 0 || return 1
   [ "$(clrow $t decision | jq -r .status)" = pending ] || { echo "an open question passed the item: $(clrow $t decision)"; return 1; }
+  # firstmate's unblock is not the owner's answer; the owner's approval of the current plan is
+  t=tk-cl4
+  ft create $t --title 'Plan unblock' --kind plan >/dev/null && ft assign $t --to w1 >/dev/null && ft start $t >/dev/null || return 1
+  ft ask $t "${ASK_FLAGS[@]}" --next-actor owner >/dev/null && ft unblock $t >/dev/null || return 1
+  [ "$(clrow $t decision | jq -r .status)" = pending ] || { echo "firstmate's unblock passed the decision item: $(clrow $t decision)"; return 1; }
+  ft plan $t --document "$doc" >/dev/null || return 1
+  seq=$(seq_of)
+  ft plan-decision $t --decision approve --plan-seq "$seq"; must 'owner plan approval' 0 || return 1
+  clrow $t decision | jq -e --arg ev "event:$(seq_of)" '.status == "pass" and .evidence == $ev' >/dev/null || { echo "plan approval did not pass the decision item: $(clrow $t decision)"; return 1; }
   # a user-visible ship: rows and gate skip cl: rows; tester, deploy and ci pass from the record
   t=tk-cl2
   ft create $t --title 'Ship probe' --kind ship --surface user-visible >/dev/null || return 1
@@ -2122,6 +2131,11 @@ case_checklist() {
   [ "$(clrow $t ci | jq -r .status)" = pending ] || { echo "a failed ci passed the item"; return 1; }
   ft event $t ci --head h1 --note 'CI green on the PR at head h1' >/dev/null || return 1
   [ "$(clrow $t ci | jq -r .status)" = pass ] || { echo "a green ci did not pass the item: $(clrow $t ci)"; return 1; }
+  # a new head without green CI sets the passed item pending again; its green CI passes it again
+  ft event $t ci --head h2 --note 'CI failed on the PR at head h2: 1 check(s) did not pass' >/dev/null || return 1
+  [ "$(clrow $t ci | jq -r .status)" = pending ] || { echo "a failed ci on a new head kept the pass: $(clrow $t ci)"; return 1; }
+  ft event $t ci --head h2 --note 'CI green on the PR at head h2' >/dev/null || return 1
+  clrow $t ci | jq -e --arg ev "event:$(seq_of)" '.status == "pass" and .evidence == $ev' >/dev/null || { echo "a green ci on the new head did not pass: $(clrow $t ci)"; return 1; }
   ft gate $t --issue "$ISSUE" --head h1; must 'gate before approve' 5 || return 1
   case $OUT in *cl:*) echo "gate names a cl: row: $OUT"; return 1 ;; esac
   ft approve $t; must 'approve with mockup open' 5 || return 1
@@ -2622,6 +2636,9 @@ mutate 'a write passes the items the record proves' checklist 'if (await syncChe
 mutate 'checklist off needs a reason' checklist "if (verb === 'off' && !reason?.trim()) throw usage" 'if (false) throw usage'
 mutate 'an open question keeps the decision item open' checklist "if (task.blockKind === 'needs-decision' && task.state === 'blocked') return null;" ''
 mutate 'only a green ci passes the ci item' checklist '/\bCI green\b/.test(bodyOf(ci).note' 'true || (bodyOf(ci).note'
+mutate 'firstmate'"'"'s unblock is not the owner'"'"'s answer' checklist "e.kind === 'unblocked' && e.actorRole === 'owner'" "e.kind === 'unblocked'"
+mutate 'the owner'"'"'s plan approval passes the decision item' checklist 'if (approval) return' 'if (false) return'
+mutate 'a passed ci item is checked again' checklist "(r.status === 'pass' && r.scenarioId === \`\${CHECKLIST_PREFIX}ci\`)" 'false'
 mutate 'rules lists only enabled rules' model_rules "r.enabled === true && inHours(" "inHours("
 mutate 'an hour range wraps past midnight' model_rules ": hour >= from || hour < to;" ": false;"
 mutate 'a repo named in a scope uses only its scoped rules' model_rules "(scoped.length ? scoped : forState.filter((r) => !r.scope))" "forState"
