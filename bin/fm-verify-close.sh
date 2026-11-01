@@ -57,8 +57,7 @@ esac
 
 problems=$(fm_verify_gate_problems "$DATA" "$ID" "$FM_HOME") || true
 if [ -n "$problems" ]; then
-  items=$(printf '%s\n' "$problems" | awk '{ printf "%s%s", sep, $0; sep = "; " }')
-  fm_backlog_mutate "$DATA" hold "$ID" --reason "$(fm_backlog_verify_reason "$ID" "$items")" --kind external \
+  fm_backlog_mutate "$DATA" hold "$ID" --reason "$(fm_backlog_verify_reason "$ID" "$problems")" --kind external \
     || echo "warning: the hold reason of $ID could not be refreshed ($FM_BACKLOG_TRANSITION_ERROR)" >&2
   printf 'REFUSED: verification records for %s/%s are not complete; %s stays held as verification pending.\n' "$DATA" "$ID" "$ID" >&2
   printf '%s\n' "$problems" | sed 's/^/  - /' >&2

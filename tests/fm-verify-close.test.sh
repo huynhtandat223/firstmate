@@ -397,12 +397,14 @@ SHIM
 }
 
 test_teardown_holds_a_row_with_many_missing_items_within_the_reason_limit() {
-  local home saved=$PATH items='' n reason
+  local home saved=$PATH items='' n reason kept more
   home=$(make_home many-missing)
   tasks-axi add "$ID" "landed UI change" --kind ship --file "$home/data/backlog.md" >/dev/null
   tasks-axi start "$ID" --file "$home/data/backlog.md" >/dev/null
+  # One item per line, as teardown records them; each item's own text holds "; ".
   for n in $(seq 1 40); do
-    items="${items:+$items; }EN$n@1440 has no check row in the record; run rows"
+    items="${items:+$items
+}EN$n@1440 has no check row in the record; run rows"
   done
   shim_reason_limit
   (
@@ -423,6 +425,10 @@ test_teardown_holds_a_row_with_many_missing_items_within_the_reason_limit() {
     "verification pending: EN1@1440 has no check row"*"; and "*" more (bin/fm-verify-close.sh $ID lists all)") ;;
     *) fail "the cut reason does not keep the first items and count the rest: $reason" ;;
   esac
+  case "$reason" in *$'\n'*) fail "the stored reason is not one line of \"; \"-joined items: $reason" ;; esac
+  kept=$(printf '%s' "$reason" | grep -o 'EN[0-9]*@1440 has no check row in the record; run rows' | wc -l)
+  more=$(printf '%s' "$reason" | sed -n 's/.*; and \([0-9]*\) more (bin.*/\1/p')
+  [ "$((kept + more))" -eq 40 ] || fail "the cut reason keeps $kept items and counts $more more, not 40 in all: $reason"
   pass "teardown holds a row with many missing items within the 5001 hold-reason limit"
 }
 
