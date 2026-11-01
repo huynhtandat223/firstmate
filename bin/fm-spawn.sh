@@ -79,7 +79,8 @@
 #   on a fresh single ship or scout only (not relaunch or persistent launches).
 #   --plan-exempt <name> skips the same gate for a spawn that carries no plan;
 #   bin/fm-plan-gate-lib.sh's fm_plan_gate_exemption owns the names and what each
-#   covers, and the spawn records its line in the backlog body and plan_exempt=.
+#   covers. Only while config/dispatch-plan-gate is present does the spawn record
+#   its line in the backlog body and plan_exempt=; without the gate it changes nothing.
 #   --allow-third-spec <words> records captain words that let a fresh single ship
 #   start while two specs are already in flight; it is never firstmate's own call.
 #   --relaunch launches a replacement agent for an EXISTING task into that
@@ -884,6 +885,7 @@ PLAN_EXCEPTION=
 PLAN_EXCEPTION_SET=0
 PLAN_EXEMPT=
 PLAN_EXEMPT_SET=0
+PLAN_EXEMPT_APPLIED=0
 ALLOW_THIRD_SPEC=
 ALLOW_THIRD_SPEC_SET=0
 PLAN_SPEC=
@@ -4408,7 +4410,7 @@ else
   fi
 fi
 
-if [ "$RELAUNCH" != 1 ] && [ "$KIND" != secondmate ] && { [ -e "$CONFIG/dispatch-plan-gate" ] || [ "$PLAN_EXCEPTION_SET" = 1 ] || [ "$PLAN_EXEMPT_SET" = 1 ]; }; then
+if [ "$RELAUNCH" != 1 ] && [ "$KIND" != secondmate ] && { [ -e "$CONFIG/dispatch-plan-gate" ] || [ "$PLAN_EXCEPTION_SET" = 1 ]; }; then
   # shellcheck source=bin/fm-plan-gate-lib.sh
   . "$SCRIPT_DIR/fm-plan-gate-lib.sh"
   plan_fix='--plan-exception "<captain words>"'
@@ -4427,6 +4429,7 @@ if [ "$RELAUNCH" != 1 ] && [ "$KIND" != secondmate ] && { [ -e "$CONFIG/dispatch
       echo "error: plan gate: cannot record exemption $PLAN_EXEMPT ($FM_BACKLOG_TRANSITION_ERROR)" >&2
       exit 1
     fi
+    PLAN_EXEMPT_APPLIED=1
     printf 'plan gate: EXEMPT %s\n' "$PLAN_EXEMPT"
   else
     plan_reason='task plan is not approved'
@@ -6253,7 +6256,7 @@ preserve_relaunch_meta() {
   [ -z "$PLAN_SPEC" ] || echo "plan_spec=$PLAN_SPEC"
   [ "$ALLOW_THIRD_SPEC_SET" != 1 ] || printf 'spec_limit_override=%s\n' "$(printf '%s' "$ALLOW_THIRD_SPEC" | base64 | tr -d '\n')"
   [ "$PLAN_EXCEPTION_SET" != 1 ] || printf 'plan_exception=%s\n' "$(printf '%s' "$PLAN_EXCEPTION" | base64 | tr -d '\n')"
-  [ "$PLAN_EXEMPT_SET" != 1 ] || echo "plan_exempt=$PLAN_EXEMPT"
+  [ "$PLAN_EXEMPT_APPLIED" != 1 ] || echo "plan_exempt=$PLAN_EXEMPT"
   echo "worktree=$WT"
   echo "project=$PROJ_ABS"
   echo "harness=$HARNESS"
