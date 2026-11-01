@@ -2156,6 +2156,10 @@ case_workflow() {
   ft setup tk-flow --file "$TMP_ROOT/setup.json"; must 'restore setup selection' 0 || return 1
   ft move tk-flow --to testing; must 'a state outside the setup' 5 || return 1
   ft move tk-flow --to implement; must move 0 || return 1
+  printf '%s' '{"steps":[{"state":"implement","harness":"claude","model":"edited","effort":"low"},{"state":"merge"}]}' > "$TMP_ROOT/setup-edit.json"
+  ft setup tk-flow --file "$TMP_ROOT/setup-edit.json"; must 'edit the current pending state' 0 || return 1
+  task_row tk-flow | jq -e '.stepModel == "edited" and .stepHarness == "claude" and .stepEffort == "low"' >/dev/null || { echo "the card kept the old runtime of its pending state: $(task_row tk-flow)"; return 1; }
+  ft setup tk-flow --file "$TMP_ROOT/setup.json"; must 'restore the current pending state' 0 || return 1
   ft step tk-flow start --harness pi --model example --effort high --generation g1; must start 0 || return 1
   task_row tk-flow | jq -e '.workflowState == "implement" and .stepModel == "example" and .stepEffort == "high" and .stepAlive == "alive"' >/dev/null || { echo "card after start: $(task_row tk-flow)"; return 1; }
   [ "$(db fm_task_step | jq '[.[] | select(.taskId == "tk-flow")] | length')" = 2 ] || { echo "a state outside the setup has a row"; return 1; }
@@ -2704,6 +2708,7 @@ mutate 'a removed pending state is skipped' workflow "...removed.map(s => ({ sta
 mutate 'reopen lets the states approve skipped wait again' workflow "s.status === 'skipped' && s.endReason === 'approved').map(" "false).map("
 mutate 'a start with no model keeps the configured model' workflow "model: args.flags.model || current.model," "model: args.flags.model,"
 mutate 'a setup edit leaves a state that ran as it ran' workflow "ran(s.state) ? { state: s.state, position: s.position }" "false ? { state: s.state, position: s.position }"
+mutate 'a setup edit of the current pending state shows on the card' workflow "setAt: new Date().toISOString(), ...card }" "setAt: new Date().toISOString() }"
 mutate 'approve skips the states that never started' workflow ": s.status === 'pending' ? [{ state: s.state, status: 'skipped', endReason: 'approved' }] : []);" ": []);"
 mutate 'a move ends the running attempt of the state left behind' workflow "const stepWrites = left ? [{ state: left.state, status: 'done'" "const stepWrites = false ? [{ state: left.state, status: 'done'"
 mutate 'the reviewer is the actor of the newest review event' stage "if (REVIEWER_KINDS.includes(event.kind)) task.reviewer = event.actor ?? null;" ";"

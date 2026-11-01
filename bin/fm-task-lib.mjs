@@ -926,7 +926,10 @@ async function cmdSetup(args) {
     const stepWrites = [...normalized.map(s => ran(s.state) ? { state: s.state, position: s.position }
       : { ...s, ...(old.some(o => o.state === s.state && o.status !== 'skipped') ? {} : { status: 'pending', attempt: 0, endReason: null }) }),
     ...removed.map(s => ({ state: s.state, status: 'skipped' }))];
-    return { kind: 'setup', extra: { stepWrites }, set: { setupBy: by, setupAt: new Date().toISOString() }, children: { documents: [{ title: 'Setup', mediaType: 'application/json', content: JSON.stringify(normalized) }] } };
+    // the card shows the current state's runtime: a setup edit of that state before it starts shows at once
+    const current = normalized.find(s => s.state === task.workflowState);
+    const card = current && !ran(current.state) ? stepProjection(current) : {};
+    return { kind: 'setup', extra: { stepWrites }, set: { setupBy: by, setupAt: new Date().toISOString(), ...card }, children: { documents: [{ title: 'Setup', mediaType: 'application/json', content: JSON.stringify(normalized) }] } };
   });
 }
 async function cmdMove(args) {
