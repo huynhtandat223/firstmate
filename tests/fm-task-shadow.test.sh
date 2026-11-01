@@ -55,8 +55,8 @@ hook() {  # <hook args...>: run the hook in the case home
     FM_DATA_OVERRIDE="$HOME_DIR/data" FM_TASK_SHADOW_WRITER="$WRITER" FAKE_CALLS="$CALLS" "${HOOK:-$ROOT/bin/fm-task-shadow.sh}" "$@"
 }
 
-calls() {  # the recorded writer calls without the key, actor and role every call carries
-  sed 's/ --key [^ ]* --actor shadow --role system$//' "$CALLS"
+calls() {  # the recorded writer calls without the key, actor and role every call carries, with a spawn generation as G
+  sed -E 's/ --key [^ ]* --actor shadow --role system$//; s/ --generation s[0-9]+\.[0-9]+\.[0-9]+/ --generation G/' "$CALLS"
 }
 keys() { sed -n 's/.* --key \([^ ]*\) --actor shadow --role system$/\1/p' "$CALLS"; }
 
@@ -151,6 +151,17 @@ test_the_flag_file_carries_the_writer_settings() {
   hook cleaned-up t1 || fail "the hook failed"
   assert_equals 'auth=cookie url=http://127.0.0.1:5001 token=/tmp/tok' "$(cat "$CALLS.env")" "the writer settings"
   pass "the flag file hands only FM_TASK_BASE_URL, FM_TASK_AUTH and FM_TASK_TOKEN_FILE to the writer"
+}
+
+test_step_events() {
+  make_case steps on
+  hook step-start t1 s1.2.3 pi gpt-6 high acct-a; hook step-start t1 s1.2.3 claude opus; hook step-end t1 s1.2.3 cleanup
+  assert_equals "$(printf '%s\n' \
+    'step t1 start --generation G --harness pi --model gpt-6 --effort high --account acct-a' \
+    'step t1 start --generation G --harness claude --model opus' \
+    'step t1 end --generation G --reason cleanup')" "$(calls)" "the step events"
+  assert_contains "$(cat "$CALLS")" "--key shadow:t1:step-start-s1.2.3 " "a step start is keyed by its spawn generation"
+  pass "step-start and step-end become the writer's step calls, keyed by the spawn generation"
 }
 
 test_events_of_the_other_scripts() {
@@ -277,12 +288,13 @@ test_spawn_writes_the_record() {
   make_real_case spawn
   add_row "$TASK" 'Spawn shadow title' ship
   out=$(in_home "$SBIN/fm-spawn.sh" "$TASK" "$PROJ_DIR" --mode local-only --yolo off 2>&1) || fail "spawn failed: $out"
-  assert_equals "$(printf '%s\n' "create $TASK --title Spawn shadow title --kind ship --repo sample" "assign $TASK --to $TASK" "start $TASK")" "$(calls)" "the record calls of a fresh spawn"
+  assert_equals "$(printf '%s\n' "create $TASK --title Spawn shadow title --kind ship --repo sample" "assign $TASK --to $TASK" "start $TASK" "step $TASK start --generation G --harness claude")" "$(calls)" "the record calls of a fresh spawn"
+  assert_contains "$(sed -n 4p "$CALLS")" "--generation $(sed -n 's/^spawn_gen=//p' "$HOME_DIR/state/$TASK.meta")" "the step start names the spawn generation of the task record"
   make_real_case spawn-off
   rm -f "$HOME_DIR/config/task-shadow"
   out=$(in_home "$SBIN/fm-spawn.sh" "$TASK" "$PROJ_DIR" --mode local-only --yolo off 2>&1) || fail "spawn failed: $out"
   assert_equals "" "$(cat "$CALLS")" "a spawn with the flag absent writes nothing"
-  pass "spawn: a fresh spawn writes create, assign and start to the record; a home without the flag writes nothing"
+  pass "spawn: a fresh spawn writes create, assign, start and its step start to the record; a home without the flag writes nothing"
 }
 
 
@@ -321,6 +333,7 @@ test_teardown_writes_the_record() {
   out=$(in_home "$SBIN/fm-teardown.sh" "$TASK" 2>&1) || fail "teardown failed: $out"
   assert_equals "" "$(cat "$CASE_DIR/view.log")" "the backlog close ran a backlog view sync (retired with the cfw5001 backend)"
   assert_contains "$(calls)" "event $TASK comment --note cleaned up by bin/fm-teardown.sh" "teardown writes its cleanup to the record"
+  assert_contains "$(calls)" "step $TASK end --generation G --reason cleanup" "teardown ends the running step of its incarnation"
   case "$(calls)" in *"approve $TASK"*) fail "the backlog close still reached the record through the retired backlog hook" ;; esac
   pass "teardown: the cleanup reaches the record, and the backlog close runs no view sync or backlog hook"
 }
@@ -369,6 +382,7 @@ test_working_after_a_block_unblocks_and_restarts
 test_the_hook_never_fails_the_script
 test_the_flag_file_carries_the_writer_settings
 test_events_of_the_other_scripts
+test_step_events
 test_rows_task_hold_keeps_review
 test_spawn_writes_the_record
 test_worker_status_command_writes_the_record
@@ -428,6 +442,8 @@ mutate_script() {  # <label> <case function> <script> <text of the hook line to 
 mutate_script 'the worker status command writes the record' test_worker_status_command_writes_the_record fm-brief.sh 'fm-task-shadow.sh'
 mutate_script 'fm-spawn.sh writes the dispatched task' test_spawn_writes_the_record fm-spawn.sh 'fm-task-shadow.sh" dispatched'
 mutate_script 'fm-teardown.sh writes the cleanup' test_teardown_writes_the_record fm-teardown.sh 'fm-task-shadow.sh" cleaned-up'
+mutate_script 'fm-spawn.sh starts the workflow step' test_spawn_writes_the_record fm-spawn.sh 'fm-task-shadow.sh" step-start'
+mutate_script 'fm-teardown.sh ends the workflow step' test_teardown_writes_the_record fm-teardown.sh 'fm-task-shadow.sh" step-end'
 mutate_script 'fm-verify-close.sh writes the verified close' test_verify_close_writes_the_record fm-verify-close.sh 'fm-task-shadow.sh" verified'
 mutate_script 'fm-captain-hold.sh writes the hold' test_captain_hold_writes_the_record fm-captain-hold.sh 'shadow_record held'
 mutate_script 'fm-captain-hold.sh writes the closing answer' test_captain_hold_writes_the_record fm-captain-hold.sh 'shadow_record answered "$1" closed'

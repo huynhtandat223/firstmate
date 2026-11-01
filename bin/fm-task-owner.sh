@@ -6,8 +6,9 @@
 # a page value. Each action runs bin/fm-task.sh, the one writer, with that owner as actor (`owner:<id>`, role
 # owner); the writer keeps seq, the transitions and the projection, and this file adds no rule of its own.
 #
-# Usage: fm-task-owner.sh --action ACTION --task TASK [--option O] [--row ID@W] [--item I --on|--off] [--decision approve|changes] [--plan-seq N] [--note N] [--to RECIPIENT] [--ask why|how|wait-what] [--rule ID --state S ...] --owner ID
+# Usage: fm-task-owner.sh --action ACTION --task TASK [--option O] [--row ID@W] [--item I --on|--off] [--decision approve|changes] [--plan-seq N] [--note N] [--to RECIPIENT] [--ask why|how|wait-what] [--rule ID --state S ...] [--setup JSON] --owner ID
 #   inbox-task|inbox-link|inbox-delete resolve a notification (--task is its id; link needs --option task-id)
+#   setup    Approve & start: setup TASK --file <the JSON> --by owner, then a queued TASK moves to its first state   needs --setup
 #   comment  a task comment: store the note once per owner, note and minute              needs --note
 #   answer   a question:     with --question SEQ, answer TASK --question SEQ --option O [--note N] (one card of a
 #            round; the last answer returns the task to its worker); without it, comment "answer: <option>"
@@ -28,7 +29,7 @@
 #
 # Prints one JSON line for the page: {"ok":true|false,"action","task","writes":[writer lines],"error"?}.
 # Exits 0, 2 for a usage refusal (nothing written), or the first refusing writer call's code; a refused comment
-# stops before the unblock.
+# stops before the unblock; a refused setup stops before the move.
 # Environment: FM_HOME defaults to this file's home (its parent directory), so the status view lands where the
 # watcher reads it. FM_TASK_OWNER_WRITER replaces bin/fm-task.sh (the tests); the writer's own settings
 # (FM_TASK_BASE_URL, FM_TASK_TOKEN_FILE) keep their defaults.
@@ -38,7 +39,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export FM_HOME="${FM_HOME:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 WRITER="${FM_TASK_OWNER_WRITER:-$SCRIPT_DIR/fm-task.sh}"
 
-ACTION='' TASK='' OPTION='' ROW='' DECISION='' PLAN_SEQ='' NOTE='' OWNER='' TO='' ASK='' RULE='' ITEM='' SWITCH='' QUESTION=''
+ACTION='' TASK='' OPTION='' ROW='' DECISION='' PLAN_SEQ='' NOTE='' OWNER='' TO='' ASK='' RULE='' ITEM='' SWITCH='' QUESTION='' SETUP=''
 declare -A RULE_FIELD=()
 RULE_FLAGS='state harness model effort rank account hours scope enabled warning'
 WRITES='[]'
@@ -56,6 +57,7 @@ while [ "$#" -gt 0 ]; do
   esac
   [ "$#" -ge 2 ] || usage "$1 needs a value"
   case "$1" in
+    --setup) SETUP=$2 ;;
     --action) ACTION=$2 ;;
     --task) TASK=$2 ;;
     --option) OPTION=$2 ;;
@@ -110,6 +112,21 @@ worker_live() {
 
 RC=0
 case "$ACTION" in
+  setup)
+    [ -n "$SETUP" ] || usage 'setup needs --setup JSON'
+    setup_file=$(mktemp "${TMPDIR:-/tmp}/fm-owner-setup.XXXXXX") || usage 'no temporary file'
+    trap 'rm -f "$setup_file"' EXIT
+    printf '%s' "$SETUP" > "$setup_file"
+    if run setup "$TASK" --file "$setup_file" --by owner; then
+      # a task already under way keeps its state: only a queued task starts its flow here
+      if [ "$("$WRITER" show "$TASK" --json 2>/dev/null </dev/null | jq -r '.workflowState // "queued"')" = queued ]; then
+        first_state=$(jq -r '(if type == "array" then . else .steps end)[0].state' "$setup_file")
+        run move "$TASK" --to "$first_state" || RC=$?
+      fi
+    else
+      RC=$?
+    fi
+    ;;
   comment)
     [[ "$NOTE" =~ [^[:space:]] ]] || usage 'comment needs a nonblank --note'
     # shellcheck source=bin/fm-backend.sh
@@ -218,6 +235,6 @@ case "$ACTION" in
       *) usage 'checklist needs --on or --off' ;;
     esac
     ;;
-  *) usage "--action must be comment, answer, unblock, pass, fail, plan, checklist, rule-add, rule-set, rule-delete, inbox-task, inbox-link or inbox-delete" ;;
+  *) usage "--action must be setup, comment, answer, unblock, pass, fail, plan, checklist, rule-add, rule-set, rule-delete, inbox-task, inbox-link or inbox-delete" ;;
 esac
 if [ "$RC" -eq 0 ]; then reply true; else reply false "$ERROR"; fi
