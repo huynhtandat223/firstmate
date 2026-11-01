@@ -11,7 +11,7 @@ STATE="$FM_HOME/state"
 if [ "${1:-}" = settings ]; then
   hook="'${SCRIPT_DIR//\'/\'\\\'\'}/fm-assistance-hook.sh'"
   jq -n --arg hook "$hook" '{
-    feedbackDrafts:"off", attribution:{commit:"",pr:"",sessionUrl:false},
+    feedbackDrafts:"off", skipDangerousModePermissionPrompt:true, attribution:{commit:"",pr:"",sessionUrl:false},
     permissions:{deny:["Agent","Task"]},
     statusLine:{type:"command",command:($hook + " usage")},
     hooks:{

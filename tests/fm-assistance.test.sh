@@ -214,6 +214,7 @@ pass 'a pre-sender proposal is recorded and held with sender unknown'
 
 printf '{"session_id":"first"}\n' | FM_HOME="$helper" "$ROOT/bin/fm-assistance-hook.sh" start >/dev/null
 FM_HOME="$helper" "$ROOT/bin/fm-assistance-hook.sh" settings | jq -e '.hooks.Stop[0].hooks[1].asyncRewake == true' >/dev/null
+FM_HOME="$helper" "$ROOT/bin/fm-assistance-hook.sh" settings | jq -e '.skipDangerousModePermissionPrompt == true' >/dev/null || fail 'assistance settings lack the Bypass Permissions acceptance'
 printf '{"session_id":"first","context_window":{"context_window_size":100000,"used_percentage":39}}\n' | FM_HOME="$helper" "$ROOT/bin/fm-assistance-hook.sh" usage >/dev/null
 printf '{"session_id":"first"}\n' | FM_HOME="$helper" "$ROOT/bin/fm-assistance-hook.sh" stop
 [ ! -e "$helper/state/assistance-rotation.json" ] || fail 'rotation below 40 percent'
