@@ -609,6 +609,10 @@ if [ "$mode" = take-over ]; then
   fi
 fi
 
+# The step liveness loop runs beside the watcher and outlives its cycles; every
+# arm starts it when it is not running (bin/fm-task-step-loop.sh owns when).
+"$SCRIPT_DIR/fm-task-step-loop.sh" start >/dev/null 2>&1 || true
+
 # If a genuinely live+fresh watcher already holds the lock, do not start a second
 # one - attach to that cycle and wait until it ends so the harness notify fires
 # then, not as an immediate empty wake. (--restart skips this: it just stopped
