@@ -850,7 +850,7 @@ async function cmdStep(args) {
     const currentTask = fold(await taskEvents(taskId));
     const step = (await stepRows(taskId)).find(s => s.state === currentTask?.workflowState);
     if (!step || step.status !== 'running' || step.alive === action) return out(`step ${taskId}: unchanged`);
-    who.key = args.flags.key ?? `step-live:${taskId}:${step.state}:${step.attempt}:${action}:${step.alive ?? 'none'}`;
+    who.key = args.flags.key ?? `step-live:${taskId}:${step.state}:${step.attempt}:${currentTask.lastSeq}:${action}`;
   }
   return write(taskId, who, async ({ task }) => {
     if (!task) throw rule('no such task');
