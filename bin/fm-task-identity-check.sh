@@ -8,8 +8,9 @@
 #
 # add: called by bin/fm-tasks-axi.sh add|create before tasks-axi runs and by
 #   bin/fm-task.sh create. It refuses
-#   - an id found as a done row in data/done-archive.md or data/backlog.md,
-#     citing the file and line;
+#   - an id found as a done row of this home's backlog (bin/fm-tasks-axi.sh rows), of a
+#     markdown home's data/done-archive.md (citing the line), or, on a cfw5001 home, in the
+#     Dev 5001 task record (done, archived, section Done, or closed);
 #   - an id with a local fm/<id> branch in the project clone <repo> (the pool
 #     worktrees share that clone's refs), naming the branch; only when <repo> is
 #     given. bin/fm-task.sh create passes it, except the shadow create that follows
@@ -19,7 +20,7 @@
 #     whole (DEV-12 does not match DEV-12A). The task record's live tasks are not
 #     read here: that needs an API call at intake, so the backlog is the source.
 # pr: called by bin/fm-pr-check.sh. The task's linked issue is the first
-#   .../issues/<n> URL in its backlog item. It refuses a GitHub PR whose closing
+#   .../issues/<n> URL in its backlog row (title, links, body). It refuses a GitHub PR whose closing
 #   references name other issues and omit that one, naming both. A PR with no
 #   closing reference, an item with no linked issue, or an unreadable forge
 #   passes: nothing can be compared.
@@ -37,6 +38,8 @@ CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 PROJECTS="${FM_PROJECTS_OVERRIDE:-$FM_HOME/projects}"
 # shellcheck source=bin/fm-enforce-lib.sh
 . "$SCRIPT_DIR/fm-enforce-lib.sh"
+# shellcheck source=bin/fm-tasks-axi-lib.sh
+. "$SCRIPT_DIR/fm-tasks-axi-lib.sh"
 
 # hit <code> <text>: log, and refuse when the switch holds block.
 hit() {
@@ -49,27 +52,43 @@ hit() {
   exit 1
 }
 
+# This home's backlog rows (bin/fm-tasks-axi.sh rows); the backlog file is never read here.
+rows() { FM_HOME="$FM_HOME" FM_DATA_OVERRIDE="$DATA" "$SCRIPT_DIR/fm-tasks-axi.sh" rows "$@" 2>/dev/null; }
+
+# done_elsewhere <id>: the id is a done task that `list` no longer shows. A markdown backlog prunes done rows into
+# data/done-archive.md; a cfw5001 backlog prunes by clearing the row's section, and old rows of other homes stay in
+# Dev 5001 too, so there the task record itself is read (state done or archived, section Done, or a closed date).
+# An unreachable API finds nothing; the check only adds refusals.
+done_elsewhere() {
+  local id=$1 backend line
+  backend=$(fm_tasks_axi_backend "$(dirname "$DATA")" 2>/dev/null) || backend=markdown
+  if [ "$backend" = cfw5001 ]; then
+    FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task.sh" show "$id" --json 2>/dev/null | jq -e '
+      .state == "done" or .state == "archived" or .section == "Done" or .backlogClosed != null' >/dev/null &&
+      printf 'the Dev 5001 task record\n'
+    return 0
+  fi
+  [ -f "$DATA/done-archive.md" ] || return 0
+  line=$(awk -v id="$id" '$1 == "-" && $2 == "[x]" && $3 == id { print NR; exit }' "$DATA/done-archive.md")
+  [ -z "$line" ] || printf 'data/done-archive.md:%s\n' "$line"
+}
+
 check_add() {
-  local id=$1 title=$2 repo=${3:-} file line key other clone
-  for file in "$DATA/done-archive.md" "$DATA/backlog.md"; do
-    [ -f "$file" ] || continue
-    line=$(awk -v id="$id" '$1 == "-" && $2 == "[x]" && $3 == id { print NR; exit }' "$file")
-    [ -z "$line" ] || hit reused-id "task id $id is already a done task (data/$(basename "$file"):$line); use a new id, or reopen that task if it is the same work"
-  done
+  local id=$1 title=$2 repo=${3:-} key other clone where
+  if rows --state 'done' | jq -e --arg id "$id" 'any(.[]; .id == $id)' >/dev/null; then
+    hit reused-id "task id $id is already a done task in this home's backlog; use a new id, or reopen that task if it is the same work"
+  fi
+  where=$(done_elsewhere "$id")
+  [ -z "$where" ] || hit reused-id "task id $id is already a done task ($where); use a new id, or reopen that task if it is the same work"
   if [ -n "$repo" ]; then
     clone="$PROJECTS/$repo"
     if [ -d "$clone" ] && [ -n "$(git -C "$clone" for-each-ref --format='%(refname)' "refs/heads/fm/$id" 2>/dev/null)" ]; then
       hit reused-branch "task id $id already has the branch fm/$id in projects/$repo; use a new id"
     fi
   fi
-  [ -f "$DATA/backlog.md" ] || return 0
   for key in $(printf '%s' "$title" | grep -oiE '\b(DEV|PS)-[0-9]+\b' | tr '[:lower:]' '[:upper:]' | sort -u); do
-    other=$(awk -v id="$id" -v key="$key" '
-      /^- \[ \] [^ ]+ - / {
-        row = $0; sub(/^- \[ \] /, "", row); rid = row; sub(/ .*/, "", rid)
-        title = row; sub(/^[^ ]+ - /, "", title)
-        if (rid != id && match(toupper(title), "(^|[^A-Z0-9_])" key "([^A-Z0-9_]|$)")) { print rid; exit }
-      }' "$DATA/backlog.md")
+    other=$(rows | jq -r --arg id "$id" --arg key "$key" '
+      first(.[] | select(.id != $id and .state != "done" and ((.title // "") | ascii_upcase | test("(^|[^A-Z0-9_])" + $key + "([^A-Z0-9_]|$)"))) | .id) // empty')
     [ -z "$other" ] || hit duplicate-key "ticket $key is already carried by the live task $other; continue that task, or finish it before adding $id"
   done
 }
@@ -82,10 +101,8 @@ issue_key() {
 
 check_pr() {
   local id=$1 url=$2 block linked closes ref
-  [ -f "$DATA/backlog.md" ] || exit 0
-  block=$(awk -v id="$id" '
-    /^- \[[ x]\] / { row = $0; sub(/^- \[[ x]\] /, "", row); sub(/ .*/, "", row); on = (row == id) }
-    on { print }' "$DATA/backlog.md")
+  block=$(rows --fields links,body \
+    | jq -r --arg id "$id" '.[] | select(.id == $id) | "\(.title // "") \(.links // "") \(.body // "")"')
   linked=$(printf '%s\n' "$block" | grep -oEi 'https?://[^ )]+/issues/[0-9]+' | head -1)
   [ -n "$linked" ] || exit 0
   case "$url" in https://github.com/*/pull/*) ;; *) exit 0 ;; esac

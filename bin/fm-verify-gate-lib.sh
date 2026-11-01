@@ -63,18 +63,14 @@ fm_verify_gate_field() {  # <file> <key>
 }
 
 # Whether the task has a PR in <repo>, read the way bin/fm-procevent-deploy-verify.sh build_map
-# maps a task: the endpoint record's pr=, else a PR URL on the task's own backlog line.
+# maps a task: the endpoint record's pr=, else a PR URL on the task's own backlog row.
 fm_verify_gate_task_in_repo() {  # <state-dir> <data-dir> <task-id> <repo>
   local pr
   pr=$(sed -n 's/^pr=//p' "$1/$3.meta" 2>/dev/null | head -n 1)
   case "$pr" in "https://github.com/$4/pull/"[0-9]*) return 0 ;; esac
-  [ -f "$2/backlog.md" ] || return 1
-  awk -v repo="$4" -v task="$3" '
-    /^- \[.\] / && /\(kind: ship\)/ {
-      line = $0; sub(/^- \[.\] /, "", line); t = line; sub(/ .*/, "", t)
-      if (t == task && match($0, "https://github.com/" repo "/pull/[0-9]+")) found = 1
-    }
-    END { exit !found }' "$2/backlog.md"
+  FM_DATA_OVERRIDE="$2" "$(dirname "${BASH_SOURCE[0]}")/fm-tasks-axi.sh" rows --kind ship --fields links 2>/dev/null \
+    | jq -e --arg task "$3" --arg repo "$4" \
+    '[.[] | select(.id == $task and ("\(.title // "") \(.links // "")" | test("https://github.com/" + $repo + "/pull/[0-9]+")))] | length > 0' >/dev/null
 }
 
 # Prints one problem and marks the running fm_verify_gate_problems (its local $bad) as failed.
@@ -83,15 +79,24 @@ fm_verify_gate_say() {
   bad=1
 }
 
-# One evidence value: says the problem for row <rid> when it is not an existing path or URL.
+# One evidence value: says the problem for row <rid> when it is not an existing path, URL, or event reference.
 fm_verify_gate_evidence_problem() {  # <rid> <evidence> <base-dir>
   case "$2" in
     http://?*|https://?*) ;;
+    event:*)
+      fm_verify_gate_say "$1 evidence reference requires the task-record gate: $2" ;;
     ''|-) fm_verify_gate_say "$1 is pass without evidence" ;;
     /*) [ -e "$2" ] || fm_verify_gate_say "$1 evidence path does not exist: $2" ;;
     *) [ -e "$3/$2" ] || fm_verify_gate_say "$1 evidence path does not exist: $2" ;;
   esac
 }
+
+# Parse acceptance using this home's configured task API without leaking settings to callers.
+fm_verify_gate_acceptance() (
+  . "$FM_VERIFY_GATE_DIR/fm-task-shadow-config-lib.sh"
+  fm_task_shadow_config "${FM_CONFIG_OVERRIDE:-$base/config}/task-shadow"
+  node "$FM_VERIFY_GATE_DIR/fm-acceptance.mjs" "$@"
+)
 
 # The scenario line of a record row `- <id>@<width> | <line> | <state> | evidence: <x>`, trimmed.
 fm_verify_gate_row_text() {  # <row>
@@ -234,9 +239,9 @@ fm_verify_gate_problems() {  # <data-dir> <task-id> <base-dir>
       return 1
     fi
     rc=0
-    rows=$(node "$FM_VERIFY_GATE_DIR/fm-acceptance.mjs" rows "$issue" 2>/dev/null) || rc=$?
+    rows=$(fm_verify_gate_acceptance rows "$issue" 2>/dev/null) || rc=$?
     if [ "$rc" -ne 0 ]; then
-      parse=$(node "$FM_VERIFY_GATE_DIR/fm-acceptance.mjs" parse "$issue" 2>&1) || true
+      parse=$(fm_verify_gate_acceptance parse "$issue" 2>&1) || true
       if printf '%s' "$parse" | jq -e '.problems | length > 0' >/dev/null 2>&1; then
         printf '%s' "$parse" | jq -r --arg i "$issue" '.problems[] | "issue \($i) cannot be read: \(.)"'
       else
@@ -245,11 +250,11 @@ fm_verify_gate_problems() {  # <data-dir> <task-id> <base-dir>
       return 1
     fi
     [ -n "$rows" ] || fm_verify_gate_say "issue $issue has no user-visible scenario row"
-    cur_acc=$(node "$FM_VERIFY_GATE_DIR/fm-acceptance.mjs" digest "$issue" 2>/dev/null) || cur_acc=
+    cur_acc=$(fm_verify_gate_acceptance digest "$issue" 2>/dev/null) || cur_acc=
     if [ -n "$v_acc" ] && [ "$v_acc" != "$cur_acc" ]; then
       fm_verify_gate_say "Tester acceptance $v_acc is not the issue's current digest $cur_acc"
     fi
-    all_rows=$(node "$FM_VERIFY_GATE_DIR/fm-acceptance.mjs" rows "$issue" --surface all 2>/dev/null) || all_rows=$rows
+    all_rows=$(fm_verify_gate_acceptance rows "$issue" --surface all 2>/dev/null) || all_rows=$rows
     while IFS= read -r line; do
       [ -n "$line" ] || continue
       expected="$expected$(printf '%s' "${line#- }" | awk -F' [|] ' '{print $1}')"$'\n'

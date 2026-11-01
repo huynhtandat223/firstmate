@@ -442,6 +442,34 @@ test_marker_noted_row_wins_over_a_prefix_namesake() {
   pass "the marker-noted row wins over an unrelated row holding the prefix namesake"
 }
 
+# A home that selects Beads through its gitignored config/tasks-axi/.tasks.toml names a relative
+# graph path there; tasks-axi resolves it against config/tasks-axi/, so the migration scan must
+# read the same graph. This bd stub only reports the graph it was given, so no beads install is needed.
+test_migration_scan_reads_the_home_config_graph() {
+  local home fb scout out
+  home="$TMP_ROOT/home-config-beads/home"
+  mkdir -p "$home/data" "$home/config/tasks-axi" "$home/projects"
+  (umask 077; mkdir -p "$home/state")
+  fm_test_tasks_toml "$home/.tasks.toml"
+  printf '%s\n' 'backend = "beads"' '' '[beads]' 'path = "graph"' 'binary = "bd"' 'prefix = "fm"' \
+    > "$home/config/tasks-axi/.tasks.toml"
+  fb=$(fm_fakebin "$home")
+  fm_fake_exit0 "$fb" tmux treehouse no-mistakes gh gh-axi
+  write_known_rows_stub "$fb" fm-unrelated-row
+  cat > "$fb/bd" <<'SH'
+#!/usr/bin/env bash
+printf 'graph %s\n' "${BEADS_DIR:-unset}" >&2
+exit 1
+SH
+  chmod +x "$fb/bd"
+  scout="home-config-scout"
+  write_scout_with_attested_inventory "$home" "$scout" legacy-row
+  out=$(run_captain "$home" verify "$scout" 2>&1) && fail "verify passed with an unreadable graph: $out"
+  assert_contains "$out" "reading the beads graph at $home/config/tasks-axi/graph failed" \
+    "the migration scan did not read the graph the home config names"
+  pass "the migration scan resolves a home config's relative beads path where tasks-axi does"
+}
+
 test_complete_accepts_a_migrated_inventory_on_beads() {
   local fixture home scout
   require_tasks_axi_beads "complete against a beads-migrated hold" || return 0
@@ -940,7 +968,7 @@ EOF
   FM_CAPTAIN_HOLD_NOW=2026-07-14T12:00:00Z run_captain "$home" hold sample-widget \
     --reason "captain pricing call needed" >/dev/null \
     || fail "could not re-hold the released work item"
-  snap=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+  snap=$(PATH="$home/fakebin:$PATH" REAL_TASKS_AXI="$TASKS_AXI_BIN" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
     FM_DATA_OVERRIDE="$home/data" FM_CONFIG_OVERRIDE="$home/config" \
     FM_PROJECTS_OVERRIDE="$home/projects" FM_SNAPSHOT_NOW=2026-07-14T12:00:00Z \
     "$ROOT/bin/fm-fleet-snapshot.sh" --json) || fail "fleet snapshot failed after re-hold"
@@ -1059,7 +1087,7 @@ EOF
     --decision-file "$home/interrupted-answer.txt" > "$home/answer.out" 2> "$home/answer.err"; then
     fail "the forced answer close failure reported success"
   fi
-  snap=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+  snap=$(PATH="$home/fakebin:$PATH" REAL_TASKS_AXI="$TASKS_AXI_BIN" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
     FM_DATA_OVERRIDE="$home/at-close" FM_CONFIG_OVERRIDE="$home/config" \
     FM_PROJECTS_OVERRIDE="$home/projects" FM_SNAPSHOT_NOW=2026-07-14T12:00:00Z \
     "$ROOT/bin/fm-fleet-snapshot.sh" --json) || fail "fleet snapshot failed at interrupted close boundary"
@@ -1122,7 +1150,7 @@ EOF
     fail "hold accepted a malformed --until date"
   fi
 
-  snap=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+  snap=$(PATH="$home/fakebin:$PATH" REAL_TASKS_AXI="$TASKS_AXI_BIN" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
     FM_DATA_OVERRIDE="$home/data" FM_CONFIG_OVERRIDE="$home/config" \
     FM_PROJECTS_OVERRIDE="$home/projects" FM_SNAPSHOT_NOW=2026-07-14T12:00:00Z \
     "$ROOT/bin/fm-fleet-snapshot.sh" --json) || fail "fleet snapshot failed"
@@ -1149,7 +1177,7 @@ EOF
 
   # On its date the call is due again - and still answerable even though
   # tasks-axi reports the expired hold as no longer held.
-  snap=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+  snap=$(PATH="$home/fakebin:$PATH" REAL_TASKS_AXI="$TASKS_AXI_BIN" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
     FM_DATA_OVERRIDE="$home/data" FM_CONFIG_OVERRIDE="$home/config" \
     FM_PROJECTS_OVERRIDE="$home/projects" FM_SNAPSHOT_NOW=2026-08-01T12:00:00Z \
     "$ROOT/bin/fm-fleet-snapshot.sh" --json) || fail "fleet snapshot failed at the due date"
@@ -3205,7 +3233,7 @@ SH
     || fail "session start could not replay relocated cleanup after the answer: $bootstrap"
   assert_absent "$home/state/$id.meta" "session start left the relocated task record behind"
   assert_absent "$home/state/$id.backlog-close" "session start left the relocated pending record behind"
-  json=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_DATA_OVERRIDE="$data" \
+  json=$(PATH="$home/fakebin:$PATH" REAL_TASKS_AXI="$TASKS_AXI_BIN" FM_HOME="$home" FM_DATA_OVERRIDE="$data" \
     FM_BEARINGS_NOW=2026-07-14T12:00:00Z "$BEARINGS" --json) \
     || fail "Bearings failed after the relocated answer-before-replay lifecycle"
   printf '%s' "$json" | jq -e --arg id "$id" \
@@ -4547,7 +4575,7 @@ test_hold_reason_round_trips_awkward_characters() {
         assert_contains "$out" "$malformed" "public list changed historical literal $malformed"
       done
     done
-    json=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+    json=$(PATH="$home/fakebin:$PATH" REAL_TASKS_AXI="$TASKS_AXI_BIN" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
       FM_DATA_OVERRIDE="$home/data" FM_CONFIG_OVERRIDE="$home/config" \
       "$ROOT/bin/fm-fleet-snapshot.sh" --json) || fail "fleet snapshot failed"
     printf '%s' "$json" | jq -e --arg id "$id" --arg reason "$reason" --arg title "$title" \
@@ -4604,6 +4632,14 @@ SH
     start=$(PATH="$home/fakebin:$PATH" REAL_TASKS_AXI="$TASKS_AXI_BIN" FM_HOME="$home" \
       FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" FM_CONFIG_OVERRIDE="$home/config" \
       FM_BOOTSTRAP_NETWORK=skip "$ROOT/bin/fm-session-start.sh" 2>&1 || true)
+    if [ "$mode" = fallback ]; then
+      # A failed tasks-axi read is reported as is: startup never falls back to reading the backlog file.
+      assert_contains "$start" 'tasks-axi compact listing failed:' "startup did not report the failed listing"
+      assert_contains "$start" 'read failed: literal %28 and fm-hold-v1:bm9ydGg=' \
+        "startup changed unrelated error text"
+      assert_not_contains "$start" 'Investigate literal %28' "startup read the backlog file after a failed listing"
+      continue
+    fi
     assert_contains "$start" "$quoted_reason" "startup $mode changed the encoded reason"
     assert_contains "$start" 'Investigate literal %28' "startup $mode changed the title"
     assert_contains "$start" "$legacy" "startup $mode changed the legacy reason"
@@ -4611,10 +4647,6 @@ SH
     for malformed in "${malformed_reasons[@]}"; do
       assert_contains "$start" "$malformed" "startup $mode changed historical literal $malformed"
     done
-    if [ "$mode" = fallback ]; then
-      assert_contains "$start" 'read failed: literal %28 and fm-hold-v1:bm9ydGg=' \
-        "startup changed unrelated error text"
-    fi
   done
   rm "$home/fakebin/tasks-axi"
   out=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
@@ -4685,6 +4717,7 @@ test_teardown_refuses_a_ship_when_the_captain_hold_cannot_be_read
 test_verify_resolves_a_hold_migrated_to_beads_notes
 test_verify_resolves_a_hold_migrated_under_the_configured_prefix
 test_marker_noted_row_wins_over_a_prefix_namesake
+test_migration_scan_reads_the_home_config_graph
 test_complete_accepts_a_migrated_inventory_on_beads
 test_verify_names_the_unresolvable_legacy_id_once
 test_verify_resolves_a_pre_collapse_key_through_its_derived_marker

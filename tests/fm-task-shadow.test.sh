@@ -55,8 +55,8 @@ hook() {  # <hook args...>: run the hook in the case home
     FM_DATA_OVERRIDE="$HOME_DIR/data" FM_TASK_SHADOW_WRITER="$WRITER" FAKE_CALLS="$CALLS" "${HOOK:-$ROOT/bin/fm-task-shadow.sh}" "$@"
 }
 
-calls() {  # the recorded writer calls without the key, actor and role every call carries
-  sed 's/ --key [^ ]* --actor shadow --role system$//' "$CALLS"
+calls() {  # the recorded writer calls without the key, actor and role every call carries, with a spawn generation as G
+  sed -E 's/ --key [^ ]* --actor shadow --role system$//; s/ --generation s[0-9]+\.[0-9]+\.[0-9]+/ --generation G/' "$CALLS"
 }
 keys() { sed -n 's/.* --key \([^ ]*\) --actor shadow --role system$/\1/p' "$CALLS"; }
 
@@ -73,7 +73,9 @@ test_flag_absent_writes_nothing() {
 
 test_dispatched_creates_assigns_and_starts() {
   make_case dispatched on
-  printf '%s\n' '- [ ] t1 - Build the thing https://github.com/o/r/issues/5 (repo: r) (kind: ship) (since 2026-10-25)' '  note' > "$HOME_DIR/data/backlog.md"
+  # the hook reads the title through bin/fm-tasks-axi.sh show, so the fixture is a real tasks-axi backlog
+  fm_test_tasks_toml "$HOME_DIR/.tasks.toml"
+  printf '%s\n' '## In flight' '' '- [ ] t1 - Build the thing https://github.com/o/r/issues/5 (repo: r) (kind: ship) (since 2026-10-25)' '  note' '' '## Queued' '' '## Done' > "$HOME_DIR/data/backlog.md"
   hook dispatched t1 ship r claude || fail "the hook failed"
   assert_equals "$(printf '%s\n' \
     'create t1 --title Build the thing --kind ship --repo r' \
@@ -151,6 +153,17 @@ test_the_flag_file_carries_the_writer_settings() {
   pass "the flag file hands only FM_TASK_BASE_URL, FM_TASK_AUTH and FM_TASK_TOKEN_FILE to the writer"
 }
 
+test_step_events() {
+  make_case steps on
+  hook step-start t1 s1.2.3 pi gpt-6 high acct-a; hook step-start t1 s1.2.3 claude opus; hook step-end t1 s1.2.3 cleanup
+  assert_equals "$(printf '%s\n' \
+    'step t1 start --generation G --harness pi --model gpt-6 --effort high --account acct-a' \
+    'step t1 start --generation G --harness claude --model opus' \
+    'step t1 end --generation G --reason cleanup')" "$(calls)" "the step events"
+  assert_contains "$(cat "$CALLS")" "--key shadow:t1:step-start-s1.2.3 " "a step start is keyed by its spawn generation"
+  pass "step-start and step-end become the writer's step calls, keyed by the spawn generation"
+}
+
 test_events_of_the_other_scripts() {
   make_case events on
   hook cleaned-up t1; hook verified t1
@@ -196,18 +209,6 @@ test_rows_task_hold_keeps_review() {
     'done t2 --summary verification pending: A1@1440 is pending --changed-files - --verification old source verification pending --residual-risk - --next-actor tester')" \
     "$(calls)" "a rows task and a task begun before T5"
   pass "a task begun after T5 keeps its review on a verification-pending hold"
-}
-
-test_backlog_verbs() {
-  make_case backlog on
-  hook backlog "done" t1; hook backlog reopen t1; hook backlog hold t1 external "waiting"; hook backlog hold t1 captain "a question"; hook backlog unhold t1
-  assert_equals "$(printf '%s\n' \
-    'done t1 --summary closed by the old source --changed-files - --verification - --residual-risk -' \
-    'approve t1' \
-    'reopen t1 --reason backlog row reopened' \
-    'block external t1 --reason waiting --next-actor firstmate' \
-    'unblock t1')" "$(calls)" "backlog verbs (a captain hold is left to fm-captain-hold)"
-  pass "backlog verbs: done, reopen, hold and unhold; a captain hold is left to bin/fm-captain-hold.sh"
 }
 
 # ---- the state scripts, driven for real ------------------------------------------
@@ -287,12 +288,13 @@ test_spawn_writes_the_record() {
   make_real_case spawn
   add_row "$TASK" 'Spawn shadow title' ship
   out=$(in_home "$SBIN/fm-spawn.sh" "$TASK" "$PROJ_DIR" --mode local-only --yolo off 2>&1) || fail "spawn failed: $out"
-  assert_equals "$(printf '%s\n' "create $TASK --title Spawn shadow title --kind ship --repo sample" "assign $TASK --to $TASK" "start $TASK")" "$(calls)" "the record calls of a fresh spawn"
+  assert_equals "$(printf '%s\n' "create $TASK --title Spawn shadow title --kind ship --repo sample" "assign $TASK --to $TASK" "start $TASK" "step $TASK start --generation G --harness claude")" "$(calls)" "the record calls of a fresh spawn"
+  assert_contains "$(sed -n 4p "$CALLS")" "--generation $(sed -n 's/^spawn_gen=//p' "$HOME_DIR/state/$TASK.meta")" "the step start names the spawn generation of the task record"
   make_real_case spawn-off
   rm -f "$HOME_DIR/config/task-shadow"
   out=$(in_home "$SBIN/fm-spawn.sh" "$TASK" "$PROJ_DIR" --mode local-only --yolo off 2>&1) || fail "spawn failed: $out"
   assert_equals "" "$(cat "$CALLS")" "a spawn with the flag absent writes nothing"
-  pass "spawn: a fresh spawn writes create, assign and start to the record; a home without the flag writes nothing"
+  pass "spawn: a fresh spawn writes create, assign, start and its step start to the record; a home without the flag writes nothing"
 }
 
 
@@ -329,10 +331,11 @@ test_teardown_writes_the_record() {
   out=$(in_home "$SBIN/fm-merge-local.sh" "$TASK" 2>&1) || fail "local merge failed: $out"
   : > "$CALLS"; : > "$CASE_DIR/view.log"
   out=$(in_home "$SBIN/fm-teardown.sh" "$TASK" 2>&1) || fail "teardown failed: $out"
-  assert_contains "$(cat "$CASE_DIR/view.log")" "backlog sync --file $HOME_DIR/data/backlog.md" "the backlog close syncs the backlog view (fm_backlog_mutate)"
+  assert_equals "" "$(cat "$CASE_DIR/view.log")" "the backlog close ran a backlog view sync (retired with the cfw5001 backend)"
   assert_contains "$(calls)" "event $TASK comment --note cleaned up by bin/fm-teardown.sh" "teardown writes its cleanup to the record"
-  assert_contains "$(calls)" "approve $TASK" "the backlog close reaches the record (fm_backlog_done)"
-  pass "teardown: the cleanup and the backlog close reach the record"
+  assert_contains "$(calls)" "step $TASK end --generation G --reason cleanup" "teardown ends the running step of its incarnation"
+  case "$(calls)" in *"approve $TASK"*) fail "the backlog close still reached the record through the retired backlog hook" ;; esac
+  pass "teardown: the cleanup reaches the record, and the backlog close runs no view sync or backlog hook"
 }
 
 test_verify_close_writes_the_record() {
@@ -345,8 +348,8 @@ test_verify_close_writes_the_record() {
   : > "$CALLS"
   out=$(in_home "$SBIN/fm-verify-close.sh" "$TASK" 2>&1) || fail "verify-close failed: $out"
   assert_contains "$(calls)" "event $TASK comment --note verification record complete (bin/fm-verify-close.sh)" "verify-close writes its close to the record"
-  assert_contains "$(calls)" "approve $TASK" "the backlog close reaches the record"
-  pass "verify-close: the verified close reaches the record"
+  case "$(calls)" in *"approve $TASK"*) fail "the backlog close still reached the record through the retired backlog hook" ;; esac
+  pass "verify-close: the verified close reaches the record, with no retired backlog hook"
 }
 
 test_captain_hold_writes_the_record() {
@@ -379,7 +382,7 @@ test_working_after_a_block_unblocks_and_restarts
 test_the_hook_never_fails_the_script
 test_the_flag_file_carries_the_writer_settings
 test_events_of_the_other_scripts
-test_backlog_verbs
+test_step_events
 test_rows_task_hold_keeps_review
 test_spawn_writes_the_record
 test_worker_status_command_writes_the_record
@@ -407,7 +410,7 @@ mutate_hook() {  # <label> <case function> <exact source text> <replacement>
 
 mutate_hook 'the flag file switches the hook on' test_flag_absent_writes_nothing '[ -e "$FLAG" ] || exit 0' ':'
 mutate_hook 'every call carries a stable key' test_dispatched_creates_assigns_and_starts '--key "shadow:$TASK:$suffix" ' ''
-mutate_hook 'the title comes from the backlog row' test_dispatched_creates_assigns_and_starts 'row=${row#*" - "}' 'row=$TASK'
+mutate_hook 'the title comes from the backlog row' test_dispatched_creates_assigns_and_starts 'title=$(backlog_field title' 'title=$(: title'
 mutate_hook 'only the last status line is read' test_status_lines_map_to_writer_commands "tail -n 1)" "tail -n 2 | head -n 1)"
 mutate_hook 'a done line carries its PR' test_status_lines_map_to_writer_commands '--pr-url "$url")' ')'
 mutate_hook 'a refused working line is retried after unblock and start' test_working_after_a_block_unblocks_and_restarts 'blocked|triage) w "status-$key-unblock" unblock "$TASK" || return 0 ;;' 'blocked|triage) return 0 ;;'
@@ -419,7 +422,6 @@ mutate_hook 'a verification-pending hold keeps a rows task in review' test_rows_
 mutate_hook 'a captain hold is an ask for the owner' test_events_of_the_other_scripts '--why '"'"'a captain hold'"'"' --next-actor owner' '--why '"'"'a captain hold'"'"''
 mutate_hook 'a refused hold leaves a comment' test_events_of_the_other_scripts '|| w "hold-$key-comment" event' '|| : event'
 mutate_hook 'a close goes through done when the record holds the task running' test_events_of_the_other_scripts 'w "$1-done" "done" "$TASK" --summary "closed by the old source" --changed-files - --verification - --residual-risk - || return 1' 'return 1'
-mutate_hook 'a captain hold in the backlog is left to fm-captain-hold' test_backlog_verbs '[ "${3:-}" = captain ] || ' ''
 pass 'every rule of the hook has a red mutation proof'
 
 # ---- mutation proofs for the scripts: delete the one hook call, the script's case goes red ---------------------
@@ -440,8 +442,8 @@ mutate_script() {  # <label> <case function> <script> <text of the hook line to 
 mutate_script 'the worker status command writes the record' test_worker_status_command_writes_the_record fm-brief.sh 'fm-task-shadow.sh'
 mutate_script 'fm-spawn.sh writes the dispatched task' test_spawn_writes_the_record fm-spawn.sh 'fm-task-shadow.sh" dispatched'
 mutate_script 'fm-teardown.sh writes the cleanup' test_teardown_writes_the_record fm-teardown.sh 'fm-task-shadow.sh" cleaned-up'
-mutate_script 'the backlog transition lib writes a landed close' test_teardown_writes_the_record fm-backlog-transition-lib.sh 'fm_backlog_shadow "$verb"'
-mutate_script 'the backlog transition lib syncs the backlog view' test_teardown_writes_the_record fm-backlog-transition-lib.sh 'fm_backlog_view_sync "$FM_BACKLOG_AXI_FILE"'
+mutate_script 'fm-spawn.sh starts the workflow step' test_spawn_writes_the_record fm-spawn.sh 'fm-task-shadow.sh" step-start'
+mutate_script 'fm-teardown.sh ends the workflow step' test_teardown_writes_the_record fm-teardown.sh 'fm-task-shadow.sh" step-end'
 mutate_script 'fm-verify-close.sh writes the verified close' test_verify_close_writes_the_record fm-verify-close.sh 'fm-task-shadow.sh" verified'
 mutate_script 'fm-captain-hold.sh writes the hold' test_captain_hold_writes_the_record fm-captain-hold.sh 'shadow_record held'
 mutate_script 'fm-captain-hold.sh writes the closing answer' test_captain_hold_writes_the_record fm-captain-hold.sh 'shadow_record answered "$1" closed'

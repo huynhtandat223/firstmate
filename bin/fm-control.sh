@@ -1243,6 +1243,8 @@ case "$VERB" in
     ;;
   exit)
     result=$(do_exit)
+    # Opt-in task record shadow: the stopped incarnation's running workflow step ends (plan v2 D1).
+    [ ! -e "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}/task-shadow" ] || FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_DATA_OVERRIDE=$DATA "$SCRIPT_DIR/fm-task-shadow.sh" step-end "$ID" "$(fm_meta_get "$META" spawn_gen)" cleanup || true
     echo "$result $ID harness=$HARNESS backend=$BACKEND endpoint=$T worktree=$WT"
     ;;
   relaunch)

@@ -14,14 +14,36 @@
 //   assign   <task> --to ASSIGNEE            triage|todo|ready -> ready (todo while a parent is open)
 //   reassign <task> --to ASSIGNEE --reason WHY  changes only assignee; refused from done and archived
 //   start    <task>                          ready -> running
+//   setup    <task> --file JSON [--by firstmate|owner]   {"steps":[{state,harness,model,effort,fallbacks:[{harness,model,effort}]}]}:
+//            the states the task needs, in workflow order (plan implement testing merge verify; Merge has no model).
+//            Writes one fm_task_step row per state; a pending state left out becomes skipped. Once a state has
+//            started, the list of states is fixed (exit 5 otherwise); a state that has run keeps the runtime it ran
+//            with, and only pending states take a new harness, model, effort and fallbacks.
+//   move     <task> --to STATE               queued -> the first setup state -> the next one; testing|verify -> implement
+//            on a failed check row; a state outside the setup is refused (exit 5). The running attempt of the state
+//            left behind ends with the move. Done comes only through approve, which ends a running step and skips a
+//            state that never started; reopen returns to the last state that ran and lets the skipped states wait again.
+//   step     <task> start --harness H [--model M] [--effort E] [--account A] [--generation G]   the current state runs;
+//            without --model (a harness default) the setup's model and effort for the state stand
+//   step     <task> alive|dead [--generation G]   on a change only     step <task> end --reason R [--generation G]
+//            G is the spawn_gen of state/<task>.meta; a report from an older incarnation is refused (exit 5).
 //   heartbeat <task> [--note N]              running (today's `working:`)
 //   done     <task> --summary --changed-files --verification --residual-risk [--rows JSON]
 //            [--pr-url U] [--head H] [--next-actor tester|firstmate]       running -> review
-//            [--document FILE] [--document-title TITLE] attaches one documents child in the same request.
+//            [--document FILE] [--document-title TITLE] attaches one documents child in the same request
+//            (required when task kind is scout or plan; refused exit 5 otherwise).
 //            Document: UTF-8 .md/.markdown or .html/.htm, 1 byte to 2 MiB; one-line title 1..200
 //            characters (default file name). Invalid files/options exit 2 before any API write.
+//   plan     <task> --document FILE [--document-title T] [--note N]        attaches a plan document and sets
+//            planSeq = seq, planDecision = null, planDecidedAt = null (default role planner)
+//   plan-decision <task> --decision approve|changes --plan-seq N [--note WHY]
+//            sets planDecision and planDecidedAt (refused exit 5 when N !== task.planSeq or task has no plan)
 //   ask      <task> --question Q --option O (2 to 6 times) --recommendation R --why W
 //            [--document D] [--next-actor firstmate|owner]                  running -> blocked (needs-decision)
+//            --next-actor owner also asks from blocked while every open call is an owner question (a round), and leaves
+//            blockRepeats as it was; each owner question waits on its own answer
+//   answer   <task> --question SEQ [--option O] [--note N]   one open question of the task (role owner by default):
+//            event answered; the last answer moves blocked -> ready, next actor worker (todo while a parent is open)
 //   block    <kind> <task> --reason R --next-actor A [--until ISO] [--on PARENT]
 //            kind: transient|dependency|external|credential|failure; running -> blocked,
 //            a dependency waits in todo on --on PARENT; a third block of one kind goes to triage.
@@ -30,17 +52,19 @@
 //            An unreadable forge never refuses, because blocking is what a worker needs then.
 //   unblock  <task>                          blocked|triage -> ready
 //   approve  <task>                          review -> done (refused while a check row is pending or failed, and
-//            on a task with a deploy event until its user-visible rows pass on a deployed head)
+//            on a task with a deploy event until its user-visible rows pass on a deployed head; deletes any
+//            fm_event_video rows of the task after replacing video check evidence with its Tester screenshot, and
+//            writes a comment "N video đã xóa sau Verify")
 //   changes  <task> --note WHY               review -> ready
 //   reopen   <task> --reason WHY             done -> ready, next actor firstmate; archived stays final
 //   archive  <task>                          triage|todo|ready|blocked|review|done -> archived
 //   describe <task> --document FILE.md [--document-title T]              any state; default title Description
 //   thread   <task> [--since SEQ]                                       full comments, oldest first
-//   comment  <task> --note T [--image PATH --image-label L]... [--ask why|how|wait-what] [--reply-to SEQ]
-//            any state; reply-to must name a comment of this task
-//   event    <task> <kind> [--note N] [--pr-url U] [--head H]   kinds: steer comment pr deploy ci protocol_violation
-//            divergence; --head on deploy (the deployed head, which user-visible passes count on from then) or on ci
-//            (the head the CI result read); no other kind takes it
+//   comment  <task> [--note T] [--image PATH --image-label L]... [--video PATH --video-label L]...
+//            [--ask why|how|wait-what] [--reply-to SEQ]                 any state; reply-to must name a comment of this task
+//   event    <task> <kind> [--note N] [--pr-url U] [--head H] [--url U] kinds: steer comment pr deploy ci
+//            protocol_violation divergence link; --head on deploy (the deployed head, which user-visible passes count on
+//            from then) or on ci (the head the CI result read); --url on link; no other kind takes them
 //   event    <task> wait --next-actor tester|owner|merge|ci --clears-on rows|answer|merge|ci --note WHY [--rows ID@W,...]
 //            a declared wait (G1); `ask --next-actor owner` (answer) and `done --pr-url` (rows on the Tester, else merge)
 //            write one too. Its status line is `paused [at=E] [key=wait-<seq>]: waiting on <actor>: WHY (clears on X)`; the
@@ -54,33 +78,48 @@
 //   checks   <task> [--as-deployed HEAD [--touched IDS]]   read only: JSON of the open rows with their newest values,
 //            `carried`, and `due` (the Tester checks it on the head); --as-deployed reads as if HEAD were deployed next
 //   link     <parent> <child>                the child waits in todo while the parent is open
-//   rows     <task> <issue-url> [--surface all|user-visible]   one check row per scenario x width from
+//   rows     <task> [task:<id>|issue-url] [--surface all|user-visible]   defaults to the task Description; one check row per scenario x width from
 //            fm-acceptance.mjs; user-visible adds, resets and retires the Tester's rows only
-//   check    <task> <id>@<width> pass|fail|pending [--evidence E] [--head H] [--next-actor A]
-//            (--status S is the same as the result word); next actor firstmate on a pass, worker on a fail;
-//            with --role owner a pass or fail also sets the row's owner item (status, decidedAt, note = --evidence)
+//   check    <task> <id>@<width> pass|fail|pending [--evidence E | --evidence-image PATH [--evidence-label L]]
+//            [--head H] [--next-actor A] (--status S is the same as the result word); next actor firstmate on a pass,
+//            worker on a fail; --evidence-image writes a comment event with the image first and records
+//            evidence = event:<seq>#image:1; with --role owner a pass or fail also sets the row's owner item
+//            (status, decidedAt, note = --evidence)
 //   owner-check <task> <id>@<width> --page-title --url --steps --data --expected   (sets next actor owner;
 //            a row that has an item needs --url and --steps again; a re-sent --key never writes the item twice)
-//   gate     <task> --issue URL --head SHA [--evidence-root DIR]   read only: prints each reason the task is not
+//   checklist <task> apply | off <item> --reason R | on <item> [--reason R]
+//            the task kind's checklist (TEMPLATES): one check row cl:<item>@- per item, surface checklist, written on
+//            create and by apply for a task created earlier (apply adds only the missing items). plan and scout: plan,
+//            mockup, decision, tester (off: "Plan task: Tester verifies the ship slices it files"); a user-visible ship:
+//            ci, mockup, tester, deploy; other kinds have none. off (only a cl: row, reason required, kept in evidence)
+//            closes an item; on sets it pending again. After every write a pending item passes by itself when the record
+//            holds its evidence, which names the event: plan a plan event or a done document (event:<seq>#document);
+//            mockup a comment image labelled mockup (event:<seq>#image:<n>); decision the owner's approval of the
+//            current plan or the owner's unblock after the newest owner question (event:<seq>); ci the green ci event
+//            for the head of the newest done call (or of the newest ci result when that done has none); a passed ci or decision item goes pending again when its evidence no
+//            longer holds (a new head, a new plan, the owner's changes, a new open question); tester every
+//            user-visible row pass (event:<seq> of the newest check); deploy the newest deploy with a head and every
+//            user-visible row pass on it. An automatic write is refused when the row changed after it was read, so an
+//            owner's off or on wins. rows and gate skip cl: rows; approve refuses an open one like any open row.
+//   gate     <task> [--issue task:<id>|URL] --head SHA [--evidence-root DIR]   defaults to the task Description; read only: prints each reason the task is not
 //            complete (exit 5): a user-visible row of the issue not pass on the deployed head with its current
 //            digest and evidence, or no approved event newer than the last row event (bin/fm-verify-gate-lib.sh)
 //   turn-end <task> --turn TOKEN             check a durable turn generation; heartbeat is not terminal
+//   rules    [--state plan|implement|testing|merge|verify [--repo R] [--account A] [--at ISO] [--task T]] [--json]
+//            read only: the owner's model rules (fm_model_rule), every rule without --state; with --state the
+//            candidates now in rank order: enabled, in --hours at --at (local time, default now), account null or
+//            --account, and fitting --repo (a repo some rule of that state names in its scope uses only those rules,
+//            any other repo the rules with no scope). With --task and no candidate, the task stops with the owner
+//            question "Không còn model cho <State>" (once while it is open) and the call exits 5.
+//   rule     add --state S --harness H --model M --rank N [--effort E] [--account A] [--hours 17-07,sat,sun]
+//            [--scope REPO,...] [--enabled true|false] [--warning W] [--note WHY]   |   rule set <id> [the same flags]
+//            |   rule delete <id>     writes fm_model_rule, then a `rules` event on task fm-model-rules (created
+//            on first use in backlog home system); a re-sent --key writes nothing again
+//   read-mark <task> --key steer:<task>:<record>  mark one handled steer in fm_task_delivery (consumer read:<task>)
 //   deliver  <task> --consumer NAME           claim each event in fm_task_delivery, then append a wake
 //            FM_HOME is required; delivery is scoped to this task, never a whole foreign fleet.
 //            A crash between claim and queue append requires operator reconciliation (no duplicate claim).
 //            a row that has an item needs all five template fields again; a re-sent --key never writes the item twice)
-//   row      <task> --section S --row-file F --notes-file F [--file BACKLOG] | --gone   one backlog row, verbatim: the
-//            header after the checkbox (one line, starting "<task> - "), the lines under it (each ending in a newline)
-//            and its section, in the view of BACKLOG (default as for backlog below), which is then synced with that
-//            row taken from the record; --gone takes it out of that view. Text over one event body goes in a documents child.
-//   backlog  sync|render [--file BACKLOG] [--out F] [--absorb-only]   the backlog view (T7): sync writes every row the
-//            file holds differently to the record (a task the record lacks is imported first), then renders the file
-//            from the record (--absorb-only leaves the file); render prints or writes (--out) the view only. BACKLOG defaults to FM_DATA_OVERRIDE, else
-//            $FM_HOME/data, /backlog.md. Line 1 names the record; the checkbox is [x] in Done; in a section the rows
-//            follow the event that put them there, In flight and Done newest first, other sections oldest first. A
-//            line outside a row other than a blank one refuses the sync (exit 5) after the import, file unchanged.
-//            The record is shared by every home: a view holds and changes only the rows its own file wrote. A sync and
-//            a row call of one file each hold an exclusive lock on <file>.view-lock (perl's flock) while they run.
 //   show     <task> [--json]   list [--state S] [--actor A] [--json]   resume <task>   reproject <task> | --all
 //            reproject --all folds every task row again (the board card's step fields too) and prints each repair.
 // Every write takes --key K (the idempotency key; a re-send returns the first event), --actor NAME
@@ -119,7 +158,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { attr, hermes, holdText } from './fm-task-sources-lib.mjs';
 
@@ -133,7 +172,9 @@ const ACTORS = ['worker', 'tester', 'firstmate', 'owner'];
 const ROLES = ['worker', 'firstmate', 'tester', 'planner', 'owner', 'assistance', 'system'];
 const BLOCK_KINDS = ['transient', 'dependency', 'external', 'credential', 'failure'];
 const CHECK_STATUSES = ['pending', 'pass', 'fail'];
-const FREE_KINDS = ['steer', 'comment', 'pr', 'deploy', 'ci', 'protocol_violation', 'divergence'];
+// A checklist row (cl:<item>) also takes `off`, with its reason in evidence; `check` never writes it.
+const CHECKLIST_PREFIX = 'cl:';
+const FREE_KINDS = ['steer', 'comment', 'pr', 'deploy', 'ci', 'protocol_violation', 'divergence', 'link'];
 const WAIT_ACTORS = ['tester', 'owner', 'merge', 'ci'];
 const WAIT_CLEARS = ['rows', 'answer', 'merge', 'ci'];
 const CLOSED = ['done', 'archived'];
@@ -156,19 +197,28 @@ const TRANSITIONS = {
 };
 
 // the fm_task columns the projection holds, with the lengths the API enforces on them
-const LIMITS = { title: 300, repo: 200, kind: 32, state: 32, assignee: 64, nextActor: 32, blockKind: 32, blockReason: 2000, issueUrl: 2048, prUrl: 2048, surface: 32, section: 32 };
+const LIMITS = { title: 300, repo: 200, kind: 32, state: 32, assignee: 64, nextActor: 32, blockKind: 32, blockReason: 2000, issueUrl: 2048, prUrl: 2048, surface: 32, section: 32, planDecision: 16 };
 const PROJECTED = ['acceptanceDigest', 'title', 'repo', 'kind', 'state', 'assignee', 'nextActor', 'blockKind', 'blockReason', 'blockRepeats', 'issueUrl', 'prUrl', 'surface', 'holdUntil', 'row', 'notes', 'section', 'lastSeq',
-  'stage', 'stageSince', 'lastEventAt', 'lastNote', 'reviewer'];
-// The board card's step (cfw-modules#1678 change 199): the writer owns the rule and the page only reads it.
+  'stage', 'stageSince', 'lastEventAt', 'lastNote', 'reviewer', 'planSeq', 'planDecision', 'planDecidedAt',
+  'workflowState', 'workflowSince', 'stepHarness', 'stepModel', 'stepEffort', 'stepAlive', 'setupBy', 'setupAt',
+  // the backlog columns the cfw5001 tasks-axi backend writes in each row event's set (tasks-axi src/backends/cfw5001-transport.ts BACKLOG_COLUMNS)
+  'backlogHome', 'backlogKind', 'backlogHoldReason', 'backlogHoldKind', 'backlogHoldUntil', 'backlogPriority', 'backlogDeps', 'backlogSince',
+  'backlogClosed', 'backlogSeq', 'backlogPublicFollowup'];
+// The board card's step (cfw-modules#1678 change 199): the writer owns the rule and the page only reads it. The live
+// page still reads it; plan v2 D1 retires it once the board reads workflowState.
 const STEP_OF_STATE = { triage: 'queued', todo: 'queued', ready: 'queued', done: 'passed' };
+// The workflow states (plan v2 D1), in order; a task's setup names the ones it needs between queued and done.
+const WORKFLOW_STATES = ['queued', 'plan', 'implement', 'testing', 'merge', 'verify', 'done'];
 const REVIEWER_KINDS = ['check', 'owner-check', 'approved', 'changes'];
-const DATE_FIELDS = ['holdUntil', 'stageSince', 'lastEventAt'];
+const DATE_FIELDS = ['holdUntil', 'stageSince', 'lastEventAt', 'planDecidedAt', 'workflowSince', 'setupAt'];
 // the backlog row's text: kept in the record verbatim, too long and multi-line for `show`'s field=value lines
 const ROW_TEXT = ['row', 'notes'];
 const TASK_ID = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
 const MAX_ATTEMPTS = 300;
 const IMAGE_TYPES = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp' };
 const MAX_IMAGE = 2 * 1024 * 1024;
+const VIDEO_TYPES = { '.mp4': 'video/mp4', '.webm': 'video/webm' };
+const MAX_VIDEO = 20 * 1024 * 1024;
 
 class Fail extends Error {
   constructor(code, message, extra = {}) {
@@ -207,7 +257,7 @@ async function http(method, pathname, body) {
   if (body !== undefined) headers['content-type'] = 'application/json';
   let res;
   try {
-    res = await fetch(base + pathname, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(20000) });
+    res = await fetch(base + pathname, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(60000) });
   } catch (error) {
     const why = error?.cause?.code || error?.cause?.message || error?.message || 'no answer';
     throw new Fail(3, `${method} ${pathname}: no answer from ${base} (${why})`, { network: true });
@@ -238,11 +288,12 @@ const ok = (res, what) => {
 const unwrap = (json) => (json && typeof json === 'object' && 'data' in json && 'success' in json ? json.data : json);
 const lit = (value) => `'${String(value).replaceAll("'", "''")}'`;
 
-async function listAll(table, { filter, orderby = 'id', limit = Infinity } = {}) {
+async function listAll(table, { filter, orderby = 'id', limit = Infinity, select } = {}) {
   const out = [];
   for (let skip = 0; out.length < limit; skip += 100) {
     const query = [`$top=100`, `$skip=${skip}`, `$orderby=${encodeURIComponent(orderby)}`];
     if (filter) query.push(`$filter=${encodeURIComponent(filter)}`);
+    if (select) query.push(`$select=${encodeURIComponent(select)}`);
     const page = ok(await http('GET', `/api/${table}?${query.join('&')}`), `list ${table}`).value || [];
     out.push(...page);
     if (page.length < 100) break;
@@ -280,6 +331,8 @@ function bodyOf(event) {
 }
 
 // The fold of every event's `set`; null while the task has no `created` event.
+// A created task starts in workflow state queued; setup, move, step, approve and reopen set workflowState,
+// workflowSince and the card's step fields (stepHarness, stepModel, stepEffort, stepAlive) in their own `set`.
 // The step follows the state: done is passed; review is dev once a deploy follows the newest done, else pr; running is
 // pr once a pr event follows the newest started or changes, else working; triage, todo and ready are queued; blocked
 // (and archived) keep the step they had. stageSince is the time of the event that set the step. lastEventAt and
@@ -311,10 +364,11 @@ function fold(events) {
     if (event.kind === 'started' || event.kind === 'changes') pullRequest = false;
     if (event.kind === 'pr') pullRequest = true;
     task = { ...task, ...set, lastSeq: event.seq };
+    if (event.kind === 'created' && !task.workflowState) Object.assign(task, { workflowState: 'queued', workflowSince: event.createdAt ?? null });
     const stage = STEP_OF_STATE[task.state] ?? (task.state === 'review' ? (deployed ? 'dev' : 'pr')
       : task.state === 'running' ? (pullRequest ? 'pr' : 'working') : task.stage ?? 'queued');
     if (stage !== task.stage) Object.assign(task, { stage, stageSince: event.createdAt ?? null });
-    if (event.kind !== 'row') {
+    if (event.kind !== 'row' && event.kind !== 'checklist') {
       const note = String(bodyOf(event).note ?? '');
       task.lastEventAt = event.createdAt ?? null;
       if (!isMachineRecord(event, note)) task.lastNote = note.slice(0, 300) || null;
@@ -371,6 +425,9 @@ async function project(taskId) {
 // ---- arguments --------------------------------------------------------------------------------------------
 const COMMON = { actor: 's', role: 's', key: 's', note: 's', task: 's', json: 'b' };
 const SPECS = {
+  setup: { pos: ['task'], flags: { file: 's', by: 's' } },
+  move: { pos: ['task'], flags: { to: 's' } },
+  step: { pos: ['task', 'action'], flags: { harness: 's', model: 's', effort: 's', account: 's', reason: 's', generation: 's' } },
   create: { pos: ['task'], flags: { title: 's', kind: 's', repo: 's', issue: 's', surface: 's', after: 'm' } },
   import: { pos: ['task'], flags: { title: 's', kind: 's', repo: 's', state: 's', assignee: 's', 'next-actor': 's', 'block-kind': 's', 'block-reason': 's', issue: 's', 'pr-url': 's', surface: 's', until: 's', since: 's' } },
   assign: { pos: ['task'], flags: { to: 's' } },
@@ -386,13 +443,15 @@ const SPECS = {
   reassign: { pos: ['task'], flags: { to: 's', reason: 's' } },
   archive: { pos: ['task'], flags: {} },
   describe: { pos: ['task'], flags: { document: 's', 'document-title': 's' } },
+  plan: { pos: ['task'], flags: { document: 's', 'document-title': 's' } },
+  'plan-decision': { pos: ['task'], flags: { decision: 's', 'plan-seq': 's' } },
   thread: { pos: ['task'], flags: { since: 's' } },
-  comment: { pos: ['task'], flags: { image: 'm', 'image-label': 'm', ask: 's', 'reply-to': 's' } },
-  event: { pos: ['task', 'kind'], flags: { 'pr-url': 's', head: 's', touched: 's', 'next-actor': 's', 'clears-on': 's', rows: 's' } },
+  comment: { pos: ['task'], flags: { image: 'm', 'image-label': 'm', video: 'm', 'video-label': 'm', ask: 's', 'reply-to': 's' } },
+  event: { pos: ['task', 'kind'], flags: { 'pr-url': 's', head: 's', touched: 's', 'next-actor': 's', 'clears-on': 's', rows: 's', url: 's' } },
   checks: { pos: ['task'], flags: { 'as-deployed': 's', touched: 's' } },
   link: { pos: ['parent', 'child'], flags: {} },
   rows: { pos: ['task', 'issue'], flags: { surface: 's' } },
-  check: { pos: ['task', 'target', 'status'], flags: { status: 's', evidence: 's', head: 's', 'next-actor': 's' } },
+  check: { pos: ['task', 'target', 'status'], flags: { status: 's', evidence: 's', 'evidence-image': 's', 'evidence-label': 's', head: 's', 'next-actor': 's' } },
   'owner-check': { pos: ['task', 'target'], flags: { 'page-title': 's', url: 's', steps: 's', data: 's', expected: 's' } },
   show: { pos: ['task'], flags: {} },
   list: { pos: [], flags: { state: 's', actor: 's' } },
@@ -400,13 +459,17 @@ const SPECS = {
   reproject: { pos: ['task'], flags: { all: 'b' } },
   'turn-end': { pos: ['task'], flags: { turn: 's' } },
   deliver: { pos: ['task'], flags: { consumer: 's' } },
+  'read-mark': { pos: ['task'], flags: {} },
+  inbox: { pos: ['task'], flags: { action: 's', target: 's', home: 's' } },
   document: { pos: ['task'], flags: {} },
   'plan-approve': { pos: ['task'], flags: {} },
   'plan-check': { pos: ['task'], flags: {} },
   'plan-spec': { pos: ['task'], flags: {} },
   gate: { pos: ['task'], flags: { issue: 's', head: 's', 'evidence-root': 's' } },
-  row: { pos: ['task'], flags: { section: 's', 'row-file': 's', 'notes-file': 's', gone: 'b', file: 's' } },
-  backlog: { pos: ['action'], flags: { file: 's', out: 's', 'absorb-only': 'b' } },
+  rules: { pos: [], flags: { state: 's', repo: 's', at: 's', account: 's' } },
+  answer: { pos: ['task'], flags: { question: 's', option: 's' } },
+  rule: { pos: ['action', 'id'], flags: { state: 's', harness: 's', model: 's', effort: 's', rank: 's', account: 's', hours: 's', scope: 's', enabled: 's', warning: 's' } },
+  checklist: { pos: ['task', 'verb', 'item'], flags: { reason: 's' } },
 };
 
 function parseArgs(command, argv) {
@@ -493,7 +556,7 @@ async function append(taskId, who, build) {
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     const high = await highestSeq();
     const events = await taskEvents(taskId);
-    const spec = await build({ task: fold(events), events });
+    const spec = await build({ task: fold(events), events, seq: high + 1 });
     checkSet(spec.set || {});
     if (spec.note && JSON.stringify({ v: 1, note: spec.note, set: spec.set || {}, ...spec.extra }).length > 8000 - EVENT_STAGE_BUDGET) {
       spec.children = { ...spec.children, documents: [...(spec.children?.documents || []), { title: 'Event note', mediaType: 'text/plain', content: spec.note }] };
@@ -608,6 +671,25 @@ function imagesOf(args) {
 }
 const withImages = (children, images) => (images.length ? { ...children, images } : children);
 
+function videosOf(args) {
+  const paths = args.flags.video || [];
+  const labels = args.flags['video-label'] || [];
+  if (paths.length !== labels.length) throw usage('give one --video-label for each --video');
+  return paths.map((file, i) => {
+    const mediaType = VIDEO_TYPES[path.extname(file).toLowerCase()];
+    if (!mediaType) throw rule(`${file}: a video is an mp4 or webm file`);
+    let data;
+    try {
+      data = fs.readFileSync(file);
+    } catch {
+      throw rule(`${file}: cannot read the video`);
+    }
+    if (!data.length || data.length > MAX_VIDEO) throw rule(`${file}: a video is 1 byte to 20 MiB`);
+    return { label: labels[i], mediaType, size: data.length, content: data.toString('base64') };
+  });
+}
+const withVideos = (children, videos) => (videos.length ? { ...children, videos } : children);
+
 const surfaceActor = (surface) => (surface === 'user-visible' ? 'tester' : 'worker');
 const rowKey = (row) => `${row.scenarioId}@${row.width}`;
 const openRows = (rows) => rows.filter((row) => row.status === 'pending' || row.status === 'fail');
@@ -645,11 +727,22 @@ async function write(taskId, who, build, after, wait) {
   const result = await append(taskId, who, build);
   let projected;
   try {
+    const stepWrites = bodyOf(result.event).stepWrites;
+    if (Array.isArray(stepWrites)) {
+      // a replayed or late event writes only the fields of a state that no newer event has written since
+      const later = (await taskEvents(taskId)).filter(e => e.seq > result.event.seq).flatMap(e => bodyOf(e).stepWrites ?? []);
+      for (const step of stepWrites) {
+        const taken = new Set(later.filter(l => l.state === step.state).flatMap(l => Object.keys(l)));
+        const fields = Object.fromEntries(Object.entries(step).filter(([k]) => k === 'state' || !taken.has(k)));
+        if (Object.keys(fields).length > 1) await saveStep(taskId, fields);
+      }
+    }
     projected = await project(taskId);
     if (after) {
       await after(result);
       projected = await project(taskId);
     }
+    if (await syncChecklist(taskId)) projected = await project(taskId);
   } catch (error) {
     if (error instanceof Fail) {
       out(`seq=${result.event.seq} task=${taskId} event=${result.event.kind} (stored; the follow-up write failed)`);
@@ -701,7 +794,10 @@ function clearingEvent(wait, events) {
   const { clearsOn, rows = [] } = bodyOf(wait).wait || {};
   const later = events.filter((e) => e.seq > wait.seq);
   const closing = later.find((e) => e.kind === 'approved' || e.kind === 'archived');
-  if (clearsOn === 'answer') return later.find((e) => e.kind === 'unblocked') ?? closing;
+  if (clearsOn === 'answer') {
+    const { question } = bodyOf(wait).wait || {};
+    return later.find((e) => e.kind === 'unblocked' || (e.kind === 'answered' && (question ? bodyOf(e).answer?.question === question : bodyOf(e).set?.state !== undefined))) ?? closing;
+  }
   if (clearsOn === 'merge') return later.find((e) => e.kind === 'pr' && /\bmerged\b/i.test(bodyOf(e).note ?? '')) ?? closing;
   // The pr-review source writes one ci event for the PR's current head once its checks finish, green or failed,
   // so the delivered CI result is that event whatever head the worker was waiting on.
@@ -755,11 +851,11 @@ async function waitView(taskId, known) {
 }
 
 // Append a wait for a task, keyed on the call that asks for it, and write its paused line.
-async function waitOn(taskId, who, { actor, clearsOn, note, rows = [] }) {
+async function waitOn(taskId, who, { actor, clearsOn, note, rows = [], question }) {
   const result = await append(taskId, { ...who, key: `${who.key}:wait` }, async ({ task }) => {
     if (!task) throw rule('no such task');
     if (CLOSED.includes(task.state)) throw rule(`wait is refused: ${taskId} is ${task.state}`);
-    return { kind: 'wait', note, extra: { wait: { actor, clearsOn, rows } } };
+    return { kind: 'wait', note, extra: { wait: { actor, clearsOn, rows, ...(question ? { question } : {}) } } };
   });
   await statusView(result.event);
   return result;
@@ -797,6 +893,120 @@ async function verifyView(event) {
 // ---- commands ---------------------------------------------------------------------------------------------
 const noteOf = (args) => args.flags.note ?? '';
 
+const stepRows = (taskId) => listAll('fm_task_step', { filter: `taskId eq ${lit(taskId)}`, orderby: 'position' });
+const stepProjection = (step) => ({ stepHarness: step?.harness ?? null, stepModel: step?.model ?? null, stepEffort: step?.effort ?? null, stepAlive: step?.alive ?? null });
+async function saveStep(taskId, step) {
+  const old = await firstRow('fm_task_step', `taskId eq ${lit(taskId)} and state eq ${lit(step.state)}`);
+  return ok(await http(old ? 'PATCH' : 'POST', old ? `/api/fm_task_step/${old.id}` : '/api/fm_task_step', { taskId, ...step }), 'write step');
+}
+async function cmdSetup(args) {
+  const taskId = taskIdOf(args);
+  if (!args.flags.file) throw usage('setup needs --file');
+  const by = oneOf(['firstmate', 'owner'], args.flags.by ?? 'firstmate', 'setup by');
+  let input;
+  try { input = JSON.parse(fs.readFileSync(args.flags.file, 'utf8')); } catch { throw usage('setup file must contain JSON'); }
+  const steps = Array.isArray(input) ? input : input.steps;
+  if (!Array.isArray(steps) || !steps.length) throw usage('setup needs a nonempty steps array');
+  let position = -1;
+  const normalized = steps.map((s, index) => {
+    const p = WORKFLOW_STATES.indexOf(s.state);
+    if (p <= position || p < 1 || p > 5) throw rule('setup states must be unique and in workflow order');
+    position = p;
+    if (s.state !== 'merge' && (!s.harness || !s.model)) throw usage(`${s.state} needs harness and model`);
+    if (s.fallbacks !== undefined && !Array.isArray(s.fallbacks)) throw usage('fallbacks must be an array');
+    for (const candidate of s.fallbacks ?? []) {
+      if (!candidate || typeof candidate.harness !== 'string' || !candidate.harness.trim() || typeof candidate.model !== 'string' || !candidate.model.trim()) throw usage('each fallback needs harness and model');
+    }
+    return { state: s.state, position: index, harness: s.state === 'merge' ? null : s.harness, model: s.state === 'merge' ? null : s.model, effort: s.state === 'merge' ? null : s.effort ?? null, fallbacks: JSON.stringify(s.fallbacks ?? []), source: by, ruleIds: s.ruleIds ?? null };
+  });
+  return write(taskId, identity(args, 'firstmate'), async ({ task }) => {
+    if (!task || CLOSED.includes(task.state)) throw rule('setup requires an open task');
+    const old = await stepRows(taskId);
+    if (old.some(s => !['pending', 'skipped'].includes(s.status))) {
+      const active = old.filter(s => s.status !== 'skipped');
+      if (active.length !== normalized.length || active.some((s, i) => s.state !== normalized[i].state)) throw rule('a started setup keeps its states; only pending states take new runtimes');
+    }
+    // a state that has run keeps the runtime it ran with (it may be a fallback); only pending states take the new one
+    const ran = (state) => old.some(o => o.state === state && !['pending', 'skipped'].includes(o.status));
+    const removed = old.filter(s => !normalized.some(n => n.state === s.state));
+    const stepWrites = [...normalized.map(s => ran(s.state) ? { state: s.state, position: s.position }
+      : { ...s, ...(old.some(o => o.state === s.state && o.status !== 'skipped') ? {} : { status: 'pending', attempt: 0, endReason: null }) }),
+    ...removed.map(s => ({ state: s.state, status: 'skipped' }))];
+    // the card shows the current state's runtime: a setup edit of that state before it starts shows at once
+    const current = normalized.find(s => s.state === task.workflowState);
+    const card = current && !ran(current.state) ? stepProjection(current) : {};
+    return { kind: 'setup', extra: { stepWrites }, set: { setupBy: by, setupAt: new Date().toISOString(), ...card }, children: { documents: [{ title: 'Setup', mediaType: 'application/json', content: JSON.stringify(normalized) }] } };
+  });
+}
+async function cmdMove(args) {
+  const taskId = taskIdOf(args);
+  const to = oneOf(WORKFLOW_STATES, args.flags.to, 'workflow state');
+  return write(taskId, identity(args, 'firstmate'), async ({ task }) => {
+    if (!task || CLOSED.includes(task.state)) throw rule('move requires an open task');
+    const steps = (await stepRows(taskId)).filter(s => s.status !== 'skipped');
+    const index = steps.findIndex(s => s.state === task.workflowState);
+    const target = steps.find(s => s.state === to);
+    const next = task.workflowState === 'queued' ? steps[0] : steps[index + 1];
+    const retry = ['testing', 'verify'].includes(task.workflowState) && to === 'implement' && (await checkRows(taskId)).some(r => r.status === 'fail');
+    if (!target || (next?.state !== to && !retry)) throw rule('move must follow setup; Done requires approve');
+    // the state left behind stops running: its attempt ends with the move
+    const now = new Date().toISOString();
+    const left = steps.find(s => s.state === task.workflowState && s.status === 'running');
+    const stepWrites = left ? [{ state: left.state, status: 'done', alive: 'dead', endedAt: now, endReason: `moved to ${to}` }] : [];
+    return { kind: 'moved', extra: { stepWrites }, set: { workflowState: to, workflowSince: now, ...stepProjection(target) } };
+  });
+}
+// The spawn generation that started the running attempt of a state: the newest step event that set it running.
+const startGeneration = (events, state) => {
+  const starts = events.filter(e => e.kind === 'step' && bodyOf(e).stepWrites?.some(s => s.state === state && s.status === 'running'));
+  return starts.length ? bodyOf(starts.at(-1)).generation ?? null : null;
+};
+// step start, alive, dead and end. A --generation names the spawn incarnation that reports (state/<task>.meta spawn_gen):
+// a report from another incarnation than the one that started the running attempt is refused, so a late watcher pass of
+// a replaced worker cannot overwrite its successor. A start from a new incarnation while the state runs (a relaunch)
+// re-points the running attempt to the new runtime without counting another attempt; the same incarnation again is
+// unchanged. alive, dead and end on a state that is not running, and an unchanged liveness, write nothing.
+async function cmdStep(args) {
+  const taskId = taskIdOf(args);
+  const action = oneOf(['start', 'alive', 'dead', 'end'], args.pos.action, 'step action');
+  const generation = args.flags.generation ?? null;
+  const who = identity(args, 'firstmate');
+  if (action === 'start' && !args.flags.harness) throw usage('step start needs --harness');
+  if (action === 'end' && !args.flags.reason) throw usage('step end needs --reason');
+  // the decision on the record as it is now; the write repeats it against the events really before it
+  const decide = async (task, events) => {
+    if (!task) throw rule('no such task');
+    const current = (await stepRows(taskId)).find(s => s.state === task.workflowState && s.status !== 'skipped');
+    if (!current) throw rule(`current workflow state ${task.workflowState ?? 'none'} has no setup step`);
+    const started = startGeneration(events, current.state);
+    const now = new Date().toISOString();
+    if (action === 'start') {
+      if (current.state === 'merge') throw rule('Merge has no worker model');
+      // a spawn on the harness default names no model: the configured step's model and effort stand
+      const runtime = { harness: args.flags.harness, model: args.flags.model || current.model, effort: args.flags.effort || current.effort || null, account: args.flags.account || null };
+      if (!runtime.model) throw usage('step start needs --model: the setup names no model for this state');
+      if (current.status !== 'running') return { current, patch: { ...runtime, status: 'running', alive: 'alive', attempt: current.attempt + 1, startedAt: now, lastHeartbeatAt: now, endedAt: null, endReason: null } };
+      if (!generation || !started) throw rule('end the running step before starting another attempt');
+      if (generation === started) return { current, unchanged: true };
+      return { current, patch: { ...runtime, status: 'running', alive: 'alive', lastHeartbeatAt: now } };
+    }
+    if (current.status !== 'running') return { current, unchanged: true };
+    if (generation && started && generation !== started) throw rule(`step generation ${generation} is stale: the running attempt started at ${started}`);
+    if (action === 'end') return { current, patch: { status: args.flags.reason === 'failed' ? 'failed' : 'done', alive: 'dead', endedAt: now, endReason: args.flags.reason } };
+    if (current.alive === action) return { current, unchanged: true };
+    return { current, patch: { alive: action } };
+  };
+  const before = await taskEvents(taskId);
+  const first = await decide(fold(before), before);
+  if (first.unchanged) return out(`step ${taskId}: unchanged`);
+  if (['alive', 'dead'].includes(action)) who.key = args.flags.key ?? `step-live:${taskId}:${first.current.state}:${first.current.attempt}:${generation ?? '-'}:${action}:${fold(before).lastSeq}`;
+  return write(taskId, who, async ({ task, events }) => {
+    const { current, patch, unchanged } = await decide(task, events);
+    if (unchanged) throw rule('the step changed meanwhile; nothing to write');
+    return { kind: 'step', note: args.flags.reason ?? action, extra: { generation, stepWrites: [{ state: current.state, ...patch }] }, set: stepProjection({ ...current, ...patch }) };
+  });
+}
+
 async function cmdCreate(args) {
   const taskId = taskIdOf(args);
   const who = identity(args, 'firstmate');
@@ -831,6 +1041,7 @@ async function cmdCreate(args) {
     },
     async () => {
       for (const parent of parents) await ensureLink(parent, taskId);
+      await applyChecklist(taskId);
     },
   );
   return task;
@@ -877,7 +1088,8 @@ function simple(command, kind, setFor, { needNote = false } = {}) {
       who,
       async ({ task }) => {
         guard(command, task);
-        return { kind, note: noteOf(args), set: await setFor(task, args, taskId) };
+        const { stepWrites, ...set } = await setFor(task, args, taskId);
+        return { kind, note: noteOf(args), set, ...(stepWrites?.length ? { extra: { stepWrites } } : {}) };
       },
       ['approve', 'archive'].includes(command) ? () => release(taskId, who) : undefined,
     );
@@ -899,7 +1111,11 @@ const cmdStart = simple('start', 'started', async (task, args, taskId) => {
   if (parents.length) throw rule(`start is refused while the task waits on open parents: ${parents.join(', ')}`);
   return { state: 'running', nextActor: 'worker', holdUntil: null };
 });
-const cmdHeartbeat = simple('heartbeat', 'heartbeat', async () => ({}));
+const cmdHeartbeat = simple('heartbeat', 'heartbeat', async (task, args, taskId) => {
+  const step = (await stepRows(taskId)).find(s => s.state === task.workflowState && s.status === 'running');
+  if (step) await saveStep(taskId, { state: step.state, lastHeartbeatAt: new Date().toISOString() });
+  return {};
+});
 const cmdUnblock = simple('unblock', 'unblocked', async (task, args, taskId) => {
   const waiting = (await openParents(taskId)).length > 0;
   const set = { state: waiting ? 'todo' : 'ready', nextActor: 'worker', holdUntil: null, blockReason: null };
@@ -910,7 +1126,17 @@ const cmdChanges = simple('changes', 'changes', async () => ({ state: 'ready', n
 const cmdReopen = async (args) => {
   if (!args.flags.reason?.trim()) throw usage('reopen needs --reason');
   args.flags.note = args.flags.reason;
-  return simple('reopen', 'reopened', async () => ({state: 'ready', nextActor: 'firstmate', blockKind: null, blockReason: null, blockRepeats: 0, holdUntil: null}))(args);
+  // the workflow returns to the last state that ran, and the states approve skipped wait again
+  return simple('reopen', 'reopened', async (task, a, taskId) => {
+    const steps = await stepRows(taskId);
+    // the state that ran last in event order: after testing sends the task back, implement ran after testing
+    const lastRan = (await taskEvents(taskId)).filter(e => e.kind === 'step').flatMap(e => bodyOf(e).stepWrites ?? [])
+      .filter(w => w.status === 'running').at(-1)?.state;
+    const last = steps.find(s => s.state === lastRan);
+    const stepWrites = steps.filter(s => s.status === 'skipped' && s.endReason === 'approved').map(s => ({ state: s.state, status: 'pending', endReason: null }));
+    return { state: 'ready', nextActor: 'firstmate', blockKind: null, blockReason: null, blockRepeats: 0, holdUntil: null,
+      ...(task.workflowState === 'done' ? { workflowState: last?.state ?? 'queued', workflowSince: new Date().toISOString(), ...stepProjection(last) } : {}), stepWrites };
+  })(args);
 };
 const cmdArchive = simple('archive', 'archived', async () => ({ state: 'archived', nextActor: 'firstmate' }));
 // A user-visible pass counts for the head that was built or deployed last: the head of the newest done call, or of a
@@ -945,9 +1171,42 @@ const newestRows = (rows, events) =>
     return v ? { ...r, status: v.status, nextActor: v.nextActor, evidence: v.evidence ?? null, head: v.head ?? null } : r;
   });
 
-const cmdApprove = simple('approve', 'approved', async (task, args, taskId) => {
-  const events = await taskEvents(taskId);
-  const rows = newestRows(await checkRows(taskId), events);
+async function taskVideos(events) {
+  const out = [];
+  for (const event of events.filter((e) => e.kind === 'comment')) {
+    const vids = await listAll('fm_event_video', { filter: `fmTaskEventId eq ${event.id}`, orderby: 'id', select: 'id,fmTaskEventId,label,mediaType,size' });
+    for (const v of vids) out.push({ ...v, eventSeq: event.seq });
+  }
+  return out;
+}
+
+const isVideoEvidence = (ev, videos) => {
+  if (!ev) return false;
+  if (/^event:\d+#video(?::\d+)?$/.test(ev) || /\.(?:mp4|webm)$/i.test(ev) || /\/fm_event_video\//.test(ev)) return true;
+  const m = /^event:(\d+)$/.exec(ev);
+  return Boolean(m && videos.some((v) => v.eventSeq === Number(m[1])));
+};
+
+async function findTesterScreenshot(events, row) {
+  const candidates = [];
+  const round = lastHeadEvent(events);
+  for (const event of [...events].reverse()) {
+    if (event.actorRole !== 'tester') continue;
+    // Only captures attached during the row's current built/deployed round qualify.
+    if (!round || bodyOf(round).head !== row.head || event.seq <= round.seq) continue;
+    const imgs = await listAll('fm_event_image', { filter: `fmTaskEventId eq ${event.id}`, orderby: 'position', select: 'id,fmTaskEventId,label,mediaType,position' });
+    for (const img of imgs) {
+      // A screenshot belongs to one scenario/width pair, never to the scenario alone.
+      const escapedKey = rowKey(row).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      if (!new RegExp(`(^|[^A-Za-z0-9_@.-])${escapedKey}(?=$|[^A-Za-z0-9_@.-])`).test(img.label || '')) continue;
+      candidates.push({ event, img, ref: `event:${event.seq}#image:${img.position || 1}` });
+    }
+  }
+  if (!candidates.length) return null;
+  return candidates[0]?.ref ?? null;
+}
+
+async function checkApproveReady(task, taskId, events, rows) {
   const open = openRows(rows);
   if (open.length) throw rule(`approve is refused while check rows are open: ${open.map((r) => `${rowKey(r)} (${r.status})`).join(', ')}`);
   const visible = rows.filter((r) => r.surface === 'user-visible');
@@ -961,294 +1220,70 @@ const cmdApprove = simple('approve', 'approved', async (task, args, taskId) => {
     const stale = visible.filter((r) => (r.head ?? null) !== head && !carried(r, events));
     if (stale.length) throw rule(`approve is refused: these user-visible rows passed on another head than the latest built or deployed head (${head ?? 'none'}): ${stale.map((r) => `${rowKey(r)} (${r.head ?? 'none'})`).join(', ')}`);
   }
-  return { state: 'done', nextActor: 'firstmate', blockKind: null, blockReason: null, blockRepeats: 0, holdUntil: null };
-});
-
-// ---- the backlog view (T7) ------------------------------------------------------------------------------
-// data/backlog.md is a view of the record: each row is fm_task's row (the header after the checkbox), notes (the lines
-// under it, each ending in a newline) and section, verbatim. The checkbox is [x] in Done. In a section the rows follow
-// the event that put them there: In flight and Done newest first, every other section oldest first, as tasks-axi places
-// a moved row. Line 1 is the view's own and names the record.
-const BACKLOG_LINE1 = '# Backlog - a view of the task record (fm_task row, notes and section); change it through bin/fm-tasks-axi.sh';
-const BACKLOG_SECTIONS = ['In flight', 'Queued', 'Done'];
-const NEWEST_FIRST = ['In flight', 'Done'];
-const ROW_LINE = /^- \[[ x]\] ([A-Za-z0-9._-]+) - /;
-const SECTION_LINE = /^## (.*)$/;
-
-function readText(file, what) {
-  let bytes;
-  try {
-    bytes = fs.readFileSync(file);
-  } catch {
-    throw usage(`${what} is missing or unreadable: ${file}`);
-  }
-  try {
-    return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
-  } catch {
-    throw rule(`${what} is not UTF-8: ${file}`);
-  }
 }
 
-// The values a row event sets, checked so that rendering them gives back the same row.
-function rowValues(taskId, section, row, notes) {
-  if (!section || section.length > LIMITS.section || /[\r\n]/.test(section) || section !== section.trim()) throw rule(`the section must be one line of 1 to ${LIMITS.section} characters`);
-  if (/[\r\n]/.test(row)) throw rule('the row is one line: the header after the checkbox');
-  if (ROW_LINE.exec(`- [ ] ${row}`)?.[1] !== taskId) throw rule(`the row must start with "${taskId} - "`);
-  if (notes !== '' && !notes.endsWith('\n')) throw rule('the notes end with a newline');
-  for (const line of notes.split('\n').slice(0, -1)) {
-    if (ROW_LINE.test(line) || SECTION_LINE.test(line)) throw rule(`a notes line reads as a row or a section: ${JSON.stringify(line.slice(0, 60))}`);
-  }
-  return { section, row, notes };
-}
-
-// A row event, naming the backlog file whose view holds the row; text over one event body goes in a documents child
-// as `<row>\n<notes>`.
-// Reserve 64 characters for the stage metadata append adds, without duplicating its fold rules.
-const EVENT_STAGE_BUDGET = 64;
-function rowSpec(taskId, set, note, file) {
-  const extra = { file };
-  if (set.row === undefined || JSON.stringify({ v: 1, note, set, ...extra }).length <= 8000 - EVENT_STAGE_BUDGET) return { kind: 'row', note, set, extra };
-  const doc = { title: `backlog row ${taskId}`, mediaType: 'text/markdown', content: `${set.row}\n${set.notes}` };
-  return { kind: 'row', note, set: { section: set.section, rowDocument: true }, extra, children: { documents: [doc] } };
-}
-// Every sync and row call of one backlog file holds an exclusive lock on <file>.view-lock for its reads, writes and
-// render, so an older one never writes its rows after a newer one. Node has no flock, so a perl child takes the lock
-// and holds it until this process closes its stdin (or ends).
-const LOCK_PERL = 'use Fcntl qw(:flock); open(my $f, ">>", shift) or die "cannot open the lock: $!\\n"; flock($f, LOCK_EX) or die "cannot lock: $!\\n"; $| = 1; print "locked\\n"; <STDIN>;';
-async function withBacklogLock(file, fn) {
-  const holder = spawn('perl', ['-e', LOCK_PERL, `${file}.view-lock`], { stdio: ['pipe', 'pipe', 'pipe'] });
-  await new Promise((resolve, reject) => {
-    const failed = (why) => reject(new Fail(3, `the backlog lock ${file}.view-lock was not taken: ${why}`));
-    holder.once('error', (error) => failed(error.message));
-    holder.once('exit', (code) => failed(`exit ${code}`));
-    holder.stdout.once('data', () => {
-      holder.removeAllListeners('exit');
-      resolve();
-    });
-  });
-  try {
-    return await fn();
-  } finally {
-    holder.stdin.end();
-  }
-}
-
-// A backlog file's identity: its real path, so a link to the file names the same view (and a write lands in the file).
-// The backlog a command names: --file, else FM_DATA_OVERRIDE, else $FM_HOME/data, then backlog.md.
-const backlogFile = (file) => backlogPath(file || path.join(process.env.FM_DATA_OVERRIDE || path.join(process.env.FM_HOME || '.', 'data'), 'backlog.md'));
-const backlogPath = (file) => {
-  try {
-    return fs.realpathSync(file);
-  } catch {
-    return path.resolve(file);
-  }
-};
-
-async function cmdRow(args) {
+async function cmdApprove(args) {
   const taskId = taskIdOf(args);
   const who = identity(args, 'firstmate');
-  const f = args.flags;
-  let set;
-  if (f.gone) {
-    if (f.section !== undefined || f['row-file'] !== undefined || f['notes-file'] !== undefined) throw usage('--gone takes no --section, --row-file or --notes-file');
-    set = { section: null };
-  } else {
-    if (f.section === undefined || f['row-file'] === undefined || f['notes-file'] === undefined) throw usage('row needs --section, --row-file and --notes-file, or --gone');
-    set = rowValues(taskId, f.section, readText(f['row-file'], 'the row file'), readText(f['notes-file'], 'the notes file'));
-  }
-  const file = backlogFile(f.file);
-  const store = () =>
-    write(taskId, who, async ({ task }) => {
-      if (!task) throw rule('no such task');
-      return rowSpec(taskId, set, noteOf(args), file);
+  // an item the record already proves passes first, so approve reads it closed
+  if (await syncChecklist(taskId)) await project(taskId);
+  const initialEvents = await taskEvents(taskId);
+  const initialTask = fold(initialEvents);
+  const replay = await eventByKey(who.key);
+  if (!replay) guard('approve', initialTask);
+  const initialRows = newestRows(await checkRows(taskId), initialEvents);
+  await checkApproveReady(initialTask, taskId, initialEvents, initialRows);
+  const videos = await taskVideos(initialEvents);
+  for (const row of initialRows) {
+    if (!isVideoEvidence(row.evidence, videos)) continue;
+    const replacement = await findTesterScreenshot(initialEvents, row);
+    if (!replacement) throw rule(`approve is refused: check row ${rowKey(row)} references a video (${row.evidence}) and has no Tester screenshot to replace it`);
+    const values = { status: row.status, nextActor: row.nextActor, evidence: replacement, head: row.head ?? null, checkedAt: row.checkedAt ?? new Date().toISOString() };
+    await append(taskId, { ...who, key: `${who.key}:video-ev:${rowKey(row)}` }, async ({ task }) => {
+      // append retries after a sequence conflict with a fresh fold. A competing approval
+      // therefore prevents this evidence check from being stored after Done.
+      guard('approve', task);
+      return {
+        kind: 'check',
+        note: `${rowKey(row)} ${row.status}: ${replacement} (replaced video evidence)`,
+        extra: { row: rowKey(row), values },
+      };
     });
-  if (!fs.existsSync(file)) return store();
-  // the view shows the row at once, so the next sync does not take the file's older copy back
-  return withBacklogLock(file, async () => {
-    const result = await store();
-    try {
-      out(await syncBacklog(file, who, { skip: taskId }));
-    } catch (error) {
-      if (error instanceof Fail) throw new Fail(error.code, `the row is stored; ${file} was not generated: ${error.message}`);
-      throw error;
-    }
-    return result;
-  });
+    await applyNewestCheck(taskId, row);
+  }
+  return write(
+    taskId,
+    who,
+    async ({ task }) => {
+      guard('approve', task);
+      const events = await taskEvents(taskId);
+      const rows = newestRows(await checkRows(taskId), events);
+      await checkApproveReady(task, taskId, events, rows);
+      // approve closes the workflow from whatever state it is in (the legacy closers do not move): a running step ends
+      // and a state that never started is skipped
+      const now = new Date().toISOString();
+      const stepWrites = (await stepRows(taskId)).flatMap(s => s.status === 'running' ? [{ state: s.state, status: 'done', alive: 'dead', endedAt: now, endReason: 'approved' }]
+        : s.status === 'pending' ? [{ state: s.state, status: 'skipped', endReason: 'approved' }] : []);
+      return { kind: 'approved', note: noteOf(args), ...(stepWrites.length ? { extra: { stepWrites } } : {}),
+        set: { state: 'done', workflowState: 'done', workflowSince: now, stepAlive: null, nextActor: 'firstmate', blockKind: null, blockReason: null, blockRepeats: 0, holdUntil: null } };
+    },
+    async () => {
+      await release(taskId, who);
+      const currentVideos = await taskVideos(await taskEvents(taskId));
+      const count = videos.length || currentVideos.length;
+      for (const v of currentVideos) ok(await http('DELETE', `/api/fm_event_video/${v.id}`), 'delete event video');
+      if (count > 0) {
+        await append(taskId, { ...who, key: `${who.key}:video-cleanup` }, async () => ({
+          kind: 'comment',
+          note: `${count} video đã xóa sau Verify`,
+        }));
+      }
+    },
+  );
 }
 
-// The rows of a backlog file in file order, and the first line the record cannot hold (null when there is none).
-// Line 1 is the file's title when it starts with "# ". A blank line that belongs to no row (tasks-axi leaves one in an
-// empty section) holds nothing and is dropped; any other line outside a row cannot be held.
-function parseBacklogFile(text, file) {
-  if (text !== '' && !text.endsWith('\n')) throw rule(`${file} does not end with a newline`);
-  const lines = text === '' ? [] : text.slice(0, -1).split('\n');
-  const titled = /^# /.test(lines[0] ?? '');
-  const rows = [];
-  const seen = new Set();
-  let problem = null;
-  let section = null;
-  let current = null;
-  lines.forEach((line, i) => {
-    if (i === 0 && titled) return;
-    const sec = SECTION_LINE.exec(line);
-    if (sec) {
-      section = sec[1];
-      current = null;
-      return;
-    }
-    const id = ROW_LINE.exec(line)?.[1];
-    if (id && section !== null) {
-      if (seen.has(id)) throw rule(`${file} holds ${id} twice`);
-      seen.add(id);
-      current = { id, section, row: line.slice(6), notes: '' };
-      rows.push(current);
-      return;
-    }
-    if (current) current.notes += `${line}\n`;
-    else if (line.trim() !== '') problem ??= `${file} line ${i + 1} is not part of a row, so the record cannot hold it: ${JSON.stringify(line.slice(0, 80))}; the file is left as it is`;
-  });
-  for (const r of rows) rowValues(r.id, r.section, r.row, r.notes);
-  return { rows, problem };
-}
-
-function renderBacklog(rows) {
-  const names = [...BACKLOG_SECTIONS, ...[...new Set(rows.map((r) => r.section))].filter((s) => !BACKLOG_SECTIONS.includes(s)).sort()];
-  let text = `${BACKLOG_LINE1}\n\n`;
-  for (const name of names) {
-    text += `## ${name}\n`;
-    for (const r of rows) if (r.section === name) text += `- [${name === 'Done' ? 'x' : ' '}] ${r.row}\n${r.notes}`;
-  }
-  return text;
-}
-
-// The record's side: every task row; for each task the backlog file its newest row event names, the seq of the event
-// that put it in its section of that file, and the seq of its newest row event. The record is shared by every home, so
-// a view holds only the rows its own file put there.
-async function backlogRecord(file) {
-  const tasks = new Map((await listAll('fm_task', { orderby: 'taskId' })).map((t) => [t.taskId, t]));
-  const entry = new Map();
-  const last = new Map();
-  const place = new Map();
-  const owner = new Map();
-  for (const e of await listAll('fm_task_event', { filter: "kind eq 'row'", orderby: 'seq' })) {
-    const body = bodyOf(e);
-    if (!('section' in (body.set || {}))) continue;
-    const where = JSON.stringify([body.file ?? null, body.set.section]);
-    if (place.get(e.taskId) !== where) entry.set(e.taskId, e.seq);
-    place.set(e.taskId, where);
-    owner.set(e.taskId, body.file ?? null);
-    last.set(e.taskId, e.seq);
-  }
-  return { tasks, entry, last, mine: (taskId) => owner.get(taskId) === file };
-}
-
-function recordRows(record) {
-  const rows = [...record.tasks.values()]
-    .filter((t) => t.section && t.row && record.mine(t.taskId))
-    .map((t) => ({ id: t.taskId, section: t.section, row: t.row, notes: t.notes ?? '', entry: record.entry.get(t.taskId) ?? 0 }));
-  const sections = [...new Set(rows.map((r) => r.section))];
-  return sections.flatMap((name) => rows.filter((r) => r.section === name).sort((a, b) => (NEWEST_FIRST.includes(name) ? b.entry - a.entry : a.entry - b.entry)));
-}
-
-// The order to write changed rows in so that section entry gives the file's order back: newest-first sections bottom up.
-function writeOrder(rows) {
-  const out = [];
-  for (const name of [...new Set(rows.map((r) => r.section))]) {
-    const own = rows.filter((r) => r.section === name);
-    out.push(...(NEWEST_FIRST.includes(name) ? own.reverse() : own));
-  }
-  return out;
-}
-
-// A task the record does not hold yet: import it at the state the old-source mapping gives its row.
-async function importRow(r, who) {
-  const head = r.row.slice(r.id.length + 3);
-  const hold = holdText(attr(head, 'hold'));
-  const map = hermes({ section: r.section, hold, holdKind: attr(head, 'hold-kind') });
-  const kind = attr(head, 'kind');
-  const title = head.split(/ https?:\/\/| \((?:repo|kind|since|hold|merged|done)\b/)[0].trim().slice(0, LIMITS.title) || r.id;
-  await write(r.id, { ...who, key: `import:${r.id}` }, async ({ task }) => {
-    if (task) throw rule(`task ${r.id} already present`);
-    return {
-      kind: 'created',
-      note: 'imported from the backlog view',
-      set: { title, repo: attr(head, 'repo').slice(0, LIMITS.repo) || null, kind: TASK_KINDS.includes(kind) ? kind : 'other', state: map.state, assignee: r.id.slice(0, LIMITS.assignee), nextActor: map.nextActor, blockKind: map.blockKind, blockReason: map.blockKind ? (hold || 'backlog hold').slice(0, LIMITS.blockReason) : null, blockRepeats: 0, issueUrl: null, prUrl: null, surface: null, holdUntil: null },
-    };
-  });
-}
-
-async function rowWrite(taskId, set, who, last, file) {
-  const key = `row:${taskId}:${last}:${crypto.createHash('sha256').update(JSON.stringify([file, set])).digest('hex').slice(0, 16)}`;
-  await write(taskId, { ...who, key }, async ({ task }) => {
-    if (!task) throw rule('no such task');
-    return rowSpec(taskId, set, 'backlog view', file);
-  });
-}
-
-async function cmdBacklog(args) {
-  const action = args.pos.action;
-  if (!['sync', 'render'].includes(action)) throw usage('backlog needs sync or render');
-  const file = backlogFile(args.flags.file);
-  if (action === 'render') {
-    const text = renderBacklog(recordRows(await backlogRecord(file)));
-    if (!args.flags.out || args.flags.out === '-') return process.stdout.write(text);
-    fs.writeFileSync(args.flags.out, text);
-    return out(`rendered ${args.flags.out}`);
-  }
-  if (args.flags.out) throw usage('--out is for render');
-  const who = identity(args, 'firstmate');
-  out(await withBacklogLock(file, () => syncBacklog(file, who, { absorbOnly: args.flags['absorb-only'] })));
-}
-
-// Absorb a backlog file into the record, then render it from the record. `skip` names a task whose record row was just
-// written by `row`: the file's copy of that row is not absorbed, so the render carries the record's.
-async function syncBacklog(file, who, { absorbOnly = false, skip = null } = {}) {
-  const text = readText(file, 'the backlog file');
-  const { rows, problem } = parseBacklogFile(text, file);
-  let record = await backlogRecord(file);
-  let written = 0;
-  for (const r of rows) {
-    if (record.tasks.has(r.id)) continue;
-    await importRow(r, who);
-    written++;
-  }
-  // a file the record cannot hold still has its new tasks imported, so their other record writes land
-  if (problem) throw rule(problem);
-  if (written) record = await backlogRecord(file);
-  for (const r of writeOrder(rows)) {
-    const t = record.tasks.get(r.id);
-    if (r.id === skip) continue;
-    if (record.mine(r.id) && t.section === r.section && t.row === r.row && (t.notes ?? '') === r.notes) continue;
-    await rowWrite(r.id, { section: r.section, row: r.row, notes: r.notes }, who, record.last.get(r.id) ?? 0, file);
-    written++;
-  }
-  const inFile = new Set(rows.map((r) => r.id));
-  for (const t of record.tasks.values()) {
-    if (!t.section || inFile.has(t.taskId) || !record.mine(t.taskId) || t.taskId === skip) continue;
-    await rowWrite(t.taskId, { section: null }, who, record.last.get(t.taskId) ?? 0, file);
-    written++;
-  }
-  if (absorbOnly) return `backlog: ${rows.length} rows, ${written} written, file left as it is (--absorb-only)`;
-  if (written) record = await backlogRecord(file);
-  const view = recordRows(record);
-  const ids = (list) => list.filter((id) => id !== skip).sort().join('\n');
-  if (ids(view.map((r) => r.id)) !== ids([...inFile])) {
-    throw new Fail(3, `the record does not hold the rows ${file} holds (another writer moved meanwhile); the file is left as it is; run backlog sync again`);
-  }
-  const next = renderBacklog(view);
-  let state = 'unchanged';
-  if (next !== text) {
-    if (fs.readFileSync(file, 'utf8') !== text) {
-      state = 'changed meanwhile, left for the next sync';
-    } else {
-      const tmp = `${file}.${process.pid}.tmp`;
-      fs.writeFileSync(tmp, next);
-      fs.renameSync(tmp, file);
-      state = 'generated';
-    }
-  }
-  return `backlog: ${rows.length} rows, ${written} written, file ${state}`;
-}
+// Reserve 64 characters for the stage metadata append adds, without duplicating its fold rules.
+const EVENT_STAGE_BUDGET = 64;
 
 async function cmdDescribe(args) {
   const f = args.flags;
@@ -1257,6 +1292,44 @@ async function cmdDescribe(args) {
   return write(taskIdOf(args), identity(args, 'firstmate'), async ({ task }) => {
     if (!task) throw rule('no such task');
     return { kind: 'description', children: { documents: [document] } };
+  });
+}
+
+async function cmdPlan(args) {
+  const f = args.flags;
+  if (!f.document) throw usage('plan needs --document FILE');
+  const document = documentOf(f);
+  const taskId = taskIdOf(args);
+  return write(taskId, identity(args, 'planner'), async ({ task, seq }) => {
+    if (!task) throw rule('no such task');
+    if (CLOSED.includes(task.state)) throw rule(`plan is refused: ${taskId} is ${task.state}`);
+    return {
+      kind: 'plan',
+      note: noteOf(args) || document.title,
+      set: { planSeq: seq, planDecision: null, planDecidedAt: null },
+      children: { documents: [document] },
+    };
+  });
+}
+
+async function cmdPlanDecision(args) {
+  const taskId = taskIdOf(args);
+  const f = args.flags;
+  if (!f.decision) throw usage('plan-decision needs --decision approve|changes');
+  const decision = oneOf(['approve', 'changes'], f.decision, 'decision');
+  const seqText = f['plan-seq'];
+  if (!seqText || !/^[1-9][0-9]*$/.test(seqText) || !Number.isSafeInteger(Number(seqText))) throw usage('plan-decision needs --plan-seq N');
+  const planSeq = Number(seqText);
+  return write(taskId, identity(args, 'owner'), async ({ task }) => {
+    if (!task) throw rule('no such task');
+    if (!task.planSeq) throw rule(`task ${taskId} has no plan`);
+    if (task.planSeq !== planSeq) throw rule(`plan-decision is for plan seq ${planSeq}, but task ${taskId} is at plan seq ${task.planSeq}`);
+    return {
+      kind: 'plan_decision',
+      note: noteOf(args) || `plan #${planSeq}: ${decision}`,
+      set: { planDecision: decision, planDecidedAt: new Date().toISOString() },
+      extra: { planSeq, decision },
+    };
   });
 }
 
@@ -1335,7 +1408,8 @@ async function cmdComment(args) {
   const taskId = taskIdOf(args);
   const who = identity(args, 'worker');
   const images = imagesOf(args);
-  if (!args.flags.note && !images.length) throw usage('comment needs --note or --image');
+  const videos = videosOf(args);
+  if (!args.flags.note && !images.length && !videos.length) throw usage('comment needs --note, --image or --video');
   const ask = args.flags.ask;
   if (ask !== undefined && !['why', 'how', 'wait-what'].includes(ask)) throw usage('--ask must be why, how or wait-what');
   const reply = args.flags['reply-to'];
@@ -1343,7 +1417,7 @@ async function cmdComment(args) {
   return write(taskId, who, async ({ task, events }) => {
     guard('comment', task);
     if (reply !== undefined && !events.some((event) => event.seq === Number(reply) && event.kind === 'comment')) throw rule('--reply-to must name an existing comment of this task');
-    const spec = { kind: 'comment', note: noteOf(args), extra: { ...(ask ? { ask } : {}), ...(reply !== undefined ? { replyTo: Number(reply) } : {}) }, children: withImages({}, images) };
+    const spec = { kind: 'comment', note: noteOf(args), extra: { ...(ask ? { ask } : {}), ...(reply !== undefined ? { replyTo: Number(reply) } : {}) }, children: withVideos(withImages({}, images), videos) };
     return spec;
   });
 }
@@ -1354,9 +1428,12 @@ async function cmdEvent(args) {
   const kind = oneOf([...FREE_KINDS, 'wait'], args.pos.kind, 'event kind');
   const prUrl = args.flags['pr-url'];
   const head = args.flags.head;
+  const url = args.flags.url;
   const headKind = kind === 'deploy' || kind === 'ci';
   if (head !== undefined && !headKind) throw usage('--head names a head a deploy or a ci event reports: give it only on one of those');
   if (args.flags.touched !== undefined && !(kind === 'deploy' && head)) throw usage('--touched names the scenarios a deploy touched: give it only on a deploy event with --head');
+  if (url !== undefined && kind !== 'link') throw usage('--url goes only on a link event');
+  if (kind === 'link' && (!url || !/^https?:\/\/\S+$/.test(url) || url.length > 2048)) throw rule('a link event needs --url with an http or https URL up to 2048 characters');
   const touched = touchedOf(args.flags.touched);
   if (kind === 'wait') {
     const f = args.flags;
@@ -1372,7 +1449,7 @@ async function cmdEvent(args) {
   } else if (['next-actor', 'clears-on', 'rows'].some((n) => args.flags[n] !== undefined)) throw usage('--next-actor, --clears-on and --rows go only on a wait event');
   return write(taskId, who, async ({ task }) => {
     if (!task) throw rule('no such task');
-    return { kind, note: noteOf(args), set: kind === 'pr' && prUrl ? { prUrl } : {}, ...(head ? { extra: { head, ...(touched ? { touched } : {}) } } : {}) };
+    return { kind, note: noteOf(args) || (kind === 'link' ? url : ''), set: kind === 'pr' && prUrl ? { prUrl } : {}, ...(head ? { extra: { head, ...(touched ? { touched } : {}) } } : kind === 'link' ? { extra: { url } } : {}) };
   }, kind === 'deploy' && head ? () => routeReview(taskId, who) : undefined);
 }
 
@@ -1403,6 +1480,7 @@ async function cmdDone(args) {
   const nextActor = f['next-actor'] === undefined ? null : oneOf(['tester', 'firstmate'], f['next-actor'], 'next actor');
   return write(taskId, who, async ({ task }) => {
     guard('done', task);
+    if ((task.kind === 'scout' || task.kind === 'plan') && !documents && !/^(shadow|backfill):/.test(who.key)) throw rule(`done on a ${task.kind} task requires --document`);
     const rows = await checkRows(taskId);
     const waitingOnTester = rows.some((r) => r.surface === 'user-visible' && r.status !== 'retired' && !(r.status === 'pass' && (r.head ?? null) === (f.head ?? null)));
     const child = { summary: f.summary, changedFiles: f['changed-files'], verification: f.verification, residualRisk: f['residual-risk'], rows: f.rows ?? rowsJson(rows), prUrl: f['pr-url'], head: f.head };
@@ -1456,12 +1534,52 @@ async function cmdAsk(args) {
   if (options.length < 2 || options.length > 6) throw rule(`a question has 2 to 6 options, not ${options.length}`);
   const nextActor = f['next-actor'] === undefined ? 'firstmate' : oneOf(['firstmate', 'owner'], f['next-actor'], 'next actor');
   const images = imagesOf(args);
-  return write(taskId, who, async ({ task }) => {
-    guard('ask', task);
+  return write(taskId, who, async ({ task, events }) => {
+    // A round of owner questions: another owner ask joins a task blocked only on open owner questions.
+    const round = nextActor === 'owner' && task?.state === 'blocked' && openCalls(events).length > 0
+      && openCalls(events).every((e) => e.kind === 'needs-decision' && bodyOf(e).set?.nextActor === 'owner');
+    if (!round) guard('ask', task);
     const child = { question: f.question, options: JSON.stringify(options), recommendation: f.recommendation, why: f.why, document: f.document };
     for (const key of Object.keys(child)) if (child[key] === undefined) delete child[key];
-    return { kind: 'needs-decision', note: noteOf(args), set: blockSet(task, 'needs-decision', f.question, nextActor, null), children: withImages({ question: [child] }, images) };
-  }, undefined, nextActor === 'owner' ? () => waitOn(taskId, who, { actor: 'owner', clearsOn: 'answer', note: String(f.question).replace(/\s+/g, ' ').slice(0, 300) }) : undefined);
+    // An owner question does not count toward repeat-to-triage; a question to firstmate still does.
+    const set = nextActor === 'owner'
+      ? { state: 'blocked', nextActor: 'owner', blockKind: 'needs-decision', blockReason: String(f.question).slice(0, LIMITS.blockReason), blockRepeats: task.blockRepeats, holdUntil: null }
+      : blockSet(task, 'needs-decision', f.question, nextActor, null);
+    return { kind: 'needs-decision', note: noteOf(args), set, children: withImages({ question: [child] }, images) };
+  }, undefined, nextActor === 'owner' ? (result) => waitOn(taskId, who, { actor: 'owner', clearsOn: 'answer', note: String(f.question).replace(/\s+/g, ' ').slice(0, 300), question: result.event.seq }) : undefined);
+}
+
+// The owner answers one open question of a round (plan v2 D3): an `answered` event names the question seq, the option
+// and the note. The task leaves blocked (ready, next actor worker; todo while a parent is open) only when its last open
+// question is answered; until then it stays blocked on the owner with the next open question as its reason.
+async function cmdAnswer(args) {
+  const taskId = taskIdOf(args);
+  const who = identity(args, 'owner');
+  const f = args.flags;
+  if (!/^[1-9]\d*$/.test(f.question ?? '')) throw usage('answer needs --question SEQ');
+  if (f.option === undefined && !f.note) throw usage('answer needs --option or --note');
+  const question = Number(f.question);
+  return write(taskId, who, async ({ task, events }) => {
+    if (!task) throw rule('no such task');
+    const open = openQuestions(events);
+    const asked = open.find((e) => e.seq === question);
+    if (!asked) throw rule(`#${question} is not an open question of ${taskId}`);
+    if (f.option !== undefined) {
+      const child = await firstRow('fm_event_question', `fmTaskEventId eq ${asked.id}`);
+      let options = [];
+      try {
+        options = JSON.parse(child?.options ?? '[]');
+      } catch { /* an unreadable list accepts no option */ }
+      if (!options.includes(f.option)) throw rule(`option ${JSON.stringify(f.option)} is not one of question #${question}: ${options.join(', ')}`);
+    }
+    const left = open.filter((e) => e.seq !== question);
+    const waiting = !left.length && (await openParents(taskId)).length > 0;
+    const set = left.length
+      ? { blockReason: bodyOf(left[0]).set?.blockReason ?? null }
+      : { state: waiting ? 'todo' : 'ready', nextActor: 'worker', blockReason: null, holdUntil: null };
+    const answer = { question, ...(f.option !== undefined ? { option: f.option } : {}), ...(f.note ? { note: f.note } : {}) };
+    return { kind: 'answered', note: [f.option, f.note].filter(Boolean).join(' - '), set, extra: { answer } };
+  });
 }
 
 async function cmdBlock(args) {
@@ -1579,7 +1697,7 @@ async function cmdRows(args) {
   if (CLOSED.includes(task.state)) throw rule(`rows is refused: ${taskId} is ${task.state}, and new rows or resets would sit under a closed task`);
   const surface = oneOf(['all', 'user-visible'], args.flags.surface ?? 'all', 'surface');
   const wanted = new Map([...(await wantedRows(issue))].filter(([, want]) => surface === 'all' || want.surface === surface));
-  const have = new Map((await checkRows(taskId)).map((row) => [rowKey(row), row]));
+  const have = new Map((await checkRows(taskId)).filter((row) => !isChecklist(row)).map((row) => [rowKey(row), row]));
   const counts = { added: 0, reset: 0, retired: 0, updated: 0, unchanged: 0 };
   const fresh = { status: 'pending', evidence: null, head: null, checkedAt: null };
   const actorFor = (surface) => (surface === 'user-visible' ? 'tester' : 'worker');
@@ -1624,7 +1742,7 @@ async function cmdRows(args) {
   const summary = `rows added=${counts.added} reset=${counts.reset} retired=${counts.retired} updated=${counts.updated} unchanged=${counts.unchanged} total=${wanted.size}`;
   const parser = process.env.FM_TASK_ACCEPTANCE || path.join(HERE, 'fm-acceptance.mjs');
   const digestRun = spawnSync('node', [parser, 'digest', issue, '--strict'], { encoding: 'utf8', timeout: 60000 });
-  const taskNative = !args.pos.issue || /^https?:\/\/[^\s]+[?&]task=/.test(issue);
+  const taskNative = !args.pos.issue || issue.startsWith('task:') || /^https?:\/\/[^\s]+[?&]task=/.test(issue);
   if (taskNative && (digestRun.status !== 0 || !/^[a-f0-9]{64}\s*$/.test(digestRun.stdout))) throw rule('acceptance digest could not be read');
   const sets = { ...(taskNative && task.acceptanceDigest !== digestRun.stdout.trim() ? { acceptanceDigest: digestRun.stdout.trim() } : {}), ...(taskNative ? (task.issueUrl !== issue ? { issueUrl: issue } : {}) : (args.pos.issue && !task.issueUrl ? { issueUrl: issue } : {})) };
   if (counts.added + counts.reset + counts.retired + counts.updated === 0 && !Object.keys(sets).length) {
@@ -1644,7 +1762,7 @@ async function requireOpenTask(taskId, command) {
 }
 
 // The newest event that sets the values of a check row: a check call, a reset by rows or an owner-check.
-const rowEvent = (events, row) => [...events].reverse().find((e) => (e.kind === 'check' || e.kind === 'owner-check') && bodyOf(e).row === rowKey(row) && bodyOf(e).values);
+const rowEvent = (events, row) => [...events].reverse().find((e) => ['check', 'owner-check', 'checklist'].includes(e.kind) && bodyOf(e).row === rowKey(row) && bodyOf(e).values);
 
 async function cmdCheck(args) {
   const taskId = taskIdOf(args);
@@ -1653,11 +1771,22 @@ async function cmdCheck(args) {
   const target = targetOf(args.pos.target);
   if (args.pos.status !== undefined && f.status !== undefined && args.pos.status !== f.status) throw usage(`give the result once: ${args.pos.status} or --status ${f.status}`);
   const status = oneOf(CHECK_STATUSES, args.pos.status ?? f.status, 'status');
+  if (f['evidence-label'] !== undefined && !f['evidence-image']) throw usage('--evidence-label requires --evidence-image');
+  if (f['evidence-image'] && f.evidence !== undefined) throw usage('give either --evidence or --evidence-image, not both');
+  const evImages = f['evidence-image'] ? imagesOf({ flags: { image: [f['evidence-image']], 'image-label': [f['evidence-label'] ?? `${rowKey(target)} evidence`] } }) : [];
   await requireOpenTask(taskId, 'check');
   const row = await checkRow(taskId, target);
   const nextActor = oneOf(ACTORS, f['next-actor'] ?? (status === 'pass' ? 'firstmate' : status === 'fail' ? 'worker' : row.nextActor === 'firstmate' ? surfaceActor(row.surface) : row.nextActor), 'next actor');
   if (nextActor === 'owner' && !(await ownerItem(taskId, target))) throw rule(`${rowKey(row)} cannot read next actor owner without its owner item; run owner-check first`);
-  const values = { status, nextActor, evidence: f.evidence ?? null, head: f.head ?? null, checkedAt: status === 'pending' ? null : new Date().toISOString() };
+  let evidence = f.evidence ?? null;
+  if (evImages.length) {
+    const imgRes = await append(taskId, { ...who, key: `${who.key}:evidence-image` }, async ({ task }) => {
+      guard('comment', task);
+      return { kind: 'comment', note: f['evidence-label'] ?? `${rowKey(row)} evidence`, children: withImages({}, evImages) };
+    });
+    evidence = `event:${imgRes.event.seq}#image:1`;
+  }
+  const values = { status, nextActor, evidence, head: f.head ?? null, checkedAt: status === 'pending' ? null : new Date().toISOString() };
   // a re-sent key means the call it already recorded: other values are another call and need another key
   const prior = await eventByKey(who.key);
   if (prior) {
@@ -1670,10 +1799,10 @@ async function cmdCheck(args) {
   await write(taskId, who, async ({ task }) => {
     if (!task) throw rule('no such task');
     if (CLOSED.includes(task.state)) throw rule(`check is refused: ${taskId} is ${task.state}`);
-    return { kind: 'check', note: `${rowKey(row)} ${status}${f.evidence ? `: ${f.evidence}` : ''}`, extra: { row: rowKey(row), values } };
+    return { kind: 'check', note: `${rowKey(row)} ${status}${evidence ? `: ${evidence}` : ''}`, extra: { row: rowKey(row), values } };
   }, async () => {
     await applyNewestCheck(taskId, row);
-    if (who.role === 'owner' && status !== 'pending') await ownerVerdict(taskId, target, status, f.evidence);
+    if (who.role === 'owner' && status !== 'pending') await ownerVerdict(taskId, target, status, evidence);
     await routeReview(taskId, who);
   });
 }
@@ -1756,6 +1885,21 @@ async function cmdChecks(args) {
   out(JSON.stringify({ task: taskId, state: task.state, nextActor: task.nextActor, issueUrl: task.issueUrl ?? null, head, rows }));
 }
 
+async function eventEvidenceExists(events, ev) {
+  const m = /^event:([1-9][0-9]*)#(image:([1-9][0-9]*)|document)$/.exec(ev);
+  if (!m) return false;
+  const event = events.find((e) => e.seq === Number(m[1]));
+  if (!event) return false;
+  if (m[2] === 'document') {
+    const doc = await firstRow('fm_event_document', `fmTaskEventId eq ${event.id}`);
+    return Boolean(doc && doc.content);
+  }
+  const pos = Number(m[3]);
+  const images = await listAll('fm_event_image', { filter: `fmTaskEventId eq ${event.id}`, orderby: 'position' });
+  const img = images.find((r) => r.position === pos) ?? images[pos - 1];
+  return Boolean(img && img.content);
+}
+
 // The verify gate's read of the record (bin/fm-verify-gate-lib.sh calls it for a task begun after T5). It writes nothing,
 // prints one problem per line and exits 5 when there is any. The task passes when every user-visible row the issue asks
 // for now is `pass` with evidence on the deployed --head and with its scenario's current digest, and an approved event is
@@ -1790,7 +1934,9 @@ async function cmdGate(args) {
     }
     const ev = row.evidence ?? '';
     if (!ev || ev === '-') problems.push(`${key} is pass without evidence`);
-    else if (!/^https?:\/\/./.test(ev) && !fs.existsSync(path.resolve(f['evidence-root'] || '.', ev))) problems.push(`${key} evidence path does not exist: ${ev}`);
+    else if (/^event:/.test(ev)) {
+      if (!(await eventEvidenceExists(events, ev))) problems.push(`${key} evidence reference does not exist: ${ev}`);
+    } else if (!/^https?:\/\/./.test(ev) && !fs.existsSync(path.resolve(f['evidence-root'] || '.', ev))) problems.push(`${key} evidence path does not exist: ${ev}`);
     if ((row.head ?? null) !== f.head && f.head === deployedHead && carried(row, events)) out(`${key} carried: pass on head ${row.head}, and no later deployed PR names ${row.scenarioId}`);
     else if ((row.head ?? null) !== f.head) problems.push(`${key} passed on head ${row.head ?? 'none'}, not the deployed head ${f.head}`);
   }
@@ -1845,6 +1991,171 @@ async function cmdOwnerCheck(args) {
   });
 }
 
+// ---- the checklist ----------------------------------------------------------------------------------------
+// One fixed list per task kind, changed by PR (plan task-checklist-template P2); the approved round-2 templates.
+// `passes` is the row's proof text; `off` is the reason of an item that starts off.
+const TEMPLATES = {
+  plan: [
+    { id: 'plan', label: 'Plan document', passes: 'a plan event or a done document' },
+    { id: 'mockup', label: 'Prototype / mockup', passes: 'a comment image labelled mockup' },
+    { id: 'decision', label: 'Owner decision', passes: 'an answered owner question and none open' },
+    { id: 'tester', label: 'Tester evidence', passes: 'every user-visible row passes', off: 'Plan task: Tester verifies the ship slices it files' },
+  ],
+  ship: [
+    { id: 'ci', label: 'PR & CI green', passes: 'a ci event green on the PR head' },
+    { id: 'mockup', label: 'Prototype / mockup', passes: 'a comment image labelled mockup' },
+    { id: 'tester', label: 'Tester evidence', passes: 'every user-visible row passes' },
+    { id: 'deploy', label: 'Deployed SHA', passes: 'a deploy event with a head, and every user-visible row passes on it' },
+  ],
+};
+const isChecklist = (row) => String(row.scenarioId ?? '').startsWith(CHECKLIST_PREFIX);
+const templateOf = (task) => (task?.kind === 'plan' || task?.kind === 'scout' ? TEMPLATES.plan : task?.kind === 'ship' && task.surface === 'user-visible' ? TEMPLATES.ship : null);
+const CHECKLIST_WHO = { actor: 'checklist', role: 'system' };
+
+// Add the template's missing items; a present item keeps its values. Returns [added, total].
+async function applyChecklist(taskId) {
+  const template = templateOf(fold(await taskEvents(taskId)));
+  if (!template) return [0, 0];
+  const have = new Set((await checkRows(taskId)).map(rowKey));
+  let added = 0;
+  for (const item of template) {
+    const scenarioId = `${CHECKLIST_PREFIX}${item.id}`;
+    if (have.has(`${scenarioId}@-`)) continue;
+    const res = await http('POST', '/api/fm_task_check', {
+      taskId, scenarioId, width: '-', line: item.label, surface: 'checklist', page: '-', controls: '-', data: '-', env: null, mock: null, proof: item.passes,
+      acceptanceDigest: crypto.createHash('sha256').update(JSON.stringify(item)).digest('hex'),
+      status: item.off ? 'off' : 'pending', evidence: item.off ?? null, nextActor: 'firstmate', head: null, checkedAt: null,
+    });
+    if (res.status === 409) continue; // another apply wrote it first
+    ok(res, `create the checklist row ${scenarioId}`);
+    added++;
+  }
+  return [added, template.length];
+}
+
+async function hasDocument(event) {
+  const docs = await listAll('fm_event_document', { filter: `fmTaskEventId eq ${event.id}`, orderby: 'id', select: 'id,title' });
+  return docs.some((d) => d.title !== 'Event note');
+}
+
+// The evidence that passes an item, naming its event, or null while the record holds none.
+async function checklistEvidence(item, task, events, visible) {
+  const newest = (test) => [...events].reverse().find(test);
+  const allPass = visible.length > 0 && visible.every((r) => r.status === 'pass');
+  if (item === 'plan') {
+    for (const e of [...events].reverse()) {
+      if (e.kind === 'plan' || (e.kind === 'done' && (await hasDocument(e)))) return `event:${e.seq}#document`;
+    }
+    return null;
+  }
+  if (item === 'mockup') {
+    for (const e of [...events].reverse().filter((x) => x.kind === 'comment')) {
+      const images = await listAll('fm_event_image', { filter: `fmTaskEventId eq ${e.id}`, orderby: 'position', select: 'id,label,position' });
+      const image = images.find((i) => /\bmockup\b/i.test(i.label || ''));
+      if (image) return `event:${e.seq}#image:${image.position || images.indexOf(image) + 1}`;
+    }
+    return null;
+  }
+  if (item === 'decision') {
+    if (task.blockKind === 'needs-decision' && task.state === 'blocked') return null;
+    // the owner's own word: his approval of the current plan, or his answer to the newest owner question
+    // (an unblock by the owner; firstmate's unblock is not an answer)
+    const approval = task.planDecision === 'approve'
+      && newest((e) => e.kind === 'plan_decision' && e.actorRole === 'owner' && bodyOf(e).decision === 'approve' && bodyOf(e).planSeq === task.planSeq);
+    if (approval) return `event:${approval.seq}`;
+    const question = newest((e) => e.kind === 'needs-decision' && bodyOf(e).set?.nextActor === 'owner');
+    const answer = question && events.find((e) => e.kind === 'unblocked' && e.actorRole === 'owner' && e.seq > question.seq);
+    return answer ? `event:${answer.seq}` : null;
+  }
+  if (item === 'ci') {
+    // green CI on the current head: the head the newest done call built (a ci result for another head, whenever
+    // it arrives, does not count); a done call without --head leaves the head the newest ci result reports
+    const done = newest((e) => e.kind === 'done');
+    const built = done ? (await firstRow('fm_event_done', `fmTaskEventId eq ${done.id}`))?.head ?? null : null;
+    const head = built ?? (newest((e) => e.kind === 'ci' && bodyOf(e).head) ? bodyOf(newest((e) => e.kind === 'ci' && bodyOf(e).head)).head : null);
+    const ci = head && newest((e) => e.kind === 'ci' && bodyOf(e).head === head);
+    return ci && /\bCI green\b/.test(bodyOf(ci).note ?? '') ? `event:${ci.seq}` : null;
+  }
+  if (item === 'tester') {
+    if (!allPass) return null;
+    const last = visible.map((r) => rowEvent(events, r)).filter(Boolean).sort((a, b) => a.seq - b.seq).at(-1);
+    return last ? `event:${last.seq}` : null;
+  }
+  if (item === 'deploy') {
+    const deploy = newest((e) => e.kind === 'deploy' && bodyOf(e).head);
+    if (!deploy || !allPass) return null;
+    const head = bodyOf(deploy).head;
+    return visible.every((r) => (r.head ?? null) === head || carried(r, events)) ? `event:${deploy.seq}` : null;
+  }
+  return null;
+}
+
+// Items whose evidence a later event can take back: a new head without green CI, a new plan or the owner's changes.
+const RECHECKED = [`${CHECKLIST_PREFIX}ci`, `${CHECKLIST_PREFIX}decision`];
+// Pass each pending item whose evidence the record now holds, and set a passed ci or decision item pending again when
+// its evidence no longer holds. Each write is refused when the row changed after it was read (an owner's off or on wins).
+// Returns how many rows it changed.
+async function syncChecklist(taskId) {
+  const all = await checkRows(taskId);
+  if (!all.some(isChecklist)) return 0;
+  const events = await taskEvents(taskId);
+  const task = fold(events);
+  if (!task || CLOSED.includes(task.state)) return 0;
+  const rows = newestRows(all, events);
+  const visible = rows.filter((r) => r.surface === 'user-visible');
+  let changed = 0;
+  for (const row of rows.filter((r) => isChecklist(r) && (r.status === 'pending' || (r.status === 'pass' && RECHECKED.includes(r.scenarioId))))) {
+    const evidence = await checklistEvidence(row.scenarioId.slice(CHECKLIST_PREFIX.length), task, events, visible);
+    if (row.status === 'pending' ? !evidence : evidence === (row.evidence ?? null)) continue;
+    const status = evidence ? 'pass' : 'pending';
+    const seen = rowEvent(events, row)?.seq ?? 0;
+    // one key per item, row value and evidence: a re-run finds its event, and an item set on again can pass again
+    const key = `checklist:${crypto.createHash('sha1').update(`${taskId}\0${rowKey(row)}\0${seen}\0${status}\0${evidence}`).digest('hex')}`;
+    const values = { status, nextActor: 'firstmate', evidence, head: null, checkedAt: evidence ? new Date().toISOString() : null };
+    const wrote = await append(taskId, { ...CHECKLIST_WHO, key }, async ({ task: now, events: nowEvents }) => {
+      if (!now || CLOSED.includes(now.state)) throw rule('the task is closed');
+      if ((rowEvent(nowEvents, row)?.seq ?? 0) !== seen) throw rule(`${rowKey(row)} changed meanwhile`);
+      return { kind: 'checklist', note: `${rowKey(row)} ${status}${evidence ? `: ${evidence}` : ': its evidence no longer holds'}`, extra: { row: rowKey(row), values } };
+    }).then(() => true, (error) => {
+      if (!(error instanceof Fail && error.code === 5)) throw error;
+      return false;
+    });
+    await applyNewestCheck(taskId, row);
+    if (wrote) changed++;
+  }
+  return changed;
+}
+
+async function cmdChecklist(args) {
+  const taskId = taskIdOf(args);
+  const who = identity(args, 'firstmate');
+  const verb = oneOf(['apply', 'off', 'on'], args.pos.verb, 'checklist command');
+  const reason = args.flags.reason;
+  if (verb === 'apply') {
+    if (args.pos.item !== undefined) throw usage('checklist apply takes no item');
+    await requireOpenTask(taskId, 'checklist apply');
+    const [added, total] = await applyChecklist(taskId);
+    if (added && (await syncChecklist(taskId))) await project(taskId);
+    out(`checklist added=${added} total=${total}`);
+    return;
+  }
+  const item = args.pos.item;
+  if (!item || !/^[a-z0-9-]+$/.test(item)) throw usage(`checklist ${verb} needs an item id, for example plan`);
+  if (verb === 'off' && !reason?.trim()) throw usage('checklist off needs --reason');
+  await requireOpenTask(taskId, `checklist ${verb}`);
+  const target = { scenarioId: `${CHECKLIST_PREFIX}${item}`, width: '-' };
+  const row = await firstRow('fm_task_check', `taskId eq ${lit(taskId)} and scenarioId eq ${lit(target.scenarioId)} and width eq '-'`);
+  if (!row) throw rule(`task ${taskId} has no checklist item ${item}; run checklist ${taskId} apply`);
+  const values = verb === 'off'
+    ? { status: 'off', nextActor: 'firstmate', evidence: reason.trim(), head: null, checkedAt: new Date().toISOString() }
+    : { status: 'pending', nextActor: 'firstmate', evidence: null, head: null, checkedAt: null };
+  await write(taskId, who, async ({ task }) => {
+    if (!task) throw rule('no such task');
+    if (CLOSED.includes(task.state)) throw rule(`checklist is refused: ${taskId} is ${task.state}`);
+    return { kind: 'checklist', note: `${rowKey(row)} ${verb}${reason ? `: ${reason.trim()}` : ''}`, extra: { row: rowKey(row), values } };
+  }, () => applyNewestCheck(taskId, row));
+}
+
 async function cmdShow(args) {
   const taskId = taskIdOf(args);
   const row = await taskRow(taskId);
@@ -1892,11 +2203,14 @@ const TEMPLATE_FIELDS = {
   blocked: ['blockKind', 'reason', 'nextActor', 'until'],
 };
 
+const openQuestions = (events) => openCalls(events).filter((e) => e.kind === 'needs-decision');
+
 function openCalls(events) {
   let open = [];
   for (const e of events) {
     if (e.kind === 'blocked' || e.kind === 'needs-decision') open.push(e);
     else if (e.kind === 'unblocked' || e.kind === 'started') open = [];
+    else if (e.kind === 'answered') open = open.filter((call) => call.seq !== bodyOf(e).answer?.question);
   }
   return open;
 }
@@ -1940,7 +2254,7 @@ async function cmdResume(args) {
   const questions = calls.filter((e) => e.kind === 'needs-decision');
   const blocks = calls.filter((e) => e.kind === 'blocked');
   lines.push(`OPEN QUESTIONS (${questions.length})`);
-  for (const e of questions.slice(-3)) lines.push(`  #${e.seq} ${cut(bodyOf(e).set?.blockReason, 130)} -> ${bodyOf(e).set?.nextActor ?? '-'}`);
+  for (const e of questions.slice(-6)) lines.push(`  #${e.seq} ${cut(bodyOf(e).set?.blockReason, 130)} -> ${bodyOf(e).set?.nextActor ?? '-'}`);
   lines.push(`OPEN BLOCKS (${blocks.length})`);
   for (const e of blocks.slice(-3)) lines.push(`  #${e.seq} ${bodyOf(e).set?.blockKind ?? '-'}: ${cut(bodyOf(e).set?.blockReason, 110)} -> ${bodyOf(e).set?.nextActor ?? '-'}`);
   lines.push('LAST 10 EVENTS');
@@ -1984,6 +2298,59 @@ async function cmdTurnEnd(args) {
   out(verdict);
 }
 
+async function cmdInbox(args) {
+  const id = taskIdOf(args);
+  const action = args.flags.action;
+  if (!['task', 'linked', 'delete'].includes(action)) throw usage('inbox needs --action task|linked|delete');
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) throw usage('inbox requires a notification UUID');
+  const items = await listAll('notification', { filter: `id eq ${id}`, expand: 'actions,images($select=id),documents($select=id)' });
+  const item = items[0];
+  if (!item) throw new Fail(5, 'inbox item does not exist');
+  if (action === 'delete') {
+    ok(await http('PATCH', `/api/notification/${encodeURIComponent(id)}`, { state: 'dismissed' }), 'dismiss inbox item');
+    const retention = spawnSync('bash', [path.join(os.homedir(), '.local/share/cfw-scripts/notifications-retention.sh'), '--days', '0', '--only', id], { encoding: 'utf8', timeout: 30000 });
+    if (retention.status !== 0) throw new Fail(3, `inbox dismissed but retention failed: ${retention.stderr || retention.error?.message || 'unknown error'}`);
+    let receipt;
+    try { receipt = JSON.parse(retention.stdout); } catch { throw new Fail(3, 'retention returned no JSON receipt'); }
+    if (receipt.deleted !== 1) throw new Fail(3, 'inbox dismissed but retention did not confirm deletion');
+    out(`deleted inbox=${id}`);
+    return;
+  }
+  const target = action === 'task' ? `inbox-${id}` : args.flags.target;
+  if (!target) throw usage('linked needs --target task-id');
+  const home = args.flags.home || 'main';
+  if (!/^[A-Za-z0-9._-]{1,128}$/.test(home)) throw usage('inbox --home must be a valid backlog home');
+  if (item.resolution && item.taskId !== target) throw new Fail(5, 'inbox item was already handled');
+  if (action === 'task') {
+    await cmdCreate({ pos: { task: target }, flags: { title: item.title, kind: 'other', key: `inbox:${id}:create` } });
+    if (item.body) await cmdComment({ pos: { task: target }, flags: { note: item.body, key: `inbox:${id}:body` } });
+    await requireOpenTask(target, 'make inbox task');
+    await write(target, identity({ flags: { key: `inbox:${id}:home` } }, 'firstmate'), async () => ({
+      kind: 'row', note: 'Inbox task home', set: { backlogHome: home },
+    }));
+  } else {
+    await requireOpenTask(target, 'link inbox');
+  }
+  ok(await http('PATCH', `/api/notification/${encodeURIComponent(id)}`, { taskId: target, resolution: action }), 'resolve inbox item');
+  out(`inbox=${id} task=${target} resolution=${action}`);
+}
+
+async function cmdReadMark(args) {
+  const taskId = taskIdOf(args);
+  const key = args.flags.key;
+  if (!key?.startsWith(`steer:${taskId}:`)) throw usage('read-mark needs this task’s steer key');
+  const consumer = `read:${taskId}`;
+  if (consumer.length > 64) throw usage('read consumer exceeds 64 characters');
+  const event = (await taskEvents(taskId)).find((e) => e.kind === 'steer' && e.idempotencyKey === key);
+  if (!event) throw new Fail(5, 'steer event not stored yet');
+  const prior = await listAll('fm_task_delivery', { filter: `consumer eq ${lit(consumer)} and seq eq ${event.seq}` });
+  if (!prior.length) {
+    const res = await http('POST', '/api/fm_task_delivery', { consumer, seq: event.seq });
+    if (res.status !== 409) ok(res, 'mark steer read');
+  }
+  out(`read ${consumer} seq=${event.seq}`);
+}
+
 async function cmdDeliver(args) {
   const consumer = args.flags.consumer;
   if (!consumer || consumer.length > 64) throw usage('deliver needs --consumer (up to 64 characters)');
@@ -2021,12 +2388,160 @@ async function cmdDeliver(args) {
   }
 }
 
+// ---- model rules (plan v2 D2) ------------------------------------------------------------------------------
+// fm_model_rule holds the owner's rules; the board edits them through fm-task-owner.sh, firstmate only reads them.
+// A rule matches a dispatch when it is enabled, its hours hold at the dispatch time (local time), its account is
+// null or the asked one, and its scope fits the repo: a repo that a rule of that state names in its scope uses only
+// the rules that name it, every other repo uses the rules with no scope. Lower rank runs first.
+const RULE_STATES = ['plan', 'implement', 'testing', 'merge', 'verify'];
+const RULES_TASK = 'fm-model-rules';
+const RULES_HOME = 'system';
+const DAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+const RULE_TEXT = ['state', 'harness', 'model', 'effort', 'account', 'hours', 'scope', 'warning', 'note'];
+
+// hours: comma-separated tokens; `H-H` is a local hour range (17-07 wraps past midnight), a day name is that whole day.
+function hourTokens(hours) {
+  const tokens = String(hours).toLowerCase().split(',').map((t) => t.trim());
+  for (const token of tokens) {
+    const range = /^(\d{1,2})-(\d{1,2})$/.exec(token);
+    if (range ? Number(range[1]) > 24 || Number(range[2]) > 24 || range[1] === range[2] : !DAYS.includes(token)) {
+      throw rule(`hours ${JSON.stringify(hours)} is not a list of hour ranges (17-07) and days (${DAYS.join(',')})`);
+    }
+  }
+  return tokens;
+}
+function inHours(hours, at) {
+  if (!hours) return true;
+  const hour = at.getHours();
+  return hourTokens(hours).some((token) => {
+    const range = /^(\d{1,2})-(\d{1,2})$/.exec(token);
+    if (!range) return token === DAYS[at.getDay()];
+    const [from, to] = [Number(range[1]) % 24, Number(range[2]) % 24];
+    return from < to ? hour >= from && hour < to : hour >= from || hour < to;
+  });
+}
+const scopeFits = (scope, repo) => {
+  const name = String(repo).split('/').pop();
+  return String(scope).split(',').map((t) => t.trim()).some((t) => t && (t === repo || t === name || name.startsWith(`${t}-`)));
+};
+const byRank = (a, b) => (a.rank ?? 0) - (b.rank ?? 0) || RULE_STATES.indexOf(a.state) - RULE_STATES.indexOf(b.state) || String(a.id).localeCompare(String(b.id));
+
+// The rules that apply to one state and repo (pool), and those of them that can run now (live), in rank order.
+function ruleCandidates(rows, { state, repo, account, at }) {
+  const forState = rows.filter((r) => r.state === state);
+  const scoped = repo ? forState.filter((r) => r.scope && scopeFits(r.scope, repo)) : [];
+  const pool = (scoped.length ? scoped : forState.filter((r) => !r.scope)).sort(byRank);
+  const live = pool.filter((r) => r.enabled === true && inHours(r.hours, at) && (!account || !r.account || r.account === account));
+  return { pool, live };
+}
+const ruleLine = (r) => `rank=${r.rank ?? 0} state=${r.state} harness=${r.harness} model=${r.model} effort=${r.effort ?? '-'} account=${r.account ?? '-'} hours=${r.hours ?? '-'}`
+  + ` scope=${r.scope ?? '-'} enabled=${r.enabled === true} id=${r.id}${r.warning ? ` warning=${JSON.stringify(r.warning)}` : ''}`;
+
+async function cmdRules(args) {
+  const f = args.flags;
+  const rows = await listAll('fm_model_rule', { orderby: 'id' });
+  if (f.state === undefined) {
+    if (f.task || f.repo || f.at || f.account) throw usage('rules --repo, --at, --account and --task need --state');
+    const all = rows.sort(byRank);
+    if (f.json) out(JSON.stringify(all));
+    else for (const r of all) out(ruleLine(r));
+    return;
+  }
+  const state = oneOf(RULE_STATES, f.state, 'state');
+  const at = f.at === undefined ? new Date() : new Date(isoOf(f.at, '--at'));
+  const { pool, live } = ruleCandidates(rows, { state, repo: f.repo, account: f.account, at });
+  if (f.json) out(JSON.stringify(live));
+  else for (const r of live) out(ruleLine(r));
+  if (live.length || !f.task) return;
+  await stopForNoModel(taskIdOf(args), { state, repo: f.repo, at, pool }, identity(args, 'firstmate'));
+  throw rule(`no ${state} rule can run for ${f.repo ?? 'every repo'} now; ${f.task} waits on the owner`);
+}
+
+// Every candidate of a state is off or out of hours: the task stops with a question card for the owner, once per open
+// question. Its options are the rules that would fit if switched on or run out of hours, then "Chờ quota".
+async function stopForNoModel(taskId, { state, repo, at, pool }, who) {
+  const question = `Không còn model cho ${state[0].toUpperCase()}${state.slice(1)}`;
+  const options = [...new Set(pool.map((r) => `${r.enabled === true ? 'Dùng ngoài giờ' : 'Bật'} ${r.harness} ${r.model}`.slice(0, 200)))].slice(0, 5);
+  options.push('Chờ quota');
+  if (options.length < 2) options.unshift('Thêm rule trong Settings → Models');
+  const why = `Mọi rule ${state} cho ${repo ?? 'mọi repo'} đang tắt hoặc ngoài giờ lúc ${at.toISOString()}.`;
+  return write(taskId, who, async ({ task, events }) => {
+    if (!task) throw rule('no such task');
+    if (['review', ...CLOSED].includes(task.state)) throw rule(`${taskId} is ${task.state}; a missing model stops only an open task`);
+    if (openQuestions(events).some((e) => bodyOf(e).set?.blockReason === question)) throw rule(`${taskId} already asks the owner: ${question}`);
+    const set = { state: 'blocked', nextActor: 'owner', blockKind: 'needs-decision', blockReason: question, blockRepeats: task.blockRepeats, holdUntil: null };
+    return { kind: 'needs-decision', note: why, set, children: { question: [{ question, options: JSON.stringify(options), recommendation: options[0], why }] } };
+  }, undefined, (result) => waitOn(taskId, who, { actor: 'owner', clearsOn: 'answer', note: question, question: result.event.seq }));
+}
+
+// The fields of a rule from the flags; `add` needs state, harness, model and rank.
+function ruleFields(f, adding) {
+  const fields = {};
+  for (const name of RULE_TEXT) if (f[name] !== undefined) fields[name] = f[name];
+  if (fields.state !== undefined) oneOf(RULE_STATES, fields.state, 'state');
+  if (fields.hours !== undefined) hourTokens(fields.hours);
+  if (f.rank !== undefined) {
+    if (!/^\d{1,6}$/.test(f.rank)) throw rule(`rank ${JSON.stringify(f.rank)} is not a whole number`);
+    fields.rank = Number(f.rank);
+  }
+  if (f.enabled !== undefined) fields.enabled = oneOf(['true', 'false'], f.enabled, 'enabled') === 'true';
+  if (adding) {
+    for (const need of ['state', 'harness', 'model', 'rank']) if (fields[need] === undefined) throw usage(`rule add needs --${need}`);
+    fields.enabled ??= true;
+  }
+  return fields;
+}
+
+// The record task the rule changes are logged on, kept in a backlog home the board does not show.
+async function rulesTask(who) {
+  if (await taskRow(RULES_TASK)) return;
+  await append(RULES_TASK, { ...who, key: `${RULES_TASK}:create` }, async ({ task }) => (task ? { kind: 'row', note: '', set: {} } : {
+    kind: 'created', note: 'The owner model rules log', set: { title: 'Model rules', repo: null, kind: 'other', state: 'triage', assignee: '-', nextActor: 'firstmate', blockKind: null, blockReason: null, blockRepeats: 0, issueUrl: null, prUrl: null, surface: 'internal', holdUntil: null, backlogHome: RULES_HOME },
+  }));
+  await project(RULES_TASK);
+}
+
+async function cmdRule(args) {
+  const action = oneOf(['add', 'set', 'delete'], args.pos.action, 'rule action');
+  const who = identity(args, 'firstmate');
+  const prior = await eventByKey(who.key);
+  if (prior) {
+    out(`seq=${prior.seq} task=${prior.taskId} event=${prior.kind} (already recorded)`);
+    return;
+  }
+  const id = args.pos.id;
+  if (action === 'add' ? id !== undefined : !id) throw usage(action === 'add' ? 'rule add takes no id' : `rule ${action} needs the rule id`);
+  const fields = action === 'delete' ? {} : ruleFields(args.flags, action === 'add');
+  if (action === 'set' && !Object.keys(fields).length) throw usage('rule set needs a field to change');
+  let before = null;
+  if (id) {
+    const res = await http('GET', `/api/fm_model_rule/${encodeURIComponent(id)}`);
+    if (res.status === 404) throw rule(`no rule ${id}`);
+    before = unwrap(ok(res, 'read the rule'));
+  }
+  let after = null;
+  if (action === 'add') after = unwrap(ok(await http('POST', '/api/fm_model_rule', fields), 'add the rule'));
+  else if (action === 'set') after = unwrap(ok(await http('PATCH', `/api/fm_model_rule/${encodeURIComponent(id)}`, fields), 'change the rule'));
+  else ok(await http('DELETE', `/api/fm_model_rule/${encodeURIComponent(id)}`), 'delete the rule');
+  const ruleId = after?.id ?? id;
+  const shown = after ?? before;
+  const note = `${action} ${shown.state} ${shown.harness} ${shown.model} rank ${shown.rank ?? 0}${shown.enabled === false ? ' off' : ''}`;
+  await rulesTask(who);
+  await write(RULES_TASK, who, async ({ task }) => {
+    if (!task) throw rule(`the record task ${RULES_TASK} is missing`);
+    return { kind: 'rules', note, extra: { rule: { action, id: ruleId, changed: fields } } };
+  });
+  out(`rule=${ruleId} action=${action}`);
+}
+
 const COMMANDS = {
-  'turn-end': cmdTurnEnd, deliver: cmdDeliver, describe: cmdDescribe, thread: cmdThread,
+  setup: cmdSetup, move: cmdMove, step: cmdStep,
+  rules: cmdRules, rule: cmdRule, answer: cmdAnswer,
+  'turn-end': cmdTurnEnd, deliver: cmdDeliver, 'read-mark': cmdReadMark, inbox: cmdInbox, describe: cmdDescribe, plan: cmdPlan, 'plan-decision': cmdPlanDecision, thread: cmdThread,
   create: cmdCreate, import: cmdImport, assign: cmdAssign, start: cmdStart, heartbeat: cmdHeartbeat, done: cmdDone, ask: cmdAsk, block: cmdBlock,
   unblock: cmdUnblock, approve: cmdApprove, changes: cmdChanges, reopen: cmdReopen, reassign: cmdReassign, archive: cmdArchive, comment: cmdComment, event: cmdEvent,
   'plan-spec': cmdPlanSpec, 'plan-approve': cmdPlanApprove, 'plan-check': cmdPlanCheck, document: cmdDocument, link: cmdLink, rows: cmdRows, check: cmdCheck, 'owner-check': cmdOwnerCheck, gate: cmdGate, show: cmdShow, list: cmdList, resume: cmdResume, reproject: cmdReproject,
-  row: cmdRow, backlog: cmdBacklog, checks: cmdChecks,
+  checks: cmdChecks, checklist: cmdChecklist,
 };
 
 async function main(argv) {

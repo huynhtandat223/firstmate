@@ -16,10 +16,10 @@
 #   --surface <user-visible|internal> is an optional ship-only input recorded as
 #   surface=<value> in state/<id>.meta; absent means internal, except that a ship
 #   spawn into cfw-modules refuses a missing --surface. A user-visible spawn also
-#   writes data/<id>/verify.md with "surface: user-visible" and "issue: <url>" (the
-#   issue the backlog item links), plus "record: rows" while config/task-shadow is on
-#   for a task in the repository deploy-verify watches (FM_DEPLOY_VERIFY_REPO),
-#   and refuses when it finds no issue; bin/fm-verify-gate-lib.sh
+#   writes data/<id>/verify.md with "surface: user-visible" and "issue: <source>"
+#   (task:<id> for valid Description acceptance, else the linked issue), plus
+#   "record: rows" while config/task-shadow is on for the deploy-verify repository
+#   (FM_DEPLOY_VERIFY_REPO), and refuses when neither source exists; bin/fm-verify-gate-lib.sh
 #   owns what the task must prove before its backlog item moves to Done.
 #   --mode and --yolo are this task's delivery contract, REQUIRED for every ship
 #   spawn and refused on --scout and --secondmate spawns. Firstmate resolves both
@@ -4468,15 +4468,26 @@ if [ "$RELAUNCH" != 1 ] && [ "$KIND" = ship ] && [ -n "$PLAN_ISSUE" ]; then
   fi
 fi
 
-# A user-visible ship task starts firstmate's verification record with the issue its
-# backlog item links (bin/fm-verify-gate-lib.sh): the plan gate's approved issue, else the
-# first linked GitHub issue. No issue means the done gate could never pass, so refuse now.
+# A user-visible ship uses its own task Description when it has valid acceptance;
+# older tasks may still use the plan gate's approved issue or a linked issue.
 VERIFY_ISSUE=
 if [ "$RELAUNCH" != 1 ] && [ "$KIND" = ship ] && [ "$SURFACE" = user-visible ]; then
-  VERIFY_ISSUE=$PLAN_ISSUE
+  if VERIFY_ROWS=$(
+    . "$SCRIPT_DIR/fm-task-shadow-config-lib.sh"
+    fm_task_shadow_config "$CONFIG/task-shadow"
+    node "$SCRIPT_DIR/fm-acceptance.mjs" rows "task:$ID" --strict 2>/dev/null
+  ) && [ -n "$VERIFY_ROWS" ]; then
+    VERIFY_ISSUE="task:$ID"
+  fi
+  [ -n "$VERIFY_ISSUE" ] || VERIFY_ISSUE=$PLAN_ISSUE
   [ -n "$VERIFY_ISSUE" ] || VERIFY_ISSUE=$(printf '%s\n' "$FM_BACKLOG_ROW_LINKS" | grep -oE 'doc:https://github[.]com/[^[:space:]," ]+/issues/[0-9]+' | head -n 1 | sed 's/^doc://' || true)
+  declared_source=$(awk '/^# Acceptance$/{section=1;next} section && /^# /{exit} section{print}' "$BRIEF" | grep -oE 'task:[A-Za-z0-9][A-Za-z0-9._-]*|https://[A-Za-z0-9.-]+/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/issues/[0-9]+' | head -1 || true)
+  if [ -n "$declared_source" ] && [ "$declared_source" != "$VERIFY_ISSUE" ]; then
+    echo "error: brief acceptance $declared_source differs from verification source $VERIFY_ISSUE; align the acceptance source before spawning" >&2
+    exit 1
+  fi
   if [ -z "$VERIFY_ISSUE" ]; then
-    echo "error: $ID is user-visible, so its verification record names the issue its backlog item links; link it with bin/fm-tasks-axi.sh update $ID --title \"<current title> <issue url>\" or spawn with --surface internal" >&2
+    echo "error: $ID is user-visible: write acceptance with bin/fm-task.sh describe $ID --document <file.md>, link it with bin/fm-tasks-axi.sh update $ID --title \"<current title> <issue url>\", or spawn with --surface internal" >&2
     exit 1
   fi
 fi
@@ -7027,6 +7038,8 @@ SPAWN_ACCOUNT=
 [ ! -e "$CONFIG/fleet-ledger" ] || [ "$RELAUNCH" -eq 1 ] || FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_CONFIG_OVERRIDE=$CONFIG "$SCRIPT_DIR/fm-fleet-ledger.sh" dispatched "$ID" "$SPAWN_REPORTED_KIND" "${PROJ_ABS##*/}" "$HARNESS" "$MODEL" || true
 # Opt-in task record shadow (bin/fm-task-shadow.sh): the fresh task is written to the record too; off costs one file test.
 [ ! -e "$CONFIG/task-shadow" ] || [ "$RELAUNCH" -eq 1 ] || FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_CONFIG_OVERRIDE=$CONFIG FM_DATA_OVERRIDE=$DATA "$SCRIPT_DIR/fm-task-shadow.sh" dispatched "$ID" "$SPAWN_REPORTED_KIND" "${PROJ_ABS##*/}" "$HARNESS" || true
+# The task's current workflow state records this incarnation's runtime (plan v2 D1); a relaunch re-points it.
+[ ! -e "$CONFIG/task-shadow" ] || FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_CONFIG_OVERRIDE=$CONFIG FM_DATA_OVERRIDE=$DATA "$SCRIPT_DIR/fm-task-shadow.sh" step-start "$ID" "$SPAWN_GEN" "$HARNESS" "${MODEL:-}" "${EFFORT:-}" "${WORKER_ACCOUNT_DECLARED:-}" || true
 # Opt-in Herdr project groups (docs/herdr-backend.md "Project groups") tag the
 # new endpoint now rather than at the next watcher poll; off costs one file test.
 [ ! -e "$CONFIG/herdr-project-groups" ] || [ "$BACKEND" != herdr ] || FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_CONFIG_OVERRIDE=$CONFIG "$SCRIPT_DIR/fm-herdr-groups.sh" sync "$ID" || true

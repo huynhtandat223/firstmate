@@ -10,7 +10,7 @@ Start with the directory layout, then use the setting reference for the behavior
 | Firstmate's code, private files, or project location | [FM_HOME](#fm_home) and [operational home layout](#operational-home-layout-and-state) |
 | Task windows and worker tools | [Runtime backend](#runtime-backend-configbackend--fm_backend) and [harness support](#harness-support) |
 | Worker permissions, accounts, or environment | [Claude permission mode](#claude-permission-mode-configclaude-permission-mode), [worker account pin](#worker-account-pin-configclaude-account-configpi-account), [worker tool exclusions](#worker-tool-exclusions-configcrew-exclude-tools), [worker launch environment](#worker-launch-environment-configlaunch-env-allowlist), and its [Orca environment source](#orca-environment-source-configlaunch-env-tmux-session) |
-| Backlog, preferences, and memory | [Backlog backend](#backlog-backend-taskstoml--configbacklog-backend), [captain preferences](#captain-preferences-datacaptainmd--datacaptain-sharedmd), [external memory tiers](#external-memory-tiers-memory-layering-section), and [startup memory budget](#startup-memory-budget-configstartup-memory-budget) |
+| Backlog, preferences, and memory | [Backlog backend](#backlog-backend-taskstoml--configtasks-axi--configbacklog-backend), [captain preferences](#captain-preferences-datacaptainmd--datacaptain-sharedmd), [external memory tiers](#external-memory-tiers-memory-layering-section), and [startup memory budget](#startup-memory-budget-configstartup-memory-budget) |
 | Supervision and presentation | [Pi supervision branch](#pi-supervision-branch), [supervision host](#supervision-host-configsupervision-host), and [Calm preference](#calm-preference-configcalm) |
 | Persistent secondmates | [Secondmate routes](#secondmate-routes-datasecondmatesmd) |
 | Review rounds for worker PRs | [PR review rounds](#pr-review-rounds-configpr-reviewjson) |
@@ -514,9 +514,14 @@ Both say to re-scaffold with `--herdr-lab`.
 The check is log-only until `config/enforce-herdr-lab-brief` holds `block`: each hit is written to `state/enforce-herdr-lab-brief.log` and the brief or steer still passes.
 `bin/fm-enforce-lib.sh` owns that switch.
 
-## Backlog backend (.tasks.toml / config/backlog-backend)
+## Backlog backend (.tasks.toml / config/tasks-axi / config/backlog-backend)
 
 The tracked `.tasks.toml` pins the default `tasks-axi` markdown backend to `data/backlog.md`, with `done_keep = 10` and an archive at `data/done-archive.md`.
+A home overrides it without editing the tracked file through a gitignored `config/tasks-axi/.tasks.toml` beside its data directory: when that file exists, firstmate runs tasks-axi from `config/tasks-axi/`, so the home config replaces the tracked one whole and any relative path in it resolves against that folder ([`bin/fm-tasks-axi-lib.sh`](../bin/fm-tasks-axi-lib.sh) `fm_tasks_axi_workdir`).
+A home keeps its backlog in Dev 5001 with `backend = "cfw5001"` and `[cfw5001] home = "<name>"` in that home config: the backlog is then the `fm_task` rows whose `backlogHome` is that name, and no markdown file holds it (no render, no archive).
+That backend is a fork-only option of tasks-axi (`huynhtandat223/tasks-axi`, keys owned by its `src/config.ts` and `src/backends/cfw5001.ts`); a stock tasks-axi build refuses it with `UNSUPPORTED`, which is why the tracked default stays markdown.
+Do not set `[cfw5001] db` in a home: the backlog is read through the API only.
+Scripts read the backlog only through `bin/fm-tasks-axi.sh` (`rows` gives the `list` table as JSON) and change it only through tasks-axi verbs; the only `bin/` code that touches `data/backlog.md` itself is the `manual` backend's startup digest and the secondmate handoff, receive and provisioning paths, which move markdown backlogs between homes.
 A home may instead select another tasks-axi adapter such as Beads through its own `.tasks.toml` or `TASKS_AXI_BACKEND`; firstmate still uses only tasks-axi verbs for routine backlog reads and mutations, and the adapter maps `start` and evidence-bearing `done` transitions to its native statuses and evidence fields.
 
 ### Captain holds on Beads
@@ -551,13 +556,14 @@ Any other configured adapter is addressed by that root alone, because `--file` w
 The gate does not apply to persistent secondmates, manual-backend homes, or markdown homes without a backlog file.
 Those retain their existing persistent-agent, manual, or ad-hoc lifecycle behavior.
 Configured non-markdown adapters remain active without that file.
-Migrated-hold resolution on a beads home reads its graph path, binary, and prefix from the root `.tasks.toml` `[beads]` section only, and refuses (rc=2) when the beads backend is selected elsewhere (a `TASKS_AXI_BACKEND` override or user-level config) with no root-level `[beads]` section.
+Migrated-hold resolution on a beads home reads its graph path, binary, and prefix from the `[beads]` section of the `.tasks.toml` tasks-axi runs from (the home config when present, else the root file) only, and refuses (rc=2) when the beads backend is selected elsewhere (a `TASKS_AXI_BACKEND` override or user-level config) with no root-level `[beads]` section.
 
 On an automatic-backend home, missing or incompatible `tasks-axi`, an unresolvable configured data directory, or one containing a control byte fails lifecycle work before mutation.
 An unreadable backend configuration can refuse lifecycle work before the no-backlog exemption applies; repair the configuration named in the diagnostic ([backend resolution contract](../bin/fm-tasks-axi-lib.sh)).
 
 ### Handoffs between homes
 
+A home whose backend is `cfw5001` refuses every secondmate handoff (exit 2), because the move edits only a markdown backlog file and that home has none.
 Secondmate handoffs bypass that routine-backend choice: `fm-backlog-handoff.sh` keeps only its own fleet-level validation and delegates the item move to `tasks-axi mv`; its [script header](../bin/fm-backlog-handoff.sh) owns route-specific wake outcomes and remote outbox release.
 It moves in-scope `## Queued` items only and refuses `## In flight` and historical `## Done` records, which stay with their home for pruning or archiving.
 

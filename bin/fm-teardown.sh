@@ -1182,6 +1182,7 @@ PR_URL=$(grep '^pr=' "$META" | tail -1 | cut -d= -f2- || true)
 # (/tmp/fm-<id>/); absent for tasks spawned before that change, so tolerate empty.
 TASK_TMP=$(grep '^tasktmp=' "$META" | cut -d= -f2- || true)
 BUSY_GEN=$(fm_meta_get "$META" busy_gen)
+TEARDOWN_SPAWN_GEN=$(fm_meta_get "$META" spawn_gen)
 if [ -z "$BUSY_GEN" ]; then
   BUSY_GEN=$(cat "$STATE/$ID.busy-gen" 2>/dev/null || true)
 fi
@@ -1215,9 +1216,12 @@ BASE_BRANCH=$(grep '^base_branch=' "$META" | cut -d= -f2- || true)
 # firstmate's verification record, only its move to Done does. The missing items are read
 # here, before any destructive step, and carried by the backlog transition chosen below.
 # --force never changes that: it authorizes discarding work, never an unverified Done.
+# The record carries the items one per line, because an item's own text can hold "; ".
 TEARDOWN_VERIFY_ITEMS=
+TEARDOWN_VERIFY_LINES=
 if [ "$KIND" = ship ] && [ "$(fm_meta_get "$META" surface)" = user-visible ]; then
-  TEARDOWN_VERIFY_ITEMS=$(fm_verify_gate_problems "$DATA" "$ID" "$FM_HOME" | awk '{ printf "%s%s", sep, $0; sep = "; " }') || TEARDOWN_VERIFY_ITEMS=
+  TEARDOWN_VERIFY_LINES=$(fm_verify_gate_problems "$DATA" "$ID" "$FM_HOME") || :
+  TEARDOWN_VERIFY_ITEMS=$(printf '%s\n' "$TEARDOWN_VERIFY_LINES" | awk 'NF { printf "%s%s", sep, $0; sep = "; " }')
 fi
 
 # An incomplete verification record keeps the row out of Done: the verify-pending transition
@@ -1225,7 +1229,7 @@ fi
 TEARDOWN_VERIFY_ENC=
 if [ "$TEARDOWN_BACKLOG_APPLIES" = 1 ] && [ -n "$TEARDOWN_VERIFY_ITEMS" ]; then
   TEARDOWN_BACKLOG_TRANSITION='verify-pending'
-  TEARDOWN_VERIFY_ENC=$(fm_hold_reason_encode "$TEARDOWN_VERIFY_ITEMS")
+  TEARDOWN_VERIFY_ENC=$(fm_hold_reason_encode "$TEARDOWN_VERIFY_LINES")
 fi
 
 # A record accepted as a legacy incarnation (no spawn_gen, and either
@@ -3941,6 +3945,8 @@ retire_busy_state "$STATE" "$ID" "$BUSY_GEN" || exit 1
 # Opt-in fleet activity ledger (docs/fleet-ledger.md), before the status log is
 # retired so its last lines are captured; off costs one file test.
 [ ! -e "$CONFIG/fleet-ledger" ] || FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_CONFIG_OVERRIDE=$CONFIG "$SCRIPT_DIR/fm-fleet-ledger.sh" cleaned_up "$ID" || true
+# Opt-in task record shadow: the running workflow step of this incarnation ends with the cleanup (plan v2 D1).
+[ ! -e "$CONFIG/task-shadow" ] || FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_CONFIG_OVERRIDE=$CONFIG FM_DATA_OVERRIDE=$DATA "$SCRIPT_DIR/fm-task-shadow.sh" step-end "$ID" "$TEARDOWN_SPAWN_GEN" cleanup || true
 # Opt-in task record shadow (bin/fm-task-shadow.sh); off costs one file test.
 [ ! -e "$CONFIG/task-shadow" ] || FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_CONFIG_OVERRIDE=$CONFIG FM_DATA_OVERRIDE=$DATA "$SCRIPT_DIR/fm-task-shadow.sh" cleaned-up "$ID" || true
 status_retire_presentation_task "$STATE" "$ID" || exit 1

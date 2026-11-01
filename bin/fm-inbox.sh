@@ -1047,13 +1047,10 @@ cmd_status() {
   printf 'time     %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   printf 'inbox    %s note(s) waiting for firstmate\n' "$pending"
 
-  if [ -f "$DATA/backlog.md" ]; then
-    printf '\n--- in flight ---\n'
-    awk '/^## In flight/{f=1;next} /^## /{f=0} f && /^- \[/{print}' \
-      "$DATA/backlog.md" | sed 's/^- \[ \] /  /' | cut -c1-150
-  else
-    printf '\n(no backlog at %s)\n' "$DATA/backlog.md"
-  fi
+  printf '\n--- in flight ---\n'
+  FM_HOME="$FM_HOME" FM_DATA_OVERRIDE="$DATA" "$SELF_DIR/fm-tasks-axi.sh" rows --state in_flight 2>/dev/null \
+    | jq -r '.[] | "  \(.id) - \(.title)"' | cut -c1-150 \
+    || printf '(backlog unreadable: bin/fm-tasks-axi.sh rows failed)\n'
 
   local any=0
   for m in "$STATE"/*.meta; do

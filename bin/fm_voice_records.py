@@ -111,16 +111,8 @@ BASIS = "Last recorded event, which is history and not a live check."
 # complete. A complete list is a screen, not a sentence.
 DETAIL_LIMIT = 5
 
-ITEM = re.compile(r"^- \[(?P<done>[ x])\] (?P<id>\S+) - (?P<rest>.*)$")
-TAG = re.compile(r"\((?P<key>[a-z-]+): (?P<value>[^)]*)\)")
-# (since 2026-08-21) and (done 2026-08-21) carry no colon, so the tag pattern
-# leaves them in the title. A date read aloud in the middle of a sentence is
-# noise, so they come out too.
-DATE_TAG = re.compile(r"\((?:since|done) [0-9-]+\)")
-
-# The only backlog sections this module will parse. Done history is skipped
-# before a line is even split, so widening the answer cannot reach it by
-# accident. See "WHAT IS NEVER READ" above.
+# The only backlog states this module will read. Done history is never
+# requested, so widening the answer cannot reach it by accident. See "WHAT IS NEVER READ" above.
 READ_SECTIONS = ("in flight", "queued")
 
 # The states a worker is asked to report, and the two more that close a decision.
@@ -276,32 +268,39 @@ def _denied(denies, *fields):
     return any(needle in haystack for needle in denies)
 
 
-def _parse_backlog(path):
-    """Return (section, item) pairs for every task line in the backlog."""
-    items = []
-    section = ""
+def _parse_backlog(home):
+    """Return the open in-flight and queued items of the home's backlog.
+
+    The rows come only from bin/fm-tasks-axi.sh rows (the configured tasks-axi
+    backend); no backlog file is parsed here. An unreadable backlog reads as
+    empty, as an absent file did before.
+    """
+    env = dict(os.environ, FM_HOME=home, FM_DATA_OVERRIDE=data_dir(home))
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fm-tasks-axi.sh")
     try:
-        with open(path, encoding="utf-8") as handle:
-            lines = handle.read().splitlines()
-    except FileNotFoundError:
-        return items
-    for line in lines:
-        if line.startswith("## "):
-            section = line[3:].strip().lower()
-            continue
+        out = subprocess.run(
+            [script, "rows", "--fields", "hold_kind,hold_reason,priority"],
+            env=env, capture_output=True, text=True, timeout=120, check=True,
+        ).stdout
+        rows = json.loads(out or "[]")
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return []
+    items = []
+    for row in rows:
+        section = {"in_flight": "in flight", "queued": "queued"}.get(row.get("state"))
         if section not in READ_SECTIONS:
             continue
-        match = ITEM.match(line)
-        if not match:
-            continue
-        rest = match.group("rest")
-        tags = {m.group("key"): m.group("value") for m in TAG.finditer(rest)}
-        title = re.sub(r"\s+", " ", DATE_TAG.sub("", TAG.sub("", rest))).strip()
+        tags = {
+            key: str(row[field])
+            for key, field in (("repo", "repo"), ("kind", "kind"), ("priority", "priority"),
+                               ("hold", "hold_reason"), ("hold-kind", "hold_kind"))
+            if row.get(field) is not None
+        }
         items.append({
             "section": section,
-            "id": match.group("id"),
-            "title": title,
-            "done": match.group("done") == "x",
+            "id": row.get("id"),
+            "title": re.sub(r"\s+", " ", row.get("title") or "").strip(),
+            "done": False,
             "tags": tags,
         })
     return items
@@ -398,7 +397,7 @@ def fleet_status(home=None, scope=None):
 
     state = state_dir(home)
     workers = _workers(state)
-    items = _parse_backlog(os.path.join(data_dir(home), "backlog.md"))
+    items = _parse_backlog(home)
 
     open_items = [i for i in items if not i["done"]]
     in_flight = [i for i in open_items if i["section"] == "in flight"]
