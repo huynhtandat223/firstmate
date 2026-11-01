@@ -462,7 +462,7 @@ printf 'graph %s\n' "${BEADS_DIR:-unset}" >&2
 exit 1
 SH
   chmod +x "$fb/bd"
-  scout=home-config-scout
+  scout="home-config-scout"
   write_scout_with_attested_inventory "$home" "$scout" legacy-row
   out=$(run_captain "$home" verify "$scout" 2>&1) && fail "verify passed with an unreadable graph: $out"
   assert_contains "$out" "reading the beads graph at $home/config/tasks-axi/graph failed" \
