@@ -8,7 +8,7 @@
 #
 # Usage: fm-task-owner.sh --action ACTION --task TASK [--option O] [--row ID@W] [--item I --on|--off] [--decision approve|changes] [--plan-seq N] [--note N] [--to RECIPIENT] [--ask why|how|wait-what] [--rule ID --state S ...] [--setup JSON] --owner ID
 #   inbox-task|inbox-link|inbox-delete resolve a notification (--task is its id; link needs --option task-id)
-#   setup    Approve & start: setup TASK --file <the JSON> --by owner, then a queued TASK moves to its first state   needs --setup
+#   setup    a setup only:   setup TASK --file <the JSON> --by owner, then a queued TASK moves to its first state   needs --setup
 #   comment  a task comment: store the note once per owner, note and minute              needs --note
 #   answer   a question:     with --question SEQ, answer TASK --question SEQ --option O [--note N] (one card of a
 #            round; the last answer returns the task to its worker); without it, comment "answer: <option>"
@@ -21,9 +21,13 @@
 #            --harness --model --effort --rank --account --hours --scope --enabled --warning and --note; an empty
 #            value is left out. --task names the record task fm-model-rules. One key per owner, fields and minute.
 #   checklist an item:       checklist TASK off|on ITEM [--reason "<note>"]                  needs --item and --on or --off; --off needs --note
-#   hold     a captain hold: fm-captain-hold.sh hold TASK --reason "<note>" (default "Held by the owner on the board.")
+#   hold     a captain hold: fm-captain-hold.sh hold TASK --reason "<note>"                      needs a nonblank --note
 #   release  lift the hold:  fm-captain-hold.sh answer TASK --decision-file <the note> --release (default "Released by
 #            the owner on the board."); hold and release each tell firstmate through fm-inbox note
+#   close    Done:           event TASK close-request [--note N], then deliver TASK to firstmate as a wake
+#   start    Approve & start: with --setup, setup TASK --file <the JSON> --by owner first (a refused setup stops);
+#            then event TASK start-request [--note N] and deliver it to firstmate. Firstmate answers either request
+#            with bin/fm-owner-request.sh, which writes its result event. One request per owner, task and minute.
 #   comment delivers a new event in this call: --to firstmate uses fm-inbox note; a live task uses fm-send.
 #   Without --to, the task's live worker is selected, else firstmate. Invalid recipients write nothing.
 #   --ask on comment stores the skill name and delivers its invocation and the exact --reply-to command (as role firstmate).
@@ -239,10 +243,30 @@ case "$ACTION" in
       *) usage 'checklist needs --on or --off' ;;
     esac
     ;;
+  close|start)
+    if [ -n "$SETUP" ]; then
+      [ "$ACTION" = start ] || usage 'only start takes --setup'
+      setup_file=$(mktemp "${TMPDIR:-/tmp}/fm-owner-setup.XXXXXX") || usage 'no temporary file'
+      trap 'rm -f "$setup_file"' EXIT
+      printf '%s' "$SETUP" > "$setup_file"
+      run setup "$TASK" --file "$setup_file" --by owner || RC=$?
+    fi
+    if [ "$RC" -eq 0 ]; then
+      digest=$(printf '%s\0' "$OWNER" "$TASK" "$ACTION" "$(date -u +%Y-%m-%dT%H:%M)" | sha256sum) || usage 'request digest failed'
+      note_args=()
+      [ -z "$NOTE" ] || note_args=(--note "$NOTE")
+      run event "$TASK" "$ACTION-request" "${note_args[@]}" --key "owner-$ACTION:$TASK:${digest%% *}" || RC=$?
+    fi
+    # the watcher's consumer name, so its own pass and this call claim each event once between them
+    if [ "$RC" -eq 0 ]; then
+      run deliver "$TASK" --consumer "firstmate-${FM_HOME##*/}" || { RC=$?; ERROR="${ACTION}-request stored but firstmate delivery failed: $ERROR"; }
+    fi
+    ;;
   hold|release)
     WRITER=$HOLD
     if [ "$ACTION" = hold ]; then
-      words=${NOTE:-Held by the owner on the board.}
+      [[ "$NOTE" =~ [^[:space:]] ]] || usage 'hold needs a nonblank --note (the reason)'
+      words=$NOTE
       run hold "$TASK" --reason "$words" || RC=$?
     else
       words=${NOTE:-Released by the owner on the board.}
@@ -256,6 +280,6 @@ case "$ACTION" in
       "${FM_TASK_OWNER_INBOX:-$SCRIPT_DIR/fm-inbox.sh}" note --request-id "owner-$ACTION-$TASK-$(date -u +%Y%m%dT%H%M%S)" -- "The owner $verb task $TASK on the board: $words" >/dev/null || { RC=$?; ERROR="$ACTION stored but firstmate delivery failed"; }
     fi
     ;;
-  *) usage "--action must be setup, comment, answer, unblock, pass, fail, plan, checklist, hold, release, rule-add, rule-set, rule-delete, inbox-task, inbox-link or inbox-delete" ;;
+  *) usage "--action must be setup, comment, answer, unblock, pass, fail, plan, checklist, hold, release, close, start, rule-add, rule-set, rule-delete, inbox-task, inbox-link or inbox-delete" ;;
 esac
 if [ "$RC" -eq 0 ]; then reply true; else reply false "$ERROR"; fi
