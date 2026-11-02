@@ -13,13 +13,14 @@
 #
 # close-request: `fm-task.sh approve <task> --check` first, so a task approve would refuse stays as it is; then the
 # cleanup: bin/fm-teardown.sh <task> when this home records the task (state/<task>.meta), else
-# `fm-tasks-axi.sh done <task>` for a backlog item still open; then approve, then `closed`. The first refusal is written
+# `fm-tasks-axi.sh done <task>` for a backlog item still open (a backlog read that fails other than NOT_FOUND refuses); then approve, then `closed`. The first refusal is written
 # as `close-refused` with the refusing command's error text, and nothing after it runs. The cleanup runs before approve
 # because a cleanup refusal (unlanded work) must leave the task open in its state.
 # start-request: firstmate writes the task's instructions (the brief) first, as for any dispatch, and passes the spawn's
 # delivery flags after `--`. The harness, model and effort come from the request's setup step (`fm-task.sh requests`):
 # the owner's setup owns them, so --harness, --model and --effort after `--` are refused. A queued task moves to that
-# step's state, then bin/fm-spawn.sh runs; its record hook writes `started`. A refused spawn is written as
+# step's state, then bin/fm-spawn.sh runs; its record hook writes `started` (without the hook, this command assigns a
+# triage or todo task, then writes it). A refused spawn is written as
 # `start-refused` with the spawn's error text (a blocked model, a capacity limit, a missing login).
 #
 # Prints one line per write and the result: `result=<kind> task=<task> seq=<request seq>`.
@@ -108,7 +109,15 @@ case "$KIND" in
       try "$TEARDOWN" "$TASK" || refuse "$(refusal_text "$ERR")"
     else
       # a task no worker ran: its cleanup is closing the backlog item, when this home holds one still open
-      backlog_state=$("$BACKLOG" show "$TASK" </dev/null 2>/dev/null | sed -n 's/^  state: //p' | head -n 1)
+      # only a read that says NOT_FOUND means there is no item; any other failed read refuses the close
+      if backlog_out=$("$BACKLOG" show "$TASK" </dev/null 2>&1); then
+        backlog_state=$(sed -n 's/^  state: //p' <<<"$backlog_out" | head -n 1)
+      elif grep -q 'code: NOT_FOUND' <<<"$backlog_out"; then
+        backlog_state=''
+      else
+        printf '%s\n' "$backlog_out" >"$ERR"
+        refuse "The backlog item could not be read: $(refusal_text "$ERR")"
+      fi
       if [ -n "$backlog_state" ] && [ "$backlog_state" != "done" ]; then
         try "$BACKLOG" "done" "$TASK" || refuse "$(refusal_text "$ERR")"
       fi
@@ -136,7 +145,12 @@ case "$KIND" in
     [ -z "$effort" ] || runtime+=(--effort "$effort")
     try "$SPAWN" "$TASK" "${SPAWN_ARGS[@]}" "${runtime[@]}" || refuse "$(refusal_text "$ERR")"
     # the spawn's record hook writes `started`; without it (task record off) this write does
-    if [ -n "$(jq -r '.requests[] | select(.kind == "start-request") | .seq' <<<"$("$WRITER" requests "$TASK" --json </dev/null)")" ]; then
+    after_json=$("$WRITER" requests "$TASK" --json </dev/null) || die "the worker started but its requests could not be read for request $SEQ" 3
+    if [ -n "$(jq -r '.requests[] | select(.kind == "start-request") | .seq' <<<"$after_json")" ]; then
+      # start needs a ready task: a triage or todo task is assigned to its worker first, as the record hook does
+      case "$(jq -r '.state' <<<"$after_json")" in
+        triage|todo) "$WRITER" assign "$TASK" --to "$TASK" --key "owner-request:$TASK:$SEQ:assign" </dev/null || die "the worker started but the record could not assign $TASK for request $SEQ" 3 ;;
+      esac
       "$WRITER" start "$TASK" --key "owner-request:$TASK:$SEQ:started" </dev/null || die "the worker started but the record could not write started for request $SEQ" 3
     fi
     echo "result=started task=$TASK seq=$SEQ"

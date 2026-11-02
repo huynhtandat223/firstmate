@@ -20,7 +20,8 @@
 //            the states the task needs, in workflow order (plan implement testing merge verify; Merge has no model).
 //            Writes one fm_task_step row per state; a pending state left out becomes skipped. Once a state has
 //            started, the list of states is fixed (exit 5 otherwise); a state that has run keeps the runtime it ran
-//            with, and only pending states take a new harness, model, effort and fallbacks.
+//            with, and only pending states take a new harness, model, effort and fallbacks. Refused while a start-request
+//            is open (that request runs the setup it was asked on).
 //   move     <task> --to STATE               queued -> the first setup state -> the next one; testing|verify -> implement
 //            on a failed check row; a state outside the setup is refused (exit 5). The running attempt of the state
 //            left behind ends with the move. Done comes only through approve, which ends a running step and skips a
@@ -71,12 +72,14 @@
 //            protocol_violation divergence link; --head on deploy (the deployed head, which user-visible passes count on
 //            from then) or on ci (the head the CI result read); --url on link; no other kind takes them
 //   event    <task> close-request|start-request [--note N]   the owner's Done or Start on the board (next actor
-//            firstmate; refused on a done or archived task, start-request also on a running one). Each stays open until
+//            firstmate; refused on a done or archived task, start-request also on a running one, and while a request of
+//            the same kind is still open). Each stays open until
 //            firstmate's bin/fm-owner-request.sh writes its result: closed (only on a done task) or close-refused, and
 //            started (the start transition) or start-refused; a refused result needs --note with the refusal text and
 //            sets next actor owner. A result with no open request of its kind is refused (exit 5).
 //   requests <task> [--json]                 read only: the open owner requests, oldest first; a start-request carries
-//            the setup step it runs (the current workflow state's step, or the first one while queued)
+//            the setup step it runs (the current workflow state's step, or the first one while queued); --json adds
+//            `answered`, the seq of each request kind's newest result (0 when none)
 //   event    <task> wait --next-actor tester|owner|merge|ci --clears-on rows|answer|merge|ci --note WHY [--rows ID@W,...]
 //            a declared wait (G1); `ask --next-actor owner` (answer) and `done --pr-url` (rows on the Tester, else merge)
 //            write one too. Its status line is `paused [at=E] [key=wait-<seq>]: waiting on <actor>: WHY (clears on X)`; the
@@ -974,8 +977,11 @@ async function cmdSetup(args) {
     }
     return { state: s.state, position: index, harness: s.state === 'merge' ? null : s.harness, model: s.state === 'merge' ? null : s.model, effort: s.state === 'merge' ? null : s.effort ?? null, fallbacks: JSON.stringify(s.fallbacks ?? []), source: s.source === 'rule' ? 'rule' : by, ruleIds: s.ruleIds ?? null };
   });
-  return write(taskId, identity(args, 'firstmate'), async ({ task }) => {
+  return write(taskId, identity(args, 'firstmate'), async ({ task, events }) => {
     if (!task || CLOSED.includes(task.state)) throw rule('setup requires an open task');
+    // an open start-request runs the setup it was asked on; a setup written before its answer would change that launch
+    const pending = openRequests(events).find((e) => e.kind === 'start-request');
+    if (pending) throw rule(`setup is refused: start-request ${pending.seq} is still open on ${taskId}`);
     const old = await stepRows(taskId);
     if (old.some(s => !['pending', 'skipped'].includes(s.status))) {
       const active = old.filter(s => s.status !== 'skipped');
@@ -1569,6 +1575,9 @@ async function cmdEvent(args) {
     if (REQUEST_RESULTS[kind]) {
       if (CLOSED.includes(task.state)) throw rule(`${kind} is refused: ${taskId} is ${task.state}`);
       if (kind === 'start-request' && task.state === 'running') throw rule(`start-request is refused: ${taskId} is running`);
+      // one open request per kind, so each result answers exactly one request
+      const open = openRequests(events).find((e) => e.kind === kind);
+      if (open) throw rule(`${kind} is refused: request ${open.seq} is still open on ${taskId}`);
       return { kind, note: noteOf(args), set: { nextActor: 'firstmate' } };
     }
     if (RESULT_REQUEST[kind]) {
@@ -2506,7 +2515,9 @@ async function cmdRequests(args) {
   const step = steps.find((s) => s.state === task.workflowState) ?? steps[0] ?? null;
   const rows = openRequests(events).map((e) => ({ seq: e.seq, kind: e.kind, actor: e.actor ?? null, note: bodyOf(e).note ?? '', at: e.createdAt ?? null,
     ...(e.kind === 'start-request' ? { step: step && { state: step.state, harness: step.harness ?? null, model: step.model ?? null, effort: step.effort ?? null } } : {}) }));
-  if (args.flags.json) return out(JSON.stringify({ taskId, state: task.state, workflowState: task.workflowState, requests: rows }));
+  // the seq of the newest result of each request kind (0 when none), so a request asked again after its answer is new
+  const answered = Object.fromEntries(Object.entries(REQUEST_RESULTS).map(([k, results]) => [k, Math.max(0, ...events.filter((e) => results.includes(e.kind)).map((e) => e.seq))]));
+  if (args.flags.json) return out(JSON.stringify({ taskId, state: task.state, workflowState: task.workflowState, requests: rows, answered }));
   if (!rows.length) return out(`no open request task=${taskId} state=${task.state}`);
   for (const r of rows) out(`seq=${r.seq} kind=${r.kind} actor=${r.actor ?? '-'}${r.step ? ` step=${r.step.state} harness=${r.step.harness ?? '-'} model=${r.step.model ?? '-'} effort=${r.step.effort ?? '-'}` : ''} note=${JSON.stringify(r.note)}`);
 }

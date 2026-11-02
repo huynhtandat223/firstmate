@@ -27,7 +27,8 @@
 #   close    Done:           event TASK close-request [--note N], then deliver TASK to firstmate as a wake
 #   start    Approve & start: with --setup, setup TASK --file <the JSON> --by owner first (a refused setup stops);
 #            then event TASK start-request [--note N] and deliver it to firstmate. Firstmate answers either request
-#            with bin/fm-owner-request.sh, which writes its result event. One request per owner, task and minute.
+#            with bin/fm-owner-request.sh, which writes its result event. One request per owner, task, minute and answer;
+#            a second request of a kind still open is refused.
 #   comment delivers a new event in this call: --to firstmate uses fm-inbox note; a live task uses fm-send.
 #   Without --to, the task's live worker is selected, else firstmate. Invalid recipients write nothing.
 #   --ask on comment stores the skill name and delivers its invocation and the exact --reply-to command (as role firstmate).
@@ -252,7 +253,9 @@ case "$ACTION" in
       run setup "$TASK" --file "$setup_file" --by owner || RC=$?
     fi
     if [ "$RC" -eq 0 ]; then
-      digest=$(printf '%s\0' "$OWNER" "$TASK" "$ACTION" "$(date -u +%Y-%m-%dT%H:%M)" | sha256sum) || usage 'request digest failed'
+      # the newest answer of this kind is in the key, so asking again after a refusal is a new request, not a replay
+      answered=$("$WRITER" requests "$TASK" --json 2>/dev/null </dev/null | jq -r --arg k "$ACTION-request" '.answered[$k] // 0' 2>/dev/null) || answered=0
+      digest=$(printf '%s\0' "$OWNER" "$TASK" "$ACTION" "$(date -u +%Y-%m-%dT%H:%M)" "${answered:-0}" | sha256sum) || usage 'request digest failed'
       note_args=()
       [ -z "$NOTE" ] || note_args=(--note "$NOTE")
       run event "$TASK" "$ACTION-request" "${note_args[@]}" --key "owner-$ACTION:$TASK:${digest%% *}" || RC=$?
