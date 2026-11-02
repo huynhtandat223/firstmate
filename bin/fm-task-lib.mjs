@@ -20,7 +20,8 @@
 //            the states the task needs, in workflow order (plan implement testing merge verify; Merge has no model).
 //            Writes one fm_task_step row per state; a pending state left out becomes skipped. Once a state has
 //            started, the list of states is fixed (exit 5 otherwise); a state that has run keeps the runtime it ran
-//            with, and only pending states take a new harness, model, effort and fallbacks.
+//            with, and only pending states take a new harness, model, effort and fallbacks. Refused while a start-request
+//            is open (that request runs the setup it was asked on).
 //   move     <task> --to STATE               queued -> the first setup state -> the next one; testing|verify -> implement
 //            on a failed check row; a state outside the setup is refused (exit 5). The running attempt of the state
 //            left behind ends with the move. Done comes only through approve, which ends a running step and skips a
@@ -976,8 +977,11 @@ async function cmdSetup(args) {
     }
     return { state: s.state, position: index, harness: s.state === 'merge' ? null : s.harness, model: s.state === 'merge' ? null : s.model, effort: s.state === 'merge' ? null : s.effort ?? null, fallbacks: JSON.stringify(s.fallbacks ?? []), source: s.source === 'rule' ? 'rule' : by, ruleIds: s.ruleIds ?? null };
   });
-  return write(taskId, identity(args, 'firstmate'), async ({ task }) => {
+  return write(taskId, identity(args, 'firstmate'), async ({ task, events }) => {
     if (!task || CLOSED.includes(task.state)) throw rule('setup requires an open task');
+    // an open start-request runs the setup it was asked on; a setup written before its answer would change that launch
+    const pending = openRequests(events).find((e) => e.kind === 'start-request');
+    if (pending) throw rule(`setup is refused: start-request ${pending.seq} is still open on ${taskId}`);
     const old = await stepRows(taskId);
     if (old.some(s => !['pending', 'skipped'].includes(s.status))) {
       const active = old.filter(s => s.status !== 'skipped');

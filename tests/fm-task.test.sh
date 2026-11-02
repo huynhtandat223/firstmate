@@ -2733,6 +2733,10 @@ STUB
   seq=$(open_seq $t start-request)
   [ -n "$seq" ] || { echo "no open start-request: $OUT"; return 1; }
   "$BIN/fm-task.sh" requests $t --json | jq -e '.requests[0].step == {state: "implement", harness: "claude", model: "claude-opus-5-5", effort: "high"}' >/dev/null || { echo "request step: $("$BIN/fm-task.sh" requests $t --json)"; rc=1; }
+  # a second owner's Start with another setup is refused before it writes, so the open request keeps its runtime
+  ow --action start --task $t --setup '{"steps":[{"state":"implement","harness":"codex","model":"other-model"},{"state":"merge"}]}' --owner u-2
+  must 'a second start with another setup' 5 || rc=1
+  "$BIN/fm-task.sh" requests $t --json | jq -e '.requests[0].step.model == "claude-opus-5-5"' >/dev/null || { echo "a refused start changed the pending setup: $("$BIN/fm-task.sh" requests $t --json)"; rc=1; }
   orq $t --seq "$seq"; must 'a start without the spawn' 2 || rc=1
   orq $t --seq "$seq" -- /p --mode direct-PR --yolo off --model other; must 'a start that names its own model' 2 || rc=1
   [ "$(task_row $t | jq -r .workflowState)" = queued ] || { echo 'a refused start moved the task'; rc=1; }
@@ -3177,6 +3181,7 @@ mutate_request_owner() {  # <label> <exact owner script text> <replacement>: the
   pass "guard '$1' is needed: case owner_request goes red without it"
 }
 mutate_request_owner 'a request asked again after its answer is new' '"$(date -u +%Y-%m-%dT%H:%M)" "${answered:-0}"' '"$(date -u +%Y-%m-%dT%H:%M)"'
+mutate 'a setup waits for the open start-request' owner_request 'if (pending) throw rule' 'if (false) throw rule'
 mutate 'one open request per kind' owner_request 'if (open) throw rule' 'if (false) throw rule'
 mutate_owner_request 'a failed backlog read refuses the close' 'refuse "The backlog item could not be read' 'backlog_state="" || refuse "The backlog item could not be read'
 mutate_owner_request 'a triage task is assigned before started' 'triage|todo) "$WRITER" assign' 'never) "$WRITER" assign'
