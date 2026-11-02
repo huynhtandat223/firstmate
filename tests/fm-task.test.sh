@@ -2625,7 +2625,10 @@ case_owner_request() {
     cat > "$stubs/$name" <<STUB
 #!/usr/bin/env bash
 printf '$name|%s\n' "\$*" >> "$calls"
-if [ "$name" = backlog ] && [ "\$1" = show ]; then printf 'task:\n  id: %s\n  state: queued\n' "\$2"; exit 0; fi
+if [ "$name" = backlog ] && [ "\$1" = show ]; then
+  [ -z "\${BACKLOG_SHOW_FAIL:-}" ] || { printf 'Error: %s\n' "\$BACKLOG_SHOW_FAIL" >&2; exit 1; }
+  printf 'task:\n  id: %s\n  state: queued\n' "\$2"; exit 0
+fi
 [ -z "\${REFUSE_$name:-}" ] || { printf 'error: %s\n' "\$REFUSE_$name" >&2; exit 1; }
 STUB
     chmod +x "$stubs/$name"
@@ -2664,10 +2667,15 @@ STUB
   orq $t --seq "$seq"; must 'an answered request' 0 || rc=1
   grep -q '^result=none' <<<"$OUT" || { echo "an answered request ran again: $OUT"; rc=1; }
 
-  # ACT2: Done again; the cleanup runs, then approve, then closed
+  # ACT2: Done again by the same owner in the same minute is a new request after the refusal; the cleanup runs, then
+  # approve, then closed
   : > "$calls"
-  ow --action close --task $t --note 'ship it' --owner u-2; must 'second close' 0 || rc=1
+  before=$seq
+  ow --action close --task $t --note 'ship it' --owner u-1; must 'second close' 0 || rc=1
   seq=$(open_seq $t close-request)
+  [ -n "$seq" ] && [ "$seq" != "$before" ] || { echo "a close asked again after its refusal was a replay: seq=$seq"; rc=1; }
+  # one open request per kind: a second owner's Done waits for the first answer
+  ow --action close --task $t --owner u-2; must 'a second open close-request' 5 || rc=1
   orq $t --seq "$seq"; must 'close' 0 || rc=1
   grep -qx "teardown|$t" "$calls" || { echo "teardown call: $(cat "$calls")"; rc=1; }
   [ "$(task_state $t)" = "done" ] && [ "$(last_kind $t)" = closed ] || { echo "after close: $(task_state $t) $(last_kind $t)"; rc=1; }
@@ -2692,8 +2700,13 @@ STUB
   [ ! -s "$calls" ] || { echo "a refused approve still cleaned up: $(cat "$calls")"; rc=1; }
   [ "$(task_state $t)" = running ] || rc=1
   ft approve $t --check; must 'approve --check on a running task' 5 || rc=1
-  # a task with no worker in this home: the cleanup closes its open backlog item
+  # a task with no worker in this home: the cleanup closes its open backlog item; a backlog read that fails refuses
   ft "done" $t "${DONE_FLAGS[@]}" >/dev/null || return 1
+  ow --action close --task $t --owner u-3; must 'close with an unreadable backlog' 0 || rc=1
+  BACKLOG_SHOW_FAIL='backlog adapter unavailable' orq $t --seq "$(open_seq $t close-request)"; must 'unreadable backlog' 0 || rc=1
+  if ! { [ "$(last_kind $t)" = close-refused ] && grep -q 'backlog adapter unavailable' <<<"$(last_note $t)" && [ "$(task_state $t)" = review ]; }; then
+    echo "an unreadable backlog closed the task: $(last_kind $t) $(task_state $t) $(last_note $t)"; rc=1
+  fi
   ow --action close --task $t --owner u-2; must 'close without a worker' 0 || rc=1
   orq $t --seq "$(open_seq $t close-request)"; must 'close without a worker' 0 || rc=1
   if ! { grep -qx "backlog|done $t" "$calls" && ! grep -q '^teardown' "$calls"; }; then echo "cleanup without a worker: $(cat "$calls")"; rc=1; fi
@@ -2707,6 +2720,7 @@ STUB
   ft event $t close-refused; must 'close-refused without its text' 2 || rc=1
   ft event $t start-request; must 'start-request on a running task' 5 || rc=1
   ft event $t close-request; must 'close-request' 0 || rc=1
+  ft event $t close-request; must 'a second open close-request' 5 || rc=1
   ft event $t closed; must 'closed on a task not done' 5 || rc=1
   ft event $t start-refused --note x; must 'start-refused for a close-request' 5 || rc=1
 
@@ -2726,7 +2740,8 @@ STUB
   [ "$(last_kind $t)" = start-refused ] && [ "$(last_note $t)" = 'error: claude account pin needs a login' ] || { echo "spawn refusal: $(last_kind $t) $(last_note $t)"; rc=1; }
   grep -qx "spawn|$t /p --mode direct-PR --yolo off --harness claude --model claude-opus-5-5 --effort high" "$calls" || { echo "spawn call: $(cat "$calls")"; rc=1; }
   [ "$(task_row $t | jq -r .workflowState)" = implement ] || { echo "the start did not move to the first state: $(task_row $t)"; rc=1; }
-  ft assign $t --to $t >/dev/null || return 1
+  # still in triage: without the record hook, the start assigns the task before it writes started
+  [ "$(task_state $t)" = triage ] || { echo "setup: $(task_state $t)"; return 1; }
   ow --action start --task $t --owner u-3; must 'start again without an edit' 0 || rc=1
   seq=$(open_seq $t start-request)
   orq $t --seq "$seq" -- /p --mode direct-PR --yolo off; must 'start' 0 || rc=1
@@ -3152,6 +3167,19 @@ mutate_owner_request() {  # <label> <exact handler text> <replacement>: the owne
   pass "guard '$1' is needed: case owner_request goes red without it"
 }
 mutate_owner_request 'nothing is cleaned up for a task approve would refuse' 'try "$WRITER" approve "$TASK" --check || refuse' 'true || refuse'
+mutate_request_owner() {  # <label> <exact owner script text> <replacement>: the owner_request case goes red
+  cp "$TMP_ROOT/fm-task-lib.mjs.orig" "$LIB"
+  cp "$TMP_ROOT/fm-task-owner.sh.orig" "$MBIN/fm-task-owner.sh"
+  S="$2" R="$3" perl -0pi -e 's/\Q$ENV{S}\E/$ENV{R}/' "$MBIN/fm-task-owner.sh"
+  cmp -s "$TMP_ROOT/fm-task-owner.sh.orig" "$MBIN/fm-task-owner.sh" && fail "mutation '$1' changed nothing"
+  if out=$(case_owner_request "$MBIN" 2>&1); then fail "removing the guard '$1' left case owner_request green"; fi
+  cp "$TMP_ROOT/fm-task-owner.sh.orig" "$MBIN/fm-task-owner.sh"
+  pass "guard '$1' is needed: case owner_request goes red without it"
+}
+mutate_request_owner 'a request asked again after its answer is new' '"$(date -u +%Y-%m-%dT%H:%M)" "${answered:-0}"' '"$(date -u +%Y-%m-%dT%H:%M)"'
+mutate 'one open request per kind' owner_request 'if (open) throw rule' 'if (false) throw rule'
+mutate_owner_request 'a failed backlog read refuses the close' 'refuse "The backlog item could not be read' 'backlog_state="" || refuse "The backlog item could not be read'
+mutate_owner_request 'a triage task is assigned before started' 'triage|todo) "$WRITER" assign' 'never) "$WRITER" assign'
 mutate_owner_request 'a cleanup refusal leaves the task open' 'try "$TEARDOWN" "$TASK" || refuse "$(refusal_text "$ERR")"' 'try "$TEARDOWN" "$TASK" || true'
 mutate_owner_request "the owner's setup names the spawn's runtime" 'runtime=(--harness "$harness")' 'runtime=()'
 pass 'every guarded behavior has a red mutation proof'
