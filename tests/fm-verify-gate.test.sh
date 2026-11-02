@@ -503,18 +503,55 @@ case_rows_deployed_head() {
   [ ! -e "$FAKE_ARGS" ] || { echo 'the record was asked with no deployed head'; return 1; }
 }
 
-# A rows ask is made only on an explicit deployed head, so it is the deployed head as a deploy ask is: after a deploy
-# ask on head A and a later rows ask on head B, rows that passed on B close the gate and rows that passed only on A refuse.
+# One deploy-verify ledger ask line.
+ledger_ask() {  # <round> <task> <sha>
+  printf '{"type":"ask","round":"%s","key":"%s:%s:%s","task":"%s","sha":"%s"}\n' "$1" "$1" "$2" "$3" "$2" "$3"
+}
+
+# A rows ask on a head a later deploy names is the deployed head: after a deploy ask on head A, another task's deploy
+# ask on head B leaves this task on A, and this task's rows ask on B then moves it to B, so rows that passed on B close
+# the gate and rows that passed only on A refuse.
 case_rows_ask_is_the_deployed_head() {
   local home a=2222222222222222222222222222222222222222 b=3333333333333333333333333333333333333333 ledger
   home=$(rows_home)
   export FAKE_ARGS="$home/fake.args"
   ledger="$home/data/deploy-verify/ledger.jsonl"
-  printf '{"type":"ask","round":"deploy","key":"deploy:%s:%s","task":"%s","sha":"%s"}\n' "$TASK" "$a" "$TASK" "$a" > "$ledger"
+  ledger_ask deploy "$TASK" "$a" > "$ledger"
   FAKE_PASS_HEAD=$a passes "$1" "$home" || return 1
-  printf '{"type":"ask","round":"rows","key":"rows:%s:%s:0","task":"%s","sha":"%s","head":"%s"}\n' "$TASK" "$b" "$TASK" "$b" "$b" >> "$ledger"
+  ledger_ask deploy other "$b" >> "$ledger"
+  FAKE_PASS_HEAD=$a passes "$1" "$home" || return 1
+  ledger_ask rows "$TASK" "$b" >> "$ledger"
   FAKE_PASS_HEAD=$b passes "$1" "$home" || return 1
   FAKE_PASS_HEAD=$a refuses "$1" "$home" 'A1@1440 has no pass on the asked head'
+}
+
+# The order is the deploy order, not the ask order: a rows ask on head A written after this task's deploy ask on a
+# newer head B (deploy-verify plans the deploy round before the rows round) leaves the head at B, and a later replay
+# ask on A does not make A newer.
+case_rows_ask_on_an_older_head() {
+  local home a=2222222222222222222222222222222222222222 b=3333333333333333333333333333333333333333 ledger
+  home=$(rows_home)
+  export FAKE_ARGS="$home/fake.args"
+  ledger="$home/data/deploy-verify/ledger.jsonl"
+  { ledger_ask deploy other "$a"; ledger_ask deploy "$TASK" "$b"; ledger_ask rows "$TASK" "$a"; } > "$ledger"
+  FAKE_PASS_HEAD=$b passes "$1" "$home" || return 1
+  FAKE_PASS_HEAD=$a refuses "$1" "$home" 'A1@1440 has no pass on the asked head' || return 1
+  ledger_ask deploy other "$a" >> "$ledger"
+  FAKE_PASS_HEAD=$b passes "$1" "$home"
+}
+
+# A head no deploy ask names is not deployed: a draft or rows ask of the task on PR head C leaves the head at the
+# deployed head B, and with no deploy ask at all the rows ask on C refuses as a missing ask.
+case_rows_ask_on_an_undeployed_head() {
+  local home b=3333333333333333333333333333333333333333 c=4444444444444444444444444444444444444444 ledger
+  home=$(rows_home)
+  export FAKE_ARGS="$home/fake.args"
+  ledger="$home/data/deploy-verify/ledger.jsonl"
+  { ledger_ask deploy "$TASK" "$b"; ledger_ask draft "$TASK" "$c"; ledger_ask rows "$TASK" "$c"; } > "$ledger"
+  FAKE_PASS_HEAD=$b passes "$1" "$home" || return 1
+  FAKE_PASS_HEAD=$c refuses "$1" "$home" 'A1@1440 has no pass on the asked head' || return 1
+  { ledger_ask draft "$TASK" "$c"; ledger_ask rows "$TASK" "$c"; } > "$ledger"
+  FAKE_PASS_HEAD=$c refuses "$1" "$home" "no deploy ask for $TASK"
 }
 
 # The writer runs with the home's record settings from config/task-shadow.
@@ -559,7 +596,7 @@ issue_cannot_be_parsed issue_cannot_be_read issue_without_user_visible_rows row_
 row_not_pass row_without_evidence_field row_pass_without_evidence row_evidence_path row_id_not_in_issue retired_row
 retired_row_of_a_present_id_at_another_width internal_scenario_row row_text_differs_from_the_issue malformed_tester_row verified_line_closes_the_record acceptance_digest verified_line_missing verified_line_without_head
 deployed_head_is_the_newest_ask a_pr_in_the_watched_repo_needs_an_ask a_pr_in_another_repo_takes_the_deployed_line the_backlog_line_names_the_pr approval home_video
-rows_read_the_record rows_problems rows_record_unreadable rows_deployed_head rows_ask_is_the_deployed_head rows_writer_settings rows_files_before_t5 rows_carried"
+rows_read_the_record rows_problems rows_record_unreadable rows_deployed_head rows_ask_is_the_deployed_head rows_ask_on_an_older_head rows_ask_on_an_undeployed_head rows_writer_settings rows_files_before_t5 rows_carried"
 
 # ---- real gate ------------------------------------------------------------------------
 
@@ -630,10 +667,8 @@ unsay 'the verified line carries a digest' acceptance_digest 'Tester verified li
 unsay 'the verified line is required' verified_line_missing "Tester record has no 'verified: tester"
 unsay 'the verified line names a head' verified_line_without_head 'Tester verified line has no head='
 unsay 'the Tester head is the deployed head' deployed_head_is_the_newest_ask 'Tester head '
-mutate 'the newest ask is the deployed head' deployed_head_is_the_newest_ask 's/\| tail -n 1\n\}/| head -n 1\n}/'
-mutate 'a draft round is not a deploy' deployed_head_is_the_newest_ask 's/ and \(\.round == "deploy" or \.round == "rows"\)//'
-mutate 'a rows ask is a deployed head' rows_ask_is_the_deployed_head 's/ or \.round == "rows"//'
-mutate 'only the task'"'"'s own asks count' deployed_head_is_the_newest_ask 's/ and \.task == \$t//'
+mutate 'the newest deployed ask is the deployed head' deployed_head_is_the_newest_ask 's/max_by\(\.at\)/min_by(.at)/'
+mutate 'only the task'"'"'s own asks count' rows_ask_is_the_deployed_head 's/ and \.task == \$t//'
 unsay 'a deployed head is required' a_pr_in_another_repo_takes_the_deployed_line 'no deployed head for'
 mutate 'a PR elsewhere takes the deployed line' a_pr_in_another_repo_takes_the_deployed_line 's/want_sha=\$\(fm_verify_gate_field "\$file" deployed\)/want_sha=/'
 unsay 'a missing ask refuses for a PR in the watched repo' a_pr_in_the_watched_repo_needs_an_ask 'no deploy ask for'
@@ -658,5 +693,10 @@ swap 'each reason the record gives is a problem' rows_problems "printf '%s\\n' \
 unsay 'a record that cannot be read is a problem' rows_record_unreadable 'the task record cannot be read: $(sed'
 swap 'the record is asked about the deployed head' rows_deployed_head '--head "$want_sha"' '--head "$issue"'
 swap 'no deployed head, no read of the record' rows_deployed_head '[ -n "$want_sha" ] || return 0' ':'
+swap 'a rows ask is a deployed head' rows_ask_is_the_deployed_head '(.round == "deploy" or .round == "rows")' '.round == "deploy"'
+swap 'the deploy order decides, not the ask order' rows_ask_on_an_older_head 'max_by(.at) | .sha' 'last | .sha'
+swap 'the first deploy ask of a head dates it' rows_ask_on_an_older_head ')] | first;' ')] | last;'
+swap 'only a deploy-round ask proves a deploy' rows_ask_on_an_undeployed_head ' and $l[.].round == "deploy" and $l[.].sha == $s' ' and $l[.].sha == $s'
+swap 'an ask on no deployed head is no head' rows_ask_on_an_undeployed_head ' | select(.at != null)]' ']'
 swap 'the writer runs with the record settings' rows_writer_settings '    fm_task_shadow_config "$config/task-shadow"' '    :'
 pass 'every rule of the gate has a red mutation proof'
