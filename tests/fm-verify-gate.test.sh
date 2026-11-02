@@ -20,23 +20,6 @@ unset FM_TESTER_HOME FM_STATE_OVERRIDE
 vg_install_gh "$TMP_ROOT/gh"
 TASK=landed-ui
 
-# A stand-in for gh's commit compare in the watched repo o/r: FAKE_ORDER lists the deployed heads oldest first, and the
-# compare of two of them answers ahead, behind or identical by that order. A sha outside FAKE_ORDER, another repo or
-# another call cannot be read; FAKE_DIVERGED answers diverged.
-FAKE_GH="$TMP_ROOT/fake-gh-compare"
-cat > "$FAKE_GH" <<'SH'
-#!/usr/bin/env bash
-[ "${1:-}" = api ] && [ "${3:-}" = --jq ] && [ "${4:-}" = .status ] || exit 2
-pair=${2#repos/o/r/compare/}
-[ "$pair" != "$2" ] || exit 1
-[ -z "${FAKE_DIVERGED:-}" ] || { echo diverged; exit 0; }
-pos() { local i=0 s; for s in ${FAKE_ORDER:-}; do [ "$s" = "$1" ] && { echo "$i"; return 0; }; i=$((i + 1)); done; return 1; }
-b=$(pos "${pair%%...*}") && h=$(pos "${pair#*...}") || exit 1
-if [ "$h" -gt "$b" ]; then echo ahead; elif [ "$h" -lt "$b" ]; then echo behind; else echo identical; fi
-SH
-chmod +x "$FAKE_GH"
-export FM_VERIFY_GATE_GH="$FAKE_GH"
-
 new_home() {  # prints a home with passing records
   local home
   home=$(mktemp -d "$TMP_ROOT/home.XXXXXX")
@@ -339,7 +322,7 @@ case_verified_line_without_head() {
 # refuses an older record, a draft round and another task's ask do not count.
 case_deployed_head_is_the_newest_ask() {
   local home old=2222222222222222222222222222222222222222 ledger
-  export FAKE_ORDER="$old $VG_SHA"
+  export VG_ORDER="$old $VG_SHA"
   home=$(new_home)
   ledger="$home/data/deploy-verify/ledger.jsonl"
   set_line "$(tester "$home")" 'verified: ' "verified: tester 1000 head=$old acceptance=$(vg_digest)"
@@ -512,7 +495,7 @@ case_rows_record_unreadable() {
 case_rows_deployed_head() {
   local home sha2=2222222222222222222222222222222222222222
   home=$(rows_home)
-  export FAKE_ARGS="$home/fake.args" FAKE_ORDER="$VG_SHA $sha2"
+  export FAKE_ARGS="$home/fake.args" VG_ORDER="$VG_SHA $sha2"
   printf '{"type":"ask","round":"deploy","key":"k2","task":"%s","sha":"%s"}\n' "$TASK" "$sha2" >> "$home/data/deploy-verify/ledger.jsonl"
   FAKE_RC=0 passes "$1" "$home" || return 1
   case "$(sed -n 1p "$FAKE_ARGS")" in *"--head $sha2 "*) ;; *) echo "the record was asked about another head: $(sed -n 1p "$FAKE_ARGS")"; return 1 ;; esac
@@ -535,7 +518,7 @@ ledger_replay() {  # <task> <sha>
 case_rows_ask_is_the_deployed_head() {
   local home a=2222222222222222222222222222222222222222 b=3333333333333333333333333333333333333333 ledger
   home=$(rows_home)
-  export FAKE_ARGS="$home/fake.args" FAKE_ORDER="$a $b"
+  export FAKE_ARGS="$home/fake.args" VG_ORDER="$a $b"
   ledger="$home/data/deploy-verify/ledger.jsonl"
   ledger_ask deploy "$TASK" "$a" > "$ledger"
   FAKE_PASS_HEAD=$a passes "$1" "$home" || return 1
@@ -552,7 +535,7 @@ case_rows_ask_is_the_deployed_head() {
 case_rows_ask_on_an_older_head() {
   local home a=2222222222222222222222222222222222222222 b=3333333333333333333333333333333333333333 ledger
   home=$(rows_home)
-  export FAKE_ARGS="$home/fake.args" FAKE_ORDER="$a $b"
+  export FAKE_ARGS="$home/fake.args" VG_ORDER="$a $b"
   ledger="$home/data/deploy-verify/ledger.jsonl"
   { ledger_ask deploy other "$a"; ledger_ask deploy "$TASK" "$b"; ledger_ask rows "$TASK" "$a"; } > "$ledger"
   FAKE_PASS_HEAD=$b passes "$1" "$home" || return 1
@@ -581,7 +564,7 @@ case_rows_ask_on_an_undeployed_head() {
 case_rows_ask_on_a_head_only_a_replay_names() {
   local home a=2222222222222222222222222222222222222222 b=3333333333333333333333333333333333333333 ledger
   home=$(rows_home)
-  export FAKE_ARGS="$home/fake.args" FAKE_ORDER="$a $b"
+  export FAKE_ARGS="$home/fake.args" VG_ORDER="$a $b"
   ledger="$home/data/deploy-verify/ledger.jsonl"
   { ledger_ask deploy "$TASK" "$b"; ledger_replay other "$a"; ledger_ask rows "$TASK" "$a"; } > "$ledger"
   FAKE_PASS_HEAD=$b passes "$1" "$home" || return 1
@@ -598,10 +581,10 @@ case_rows_heads_cannot_be_ordered() {
   export FAKE_ARGS="$home/fake.args"
   ledger="$home/data/deploy-verify/ledger.jsonl"
   { ledger_ask deploy "$TASK" "$a"; ledger_ask deploy other "$b"; ledger_ask rows "$TASK" "$b"; } > "$ledger"
-  FAKE_ORDER="$a" FAKE_PASS_HEAD=$b refuses "$1" "$home" "cannot order the deployed heads of $TASK: the GitHub compare $a...$b in o/r cannot be read" || return 1
+  VG_ORDER="$a" FAKE_PASS_HEAD=$b refuses "$1" "$home" "cannot order the deployed heads of $TASK: the GitHub compare $a...$b in o/r cannot be read" || return 1
   [ ! -e "$FAKE_ARGS" ] || { echo 'the record was asked with no deployed head'; return 1; }
-  FAKE_ORDER="$a $b" FAKE_DIVERGED=1 FAKE_PASS_HEAD=$b refuses "$1" "$home" "cannot order the deployed heads of $TASK: $a and $b are not in one line of o/r history (compare status 'diverged')" || return 1
-  FAKE_ORDER="$a $b" FAKE_PASS_HEAD=$b passes "$1" "$home"
+  VG_ORDER="$a $b" VG_DIVERGED=1 FAKE_PASS_HEAD=$b refuses "$1" "$home" "cannot order the deployed heads of $TASK: $a and $b are not in one line of o/r history (compare status 'diverged')" || return 1
+  VG_ORDER="$a $b" FAKE_PASS_HEAD=$b passes "$1" "$home"
 }
 
 # The writer runs with the home's record settings from config/task-shadow.
