@@ -2642,7 +2642,8 @@ STUB
   ow --action hold --task $t --note '   ' --owner u-1; must 'hold with a blank reason' 2 || rc=1
 
   # ACT3: Done on a reviewed task whose cleanup refuses: close-refused with the refusal text, the task stays in review
-  mk_running $t >/dev/null && ft done $t "${DONE_FLAGS[@]}" >/dev/null || { echo "setup: $ERR"; return 1; }
+  mk_running $t >/dev/null || { echo "setup: $ERR"; return 1; }
+  ft "done" $t "${DONE_FLAGS[@]}" >/dev/null || { echo "setup done: $ERR"; return 1; }
   ow --action close --task $t --owner u-1; must 'close' 0 || rc=1
   jq -e '.ok and .action == "close"' <<<"$OUT" >/dev/null || { echo "close reply: $OUT"; rc=1; }
   seq=$(open_seq $t close-request)
@@ -2669,7 +2670,7 @@ STUB
   seq=$(open_seq $t close-request)
   orq $t --seq "$seq"; must 'close' 0 || rc=1
   grep -qx "teardown|$t" "$calls" || { echo "teardown call: $(cat "$calls")"; rc=1; }
-  [ "$(task_state $t)" = done ] && [ "$(last_kind $t)" = closed ] || { echo "after close: $(task_state $t) $(last_kind $t)"; rc=1; }
+  [ "$(task_state $t)" = "done" ] && [ "$(last_kind $t)" = closed ] || { echo "after close: $(task_state $t) $(last_kind $t)"; rc=1; }
   db fm_task_event | jq -e --arg t $t '[.[] | select(.taskId == $t and .kind == "approved")] | length == 1' >/dev/null || { echo 'approve did not run once'; rc=1; }
   ow --action close --task $t --owner u-3; must 'close on a done task' 5 || rc=1
 
@@ -2678,16 +2679,16 @@ STUB
   mk_running $t >/dev/null || return 1
   ow --action close --task $t --owner u-1; must 'close a running task' 0 || rc=1
   orq $t --seq "$(open_seq $t close-request)"; must 'refused approve' 0 || rc=1
-  [ "$(last_kind $t)" = close-refused ] && grep -q 'approve is not allowed from state running' <<<"$(last_note $t)" || { echo "approve refusal: $(last_note $t)"; rc=1; }
+  if ! { [ "$(last_kind $t)" = close-refused ] && grep -q 'approve is not allowed from state running' <<<"$(last_note $t)"; }; then echo "approve refusal: $(last_note $t)"; rc=1; fi
   [ ! -s "$calls" ] || { echo "a refused approve still cleaned up: $(cat "$calls")"; rc=1; }
   [ "$(task_state $t)" = running ] || rc=1
   ft approve $t --check; must 'approve --check on a running task' 5 || rc=1
   # a task with no worker in this home: the cleanup closes its open backlog item
-  ft done $t "${DONE_FLAGS[@]}" >/dev/null || return 1
+  ft "done" $t "${DONE_FLAGS[@]}" >/dev/null || return 1
   ow --action close --task $t --owner u-2; must 'close without a worker' 0 || rc=1
   orq $t --seq "$(open_seq $t close-request)"; must 'close without a worker' 0 || rc=1
-  grep -qx "backlog|done $t" "$calls" && ! grep -q '^teardown' "$calls" || { echo "cleanup without a worker: $(cat "$calls")"; rc=1; }
-  [ "$(task_state $t)" = done ] || rc=1
+  if ! { grep -qx "backlog|done $t" "$calls" && ! grep -q '^teardown' "$calls"; }; then echo "cleanup without a worker: $(cat "$calls")"; rc=1; fi
+  [ "$(task_state $t)" = "done" ] || rc=1
 
   # the result kinds need an open request of their kind, a refusal needs its text, and closed needs a done task
   t=tk-or3
