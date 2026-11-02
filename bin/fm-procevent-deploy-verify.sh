@@ -456,7 +456,7 @@ plan_drafts() {  # <workdir>
 # explicit head, without the rows already asked on that head, and without a held ask until its hold is old enough.
 # Returns 1 with READ_ERROR_FILE set when the record or GitHub cannot be read.
 plan_rows_task() {  # <task>
-  local task=$1 json issue_url repo n issue_json head keys key rows lines held_at now
+  local task=$1 json issue_url repo n ref issue_json head keys key rows lines held_at now
   json=$(task_writer checks "$task" 2>&1)
   # shellcheck disable=SC2181 # the status of the assignment above
   if [ "$?" -ne 0 ] || ! jq -e '.rows | type == "array"' <<<"$json" >/dev/null 2>&1; then
@@ -469,12 +469,14 @@ plan_rows_task() {  # <task>
   if [ -z "$issue_url" ] || [[ "$issue_url" == task:* || "$issue_url" == *'#firstmate.board?'*'task='* ]]; then
     case "$issue_url" in task:*) n=$issue_url ;; *) n="task:$task" ;; esac
     issue_url=$(acceptance_url "$n")
+    ref=$(issue_ref "$n")
     issue_json=$(acceptance_body_json "$n") || return 1
   else
     case "$issue_url" in https://github.com/*/*/issues/[0-9]*) ;; *) return 0 ;; esac
     repo=${issue_url#https://github.com/}
     repo=${repo%/issues/*}
     n=${issue_url##*/}
+    ref="${repo##*/}#$n"
     issue_json=$(gh_read "repos/$repo/issues/$n") || return 1
   fi
   read_acceptance visible "$(jq -r '.body // ""' <<<"$issue_json")"
@@ -494,7 +496,7 @@ plan_rows_task() {  # <task>
     # shellcheck disable=SC2016 # jq variables, not shell
     held_at=$([ ! -f "$LEDGER" ] || jq -Rr --arg k "$key" 'fromjson? | select(.type == "hold" and .key == $k and (.lease | not) and (.cap | not)) | .at' "$LEDGER" | tail -n 1)
     [ -z "$held_at" ] || [ $((now - held_at)) -ge "${FM_DEPLOY_VERIFY_HOLD_SECONDS:-600}" ] || continue
-    add_ask "$(jq -cn --arg key "$key" --arg task "$task" --arg issue "${repo##*/}#$n" --arg issue_url "$issue_url" --arg head "$head" \
+    add_ask "$(jq -cn --arg key "$key" --arg task "$task" --arg issue "$ref" --arg issue_url "$issue_url" --arg head "$head" \
       --argjson rows "$rows" --argjson lines "$lines" --argjson envs "$ISSUE_ENVS" --argjson arrival "$now" \
       '{round: "rows", key: $key, task: $task, issue: $issue, issue_url: $issue_url, prs: [], sha: $head, head: $head, run: null,
         lines: $lines, rows: $rows, env: ($envs | with_entries(select(.key as $id | $lines | index($id)))), arrival: $arrival}')"

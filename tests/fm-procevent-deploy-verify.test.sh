@@ -888,6 +888,27 @@ scenario_rows_ask() {
   fi
 }
 
+# A task whose acceptance is its own task record (`issue: task:<id>`) gets the same rows ask: one ask for the rows
+# pending for the Tester on an explicit head, its issue the task id and its issue URL the board link.
+scenario_rows_ask_task() {
+  new_lab "$1"
+  tpl_issue_body "$(tpl_scenario_env V1 'Dev 5001' 1440; tpl_scenario_env V2 'Dev 5001' 1440)" > "$LAB/description"
+  printf '#!/usr/bin/env bash\ncase "$1" in document) cat "%s/description" ;; checks) cat "%s/checks.json" ;; esac\n' "$LAB" "$LAB" > "$LAB/writer"
+  chmod +x "$LAB/writer"
+  : > "$H/config/task-shadow"
+  printf 'kind=ship\n' > "$H/state/alpha.meta"
+  mkdir -p "$H/data/alpha"
+  printf 'surface: user-visible\nissue: task:alpha\nrecord: rows\n' > "$H/data/alpha/verify.md"
+  printf '{"task":"alpha","state":"running","nextActor":"worker","head":null,"rows":[{"key":"V1@1440","scenarioId":"V1","width":"1440","surface":"user-visible","status":"pending","nextActor":"tester","head":"%s","carried":false,"due":true},{"key":"V2@1440","scenarioId":"V2","width":"1440","surface":"user-visible","status":"pending","nextActor":"tester","head":"%s","carried":false,"due":true}]}\n' "$(sha h1)" "$(sha h1)" > "$LAB/checks.json"
+  export FM_TASK_SHADOW_WRITER="$LAB/writer"
+  local dry
+  dry=$("$BIN/fm-procevent-deploy-verify.sh" ask-rows alpha --dry-run 2>&1)
+  unset FM_TASK_SHADOW_WRITER
+  jq -e --arg h "$(sha h1)" '.round == "rows" and .sha == $h and .issue == "alpha" and (.issue_url | contains("task=alpha"))
+    and ([.rows[] | split(" | ")[0]] == ["- V1@1440", "- V2@1440"])' <<<"$dry" >/dev/null 2>&1 \
+    || { echo "task rows ask: $dry"; return 1; }
+}
+
 # HG5 (firstmate#176 G5): the rows ask of an env with a config/env/<name> file claims `env:<name>` for the Tester
 # before it is sent. While a worker holds the lease the ask is held with a wait naming the holder (one hold line, no
 # RAM read), it goes out at the first poll after the worker releases, and the poll releases the Tester's lease when
@@ -1163,7 +1184,7 @@ run_scenarios() {  # <bin-dir>
 
 # ---- real adapter -----------------------------------------------------------
 
-for s in task_native ledger skips not_deployed draft spawn_brief retry_brief failures runner live_tester cap skip_catchup rows refused replay replay_refused shadow rows_record carry rows_ask rows_lease rows_lease_two rows_lease_failed_send; do
+for s in task_native ledger skips not_deployed draft spawn_brief retry_brief failures runner live_tester cap skip_catchup rows refused replay replay_refused shadow rows_record carry rows_ask rows_ask_task rows_lease rows_lease_two rows_lease_failed_send; do
   out=$(scenario_"$s" "$ROOT/bin" 2>&1) || fail "scenario $s failed on the real adapter: $out"
   pass "deploy-verify $s"
 done
