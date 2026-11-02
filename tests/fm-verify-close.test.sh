@@ -115,6 +115,8 @@ test_incomplete_record_refuses_lists_problems_and_refreshes_the_reason() {
 # the close stays refused until the Tester verifies again.
 test_a_newer_deploy_refuses_the_close_until_the_tester_verifies_again() {
   local home newer=2222222222222222222222222222222222222222
+  local VG_ORDER="$VG_SHA $newer"
+  export VG_ORDER
   home=$(make_home newer-deploy)
   add_row "$home" 'verification pending: an older gap'
   write_verify "$home" pass

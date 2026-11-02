@@ -5,7 +5,9 @@
 # ledger. The real parser reads the fixture issue; only gh is a stand-in.
 #
 # vg_install_gh <dir>               writes the fixture issue and a fake gh under <dir>, and
-#                                   exports FM_ACCEPTANCE_GH and VG_BODY_FILE
+#                                   exports FM_ACCEPTANCE_GH, FM_VERIFY_GATE_GH and VG_BODY_FILE; the
+#                                   fake answers the gate's commit compare by VG_ORDER (deployed heads,
+#                                   oldest first; any other sha cannot be read) and VG_DIVERGED
 # vg_write_records <home> <task> [none]
 #                                   writes all three for a home laid out as state/ and data/ with
 #                                   the Tester home at <home>/tester; every row passes, the Tester
@@ -50,6 +52,17 @@ vg_install_gh() {  # <dir>
 EOF
   cat >"$dir/gh" <<'SH'
 #!/usr/bin/env bash
+if [ "${1:-}" = api ]; then
+  # The gate's commit compare in the watched repo: VG_ORDER lists deployed heads oldest first.
+  [ "${3:-}" = --jq ] && [ "${4:-}" = .status ] || exit 2
+  pair=${2#"repos/$FM_DEPLOY_VERIFY_REPO/compare/"}
+  [ "$pair" != "$2" ] || exit 1
+  [ -z "${VG_DIVERGED:-}" ] || { echo diverged; exit 0; }
+  pos() { local i=0 s; for s in ${VG_ORDER:-}; do [ "$s" = "$1" ] && { echo "$i"; return 0; }; i=$((i + 1)); done; return 1; }
+  b=$(pos "${pair%%...*}") && h=$(pos "${pair#*...}") || exit 1
+  if [ "$h" -gt "$b" ]; then echo ahead; elif [ "$h" -lt "$b" ]; then echo behind; else echo identical; fi
+  exit 0
+fi
 [ "${1:-}" = issue ] && [ "${2:-}" = view ] || exit 2
 [ -z "${VG_GH_FAIL:-}" ] || { echo 'GraphQL: Could not resolve to an Issue' >&2; exit 1; }
 jq -Rs '{body: .}' "$VG_BODY_FILE"
@@ -57,7 +70,7 @@ SH
   chmod +x "$dir/gh"
   VG_BODY_FILE="$dir/issue.body"
   # The fixture issue lives in o/r, the repo deploy-verify watches in these suites.
-  export FM_ACCEPTANCE_GH="$dir/gh" VG_BODY_FILE FM_DEPLOY_VERIFY_REPO=o/r
+  export FM_ACCEPTANCE_GH="$dir/gh" FM_VERIFY_GATE_GH="$dir/gh" VG_BODY_FILE FM_DEPLOY_VERIFY_REPO=o/r
 }
 
 vg_digest() { node "$ROOT/bin/fm-acceptance.mjs" digest "$VG_ISSUE"; }

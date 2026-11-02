@@ -5334,6 +5334,8 @@ test_verify_gate_holds_approval_not_newer_than_the_tester() {
 
 test_verify_gate_holds_a_record_for_an_older_deploy() {
   local case_dir newer=2222222222222222222222222222222222222222
+  local VG_ORDER="$VG_SHA $newer"
+  export VG_ORDER
   case_dir=$(verify_gate_case verify-old-head)
   : > "$case_dir/shot.png"
   write_verify "$case_dir" pass "$case_dir/shot.png" yes

@@ -27,7 +27,7 @@
 # digest, or carried from an earlier deployed head that no later PR names (printed on stderr with that head), and an
 # approved event newer than the last row (bin/fm-task-lib.mjs owns that read). Line 1, the issue line
 # and the deployed head below are checked as for any task; the writer runs with the settings of config/task-shadow.
-# FM_VERIFY_GATE_TASK replaces bin/fm-task.sh (the tests use a stand-in).
+# FM_VERIFY_GATE_TASK replaces bin/fm-task.sh and FM_VERIFY_GATE_GH replaces gh (the tests use stand-ins).
 # The Tester home is home= in <state>/tester.meta, or FM_TESTER_HOME. A relative evidence
 # path resolves against that home. A row in state `retired` is allowed only for a scenario id
 # the issue no longer has (not for one width of an id it still has); a row for an issue scenario that is not user-visible is ignored.
@@ -40,8 +40,9 @@
 #   - the Tester's acceptance= equals `fm-acceptance.mjs digest <issue>`: the digest of the full
 #     scenarios as they read now, so a scenario edited in any field after the Tester read it
 #     is verified again,
-#   - the Tester's head= equals the sha of the newest deploy-round or replay ask for the task
-#     in <data-dir>/deploy-verify/ledger.jsonl (a missing ask refuses), or, for a task whose PR is
+#   - the Tester's head= equals the task's deployed head in <data-dir>/deploy-verify/ledger.jsonl (the
+#     newest by GitHub ancestry of the deployed heads of its deploy-round and rows-round asks:
+#     fm_verify_gate_ledger_shas; no ask on a deployed head refuses), or, for a task whose PR is
 #     not in the repo deploy-verify watches, the 'deployed: <sha>' line of firstmate's record, and
 #   - 'approved: firstmate' is newer than the Tester's verified epoch.
 # <base-dir> is the firstmate home: <base-dir>/state is the state directory
@@ -49,12 +50,18 @@
 
 FM_VERIFY_GATE_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
-# The sha of the newest ask the deploy-verify ledger holds for a task: a deploy round or a
-# replay (both are round=deploy), never a draft round. Prints nothing when there is none.
-fm_verify_gate_ledger_sha() {  # <ledger> <task-id>
+# The deployed heads the deploy-verify ledger holds for a task, one per line in the order the task first asked on
+# them: the shas of the task's own deploy-round and rows-round asks that a deploy-round ask of any task names (a
+# deploy round or a replay, both round=deploy; deploy-verify writes one only for a green deploy), so a draft or
+# rows ask alone never proves a deploy. Prints nothing when no ask of the task names a deployed head.
+fm_verify_gate_ledger_shas() {  # <ledger> <task-id>
   [ -f "$1" ] || return 0
   # shellcheck disable=SC2016 # jq variables, not shell
-  jq -Rr --arg t "$2" 'fromjson? | select(.type == "ask" and .round == "deploy" and .task == $t) | .sha' "$1" | tail -n 1
+  jq -Rnr --arg t "$2" '
+    [inputs | fromjson?] as $l
+    | [$l[] | select(.type == "ask" and .round == "deploy") | .sha] as $deployed
+    | [$l[] | select(.type == "ask" and (.round == "deploy" or .round == "rows") and .task == $t) | .sha | select(IN($deployed[]))]
+    | reduce .[] as $s ([]; if index([$s]) then . else . + [$s] end) | .[]' "$1"
 }
 
 # A record's value for `<key>: ` (the last such line).
@@ -110,15 +117,35 @@ fm_verify_gate_row_text() {  # <row>
 }
 
 # The deployed head, into the running fm_verify_gate_problems' $want_sha (a problem when there is none). deploy-verify
-# maps a task by its PR, so a task whose PR is in the repo it watches (FM_DEPLOY_VERIFY_REPO) has the newest ask of the
-# task in the ledger as its head, and a missing ask is a refusal; a task with a PR elsewhere has no ask, so it is
-# firstmate's own deployed: line. The issue's repo plays no part.
+# maps a task by its PR, so a task whose PR is in the repo it watches (FM_DEPLOY_VERIFY_REPO) has the newest of its
+# deployed heads in the ledger as its head (newest by GitHub ancestry when there are two or more; a compare that
+# cannot be read, or heads not in one line of history, is a refusal), and a missing ask is a refusal; a task with a
+# PR elsewhere has no ask, so it is firstmate's own deployed: line. The issue's repo plays no part.
 fm_verify_gate_deployed_head() {
-  local repo
+  local repo heads head status
   repo=${FM_DEPLOY_VERIFY_REPO:-huynhtandat223/cfw-modules}
   if fm_verify_gate_task_in_repo "$state" "$data" "$id" "$repo"; then
-    want_sha=$(fm_verify_gate_ledger_sha "$ledger" "$id")
-    [ -n "$want_sha" ] || fm_verify_gate_say "no deploy ask for $id in $ledger; its PR is in $repo, which deploy-verify watches, so a deployed: line does not stand in for it"
+    heads=$(fm_verify_gate_ledger_shas "$ledger" "$id")
+    want_sha=$(printf '%s\n' "$heads" | sed -n 1p)
+    [ -n "$want_sha" ] || { fm_verify_gate_say "no deploy ask for $id in $ledger; its PR is in $repo, which deploy-verify watches, so a deployed: line does not stand in for it"; return 0; }
+    # Two or more deployed heads: the newest is the one the others are ancestors of on GitHub, since each deploy of
+    # main contains the deploys before it. The ledger order cannot say it: a held ask keeps the cursor behind a
+    # delivered deploy, and a later replay then asks on that older head.
+    for head in $(printf '%s\n' "$heads" | sed 1d); do
+      if ! status=$("${FM_VERIFY_GATE_GH:-gh}" api "repos/$repo/compare/$want_sha...$head" --jq .status 2>/dev/null); then
+        fm_verify_gate_say "cannot order the deployed heads of $id: the GitHub compare $want_sha...$head in $repo cannot be read"
+        want_sha=
+        return 0
+      fi
+      case "$status" in
+        ahead) want_sha=$head ;;
+        behind|identical) ;;
+        *)
+          fm_verify_gate_say "cannot order the deployed heads of $id: $want_sha and $head are not in one line of $repo history (compare status '${status:-none}')"
+          want_sha=
+          return 0 ;;
+      esac
+    done
   else
     want_sha=$(fm_verify_gate_field "$file" deployed)
     [ -n "$want_sha" ] || fm_verify_gate_say "no deployed head for $id: its PR is not in $repo, the repo deploy-verify watches, so $file needs a 'deployed: <sha>' line"
