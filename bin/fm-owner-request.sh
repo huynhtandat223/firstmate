@@ -101,6 +101,8 @@ try() {  # run one step; its stderr lands in ERR and is shown after it
 case "$KIND" in
   close-request)
     [ "${#SPAWN_ARGS[@]}" -eq 0 ] || die 'a close-request takes no spawn arguments'
+    # a run stopped after its approve only has the result left to write
+    [ "$(jq -r '.state' <<<"$open_json")" != "done" ] || result closed 'Approved and cleaned up.'
     try "$WRITER" approve "$TASK" --check || refuse "$(refusal_text "$ERR")"
     if [ -f "$STATE/$TASK.meta" ]; then
       try "$TEARDOWN" "$TASK" || refuse "$(refusal_text "$ERR")"

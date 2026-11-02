@@ -2673,6 +2673,15 @@ STUB
   [ "$(task_state $t)" = "done" ] && [ "$(last_kind $t)" = closed ] || { echo "after close: $(task_state $t) $(last_kind $t)"; rc=1; }
   db fm_task_event | jq -e --arg t $t '[.[] | select(.taskId == $t and .kind == "approved")] | length == 1' >/dev/null || { echo 'approve did not run once'; rc=1; }
   ow --action close --task $t --owner u-3; must 'close on a done task' 5 || rc=1
+  # a run stopped between approve and its result: the request is still open on a done task, and a re-run closes it
+  t=tk-or6
+  mk_running $t >/dev/null || return 1
+  ft "done" $t "${DONE_FLAGS[@]}" >/dev/null || return 1
+  ow --action close --task $t --owner u-1; must 'close' 0 || rc=1
+  seq=$(open_seq $t close-request)
+  ft approve $t >/dev/null || return 1
+  orq $t --seq "$seq"; must 'close after a stopped run' 0 || rc=1
+  [ "$(last_kind $t)" = closed ] || { echo "after a stopped run: $(last_kind $t) $(last_note $t)"; rc=1; }
 
   # a task approve would refuse: nothing is cleaned up and the refusal is the result
   t=tk-or2; : > "$calls"
