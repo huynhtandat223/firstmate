@@ -40,7 +40,7 @@
 #   - the Tester's acceptance= equals `fm-acceptance.mjs digest <issue>`: the digest of the full
 #     scenarios as they read now, so a scenario edited in any field after the Tester read it
 #     is verified again,
-#   - the Tester's head= equals the sha of the newest deploy-round or replay ask for the task
+#   - the Tester's head= equals the sha of the newest deploy-round, replay or rows-round ask for the task
 #     in <data-dir>/deploy-verify/ledger.jsonl (a missing ask refuses), or, for a task whose PR is
 #     not in the repo deploy-verify watches, the 'deployed: <sha>' line of firstmate's record, and
 #   - 'approved: firstmate' is newer than the Tester's verified epoch.
@@ -49,12 +49,13 @@
 
 FM_VERIFY_GATE_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
-# The sha of the newest ask the deploy-verify ledger holds for a task: a deploy round or a
-# replay (both are round=deploy), never a draft round. Prints nothing when there is none.
+# The sha of the newest ask the deploy-verify ledger holds for a task on a deployed head: a deploy
+# round or a replay (both are round=deploy), or a rows round (it asks only on an explicit deployed
+# head), never a draft round. Prints nothing when there is none.
 fm_verify_gate_ledger_sha() {  # <ledger> <task-id>
   [ -f "$1" ] || return 0
   # shellcheck disable=SC2016 # jq variables, not shell
-  jq -Rr --arg t "$2" 'fromjson? | select(.type == "ask" and .round == "deploy" and .task == $t) | .sha' "$1" | tail -n 1
+  jq -Rr --arg t "$2" 'fromjson? | select(.type == "ask" and (.round == "deploy" or .round == "rows") and .task == $t) | .sha' "$1" | tail -n 1
 }
 
 # A record's value for `<key>: ` (the last such line).
