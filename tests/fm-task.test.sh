@@ -2598,18 +2598,147 @@ STUB
   printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s"\n' "$inbox" > "$TMP_ROOT/owner-hold-inbox"
   chmod +x "$stub" "$TMP_ROOT/owner-hold-inbox"
   ohold() { OUT=$(FM_TASK_OWNER_HOLD="$stub" FM_TASK_OWNER_INBOX="$TMP_ROOT/owner-hold-inbox" "$BIN/fm-task-owner.sh" "$@" 2>"$TMP_ROOT/err"); RC=$?; }
-  ohold --action hold --task tk-oh1 --owner u-1; must 'hold' 0 || rc=1
-  grep -qx 'hold|tk-oh1|--reason|Held by the owner on the board.|' "$log" || { echo "hold call: $(cat "$log")"; rc=1; }
+  ohold --action hold --task tk-oh1 --note 'wait for the API' --owner u-1; must 'hold' 0 || rc=1
+  grep -qx 'hold|tk-oh1|--reason|wait for the API|' "$log" || { echo "hold call: $(cat "$log")"; rc=1; }
   jq -e '.ok and .action == "hold" and .writes == ["held"]' <<<"$OUT" >/dev/null || { echo "hold reply: $OUT"; rc=1; }
-  grep -q 'The owner held task tk-oh1 on the board: Held by the owner on the board.' "$inbox" || { echo "hold note: $(cat "$inbox")"; rc=1; }
+  grep -q 'The owner held task tk-oh1 on the board: wait for the API' "$inbox" || { echo "hold note: $(cat "$inbox")"; rc=1; }
   ohold --action release --task tk-oh1 --note 'go on' --owner u-1; must 'release' 0 || rc=1
   grep -q '^answer|tk-oh1|--decision-file|.*|--release|file=go on$' "$log" || { echo "release call: $(cat "$log")"; rc=1; }
   grep -q 'The owner released the hold on task tk-oh1 on the board: go on' "$inbox" || { echo "release note: $(cat "$inbox")"; rc=1; }
   : > "$inbox"
-  HOLD_REFUSE=1 ohold --action hold --task tk-oh1 --owner u-1; must 'refused hold' 5 || rc=1
+  HOLD_REFUSE=1 ohold --action hold --task tk-oh1 --note 'again' --owner u-1; must 'refused hold' 5 || rc=1
   jq -e '.ok == false and .error == "refused: closed"' <<<"$OUT" >/dev/null || { echo "refused reply: $OUT"; rc=1; }
   [ ! -s "$inbox" ] || { echo "a refused hold told firstmate: $(cat "$inbox")"; rc=1; }
-  ohold --action hold --task tk-oh1; must 'hold without an owner' 2 || rc=1
+  ohold --action hold --task tk-oh1 --note x; must 'hold without an owner' 2 || rc=1
+  return $rc
+}
+
+# ACT1-ACT4 (task-checklist-template T5): the board's Done and Approve & start write one owner request each, delivered
+# to firstmate as a wake that names bin/fm-owner-request.sh; that command answers the request with one result event.
+case_owner_request() {
+  BIN=$1; reset_db
+  export FM_HOME="$TMP_ROOT/owner-request-home"
+  rm -rf "$FM_HOME"; mkdir -p "$FM_HOME/state"
+  local t=tk-or1 rc=0 stubs="$TMP_ROOT/owner-request-stubs" calls="$TMP_ROOT/owner-request-calls.log" seq before
+  mkdir -p "$stubs"; : > "$calls"
+  for name in teardown spawn backlog; do
+    cat > "$stubs/$name" <<STUB
+#!/usr/bin/env bash
+printf '$name|%s\n' "\$*" >> "$calls"
+if [ "$name" = backlog ] && [ "\$1" = show ]; then printf 'task:\n  id: %s\n  state: queued\n' "\$2"; exit 0; fi
+[ -z "\${REFUSE_$name:-}" ] || { printf 'error: %s\n' "\$REFUSE_$name" >&2; exit 1; }
+STUB
+    chmod +x "$stubs/$name"
+  done
+  ow() { OUT=$("$BIN/fm-task-owner.sh" "$@" 2>"$TMP_ROOT/err"); RC=$?; ERR=$(cat "$TMP_ROOT/err"); }
+  orq() { OUT=$(FM_OWNER_REQUEST_TEARDOWN="$stubs/teardown" FM_OWNER_REQUEST_SPAWN="$stubs/spawn" FM_OWNER_REQUEST_BACKLOG="$stubs/backlog" \
+    "$BIN/fm-owner-request.sh" "$@" 2>"$TMP_ROOT/err"); RC=$?; ERR=$(cat "$TMP_ROOT/err"); }
+  open_seq() { "$BIN/fm-task.sh" requests "$1" --json | jq -r --arg k "$2" '[.requests[] | select(.kind == $k)][0].seq // empty'; }
+  last_kind() { db fm_task_event | jq -r --arg t "$1" '[.[] | select(.taskId == $t)] | sort_by(.seq) | last | .kind'; }
+  last_note() { db fm_task_event | jq -r --arg t "$1" '[.[] | select(.taskId == $t)] | sort_by(.seq) | last | .body | fromjson | .note'; }
+
+  # a hold needs his reason
+  ow --action hold --task $t --owner u-1; must 'hold without a reason' 2 || rc=1
+  ow --action hold --task $t --note '   ' --owner u-1; must 'hold with a blank reason' 2 || rc=1
+
+  # ACT3: Done on a reviewed task whose cleanup refuses: close-refused with the refusal text, the task stays in review
+  mk_running $t >/dev/null || { echo "setup: $ERR"; return 1; }
+  ft "done" $t "${DONE_FLAGS[@]}" >/dev/null || { echo "setup done: $ERR"; return 1; }
+  ow --action close --task $t --owner u-1; must 'close' 0 || rc=1
+  jq -e '.ok and .action == "close"' <<<"$OUT" >/dev/null || { echo "close reply: $OUT"; rc=1; }
+  seq=$(open_seq $t close-request)
+  [ -n "$seq" ] || { echo 'no open close-request'; return 1; }
+  [ "$(task_row $t | jq -r .nextActor)" = firstmate ] || { echo "close-request next actor: $(task_row $t | jq -r .nextActor)"; rc=1; }
+  # the first delivery of a task delivers an open request all the same, and its wake names the command
+  grep -F "owner request $seq: $t close-request - run bin/fm-owner-request.sh $t --seq $seq" "$FM_HOME/state/.wake-queue" >/dev/null \
+    || { echo "no request wake: $(cat "$FM_HOME/state/.wake-queue" 2>/dev/null)"; rc=1; }
+  before=$(count fm_task_event)
+  ow --action close --task $t --owner u-1; must 'close replay in the same minute' 0 || rc=1
+  [ "$(count fm_task_event)" = "$before" ] || { echo 'a replayed close wrote a second request'; rc=1; }
+  [ "$(grep -c "owner request $seq:" "$FM_HOME/state/.wake-queue")" = 1 ] || { echo 'a replayed close woke firstmate twice'; rc=1; }
+  : > "$FM_HOME/state/$t.meta"
+  REFUSE_teardown='refusing: worktree has uncommitted changes' orq $t --seq "$seq"; must 'refused cleanup' 0 || rc=1
+  [ "$(last_kind $t)" = close-refused ] && [ "$(last_note $t)" = 'error: refusing: worktree has uncommitted changes' ] \
+    || { echo "refused result: $(last_kind $t) $(last_note $t)"; rc=1; }
+  [ "$(task_state $t)" = review ] && [ "$(task_row $t | jq -r .nextActor)" = owner ] || { echo "after a refused cleanup: $(task_row $t)"; rc=1; }
+  orq $t --seq "$seq"; must 'an answered request' 0 || rc=1
+  grep -q '^result=none' <<<"$OUT" || { echo "an answered request ran again: $OUT"; rc=1; }
+
+  # ACT2: Done again; the cleanup runs, then approve, then closed
+  : > "$calls"
+  ow --action close --task $t --note 'ship it' --owner u-2; must 'second close' 0 || rc=1
+  seq=$(open_seq $t close-request)
+  orq $t --seq "$seq"; must 'close' 0 || rc=1
+  grep -qx "teardown|$t" "$calls" || { echo "teardown call: $(cat "$calls")"; rc=1; }
+  [ "$(task_state $t)" = "done" ] && [ "$(last_kind $t)" = closed ] || { echo "after close: $(task_state $t) $(last_kind $t)"; rc=1; }
+  db fm_task_event | jq -e --arg t $t '[.[] | select(.taskId == $t and .kind == "approved")] | length == 1' >/dev/null || { echo 'approve did not run once'; rc=1; }
+  ow --action close --task $t --owner u-3; must 'close on a done task' 5 || rc=1
+  # a run stopped between approve and its result: the request is still open on a done task, and a re-run closes it
+  t=tk-or6
+  mk_running $t >/dev/null || return 1
+  ft "done" $t "${DONE_FLAGS[@]}" >/dev/null || return 1
+  ow --action close --task $t --owner u-1; must 'close' 0 || rc=1
+  seq=$(open_seq $t close-request)
+  ft approve $t >/dev/null || return 1
+  orq $t --seq "$seq"; must 'close after a stopped run' 0 || rc=1
+  [ "$(last_kind $t)" = closed ] || { echo "after a stopped run: $(last_kind $t) $(last_note $t)"; rc=1; }
+
+  # a task approve would refuse: nothing is cleaned up and the refusal is the result
+  t=tk-or2; : > "$calls"
+  mk_running $t >/dev/null || return 1
+  ow --action close --task $t --owner u-1; must 'close a running task' 0 || rc=1
+  orq $t --seq "$(open_seq $t close-request)"; must 'refused approve' 0 || rc=1
+  if ! { [ "$(last_kind $t)" = close-refused ] && grep -q 'approve is not allowed from state running' <<<"$(last_note $t)"; }; then echo "approve refusal: $(last_note $t)"; rc=1; fi
+  [ ! -s "$calls" ] || { echo "a refused approve still cleaned up: $(cat "$calls")"; rc=1; }
+  [ "$(task_state $t)" = running ] || rc=1
+  ft approve $t --check; must 'approve --check on a running task' 5 || rc=1
+  # a task with no worker in this home: the cleanup closes its open backlog item
+  ft "done" $t "${DONE_FLAGS[@]}" >/dev/null || return 1
+  ow --action close --task $t --owner u-2; must 'close without a worker' 0 || rc=1
+  orq $t --seq "$(open_seq $t close-request)"; must 'close without a worker' 0 || rc=1
+  if ! { grep -qx "backlog|done $t" "$calls" && ! grep -q '^teardown' "$calls"; }; then echo "cleanup without a worker: $(cat "$calls")"; rc=1; fi
+  [ "$(task_state $t)" = "done" ] || rc=1
+
+  # the result kinds need an open request of their kind, a refusal needs its text, and closed needs a done task
+  t=tk-or3
+  mk_running $t >/dev/null || return 1
+  ft event $t closed; must 'closed with no request' 5 || rc=1
+  ft event $t close-refused --note x; must 'close-refused with no request' 5 || rc=1
+  ft event $t close-refused; must 'close-refused without its text' 2 || rc=1
+  ft event $t start-request; must 'start-request on a running task' 5 || rc=1
+  ft event $t close-request; must 'close-request' 0 || rc=1
+  ft event $t closed; must 'closed on a task not done' 5 || rc=1
+  ft event $t start-refused --note x; must 'start-refused for a close-request' 5 || rc=1
+
+  # ACT4: Approve & start with an edited setup, then the spawn on the step's runtime; a refused spawn is the result
+  t=tk-or4; : > "$calls"
+  ft create $t --title "Task $t" --kind ship --repo example/repo >/dev/null || return 1
+  ow --action start --task $t --setup '{"steps":[{"state":"implement","harness":"claude","model":"claude-opus-5-5","effort":"high"},{"state":"merge"}]}' --owner u-1
+  must 'start with a setup' 0 || rc=1
+  db fm_task_step | jq -e --arg t $t '.[] | select(.taskId == $t and .state == "implement") | .source == "owner" and .model == "claude-opus-5-5"' >/dev/null || { echo "owner setup: $(db fm_task_step)"; rc=1; }
+  seq=$(open_seq $t start-request)
+  [ -n "$seq" ] || { echo "no open start-request: $OUT"; return 1; }
+  "$BIN/fm-task.sh" requests $t --json | jq -e '.requests[0].step == {state: "implement", harness: "claude", model: "claude-opus-5-5", effort: "high"}' >/dev/null || { echo "request step: $("$BIN/fm-task.sh" requests $t --json)"; rc=1; }
+  orq $t --seq "$seq"; must 'a start without the spawn' 2 || rc=1
+  orq $t --seq "$seq" -- /p --mode direct-PR --yolo off --model other; must 'a start that names its own model' 2 || rc=1
+  [ "$(task_row $t | jq -r .workflowState)" = queued ] || { echo 'a refused start moved the task'; rc=1; }
+  REFUSE_spawn='claude account pin needs a login' orq $t --seq "$seq" -- /p --mode direct-PR --yolo off; must 'refused spawn' 0 || rc=1
+  [ "$(last_kind $t)" = start-refused ] && [ "$(last_note $t)" = 'error: claude account pin needs a login' ] || { echo "spawn refusal: $(last_kind $t) $(last_note $t)"; rc=1; }
+  grep -qx "spawn|$t /p --mode direct-PR --yolo off --harness claude --model claude-opus-5-5 --effort high" "$calls" || { echo "spawn call: $(cat "$calls")"; rc=1; }
+  [ "$(task_row $t | jq -r .workflowState)" = implement ] || { echo "the start did not move to the first state: $(task_row $t)"; rc=1; }
+  ft assign $t --to $t >/dev/null || return 1
+  ow --action start --task $t --owner u-3; must 'start again without an edit' 0 || rc=1
+  seq=$(open_seq $t start-request)
+  orq $t --seq "$seq" -- /p --mode direct-PR --yolo off; must 'start' 0 || rc=1
+  [ "$(task_state $t)" = running ] && [ "$(last_kind $t)" = started ] || { echo "after start: $(task_state $t) $(last_kind $t)"; rc=1; }
+  [ -z "$(open_seq $t start-request)" ] || { echo 'started did not answer the start-request'; rc=1; }
+  ow --action start --task $t --owner u-2; must 'start on a running task' 5 || rc=1
+  # --refuse answers either request with firstmate's own reason
+  t=tk-or5
+  ft create $t --title "Task $t" --kind ship >/dev/null || return 1
+  ow --action start --task $t --owner u-1; must 'start' 0 || rc=1
+  orq $t --seq "$(open_seq $t start-request)" --refuse 'no capacity on this project now'; must 'refuse' 0 || rc=1
+  [ "$(last_kind $t)" = start-refused ] && [ "$(last_note $t)" = 'no capacity on this project now' ] || rc=1
   return $rc
 }
 
@@ -2780,7 +2909,7 @@ case_setup_rules() {
   return 0
 }
 
-CASES=${FM_TASK_CASES:-"plan_task description_thread terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed long_notes status_view verify_view owner_writer workflow stage wait carry slice_c model_rules checklist question_round setup_rules backlog_home owner_hold"}
+CASES=${FM_TASK_CASES:-"plan_task description_thread terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed long_notes status_view verify_view owner_writer workflow stage wait carry slice_c model_rules checklist question_round setup_rules backlog_home owner_hold owner_request"}
 
 # ---- real command -------------------------------------------------------------------
 
@@ -2804,6 +2933,7 @@ cp "$TMP_ROOT/fm-acceptance.mjs.orig" "$MBIN/fm-acceptance.mjs"
 cp "$TMP_ROOT/fm-task.sh.orig" "$MBIN/fm-task.sh"
 cp "$ROOT/bin/fm-task-sources-lib.mjs" "$MBIN/fm-task-sources-lib.mjs"
 cp "$ROOT/bin/fm-backend.sh" "$ROOT/bin/fm-wake-lib.sh" "$ROOT/bin/fm-path-lib.sh" "$ROOT/bin/fm-inbox.sh" "$MBIN/"
+cp "$ROOT/bin/fm-owner-request.sh" "$TMP_ROOT/fm-owner-request.sh.orig"; cp "$ROOT/bin/fm-owner-request.sh" "$MBIN/"
 chmod +x "$MBIN/fm-task.sh"
 LIB="$MBIN/fm-task-lib.mjs"
 
@@ -3009,5 +3139,20 @@ mutate_owner_hold 'only a stored hold tells firstmate' '    if [ "$RC" -eq 0 ]; 
       verb=$([ "$ACTION" = hold ]' '    if true; then
       verb=$([ "$ACTION" = hold ]'
 mutate_owner 'an answer unblocks after its comment' 'run comment "$TASK" --note "$text" && run unblock "$TASK" || RC=$?' 'run comment "$TASK" --note "$text" || RC=$?'
+mutate 'the first delivery still delivers an open owner request' owner_request '|| open.has(e.seq)' ''
+mutate 'a result needs an open request of its kind' owner_request "if (!openRequests(events).some((e) => e.kind === RESULT_REQUEST[kind])) throw rule" "if (false) throw rule"
+mutate 'a refused result points the owner at the refusal' owner_request "set: kind === 'closed' ? {} : { nextActor: 'owner' }" 'set: {}'
+mutate_owner_request() {  # <label> <exact handler text> <replacement>: the owner_request case goes red
+  cp "$TMP_ROOT/fm-task-lib.mjs.orig" "$LIB"
+  cp "$TMP_ROOT/fm-owner-request.sh.orig" "$MBIN/fm-owner-request.sh"
+  S="$2" R="$3" perl -0pi -e 's/\Q$ENV{S}\E/$ENV{R}/' "$MBIN/fm-owner-request.sh"
+  cmp -s "$TMP_ROOT/fm-owner-request.sh.orig" "$MBIN/fm-owner-request.sh" && fail "mutation '$1' changed nothing"
+  if out=$(case_owner_request "$MBIN" 2>&1); then fail "removing the guard '$1' left case owner_request green"; fi
+  cp "$TMP_ROOT/fm-owner-request.sh.orig" "$MBIN/fm-owner-request.sh"
+  pass "guard '$1' is needed: case owner_request goes red without it"
+}
+mutate_owner_request 'nothing is cleaned up for a task approve would refuse' 'try "$WRITER" approve "$TASK" --check || refuse' 'true || refuse'
+mutate_owner_request 'a cleanup refusal leaves the task open' 'try "$TEARDOWN" "$TASK" || refuse "$(refusal_text "$ERR")"' 'try "$TEARDOWN" "$TASK" || true'
+mutate_owner_request "the owner's setup names the spawn's runtime" 'runtime=(--harness "$harness")' 'runtime=()'
 pass 'every guarded behavior has a red mutation proof'
 live_home_untouched

@@ -56,7 +56,8 @@
 //   approve  <task>                          review -> done (refused while a check row is pending or failed, and
 //            on a task with a deploy event until its user-visible rows pass on a deployed head; deletes any
 //            fm_event_video rows of the task after replacing video check evidence with its Tester screenshot, and
-//            writes a comment "N video(s) deleted after Verify")
+//            writes a comment "N video(s) deleted after Verify"); --check runs the same refusals and writes nothing
+//            but the checklist items the record already proves, printing `approve ready task=<id> state=<state>`
 //   changes  <task> --note WHY               review -> ready
 //   reopen   <task> --reason WHY             done -> ready, next actor firstmate; archived stays final
 //   archive  <task>                          triage|todo|ready|blocked|review|done -> archived
@@ -69,6 +70,13 @@
 //   event    <task> <kind> [--note N] [--pr-url U] [--head H] [--url U] kinds: steer comment pr deploy ci
 //            protocol_violation divergence link; --head on deploy (the deployed head, which user-visible passes count on
 //            from then) or on ci (the head the CI result read); --url on link; no other kind takes them
+//   event    <task> close-request|start-request [--note N]   the owner's Done or Start on the board (next actor
+//            firstmate; refused on a done or archived task, start-request also on a running one). Each stays open until
+//            firstmate's bin/fm-owner-request.sh writes its result: closed (only on a done task) or close-refused, and
+//            started (the start transition) or start-refused; a refused result needs --note with the refusal text and
+//            sets next actor owner. A result with no open request of its kind is refused (exit 5).
+//   requests <task> [--json]                 read only: the open owner requests, oldest first; a start-request carries
+//            the setup step it runs (the current workflow state's step, or the first one while queued)
 //   event    <task> wait --next-actor tester|owner|merge|ci --clears-on rows|answer|merge|ci --note WHY [--rows ID@W,...]
 //            a declared wait (G1); `ask --next-actor owner` (answer) and `done --pr-url` (rows on the Tester, else merge)
 //            write one too. Its status line is `paused [at=E] [key=wait-<seq>]: waiting on <actor>: WHY (clears on X)`; the
@@ -121,7 +129,9 @@
 //            on first use in backlog home system); a re-sent --key writes nothing again
 //   read-mark <task> --key steer:<task>:<record>  mark one handled steer in fm_task_delivery (consumer read:<task>)
 //   deliver  <task> --consumer NAME           claim each event in fm_task_delivery, then append a wake
-//            FM_HOME is required; delivery is scoped to this task, never a whole foreign fleet.
+//            FM_HOME is required; delivery is scoped to this task, never a whole foreign fleet. The first call only
+//            sets the baseline, except that an open owner request is delivered all the same; an owner request's wake
+//            reads `owner request <seq>: <task> <kind> - run bin/fm-owner-request.sh <task> --seq <seq>`.
 //            A crash between claim and queue append requires operator reconciliation (no duplicate claim).
 //            a row that has an item needs all five template fields again; a re-sent --key never writes the item twice)
 //   show     <task> [--json]   list [--state S] [--actor A] [--json]   resume <task>   reproject <task> | --all
@@ -178,7 +188,12 @@ const BLOCK_KINDS = ['transient', 'dependency', 'external', 'credential', 'failu
 const CHECK_STATUSES = ['pending', 'pass', 'fail'];
 // A checklist row (cl:<item>) also takes `off`, with its reason in evidence; `check` never writes it.
 const CHECKLIST_PREFIX = 'cl:';
-const FREE_KINDS = ['steer', 'comment', 'pr', 'deploy', 'ci', 'protocol_violation', 'divergence', 'link'];
+const FREE_KINDS = ['steer', 'comment', 'pr', 'deploy', 'ci', 'protocol_violation', 'divergence', 'link',
+  'close-request', 'start-request', 'closed', 'close-refused', 'start-refused'];
+// The owner's board requests (task-checklist-template T5) and the result kinds that answer each: firstmate's
+// bin/fm-owner-request.sh writes one of them; `started` is the start transition the spawn writes.
+const REQUEST_RESULTS = { 'close-request': ['closed', 'close-refused'], 'start-request': ['started', 'start-refused'] };
+const RESULT_REQUEST = { closed: 'close-request', 'close-refused': 'close-request', 'start-refused': 'start-request' };
 const WAIT_ACTORS = ['tester', 'owner', 'merge', 'ci'];
 const WAIT_CLEARS = ['rows', 'answer', 'merge', 'ci'];
 const CLOSED = ['done', 'archived'];
@@ -441,7 +456,7 @@ const SPECS = {
   ask: { pos: ['task'], flags: { question: 's', option: 'm', recommendation: 's', why: 's', document: 's', 'next-actor': 's', image: 'm', 'image-label': 'm' } },
   block: { pos: ['kind', 'task'], flags: { reason: 's', 'next-actor': 's', until: 's', on: 's', image: 'm', 'image-label': 'm' } },
   unblock: { pos: ['task'], flags: {} },
-  approve: { pos: ['task'], flags: {} },
+  approve: { pos: ['task'], flags: { check: 'b' } },
   changes: { pos: ['task'], flags: {} },
   reopen: { pos: ['task'], flags: { reason: 's' } },
   reassign: { pos: ['task'], flags: { to: 's', reason: 's' } },
@@ -464,6 +479,7 @@ const SPECS = {
   reproject: { pos: ['task'], flags: { all: 'b' } },
   'turn-end': { pos: ['task'], flags: { turn: 's' } },
   deliver: { pos: ['task'], flags: { consumer: 's' } },
+  requests: { pos: ['task'], flags: {} },
   'read-mark': { pos: ['task'], flags: {} },
   inbox: { pos: ['task'], flags: { action: 's', target: 's', home: 's' } },
   document: { pos: ['task'], flags: {} },
@@ -1321,7 +1337,7 @@ async function cmdApprove(args) {
   const initialEvents = await taskEvents(taskId);
   const initialTask = fold(initialEvents);
   const replay = await eventByKey(who.key);
-  if (!replay) guard('approve', initialTask);
+  if (!replay || args.flags.check) guard('approve', initialTask);
   const initialRows = newestRows(await checkRows(taskId), initialEvents);
   await checkApproveReady(initialTask, taskId, initialEvents, initialRows);
   const videos = await taskVideos(initialEvents);
@@ -1329,6 +1345,7 @@ async function cmdApprove(args) {
     if (!isVideoEvidence(row.evidence, videos)) continue;
     const replacement = await findTesterScreenshot(initialEvents, row);
     if (!replacement) throw rule(`approve is refused: check row ${rowKey(row)} references a video (${row.evidence}) and has no Tester screenshot to replace it`);
+    if (args.flags.check) continue;
     const values = { status: row.status, nextActor: row.nextActor, evidence: replacement, head: row.head ?? null, checkedAt: row.checkedAt ?? new Date().toISOString() };
     await append(taskId, { ...who, key: `${who.key}:video-ev:${rowKey(row)}` }, async ({ task }) => {
       // append retries after a sequence conflict with a fresh fold. A competing approval
@@ -1342,6 +1359,7 @@ async function cmdApprove(args) {
     });
     await applyNewestCheck(taskId, row);
   }
+  if (args.flags.check) return out(`approve ready task=${taskId} state=${initialTask.state}`);
   return write(
     taskId,
     who,
@@ -1513,6 +1531,13 @@ async function cmdComment(args) {
   });
 }
 
+// The owner's requests no result answers yet, oldest first: a request is answered by the first event of one of its
+// result kinds that follows it, so a refused request asked again is open again.
+function openRequests(events) {
+  const sorted = [...events].sort((a, b) => a.seq - b.seq);
+  return sorted.filter((e, i) => REQUEST_RESULTS[e.kind] && !sorted.slice(i + 1).some((later) => REQUEST_RESULTS[e.kind].includes(later.kind)));
+}
+
 async function cmdEvent(args) {
   const taskId = taskIdOf(args);
   const who = identity(args, 'worker');
@@ -1538,8 +1563,19 @@ async function cmdEvent(args) {
       return { kind: 'wait', note: f.note, extra: { wait: { actor, clearsOn, rows } } };
     });
   } else if (['next-actor', 'clears-on', 'rows'].some((n) => args.flags[n] !== undefined)) throw usage('--next-actor, --clears-on and --rows go only on a wait event');
-  return write(taskId, who, async ({ task }) => {
+  if (RESULT_REQUEST[kind] && !/\S/.test(noteOf(args)) && kind !== 'closed') throw usage(`a ${kind} event needs --note with the refusal text`);
+  return write(taskId, who, async ({ task, events }) => {
     if (!task) throw rule('no such task');
+    if (REQUEST_RESULTS[kind]) {
+      if (CLOSED.includes(task.state)) throw rule(`${kind} is refused: ${taskId} is ${task.state}`);
+      if (kind === 'start-request' && task.state === 'running') throw rule(`start-request is refused: ${taskId} is running`);
+      return { kind, note: noteOf(args), set: { nextActor: 'firstmate' } };
+    }
+    if (RESULT_REQUEST[kind]) {
+      if (!openRequests(events).some((e) => e.kind === RESULT_REQUEST[kind])) throw rule(`${kind} is refused: ${taskId} has no open ${RESULT_REQUEST[kind]}`);
+      if (kind === 'closed' && task.state !== 'done') throw rule(`closed is refused: ${taskId} is ${task.state}, not approved`);
+      return { kind, note: noteOf(args), set: kind === 'closed' ? {} : { nextActor: 'owner' } };
+    }
     return { kind, note: noteOf(args) || (kind === 'link' ? url : ''), set: kind === 'pr' && prUrl ? { prUrl } : {}, ...(head ? { extra: { head, ...(touched ? { touched } : {}) } } : kind === 'link' ? { extra: { url } } : {}) };
   }, kind === 'deploy' && head ? () => routeReview(taskId, who) : undefined);
 }
@@ -2454,6 +2490,27 @@ async function cmdReadMark(args) {
   out(`read ${consumer} seq=${event.seq}`);
 }
 
+// An owner request names the one command that answers it, so the wake alone tells firstmate what to run.
+const wakeReason = (e) => (REQUEST_RESULTS[e.kind]
+  ? `owner request ${e.seq}: ${e.taskId} ${e.kind} - run bin/fm-owner-request.sh ${e.taskId} --seq ${e.seq}`
+  : `task event ${e.seq}: ${e.taskId} ${e.kind}`);
+
+// requests: the open owner requests, oldest first, each with the setup step a start runs (the current workflow
+// state's step, or the first step while the task is queued).
+async function cmdRequests(args) {
+  const taskId = taskIdOf(args);
+  const events = await taskEvents(taskId);
+  const task = fold(events);
+  if (!task) throw rule('no such task');
+  const steps = await stepRows(taskId);
+  const step = steps.find((s) => s.state === task.workflowState) ?? steps[0] ?? null;
+  const rows = openRequests(events).map((e) => ({ seq: e.seq, kind: e.kind, actor: e.actor ?? null, note: bodyOf(e).note ?? '', at: e.createdAt ?? null,
+    ...(e.kind === 'start-request' ? { step: step && { state: step.state, harness: step.harness ?? null, model: step.model ?? null, effort: step.effort ?? null } } : {}) }));
+  if (args.flags.json) return out(JSON.stringify({ taskId, state: task.state, workflowState: task.workflowState, requests: rows }));
+  if (!rows.length) return out(`no open request task=${taskId} state=${task.state}`);
+  for (const r of rows) out(`seq=${r.seq} kind=${r.kind} actor=${r.actor ?? '-'}${r.step ? ` step=${r.step.state} harness=${r.step.harness ?? '-'} model=${r.step.model ?? '-'} effort=${r.step.effort ?? '-'}` : ''} note=${JSON.stringify(r.note)}`);
+}
+
 async function cmdDeliver(args) {
   const consumer = args.flags.consumer;
   if (!consumer || consumer.length > 64) throw usage('deliver needs --consumer (up to 64 characters)');
@@ -2468,14 +2525,16 @@ async function cmdDeliver(args) {
   const spool = path.join(state, '.task-delivery-outbox', crypto.createHash('sha256').update(consumer).digest('hex'));
   fs.mkdirSync(spool, { recursive: true });
   const activation = path.join(spool, `${taskIdOf(args)}.activated`);
+  let baseline;
   if (!fs.existsSync(activation)) {
-    // First activation establishes a baseline, not a replay of historical work.
+    // First activation establishes a baseline, not a replay of historical work; an owner request no result answers
+    // yet is work still waiting, so it is delivered all the same.
     fs.writeFileSync(activation, String(lastSeq));
     out(`activated ${consumer} task=${taskIdOf(args)} after=${lastSeq}`);
-    return;
-  }
-  const baseline = Number(fs.readFileSync(activation, 'utf8'));
-  const events = taskStream.filter((e) => e.seq > baseline);
+    baseline = lastSeq;
+  } else baseline = Number(fs.readFileSync(activation, 'utf8'));
+  const open = new Set(openRequests(taskStream).map((e) => e.seq));
+  const events = taskStream.filter((e) => e.seq > baseline || open.has(e.seq));
   for (const event of events) {
     if (event.kind === 'comment' && event.actorRole === 'owner' && event.idempotencyKey?.startsWith('owner-comment:')) continue;
     const receipt = path.join(spool, `${event.seq}.json`);
@@ -2484,7 +2543,7 @@ async function cmdDeliver(args) {
     if (!fs.existsSync(receipt)) fs.writeFileSync(receipt, JSON.stringify(event), { flag: 'wx' });
     const res = await http('POST', '/api/fm_task_delivery', { consumer, seq: event.seq });
     if (res.status !== 409) ok(res, 'claim event delivery');
-    const queued = spawnSync('bash', ['-c', 'source "$1/fm-wake-lib.sh"; fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"; trap \'fm_lock_release "$FM_WAKE_QUEUE_LOCK"\' EXIT; if ! test -f "$4.sent"; then if ! test -f "$STATE/.wake-queue" || ! grep -Fq "$(printf "\\t%s\\t" "$2")" "$STATE/.wake-queue"; then fm_wake_append_locked check "$2" "$3" || exit; fi; : > "$4.sent"; fi', 'task-delivery', HERE, `task-event-${event.seq}`, `task event ${event.seq}: ${event.taskId} ${event.kind}`, receipt], { encoding: 'utf8', env: process.env });
+    const queued = spawnSync('bash', ['-c', 'source "$1/fm-wake-lib.sh"; fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"; trap \'fm_lock_release "$FM_WAKE_QUEUE_LOCK"\' EXIT; if ! test -f "$4.sent"; then if ! test -f "$STATE/.wake-queue" || ! grep -Fq "$(printf "\\t%s\\t" "$2")" "$STATE/.wake-queue"; then fm_wake_append_locked check "$2" "$3" || exit; fi; : > "$4.sent"; fi', 'task-delivery', HERE, `task-event-${event.seq}`, wakeReason(event), receipt], { encoding: 'utf8', env: process.env });
     if (queued.status !== 0) throw new Fail(3, `delivery ${event.seq} claimed but wake append failed: ${queued.stderr}`);
     fs.unlinkSync(receipt);
     out(`delivered ${consumer} seq=${event.seq}`);
@@ -2640,7 +2699,7 @@ async function cmdRule(args) {
 const COMMANDS = {
   setup: cmdSetup, move: cmdMove, step: cmdStep,
   rules: cmdRules, rule: cmdRule, answer: cmdAnswer,
-  'turn-end': cmdTurnEnd, deliver: cmdDeliver, 'read-mark': cmdReadMark, inbox: cmdInbox, describe: cmdDescribe, plan: cmdPlan, 'plan-decision': cmdPlanDecision, thread: cmdThread,
+  'turn-end': cmdTurnEnd, deliver: cmdDeliver, requests: cmdRequests, 'read-mark': cmdReadMark, inbox: cmdInbox, describe: cmdDescribe, plan: cmdPlan, 'plan-decision': cmdPlanDecision, thread: cmdThread,
   create: cmdCreate, import: cmdImport, assign: cmdAssign, start: cmdStart, heartbeat: cmdHeartbeat, done: cmdDone, ask: cmdAsk, block: cmdBlock,
   unblock: cmdUnblock, approve: cmdApprove, changes: cmdChanges, reopen: cmdReopen, reassign: cmdReassign, archive: cmdArchive, home: cmdHome, comment: cmdComment, event: cmdEvent,
   'plan-spec': cmdPlanSpec, 'plan-approve': cmdPlanApprove, 'plan-check': cmdPlanCheck, document: cmdDocument, link: cmdLink, rows: cmdRows, check: cmdCheck, 'owner-check': cmdOwnerCheck, gate: cmdGate, show: cmdShow, list: cmdList, resume: cmdResume, reproject: cmdReproject,

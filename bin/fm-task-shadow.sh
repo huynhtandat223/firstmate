@@ -255,7 +255,11 @@ case "$EVENT" in
   held) hold_event "${2:-hold}" "${3:-}" "${4:-}" ;;
   answered)
     case "${2:-}" in
-      released) w answered-released unblock "$TASK" || w answered-released-comment event "$TASK" comment --note 'captain hold released' ;;
+      released)
+        # keyed by the record's last event, so the release of a later hold on the same task is a new write, not a replay
+        cycle=$("$WRITER" show "$TASK" --json 2>/dev/null </dev/null | jq -r '.lastSeq // 0' 2>/dev/null) || cycle=0
+        w "answered-released-${cycle:-0}" unblock "$TASK" || w "answered-released-comment-${cycle:-0}" event "$TASK" comment --note 'captain hold released'
+        ;;
       *) close_task answered ;;
     esac
     ;;
