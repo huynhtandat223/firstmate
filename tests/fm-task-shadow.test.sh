@@ -19,7 +19,7 @@ vg_install_gh "$TMP_ROOT/gh"
 mk_writer() {  # <dir>: a fake bin/fm-task.sh that records one line per call
   cat > "$1/fake-writer" <<'SH'
 #!/usr/bin/env bash
-if [ "${1:-}" = show ]; then printf '{"state":"%s"}\n' "${FAKE_STATE:-running}"; exit 0; fi
+if [ "${1:-}" = show ]; then printf '{"state":"%s","lastSeq":%s}\n' "${FAKE_STATE:-running}" "${FAKE_SEQ:-0}"; exit 0; fi
 # a call matching $FAKE_LATE is recorded 1.5 s late, once, as an API that answers late
 case "$*" in *"${FAKE_LATE:-@none@}"*) [ -e "$FAKE_CALLS.late" ] || { : > "$FAKE_CALLS.late"; sleep 1.5; } ;; esac
 printf '%s\n' "$*" >> "$FAKE_CALLS"
@@ -189,6 +189,10 @@ test_events_of_the_other_scripts() {
   assert_equals "$(printf '%s\n' \
     'ask t1 --question queued row --option Decide now --option Decide later --recommendation - --why a captain hold --next-actor owner' \
     'event t1 comment --note held (captain): queued row')" "$(calls)" "a refused ask leaves a comment"
+  make_case events-release-twice on
+  FAKE_SEQ=5 hook answered t1 released; FAKE_SEQ=5 hook answered t1 released; FAKE_SEQ=9 hook answered t1 released
+  assert_equals "$(printf '%s\n' 'unblock t1 --key shadow:t1:answered-released-5' 'unblock t1 --key shadow:t1:answered-released-5' 'unblock t1 --key shadow:t1:answered-released-9')" \
+    "$(sed 's/ --actor shadow --role system//' "$CALLS")" "a replayed release keeps its key and a later hold's release writes again"
   make_case events-close on
   hook answered t1 closed
   assert_equals "$(printf '%s\n' 'done t1 --summary closed by the old source --changed-files - --verification - --residual-risk -' 'approve t1')" "$(calls)" "approve of a task the record holds running"
