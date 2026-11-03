@@ -466,7 +466,14 @@ plan_rows_task() {  # <task>
   jq -e 'any(.rows[]; .surface == "user-visible" and .status == "pending" and .nextActor == "tester" and .head != null)' <<<"$json" >/dev/null || return 0
   issue_url=$(jq -r '.issueUrl // empty' <<<"$json")
   if [ "$issue_url" = "$task" ]; then
-    description=$(task_writer document "$task") || return 1
+    if description=$(task_writer document "$task" 2>&1); then
+      :
+    elif [ "$?" -eq 5 ] && [ "$description" = 'fm-task: task has no Description event' ]; then
+      description=''
+    else
+      printf 'the task Description of %s could not be read: %s\n' "$task" "$description" > "$READ_ERROR_FILE"
+      return 1
+    fi
     if printf '%s\n' "$description" | node "$ACCEPTANCE" parse - 2>/dev/null | jq -e '.scenarios | length > 0' >/dev/null; then
       issue_url="task:$task"
     else
