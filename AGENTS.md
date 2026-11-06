@@ -254,7 +254,7 @@ Load `validation-supervision` when a ship starts or already has an active no-mis
 
 ### PR ready, landing, and teardown
 
-Load `ship-landing` when a ship reports a PR or ready branch, when deciding or monitoring landing, and before task cleanup.
+Load `ship-landing` when a ship reports a PR or ready branch, reports an applied runtime-data change, or a Tester result arrives, when deciding or monitoring landing, and before task cleanup.
 
 ### Scout outcome and promotion
 
@@ -393,6 +393,9 @@ Use its scaffold as the contract, then fill `## Captain's intent` (`{TASK}`) wit
 Fill `## Firstmate spec` (`{FIRSTMATE_SPEC}`) with only the build instructions that ask requires, naming what stays out of scope when the ask is narrow; a generalization, consistency sweep, or extra hardening the captain did not ask for is follow-up work to note, not scope to add.
 `bin/fm-dod-lib.sh` owns intent authoring without added speaker labels or direct address, its provenance markers, what a no-mistakes worker may pass as `--intent`, and the string's self-sufficiency rule.
 Keep additions task-specific rather than repeating lifecycle instructions, and alter generated sections only when the task genuinely differs from the standard shape.
+
+When a brief implements a multi-slice plan, it names the plan item and the scenarios it takes.
+Seed, config and cutover work stays in that plan with a responsible task, and the release is complete when every required plan item has evidence.
 
 Every ship brief must retain the worktree-isolation assertion and stop if launched in the primary checkout.
 If a ship task touches firstmate's shared tracked material, explicitly require `firstmate-coding-guidelines` before editing.

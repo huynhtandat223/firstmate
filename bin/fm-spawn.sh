@@ -15,12 +15,14 @@
 #   CLAUDE.md and AGENTS.md itself, as data.
 #   --surface <user-visible|internal> is an optional ship-only input recorded as
 #   surface=<value> in state/<id>.meta; absent means internal, except that a ship
-#   spawn into cfw-modules refuses a missing --surface. A user-visible spawn also
-#   writes data/<id>/verify.md with "surface: user-visible" and "issue: <source>"
-#   (task:<id> for valid Description acceptance, else the linked issue), plus
+#   spawn into cfw-modules refuses a missing --surface. A new user-visible spawn
+#   takes acceptance only from the task's own Description (task:<id>) and writes
+#   data/<id>/verify.md with "surface: user-visible" and "issue: task:<id>", plus
 #   "record: rows" while config/task-shadow is on for the deploy-verify repository
-#   (FM_DEPLOY_VERIFY_REPO), and refuses when neither source exists; bin/fm-verify-gate-lib.sh
-#   owns what the task must prove before its backlog item moves to Done.
+#   (FM_DEPLOY_VERIFY_REPO), and refuses naming bin/fm-task.sh describe when the
+#   Description has none; an existing data/<id>/verify.md keeps working unchanged.
+#   bin/fm-verify-gate-lib.sh owns what the task must prove before its backlog
+#   item moves to Done.
 #   --mode and --yolo are this task's delivery contract, REQUIRED for every ship
 #   spawn and refused on --scout and --secondmate spawns. Firstmate resolves both
 #   per task at intake (AGENTS.md section 7); data/projects.md holds the captain's
@@ -4500,26 +4502,26 @@ if [ "$RELAUNCH" != 1 ] && [ "$KIND" = ship ] && [ -n "$PLAN_ISSUE" ]; then
   fi
 fi
 
-# A user-visible ship uses its own task Description when it has valid acceptance;
-# older tasks may still use the plan gate's approved issue or a linked issue.
+# A new user-visible ship takes acceptance only from its own task Description
+# (task:<id>); an existing verify.md keeps working unchanged.
 VERIFY_ISSUE=
 if [ "$RELAUNCH" != 1 ] && [ "$KIND" = ship ] && [ "$SURFACE" = user-visible ]; then
-  if VERIFY_ROWS=$(
+  if [ -e "$DATA/$ID/verify.md" ]; then
+    VERIFY_ISSUE=$(sed -n 's/^issue: //p' "$DATA/$ID/verify.md" | tail -n 1)
+  elif VERIFY_ROWS=$(
     . "$SCRIPT_DIR/fm-task-shadow-config-lib.sh"
     fm_task_shadow_config "$CONFIG/task-shadow"
     node "$SCRIPT_DIR/fm-acceptance.mjs" rows "task:$ID" --strict 2>/dev/null
   ) && [ -n "$VERIFY_ROWS" ]; then
     VERIFY_ISSUE="task:$ID"
   fi
-  [ -n "$VERIFY_ISSUE" ] || VERIFY_ISSUE=$PLAN_ISSUE
-  [ -n "$VERIFY_ISSUE" ] || VERIFY_ISSUE=$(printf '%s\n' "$FM_BACKLOG_ROW_LINKS" | grep -oE 'doc:https://github[.]com/[^[:space:]," ]+/issues/[0-9]+' | head -n 1 | sed 's/^doc://' || true)
+  if [ -z "$VERIFY_ISSUE" ]; then
+    echo "error: $ID is user-visible: write acceptance with bin/fm-task.sh describe $ID --document <file.md>, or spawn with --surface internal" >&2
+    exit 1
+  fi
   declared_source=$(awk '/^# Acceptance$/{section=1;next} section && /^# /{exit} section{print}' "$BRIEF" | grep -oE 'task:[A-Za-z0-9][A-Za-z0-9._-]*|https://[A-Za-z0-9.-]+/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/issues/[0-9]+' | head -1 || true)
   if [ -n "$declared_source" ] && [ "$declared_source" != "$VERIFY_ISSUE" ]; then
     echo "error: brief acceptance $declared_source differs from verification source $VERIFY_ISSUE; align the acceptance source before spawning" >&2
-    exit 1
-  fi
-  if [ -z "$VERIFY_ISSUE" ]; then
-    echo "error: $ID is user-visible: write acceptance with bin/fm-task.sh describe $ID --document <file.md>, link it with bin/fm-tasks-axi.sh update $ID --title \"<current title> <issue url>\", or spawn with --surface internal" >&2
     exit 1
   fi
 fi
