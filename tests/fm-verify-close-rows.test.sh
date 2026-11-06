@@ -26,6 +26,7 @@ case "$1" in
     st=ready; [ "$1" = start ] && st=running; [ "$1" = done ] && st=review
     jq --arg s "$st" '.state=$s|.blockKind=null' "$FAKE_DIR/task.json" >"$FAKE_DIR/t.new" && mv "$FAKE_DIR/t.new" "$FAKE_DIR/task.json" ;;
   approve) exit "${FAKE_APPROVE_RC:-0}" ;;
+  gate) if [ -s "$FAKE_DIR/gate_out" ]; then cat "$FAKE_DIR/gate_out"; exit 5; fi ;;
   *) exit 0 ;;
 esac
 SH
@@ -43,7 +44,7 @@ chmod +x "$GH"
 
 # Optional case settings, reset by make_case: PR (the task's PR url), DEPLOYED (a deployed: line), ROW_ACTOR
 # (next actor of a pending row), ASK_ROUND and ASK_EXTRA (a second ask head), GH_STATUS (compare answer).
-PR=- DEPLOYED=- ROW_ACTOR=- ASK_ROUND=rows ASK_EXTRA=- GH_STATUS=FAIL
+PR=- DEPLOYED=- ROW_ACTOR=- ASK_ROUND=rows ASK_EXTRA=- GH_STATUS=FAIL GATE_OUT=
 
 # make_case <name> <state> <block-kind|-> <until|-> <row-status> <ask-head|->
 make_case() {
@@ -60,9 +61,10 @@ make_case() {
     [ "$ask" = - ] || printf '{"type":"ask","round":"%s","task":"%s","head":"%s","sha":"%s","tester":"running","prs":[]}\n' "$ASK_ROUND" "$ID" "$ask" "$ask" >>"$d/home/data/deploy-verify/ledger.jsonl"
   done
   echo "$GH_STATUS" >"$d/gh_status"
+  printf '%s' "$GATE_OUT" >"$d/gate_out"
   : >"$d/calls"
   CASE=$d
-  PR=- DEPLOYED=- ROW_ACTOR=- ASK_ROUND=rows ASK_EXTRA=- GH_STATUS=FAIL
+  PR=- DEPLOYED=- ROW_ACTOR=- ASK_ROUND=rows ASK_EXTRA=- GH_STATUS=FAIL GATE_OUT=
 }
 
 run() {  # [--check]: OUT and RC
@@ -70,7 +72,7 @@ run() {  # [--check]: OUT and RC
   OUT=$(FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$CASE/home" FM_VERIFY_GATE_TASK="$WRITER" FAKE_DIR="$CASE" \
     FM_VERIFY_GATE_GH="$GH" FM_DEPLOY_VERIFY_REPO=example/repo "$CLOSE" "$@" "$ID" 2>&1) || RC=$?
 }
-writes() { grep -Ev '^(show|checks|approve) ' "$CASE/calls" || true; }
+writes() { grep -Ev '^(show|checks|approve|gate) ' "$CASE/calls" || true; }
 
 test_handoff_writes_the_deploy_event_with_the_ledger_head() {
   make_case pr-handoff review - - pass "$H"
@@ -196,6 +198,31 @@ test_deployed_heads_that_cannot_be_ordered_are_refused() {
   pass "deployed heads that cannot be ordered are refused and named"
 }
 
+test_a_ready_task_is_never_advanced_to_review() {
+  local mode
+  make_case ready ready - - pass "$H"
+  for mode in --check ""; do
+    run $mode
+    [ "$RC" = 1 ] || fail "a ready task (returned by changes) was accepted${mode:+ in $mode}: $OUT"
+    case "$OUT" in *"$ID is in state ready, not review"*) ;; *) fail "the ready state is not named${mode:+ in $mode}: $OUT" ;; esac
+    [ -z "$(writes)" ] || fail "a ready task caused writes: $(writes)"
+  done
+  pass "a task that is ready for any reason but a cleared transient wait is refused and nothing is written"
+}
+
+test_rows_without_evidence_or_a_current_digest_are_refused_before_any_write() {
+  local mode
+  GATE_OUT=$'DC1@390 is pass without evidence\nTester acceptance old is not the issue\'s current digest new\n'
+  make_case gate blocked transient 2000-01-01T00:00:00Z pass "$H"
+  for mode in --check ""; do
+    run $mode
+    [ "$RC" = 1 ] || fail "rows the task record rejects were accepted${mode:+ in $mode}: $OUT"
+    case "$OUT" in *"task record gate: DC1@390 is pass without evidence"*"task record gate: Tester acceptance old"*) ;; *) fail "the gate's reasons are not named${mode:+ in $mode}: $OUT" ;; esac
+    [ -z "$(writes)" ] || fail "rows the record rejects caused writes: $(writes)"
+  done
+  pass "evidence and digest problems from the task record gate refuse the handoff before any write"
+}
+
 test_handoff_writes_the_deploy_event_with_the_ledger_head
 test_open_rows_are_named_and_nothing_is_written
 test_an_expired_transient_wait_is_cleared_before_the_deploy_event
@@ -206,3 +233,5 @@ test_an_approved_task_prints_already_approved
 test_a_transient_wait_without_a_valid_until_date_is_not_cleared
 test_a_pr_outside_the_repo_keeps_its_recorded_deployed_line
 test_deployed_heads_that_cannot_be_ordered_are_refused
+test_a_ready_task_is_never_advanced_to_review
+test_rows_without_evidence_or_a_current_digest_are_refused_before_any_write

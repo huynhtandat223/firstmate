@@ -11,6 +11,9 @@
 #     (for a page-only task with no PR, the head of its rows ask), writes the deploy event
 #     with that head, clears a transient block whose until date has passed and whose rows
 #     all pass, then reports approve ready or prints each missing item with its next action.
+#     Before any write it applies the task record's own gate (current Description rows, digest,
+#     evidence) to that head; only a transient block this run clears moves a task on to review,
+#     so a task returned to ready by `changes` is refused and left alone.
 #     Firstmate's own `bin/fm-task.sh approve <id>` stays a separate step.
 #   - With --check, reads the task record and ledger without writing anything, and reports
 #     approve ready or prints each missing item with its next action.
@@ -261,12 +264,9 @@ fm_verify_close_rows() {
       blocking_items+=("$ID is blocked (${block_kind:-blocked}: ${block_reason:-no reason}); next: bin/fm-task.sh unblock $ID")
     fi
   elif [ "$task_state" != review ]; then
-    if [ "$task_state" = ready ] && [ ! -f "$STATE/$ID.meta" ] && [ "${#blocking_items[@]}" -eq 0 ]; then
-      can_advance_ready_to_review=1
-      handoff_items+=("$ID is in state ready after unblock with all check rows passing; next: bin/fm-verify-close.sh $ID")
-    else
-      blocking_items+=("$ID is in state $task_state, not review; next: bin/fm-task.sh done $ID --summary <summary> --changed-files <files> --verification <proof> --residual-risk <risk>")
-    fi
+    # Only this run's own clearing of an expired transient block moves a task on to review; a task that is
+    # ready for any other reason (for example after `changes`) goes back to its worker, never through here.
+    blocking_items+=("$ID is in state $task_state, not review; next: bin/fm-task.sh done $ID --summary <summary> --changed-files <files> --verification <proof> --residual-risk <risk>")
   fi
 
   local cl_deploy_open=0
@@ -291,6 +291,23 @@ fm_verify_close_rows() {
     need_verify_md_deployed=1
     if [ "$need_deploy_event" -eq 0 ] && [ "${#blocking_items[@]}" -eq 0 ]; then
       handoff_items+=("$VERIFY_FILE does not record deployed: $target_head; next: bin/fm-verify-close.sh $ID")
+    fi
+  fi
+
+  if [ "${#blocking_items[@]}" -eq 0 ] && [ -n "$target_head" ]; then
+    # The task record's own read of the acceptance, before anything is written: current Description rows and
+    # digest, and evidence for every pass on the head. The same read the approval gate makes later.
+    local gate_issue gate_tester_home gate_line gate_out
+    gate_issue=$(fm_verify_gate_field "$VERIFY_FILE" issue)
+    gate_tester_home=${FM_TESTER_HOME:-}
+    if [ -z "$gate_tester_home" ] && [ -f "$STATE/tester.meta" ]; then
+      gate_tester_home=$(sed -n 's/^home=//p' "$STATE/tester.meta" | tail -n 1)
+    fi
+    if ! gate_out=$(fm_verify_gate_record "$ID" "${gate_issue:-$ID}" "$target_head" "$CONFIG" "$gate_tester_home" 2>/dev/null); then
+      while IFS= read -r gate_line; do
+        [ -n "$gate_line" ] || continue
+        blocking_items+=("task record gate: $gate_line; next: fix the row or its evidence, then run bin/fm-verify-close.sh --check $ID")
+      done <<<"$gate_out"
     fi
   fi
 
