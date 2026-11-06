@@ -1,6 +1,6 @@
 ---
 name: ship-landing
-description: Load when a ship reports a PR or ready branch, when deciding or monitoring landing, and before task cleanup.
+description: Load when a ship reports a PR or ready branch, reports an applied runtime-data change, or a Tester result arrives, when deciding or monitoring landing, and before task cleanup.
 user-invocable: false
 metadata:
   internal: true
@@ -26,9 +26,21 @@ Tear down a ship task only after landing is confirmed.
 A teardown refusal for uncommitted or unlanded work is a stop-and-investigate result, never an obstacle to bypass.
 Never force teardown without explicit discard authority.
 After successful teardown, record completion, retain only the configured recent Done history, and re-evaluate queued work whose blockers and time gates have cleared.
-For a user-visible task held for verification, inspect the deployed change and the Tester's record in its own home, then write only `approved: firstmate <epoch>` after your own look in the task's `verify.md` (retain its `surface:` and `issue:` headers, and record `deployed: <sha>` when the task's PR is outside `FM_DEPLOY_VERIFY_REPO`, as required by `bin/fm-verify-gate-lib.sh`).
-When that `verify.md` carries `record: rows`, the Tester's record is the task's check rows in the task record, and your approval is `bin/fm-task.sh approve <task>` after your own look, in place of the `approved:` line.
-Worker evidence belongs in the task's `notes.md`; close the held row with `bin/fm-verify-close.sh`, whose gate reads the two records directly.
 
 A secondmate is persistent and an empty queue is healthy.
 Retire one only on an explicit captain or main-firstmate decision, after loading `secondmate-provisioning`; its home must contain no work under way, and forced discard still requires explicit captain authority.
+
+## Task-record verification (`record: rows`)
+
+Use this path when the task's `verify.md` carries `record: rows`, after a Tester result or an applied runtime-data change.
+The Tester's record is the task's check rows in the task record.
+Run `bin/fm-verify-close.sh --check <task>` first; it writes nothing and prints each missing item with its next action.
+Run `bin/fm-verify-close.sh <task>` as the one handoff: it takes the head the rows passed on from the deploy-verify ledger (for a page-only task with no PR, the head of its rows ask, which does not pin the page's stored revision), refuses unless the task record's own evidence and acceptance-digest check passes on that head, writes the deploy event with that head, clears a transient wait whose until date has passed and whose rows all pass, then reports approve ready or names what is missing.
+Approve with `bin/fm-task.sh approve <task>` after your own look, only once the deployed artifact and its proof agree and any met wait is cleared.
+When teardown left the task's backlog row held as `verification pending`, approval does not close that row: run `bin/fm-verify-close.sh <task>` again after approval to move it to Done.
+The task is complete when the gate accepts or the record names what is missing.
+
+## Legacy `verify.md`
+
+For a user-visible task held for verification without `record: rows`, inspect the deployed change and the Tester's record in its own home, then write only `approved: firstmate <epoch>` after your own look in the task's `verify.md` (retain its `surface:` and `issue:` headers, and record `deployed: <sha>` when the task's PR is outside `FM_DEPLOY_VERIFY_REPO`, as required by `bin/fm-verify-gate-lib.sh`).
+Worker evidence belongs in the task's `notes.md`; close the held row with `bin/fm-verify-close.sh`, whose gate reads the two records directly.

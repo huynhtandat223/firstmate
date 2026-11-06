@@ -1403,6 +1403,78 @@ case_gate() {
   case $OUT in *'the task record has no task tk-none'*) ;; *) echo "the gate does not say the task is missing: $OUT"; return 1 ;; esac
 }
 
+# --before-approval: the read the verify handoff makes before it writes the deploy event. It skips both approved checks and
+# reads the rows as if a deploy event of --head were recorded next, so a carried pass counts. Without the flag the same record is refused.
+case_gate_before_approval() {
+  BIN=$1; reset_db
+  unset FM_HOME
+  local t=tk-bap
+  use_issue v1
+  mk_running $t >/dev/null || { echo "setup: $ERR"; return 1; }
+  { ft rows $t "$ISSUE" >/dev/null && ft "done" $t "${DONE_FLAGS[@]}" --head b0 >/dev/null && ft event $t deploy --head D0 >/dev/null; } || { echo "setup: $ERR"; return 1; }
+  { ft check $t A1@1440 pass --evidence https://e/1 --head D0 >/dev/null && ft check $t A1@390 pass --evidence https://e/2 --head D0 >/dev/null; } || { echo "check: $ERR"; return 1; }
+  for r in A2@- A3@-; do ft check $t $r pass --evidence https://e/3 >/dev/null || { echo "check $r: $ERR"; return 1; }; done
+  ft gate $t --issue "$ISSUE" --head D0
+  must 'gate before the approval' 5 || return 1
+  case $OUT in *'no approved event'*) ;; *) echo "the gate missed the approval: $OUT"; return 1 ;; esac
+  ft gate $t --issue "$ISSUE" --head D0 --before-approval
+  must 'gate --before-approval on rows that pass on the head' 0 || { echo "problems: $OUT"; return 1; }
+  # a pass on an earlier deployed head carries to the head about to be deployed; only the flag reads it so
+  ft gate $t --issue "$ISSUE" --head D1
+  must 'gate on a head not yet deployed' 5 || return 1
+  ft gate $t --issue "$ISSUE" --head D1 --before-approval
+  must 'gate --before-approval on a deploy that names no scenarios' 5 || return 1
+  ft gate $t --issue "$ISSUE" --head D1 --before-approval --touched A1
+  must 'gate --before-approval on a deploy that touches the scenario' 5 || return 1
+  ft gate $t --issue "$ISSUE" --head D1 --touched none
+  must 'gate --touched without --before-approval' 2 || return 1
+  ft gate $t --issue "$ISSUE" --head D1 --before-approval --touched none
+  must 'gate --before-approval on a carried pass' 0 || { echo "problems: $OUT"; return 1; }
+  grep -qx 'A1@1440 carried: pass on head D0, and no later deployed PR names A1' <<<"$OUT" || { echo "the carried pass is not printed: $OUT"; return 1; }
+  # the flag lifts only the two approved checks: a pending row, a missing evidence file and a changed scenario still refuse
+  ft check $t A1@390 pending >/dev/null || { echo "check: $ERR"; return 1; }
+  ft gate $t --issue "$ISSUE" --head D0 --before-approval
+  must 'gate --before-approval with a pending row' 5 || return 1
+  case $OUT in *"A1@390 is 'pending', not pass"*) ;; *) echo "the pending row is not named: $OUT"; return 1 ;; esac
+  case $OUT in *'no approved event'*) echo "the flag still asks for the approval: $OUT"; return 1 ;; esac
+  ft check $t A1@390 pass --evidence shots/missing.png --head D0 >/dev/null || { echo "check: $ERR"; return 1; }
+  ft gate $t --issue "$ISSUE" --head D0 --before-approval --evidence-root "$TMP_ROOT/tester"
+  must 'gate --before-approval with a missing evidence file' 5 || return 1
+  case $OUT in *'A1@390 evidence path does not exist: shots/missing.png'*) ;; *) echo "the missing evidence is not named: $OUT"; return 1 ;; esac
+}
+
+# The verify handoff (bin/fm-verify-close.sh) against the real task writer and gate: a task in review whose rows pass on the
+# ledger's rows-ask head has no approved event and no deploy event yet, and the handoff must still reach approve ready.
+case_handoff_gate() {
+  BIN=$1; reset_db
+  unset FM_HOME
+  local t=tk-hof h=H1111 home="$TMP_ROOT/hof-home" close="$ROOT/bin/fm-verify-close.sh" r
+  rm -rf "$home"; mkdir -p "$home/data/$t" "$home/data/deploy-verify" "$home/state" "$home/config"
+  printf 'surface: user-visible\nissue: %s\nrecord: rows\n' "$ISSUE" > "$home/data/$t/verify.md"
+  printf '{"type":"ask","round":"rows","task":"%s","head":"%s","sha":"%s","tester":"running","prs":[]}\n' "$t" "$h" "$h" > "$home/data/deploy-verify/ledger.jsonl"
+  handoff() { OUT=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" FM_VERIFY_GATE_TASK="$BIN/fm-task.sh" FM_DEPLOY_VERIFY_REPO=example/repo "$close" "$@" "$t" 2>&1); RC=$?; return "$RC"; }
+  use_issue v1
+  mk_running $t >/dev/null || { echo "setup: $ERR"; return 1; }
+  { ft rows $t "$ISSUE" >/dev/null && ft "done" $t "${DONE_FLAGS[@]}" --head b0 >/dev/null; } || { echo "setup: $ERR"; return 1; }
+  for r in A1@1440 A1@390; do ft check $t $r pass --evidence https://e/$r --head $h >/dev/null || { echo "check $r: $ERR"; return 1; }; done
+  for r in A2@- A3@-; do ft check $t $r pass --evidence https://e/3 >/dev/null || { echo "check $r: $ERR"; return 1; }; done
+  events=$(count fm_task_event)
+  handoff --check
+  [ "$RC" -eq 1 ] || { echo "--check on a task with no deploy event: exit $RC: $OUT"; return 1; }
+  case $OUT in *"no deploy event for $t on head $h"*) ;; *) echo "--check does not name the missing deploy event: $OUT"; return 1 ;; esac
+  case $OUT in *'no approved event'*) echo "--check asks for the approval before it exists: $OUT"; return 1 ;; esac
+  [ "$(count fm_task_event)" = "$events" ] || { echo "--check wrote an event"; return 1; }
+  handoff
+  [ "$RC" -eq 0 ] || { echo "the handoff on rows that pass: exit $RC: $OUT"; return 1; }
+  case $OUT in *"approve ready task=$t"*) ;; *) echo "the handoff did not report approve ready: $OUT"; return 1 ;; esac
+  db fm_task_event | jq -e --arg t "$t" --arg h "$h" '[.[] | select(.taskId == $t and .kind == "deploy" and (.body | fromjson | .head) == $h)] | length == 1' >/dev/null || { echo "no deploy event with the ledger head"; return 1; }
+  ft approve $t
+  must 'approve after the handoff' 0 || return 1
+  handoff
+  [ "$RC" -eq 0 ] || { echo "the handoff after approval: exit $RC: $OUT"; return 1; }
+  case $OUT in *'already approved'*) ;; *) echo "the handoff after approval does not report complete: $OUT"; return 1 ;; esac
+}
+
 # rows routes a task in review again after it adds, resets or retires rows.
 case_rows_route() {
   BIN=$1; reset_db
@@ -2932,7 +3004,7 @@ case_setup_rules() {
   return 0
 }
 
-CASES=${FM_TASK_CASES:-"plan_task description_thread terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed long_notes status_view verify_view owner_writer workflow stage wait carry slice_c model_rules checklist question_round setup_rules backlog_home owner_hold owner_request"}
+CASES=${FM_TASK_CASES:-"plan_task description_thread terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed long_notes status_view verify_view owner_writer workflow stage wait carry slice_c model_rules checklist question_round setup_rules backlog_home owner_hold owner_request gate_before_approval handoff_gate"}
 
 # ---- real command -------------------------------------------------------------------
 
@@ -3067,6 +3139,8 @@ mutate 'the gate needs the deployed head' gate 'if ((row.head ?? null) !== f.hea
 mutate 'the gate needs the current digest' gate 'if (row.line !== want.line || row.acceptanceDigest !== want.acceptanceDigest) problems.push' 'if (false) problems.push'
 mutate 'the gate needs an approved event' gate 'if (!approved) problems.push' 'if (false) problems.push'
 mutate 'the gate needs the approval newer than the last row' gate 'else if (lastRow && approved.seq < lastRow.seq) problems.push' 'else if (false) problems.push'
+mutate 'the gate before approval skips the two approved checks' handoff_gate "if (!f['before-approval']) {" 'if (true) {'
+mutate 'the gate before approval reads the rows as if the deploy were recorded' gate_before_approval "const view = f['before-approval'] ? [" 'const view = false ? ['
 mutate 'the gate refuses a task the record does not hold' gate '  if (!fold(events)) {
     out(' '  if (false) {
     out('
@@ -3090,9 +3164,9 @@ mutate 'only a merged pr event clears a merge wait' wait "e.kind === 'pr' && /\\
 mutate 'a pass carries while no later deploy names its id' carry "  return later.every((e) => Array.isArray(bodyOf(e).touched) && !bodyOf(e).touched.includes(row.scenarioId));" "  return false;"
 mutate 'a deploy that names an id brings its row back' carry "Array.isArray(bodyOf(e).touched) && !bodyOf(e).touched.includes(row.scenarioId)" "Array.isArray(bodyOf(e).touched)"
 mutate 'a deploy that records nothing touches every row' carry "Array.isArray(bodyOf(e).touched) && !bodyOf(e).touched.includes(row.scenarioId)" "!(bodyOf(e).touched || []).includes(row.scenarioId)"
-mutate 'the gate prints each carried pass with its head' carry "&& carried(row, events)) out(" "&& false) out("
+mutate 'the gate prints each carried pass with its head' carry "&& carried(row, view)) out(" "&& false) out("
 mutate 'a carried pass counts the deploys after its head was deployed' carry "const own = [...deploys].reverse().find((e) => bodyOf(e).head === row.head);" "const own = rowEvent(events, row);"
-mutate 'a carried pass counts only for the latest deployed head' carry '&& f.head === deployedHead && carried(row, events)) out(' '&& carried(row, events)) out('
+mutate 'a carried pass counts only for the latest deployed head' carry '&& f.head === deployedHead && carried(row, view)) out(' '&& carried(row, view)) out('
 mutate 'checks --as-deployed reads a next deploy' carry "const view = as ? [" "const view = false ? ["
 mutate 'an owner pass or fail sets the owner item' owner_writer "if (who.role === 'owner' && status !== 'pending') await ownerVerdict(" "if (false) await ownerVerdict("
 mutate 'plan-decision refuses a task without a plan' slice_c 'if (!task.planSeq) throw rule' 'if (false) throw rule'
