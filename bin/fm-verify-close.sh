@@ -75,7 +75,8 @@ fm_verify_close_rows() {
   local has_pr_in_repo=0 ledger_heads='' pass_heads='' target_head='' target_touched='none'
   local visible_count open_count as_deployed_json
   local can_unblock_transient=0 can_advance_ready_to_review=0 need_deploy_event=0 need_verify_md_deployed=0
-  local until_future=0 after_unblock_state approve_out
+  local until_future=0 until_invalid=0 after_unblock_state approve_out
+  local has_other_pr=0 order_problem='' deployed_line=''
   local -a blocking_items=() handoff_items=()
 
   # shellcheck source=bin/fm-task-shadow-config-lib.sh
@@ -115,7 +116,7 @@ fm_verify_close_rows() {
         return 1
       fi
     fi
-    printf 'approve ready task=%s state=done%s; next: none\n' "$ID" "${current_head:+ head=$current_head}"
+    printf 'already approved task=%s state=done%s; next: none\n' "$ID" "${current_head:+ head=$current_head}"
     exit 0
   fi
 
@@ -125,8 +126,18 @@ fm_verify_close_rows() {
     has_pr_in_repo=1
   fi
 
+  if [ "$has_pr_in_repo" -eq 0 ]; then
+    if [ -n "$pr_url" ] || [ -n "$(sed -n 's/^pr=//p' "$STATE/$ID.meta" 2>/dev/null | head -n 1)" ]; then
+      has_other_pr=1
+    fi
+  fi
+
   if [ "$has_pr_in_repo" -eq 1 ]; then
     ledger_heads=$(fm_verify_gate_ledger_shas "$ledger" "$ID")
+  elif [ "$has_other_pr" -eq 1 ]; then
+    # A PR outside the repo deploy-verify watches keeps the deployed: line firstmate recorded.
+    deployed_line=$(fm_verify_gate_field "$VERIFY_FILE" deployed)
+    ledger_heads=$deployed_line
   else
     # Page-only task with no PR: take the head of its rows ask in the deploy-verify ledger.
     # shellcheck disable=SC2016
@@ -149,12 +160,19 @@ fm_verify_close_rows() {
         case "$cmp_status" in
           ahead) target_head=$h ;;
           behind|identical) ;;
-          *) target_head=$h ;;
+          *)
+            order_problem="the deployed heads $target_head and $h of $ID are not in one line of $repo history (compare status '${cmp_status:-none}')"
+            break ;;
         esac
       else
-        target_head=$h
+        order_problem="the GitHub compare $target_head...$h in $repo cannot be read, so the deployed heads of $ID cannot be ordered"
+        break
       fi
     done
+    if [ -n "$order_problem" ]; then
+      blocking_items+=("cannot order the deployed heads: $order_problem; next: re-run bin/fm-verify-close.sh $ID when GitHub is reachable, or ask deploy-verify for the one head that is deployed")
+      target_head=
+    fi
   fi
 
   if [ -n "$target_head" ] && [ -f "$ledger" ]; then
@@ -176,18 +194,20 @@ fm_verify_close_rows() {
     while IFS=$'\t' read -r r_key r_status r_actor r_head; do
       [ -n "$r_key" ] || continue
       if [ "$r_status" = pending ] && [ "$r_actor" = tester ]; then
-        local ask_tester=''
-        if [ -n "$r_head" ] && [ -f "$ledger" ]; then
+        local ask_tester='' ask_head=${r_head:-$target_head}
+        if [ -n "$ask_head" ] && [ -f "$ledger" ]; then
           # shellcheck disable=SC2016
-          ask_tester=$(jq -Rr --arg t "$ID" --arg h "$r_head" 'fromjson? | select(.type == "ask" and .task == $t and (.sha == $h or .head == $h)) | (.tester // "sent")' "$ledger" | tail -n 1)
+          ask_tester=$(jq -Rr --arg t "$ID" --arg h "$ask_head" 'fromjson? | select(.type == "ask" and .task == $t and (.sha == $h or .head == $h)) | (.tester // "sent")' "$ledger" | tail -n 1)
         fi
         if [ -n "$ask_tester" ]; then
-          blocking_items+=("$r_key is pending for tester on $r_head ($ask_tester); next: bin/fm-task.sh check $ID $r_key pass|fail --evidence <path|url> --head $r_head")
+          blocking_items+=("$r_key is pending for tester on $ask_head ($ask_tester); next: bin/fm-task.sh check $ID $r_key pass|fail --evidence <path|url> --head $ask_head")
         else
-          blocking_items+=("$r_key is pending for tester${r_head:+ on $r_head} (no verify ask in ledger); next: bin/fm-procevent-deploy-verify.sh ask-rows $ID")
+          blocking_items+=("$r_key is pending for tester${ask_head:+ on $ask_head} (no verify ask in ledger); next: bin/fm-procevent-deploy-verify.sh ask-rows $ID")
         fi
-      elif [ "$r_status" = fail ] || [ "$r_actor" = worker ]; then
-        blocking_items+=("$r_key is $r_status for worker${r_head:+ on $r_head}; next: bin/fm-task.sh changes $ID --note \"fix $r_key\"")
+      elif [ "$r_status" = pending ] && [ "$r_actor" = worker ]; then
+        blocking_items+=("$r_key is pending for worker${r_head:+ on $r_head}; next: bin/fm-task.sh check $ID $r_key pass|fail --evidence <path|url>${r_head:+ --head $r_head}")
+      elif [ "$r_status" = fail ]; then
+        blocking_items+=("$r_key is fail for worker${r_head:+ on $r_head}; next: bin/fm-task.sh changes $ID --note \"fix $r_key\"")
       elif [ "$r_actor" = owner ]; then
         blocking_items+=("$r_key is $r_status for owner; next: bin/fm-task.sh check $ID $r_key pass|fail --evidence <note> --role owner")
       else
@@ -196,7 +216,11 @@ fm_verify_close_rows() {
     done < <(jq -r '.rows[] | select((.surface // "") != "checklist" and (.status == "pending" or .status == "fail")) | [.key, .status, (.nextActor // ""), (.head // "")] | @tsv' <<<"$checks_json")
   fi
 
-  if [ -z "$target_head" ]; then
+  if [ -n "$order_problem" ]; then
+    :
+  elif [ -z "$target_head" ] && [ "$has_other_pr" -eq 1 ]; then
+    blocking_items+=("$ID has a PR outside $repo and $VERIFY_FILE records no deployed: line; next: append 'deployed: <sha>' to $VERIFY_FILE once the PR is deployed")
+  elif [ -z "$target_head" ]; then
     if [ -n "$pass_heads" ]; then
       blocking_items+=("user-visible rows of $ID passed on $(printf '%s' "$pass_heads" | tr '\n' ',' | sed 's/,$//'), which has no verify ask in $ledger; next: bin/fm-procevent-deploy-verify.sh ask-rows $ID")
     else
@@ -213,16 +237,25 @@ fm_verify_close_rows() {
 
   if [ "$task_state" = blocked ]; then
     if [ "$block_kind" = transient ]; then
-      if [ -n "$hold_until" ] && ! node -e 'process.exit(Date.parse(process.argv[1]) <= Date.now() ? 0 : 1)' "$hold_until" 2>/dev/null; then
-        until_future=1
+      if [ -z "$hold_until" ]; then
+        until_invalid=1
+      else
+        node -e 'const t = Date.parse(process.argv[1]); process.exit(Number.isNaN(t) ? 2 : t <= Date.now() ? 0 : 1)' "$hold_until" 2>/dev/null
+        case $? in
+          0) ;;
+          1) until_future=1 ;;
+          *) until_invalid=1 ;;
+        esac
       fi
-      if [ "$until_future" -eq 1 ]; then
+      if [ "$until_invalid" -eq 1 ]; then
+        blocking_items+=("transient block on $ID has no valid until date (${hold_until:-none}); next: bin/fm-task.sh unblock $ID once the wait has passed")
+      elif [ "$until_future" -eq 1 ]; then
         blocking_items+=("transient block on $ID until $hold_until is still active (${block_reason:-waiting}); next: wait until $hold_until or run bin/fm-task.sh unblock $ID")
       elif [ "${#blocking_items[@]}" -eq 0 ]; then
         can_unblock_transient=1
-        handoff_items+=("transient block on $ID until ${hold_until:-now} has passed and all check rows pass; next: bin/fm-verify-close.sh $ID")
+        handoff_items+=("transient block on $ID until $hold_until has passed and all check rows pass; next: bin/fm-verify-close.sh $ID")
       else
-        blocking_items+=("transient block on $ID until ${hold_until:-now} has passed while check rows are open; next: finish check rows then run bin/fm-verify-close.sh $ID")
+        blocking_items+=("transient block on $ID until $hold_until has passed while check rows are open; next: finish check rows then run bin/fm-verify-close.sh $ID")
       fi
     else
       blocking_items+=("$ID is blocked (${block_kind:-blocked}: ${block_reason:-no reason}); next: bin/fm-task.sh unblock $ID")
@@ -278,7 +311,7 @@ fm_verify_close_rows() {
   fi
 
   if [ "$can_unblock_transient" -eq 1 ]; then
-    FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_DATA_OVERRIDE=$DATA "$task_writer" unblock "$ID" \
+    FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_DATA_OVERRIDE=$DATA "$task_writer" unblock "$ID" --role firstmate \
       --key "verify-close:$ID:unblock:$last_seq" >/dev/null \
       || refuse "could not clear transient block on $ID; next: bin/fm-task.sh unblock $ID"
     after_unblock_state=$(FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_DATA_OVERRIDE=$DATA "$task_writer" show "$ID" --json 2>/dev/null | jq -r '.state // empty')
@@ -288,10 +321,10 @@ fm_verify_close_rows() {
   fi
 
   if [ "$can_advance_ready_to_review" -eq 1 ]; then
-    FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_DATA_OVERRIDE=$DATA "$task_writer" start "$ID" \
+    FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_DATA_OVERRIDE=$DATA "$task_writer" start "$ID" --role firstmate \
       --key "verify-close:$ID:start:$last_seq" >/dev/null \
       || refuse "could not start $ID after unblock; next: bin/fm-task.sh start $ID"
-    FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_DATA_OVERRIDE=$DATA "$task_writer" "done" "$ID" \
+    FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_DATA_OVERRIDE=$DATA "$task_writer" "done" "$ID" --role firstmate \
       --summary "verify handoff: transient wait cleared and rows passed" \
       --changed-files - \
       --verification "rows passed on $target_head" \
@@ -301,12 +334,12 @@ fm_verify_close_rows() {
   fi
 
   if [ "$need_deploy_event" -eq 1 ]; then
-    FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_DATA_OVERRIDE=$DATA "$task_writer" event "$ID" deploy \
+    FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_DATA_OVERRIDE=$DATA "$task_writer" event "$ID" deploy --role firstmate \
       --head "$target_head" \
       --touched "$target_touched" \
       --note "verify handoff: rows passed on $target_head (bin/fm-verify-close.sh)" \
       --key "verify-close:$ID:deploy:$target_head:$last_seq" >/dev/null \
-      || refuse "could not write deploy event for $ID on head $target_head; next: bin/fm-task.sh event $ID deploy --head $target_head --touched $target_touched --note \"verify handoff\""
+      || refuse "could not write deploy event for $ID on head $target_head; next: bin/fm-task.sh event $ID deploy --role firstmate --head $target_head --touched $target_touched --note \"verify handoff\""
   fi
 
   if [ "$need_verify_md_deployed" -eq 1 ] && [ "$(fm_verify_gate_field "$VERIFY_FILE" deployed)" != "$target_head" ]; then
