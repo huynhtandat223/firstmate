@@ -35,8 +35,9 @@ Retire one only on an explicit captain or main-firstmate decision, after loading
 Use this path when the task's `verify.md` carries `record: rows`, after a Tester result or an applied runtime-data change.
 The Tester's record is the task's check rows in the task record.
 Run `bin/fm-verify-close.sh --check <task>` first; it writes nothing and prints each missing item with its next action.
-Run `bin/fm-verify-close.sh <task>` as the one handoff: it takes the head the rows passed on from the deploy-verify ledger (for a page-only task with no PR, the head of its rows ask, which does not pin the page's stored revision), writes the deploy event with that head, clears a transient wait whose until date has passed and whose rows all pass, then reports approve ready or names what is missing.
+Run `bin/fm-verify-close.sh <task>` as the one handoff: it takes the head the rows passed on from the deploy-verify ledger (for a page-only task with no PR, the head of its rows ask, which does not pin the page's stored revision), refuses unless the task record's own evidence and acceptance-digest check passes on that head, writes the deploy event with that head, clears a transient wait whose until date has passed and whose rows all pass, then reports approve ready or names what is missing.
 Approve with `bin/fm-task.sh approve <task>` after your own look, only once the deployed artifact and its proof agree and any met wait is cleared.
+When teardown left the task's backlog row held as `verification pending`, approval does not close that row: run `bin/fm-verify-close.sh <task>` again after approval to move it to Done.
 The task is complete when the gate accepts or the record names what is missing.
 
 ## Legacy `verify.md`
