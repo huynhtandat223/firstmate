@@ -155,15 +155,15 @@ fm_verify_gate_deployed_head() {
 # The task record's own read of the acceptance for <issue> on <head>: prints each reason the record is not complete, one
 # per line, and returns 1 when there is any (a record that cannot be read is one problem naming why). A carried pass (a
 # pass on an earlier deployed head that no later PR names) is no problem: it goes to stderr with its head.
-fm_verify_gate_record() {  # <task-id> <issue> <head> <config-dir> <tester-home|empty>
-  local id=$1 issue=$2 want_sha=$3 config=$4 tester_home=$5 out err rc bad=0
+fm_verify_gate_record() {  # <task-id> <issue> <head> <config-dir> <tester-home|empty> [touched, for the read before approval]
+  local id=$1 issue=$2 want_sha=$3 config=$4 tester_home=$5 before=${6:-} out err rc bad=0
   err=$(mktemp "${TMPDIR:-/tmp}/fm-verify-gate.XXXXXX") || { echo "the task record cannot be read: no temporary file"; return 1; }
   rc=0
   out=$(
     # shellcheck source=bin/fm-task-shadow-config-lib.sh
     . "$FM_VERIFY_GATE_DIR/fm-task-shadow-config-lib.sh"
     fm_task_shadow_config "$config/task-shadow"
-    "${FM_VERIFY_GATE_TASK:-$FM_VERIFY_GATE_DIR/fm-task.sh}" gate "$id" --issue "$issue" --head "$want_sha" ${tester_home:+--evidence-root "$tester_home"} 2>"$err" </dev/null
+    "${FM_VERIFY_GATE_TASK:-$FM_VERIFY_GATE_DIR/fm-task.sh}" gate "$id" --issue "$issue" --head "$want_sha" ${tester_home:+--evidence-root "$tester_home"} ${before:+--before-approval --touched "$before"} 2>"$err" </dev/null
   ) || rc=$?
   printf '%s\n' "$out" | grep ' carried: pass on head ' >&2 || :
   out=$(printf '%s\n' "$out" | grep -v ' carried: pass on head ' || :)

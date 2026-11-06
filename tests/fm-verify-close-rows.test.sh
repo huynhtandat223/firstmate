@@ -86,6 +86,7 @@ test_handoff_writes_the_deploy_event_with_the_ledger_head() {
   grep -q "^event $ID deploy --role firstmate --head $H --touched none" "$CASE/calls" || fail "no deploy event with the ledger head: $(writes)"
   grep -qx "deployed: $H" "$CASE/home/data/$ID/verify.md" || fail "verify.md lacks the deployed head"
   case "$(writes)" in *approve*) fail "the handoff approved the task" ;; esac
+  grep -q "^gate $ID --issue task:$ID --head $H .*--before-approval --touched none" "$CASE/calls" || fail "the handoff did not read the record before approval: $(grep '^gate ' "$CASE/calls")"
   pass "the handoff writes the deploy event with the head the rows passed on and leaves approve to firstmate"
 }
 
@@ -143,7 +144,7 @@ test_the_handoff_writes_as_firstmate() {
 }
 
 test_an_approved_task_prints_already_approved() {
-  make_case approved done - - pass "$H"
+  make_case approved "done" - - pass "$H"
   run
   [ "$RC" = 0 ] || fail "an approved task was refused: $OUT"
   case "$OUT" in "already approved task=$ID"*) ;; *) fail "an approved task is not reported as approved: $OUT" ;; esac

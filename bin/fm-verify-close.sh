@@ -296,14 +296,14 @@ fm_verify_close_rows() {
 
   if [ "${#blocking_items[@]}" -eq 0 ] && [ -n "$target_head" ]; then
     # The task record's own read of the acceptance, before anything is written: current Description rows and
-    # digest, and evidence for every pass on the head. The same read the approval gate makes later.
+    # digest, and evidence for every pass on the head. The approval gate's read, without its two approved checks (a pass carried to this head counts), which wait for the approval.
     local gate_issue gate_tester_home gate_line gate_out
     gate_issue=$(fm_verify_gate_field "$VERIFY_FILE" issue)
     gate_tester_home=${FM_TESTER_HOME:-}
     if [ -z "$gate_tester_home" ] && [ -f "$STATE/tester.meta" ]; then
       gate_tester_home=$(sed -n 's/^home=//p' "$STATE/tester.meta" | tail -n 1)
     fi
-    if ! gate_out=$(fm_verify_gate_record "$ID" "${gate_issue:-$ID}" "$target_head" "$CONFIG" "$gate_tester_home" 2>/dev/null); then
+    if ! gate_out=$(fm_verify_gate_record "$ID" "${gate_issue:-$ID}" "$target_head" "$CONFIG" "$gate_tester_home" "$target_touched" 2>/dev/null); then
       while IFS= read -r gate_line; do
         [ -n "$gate_line" ] || continue
         blocking_items+=("task record gate: $gate_line; next: fix the row or its evidence, then run bin/fm-verify-close.sh --check $ID")

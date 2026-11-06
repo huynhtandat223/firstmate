@@ -116,9 +116,10 @@
 //            user-visible row pass (event:<seq> of the newest check); deploy the newest deploy with a head and every
 //            user-visible row pass on it. An automatic write is refused when the row changed after it was read, so an
 //            owner's off or on wins. rows and gate skip cl: rows; approve refuses an open one like any open row.
-//   gate     <task> [--issue task:<id>|URL] --head SHA [--evidence-root DIR]   defaults to the task Description; read only: prints each reason the task is not
+//   gate     <task> [--issue task:<id>|URL] --head SHA [--evidence-root DIR] [--before-approval [--touched IDS]]   defaults to the task Description; read only: prints each reason the task is not
 //            complete (exit 5): a user-visible row of the issue not pass on the deployed head with its current
-//            digest and evidence, or no approved event newer than the last row event (bin/fm-verify-gate-lib.sh)
+//            digest and evidence, or no approved event newer than the last row event (bin/fm-verify-gate-lib.sh);
+//            --before-approval skips both approved checks and reads the rows as if a deploy event of --head were recorded next
 //   turn-end <task> --turn TOKEN             check a durable turn generation; heartbeat is not terminal
 //   rules    [--state plan|implement|testing|merge|verify [--repo R] [--account A] [--at ISO] [--task T]] [--json]
 //            read only: the owner's model rules (fm_model_rule), every rule without --state; with --state the
@@ -489,7 +490,7 @@ const SPECS = {
   'plan-approve': { pos: ['task'], flags: {} },
   'plan-check': { pos: ['task'], flags: {} },
   'plan-spec': { pos: ['task'], flags: {} },
-  gate: { pos: ['task'], flags: { issue: 's', head: 's', 'evidence-root': 's' } },
+  gate: { pos: ['task'], flags: { issue: 's', head: 's', 'evidence-root': 's', 'before-approval': 'b', touched: 's' } },
   rules: { pos: [], flags: { state: 's', repo: 's', at: 's', account: 's' } },
   answer: { pos: ['task'], flags: { question: 's', option: 's' } },
   rule: { pos: ['action', 'id'], flags: { state: 's', harness: 's', model: 's', effort: 's', rank: 's', account: 's', hours: 's', scope: 's', enabled: 's', warning: 's' } },
@@ -2067,7 +2068,11 @@ async function cmdGate(args) {
   if (!wanted.length) problems.push(`issue ${f.issue} has no user-visible scenario row`);
   const have = new Map(newestRows(await checkRows(taskId), events).map((r) => [rowKey(r), r]));
   // a carried pass counts only for the latest recorded deployed head
-  const lastDeploy = [...events].reverse().find((e) => e.kind === 'deploy' && bodyOf(e).head);
+  // --before-approval [--touched IDS] reads the record as the handoff does before it writes the deploy event: as if a deploy
+  // event of --head were recorded next (the way checks --as-deployed does), and writes nothing
+  if (f.touched !== undefined && !f['before-approval']) throw usage('--touched goes with --before-approval');
+  const view = f['before-approval'] ? [...events, { seq: (events.at(-1)?.seq ?? 0) + 1, kind: 'deploy', taskId, body: JSON.stringify({ v: 1, note: '', set: {}, head: f.head, ...(touchedOf(f.touched) ? { touched: touchedOf(f.touched) } : {}) }) }] : events;
+  const lastDeploy = [...view].reverse().find((e) => e.kind === 'deploy' && bodyOf(e).head);
   const deployedHead = lastDeploy ? bodyOf(lastDeploy).head : null;
   for (const [key, want] of wanted) {
     const row = have.get(key);
@@ -2085,15 +2090,18 @@ async function cmdGate(args) {
     else if (/^event:/.test(ev)) {
       if (!(await eventEvidenceExists(events, ev))) problems.push(`${key} evidence reference does not exist: ${ev}`);
     } else if (!/^https?:\/\/./.test(ev) && !fs.existsSync(path.resolve(f['evidence-root'] || '.', ev))) problems.push(`${key} evidence path does not exist: ${ev}`);
-    if ((row.head ?? null) !== f.head && f.head === deployedHead && carried(row, events)) out(`${key} carried: pass on head ${row.head}, and no later deployed PR names ${row.scenarioId}`);
+    if ((row.head ?? null) !== f.head && f.head === deployedHead && carried(row, view)) out(`${key} carried: pass on head ${row.head}, and no later deployed PR names ${row.scenarioId}`);
     else if ((row.head ?? null) !== f.head) problems.push(`${key} passed on head ${row.head ?? 'none'}, not the deployed head ${f.head}`);
   }
   const wantedKeys = new Set(wanted.map(([key]) => key));
   for (const [key, row] of have) if (row.surface === 'user-visible' && !wantedKeys.has(key)) problems.push(`${key} is not a row of ${f.issue}; run rows`);
   const lastRow = [...events].reverse().find((e) => (e.kind === 'check' || e.kind === 'owner-check') && bodyOf(e).row);
   const approved = [...events].reverse().find((e) => e.kind === 'approved');
-  if (!approved) problems.push(`no approved event for ${taskId}: firstmate approves with bin/fm-task.sh approve after the rows pass`);
-  else if (lastRow && approved.seq < lastRow.seq) problems.push(`the approved event (seq ${approved.seq}) is not newer than the last row event (seq ${lastRow.seq})`);
+  // --before-approval: the approval does not exist yet, so neither approved check applies
+  if (!f['before-approval']) {
+    if (!approved) problems.push(`no approved event for ${taskId}: firstmate approves with bin/fm-task.sh approve after the rows pass`);
+    else if (lastRow && approved.seq < lastRow.seq) problems.push(`the approved event (seq ${approved.seq}) is not newer than the last row event (seq ${lastRow.seq})`);
+  }
   for (const problem of problems) out(problem);
   if (problems.length) throw new Fail(5, `gate: ${taskId} is not complete`);
 }
