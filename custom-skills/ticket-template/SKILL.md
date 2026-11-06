@@ -59,7 +59,6 @@ Done when every user-visible scenario × width passes in the Tester's record on 
 
 Use the Definition of done paragraph above unchanged.
 Context and Requirements name file:line change points; refresh stale references through a logged change.
-Under `## Scenarios`, a slice holds only the scenarios its plan gives it, an added regression states its reason, and integration and rollout scenarios stay on the parent release.
 The verify state belongs in the task record or Tester's record and firstmate's approval, displayed by the board, rather than in the issue body or task Description.
 
 ## Scenario rules
