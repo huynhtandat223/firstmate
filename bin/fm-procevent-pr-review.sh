@@ -435,15 +435,15 @@ extract_rows() {
 
 # Label one located finding against the stored merge-base..head diff.
 label_for() {  # <compare-file> <path> <first-line> <last-line>
-  local cmpf=$1 path=${2#./} ls=$3 le=$4 kind patch
+  local cmpf=$1 path=${2#./} ls=$3 le=$4 kind patch field=${5:-files}
   { [ -n "$path" ] && [ -n "$ls" ]; } || { echo unlocated; return 0; }
   [ -f "$cmpf" ] || { echo unchecked; return 0; }
-    kind=$(jq -r --arg p "$path" '[.files[] | select(.filename == $p)] | first // null | if . == null then "none" elif .patch == null then "nopatch" else "patch" end' "$cmpf")
+    kind=$(jq -r --arg p "$path" --arg field "$field" '[.[$field][] | select(.filename == $p)] | first // null | if . == null then "none" elif .patch == null then "nopatch" else "patch" end' "$cmpf")
   case "$kind" in
     none) echo "$LABEL_OUT" ;;
     nopatch) echo unchecked ;;
     *)
-            patch=$(jq -r --arg p "$path" '[.files[] | select(.filename == $p)] | first | .patch' "$cmpf")
+            patch=$(jq -r --arg p "$path" --arg field "$field" '[.[$field][] | select(.filename == $p)] | first | .patch' "$cmpf")
       if printf '%s\n' "$patch" | awk -v a="$ls" -v b="$le" '
         BEGIN { if (b + 0 < a + 0) { t = a; a = b; b = t } }
         # A hunk that ends in a deletion ends the file: anchor it to the last line the head still has.
@@ -479,6 +479,9 @@ scan_findings() {  # <text-file> <compare-file>
     case "$kind" in
       F)
         label=$(label_for "$cmpf" "$path" "$ls" "$le")
+        if [ "$label" = "$LABEL_IN" ] && jq -e 'has("pr_files")' "$cmpf" >/dev/null; then
+          label=$(label_for "$cmpf" "$path" "$ls" "$le" pr_files)
+        fi
         findings=$(jq -c --arg sev "$sev" --arg path "$path" --arg ls "$ls" --arg le "$le" --arg text "$rest" --arg src "$src" --arg label "$label" \
           '. + [{severity: $sev, path: (if $path == "" then null else $path end), line: (if $ls == "" then null else ($ls | tonumber) end),
                  line_end: (if $le == "" then null else ($le | tonumber) end), text: $text, source: $src, label: $label}]' <<<"$findings")
@@ -518,14 +521,18 @@ reviewer_content() {  # <task> <pr-url> <head> <merge-base> <round>
 # Exit 2: GitHub could not be read (READ_ERROR_FILE says what).
 start_round() {  # <repo> <pr> <pr-url> <task> <head> <base-ref> <round>
   local repo=$1 n=$2 url=$3 task=$4 head=$5 base=$6 round=$7 cmp merge_base committed started key f content record
-  local review_base previous
+  local review_base previous pr_cmp
   review_base=$base
   if [ -s "$LEDGER" ]; then
     previous=$(jq -rs --arg r "$repo" --argjson n "$n" '[.[] | select(.type == "round" and .repo == $r and .pr == $n)] | last | .head // empty' "$LEDGER")
     [ -z "$previous" ] || review_base=$previous
   fi
   cmp=$(gh_read "repos/$repo/compare/$review_base...$head") || return 2
-  merge_base=$(jq -r '.merge_base_commit.sha // empty' <<<"$cmp")
+  pr_cmp=$cmp
+  if [ "$review_base" != "$base" ]; then
+    pr_cmp=$(gh_read "repos/$repo/compare/$base...$head") || return 2
+  fi
+  merge_base=$(jq -r '.merge_base_commit.sha // empty' <<<"$pr_cmp")
   if [ -z "$merge_base" ]; then
     printf 'GitHub could not be read: repos/%s/compare (no merge base)\n' "$repo" > "$READ_ERROR_FILE"
     return 2
@@ -536,7 +543,7 @@ start_round() {  # <repo> <pr> <pr-url> <task> <head> <base-ref> <round>
   key=$(key_of "$repo" "$n" "$head")
   f="$OPEN/$key.round.json"
   mkdir -p "$OPEN" "$FM_HOME/data/$task"
-  jq -c '{files: [.files[]? | {filename, status, patch: (.patch // null)}]}' <<<"$cmp" > "$OPEN/$key.compare.json"
+  jq -c --argjson pr "$pr_cmp" '{files: [.files[]? | {filename, status, patch: (.patch // null)}], pr_files: $pr.files}' <<<"$cmp" > "$OPEN/$key.compare.json"
   [ "$review_base" != "$base" ] || review_base=$merge_base
   reader_prompt "$url" "$head" "$review_base" "$round" > "$FM_HOME/data/$task/reader-prompt-${head:0:8}.txt"
   jq -cn --arg repo "$repo" --argjson pr "$n" --arg url "$url" --arg task "$task" --arg head "$head" --arg mb "$merge_base" \
@@ -920,7 +927,10 @@ cmd_autohandle() {  # <source-id> <sequence> <result-file>
           "$SCRIPT_DIR/fm-procevent.sh" handled "$SOURCE_ID" "$seq" >/dev/null 2>&1
           return $?
         fi
-        return 1
+        # The open round (or timeout ledger entry) is unchanged, so the next
+        # pass retries it. Retire only this unverified capture to prevent a wake.
+        "$SCRIPT_DIR/fm-procevent.sh" handled "$SOURCE_ID" "$seq" >/dev/null 2>&1
+        return $?
       fi
       deliver_round "$result" "$task" && delivered=1 ;;
   esac
