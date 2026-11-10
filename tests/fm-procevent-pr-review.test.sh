@@ -720,7 +720,48 @@ scenario_wf3() {
   if grep -q -- "--head $(sha h3) " "$LAB/writer.calls"; then echo 'the replaced head wrote a ci event'; return 1; fi
 }
 
-SCENARIOS=${FM_PR_REVIEW_TEST_SCENARIOS:-rounds scope eof ask failures pollfail recovery disabled reenable readertimeout readerconcurrency rearm summary runner wf1 wf2 wf3}
+scenario_upstreamscope() {
+  new_lab "$1"
+  register_task alpha fm/alpha
+  baseline 7 fm/alpha h0
+  start_round 7 fm/alpha h1
+  finish_round h1
+  fx_pulls 7:fm/alpha:h2
+  fx_compare h2
+  local files
+  files=$(jq -cn --arg p "$PATCH_A" '[{filename: "upstream.txt", status: "modified", patch: $p}, {filename: "a.txt", status: "modified", patch: $p}]')
+  gh_put "repos/$REPO/compare/$(sha h1)...$(sha h2)" "$(jq -cn --arg mb "$(sha h1)" --argjson files "$files" '{merge_base_commit: {sha: $mb}, files: $files}')"
+  cycle
+  advance 130
+  cycle
+  finish_round h2 'FINDING note upstream.txt:10 upstream only | fix: remove it'
+  jq -e '.reviewer.findings[0].label == "out-of-scope (pre-existing)" and .reader.findings[0].label == "in-scope"' <<<"$LAST_RESULT" >/dev/null || { echo 'sensitive: upstream-only line must not be in scope'; return 1; }
+  ! task_text alpha | grep -q 'upstream only' || { echo 'upstream-only finding delivered'; return 1; }
+}
+
+scenario_unverifiedcapture() {
+  new_lab "$1"
+  register_task alpha fm/alpha
+  baseline 7 fm/alpha h0
+  start_round 7 fm/alpha h1
+  reviewer_answers h1
+  advance 60
+  local out result
+  out=$("$BIN/fm-procevent-pr-review.sh" wait) || return 1
+  SEQ=$((SEQ + 1))
+  result="$H/state/procevent-inbox/pr-review.$SEQ.result"
+  mkdir -p "$(dirname "$result")"
+  printf '%s\n' "$out" > "$result"
+  printf 'pr-review\n' > "$H/state/procevent-inbox/pr-review.$SEQ.adapter"
+  export FAKE_GH_FAIL=1
+  "$BIN/fm-procevent-pr-review.sh" autohandle pr-review "$SEQ" "$result" >/dev/null 2>&1 || { echo 'sensitive: unverified capture must not request publication'; return 1; }
+  [ "$(task_message_count alpha)" = 0 ] && [ "$(ledger_count '.type == "round"')" = 0 ] || { echo 'unverified capture was delivered or completed'; return 1; }
+  unset FAKE_GH_FAIL
+  cycle
+  [ "$CYCLE_AUTO" = 0 ] && [ "$(task_message_count alpha)" = 1 ] || { echo 'verified round did not retry'; return 1; }
+}
+
+SCENARIOS=${FM_PR_REVIEW_TEST_SCENARIOS:-upstreamscope unverifiedcapture rounds scope eof ask failures pollfail recovery disabled reenable readertimeout readerconcurrency rearm summary runner wf1 wf2 wf3}
 
 # ---- real adapter -----------------------------------------------------------
 
@@ -747,6 +788,10 @@ mutate() {  # <label> <scenario> <perl-substitution>
   pass "guard '$1' is needed: scenario $2 goes red without it"
 }
 
+mutate 'PR scope intersects incremental scope' upstreamscope \
+  's/&& jq -e .*has\("pr_files"\).* "\$cmpf" >\/dev\/null/\&\& false/'
+mutate 'unverified captures stay quiet' unverifiedcapture \
+  's/# pass retries it\. Retire only this unverified capture to prevent a wake\.[\s\S]*?return \$\?/# pass retries it.\n        return 1/'
 mutate 'the round cap' rounds \
   's/if \[ "\$count" -ge "\$MAX_ROUNDS" \]; then/if false; then/'
 mutate 'a head must settle' rounds \
