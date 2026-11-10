@@ -40,7 +40,10 @@
 #              of kind "cap". A Reviewer report that comes after its timeout returns one more
 #              result of kind "late". An unreadable GitHub returns one result of kind "error";
 #              the same reason stays quiet until a poll succeeds, then a "recovery" result.
-#              Rounds already open still finish and time out while GitHub cannot be read.
+#              An unverifiable head stays pending until GitHub can be read again.
+#              Before each ask and delivery the current PR head is checked. Replaced rounds are
+#              recorded as superseded, deliver nothing, and do not count toward max_rounds.
+#              After the first completed round, the reader and scope labels use last-reviewed-head..head.
 #              A reader run that passes reader.timeout_seconds (default 1500) is stopped and its
 #              status is "failed: timeout".
 # The Reviewer's report is data/reviews/<record basename without .json>.md in its home (the
@@ -489,13 +492,14 @@ scan_findings() {  # <text-file> <compare-file>
 
 # ---- the ask text ------------------------------------------------------------
 
-reader_prompt() {  # <pr-url> <head> <merge-base> <round>
+reader_prompt() {  # <pr-url> <head> <review-base> <round>
   cat <<EOF
 Review $1 at head $2 (round $4).
-Merge base: $3
-Review merge-base..head only.
+Review base: $3
+Review commits $3..$2 only. Do not review earlier commits or re-raise findings fixed by these commits.
 
 $SCOPE_RULE
+For this round, further restrict findings to lines changed in $3..$2.
 
 Report one line per finding, in exactly this form:
 $FINDING_FORMAT
@@ -514,7 +518,13 @@ reviewer_content() {  # <task> <pr-url> <head> <merge-base> <round>
 # Exit 2: GitHub could not be read (READ_ERROR_FILE says what).
 start_round() {  # <repo> <pr> <pr-url> <task> <head> <base-ref> <round>
   local repo=$1 n=$2 url=$3 task=$4 head=$5 base=$6 round=$7 cmp merge_base committed started key f content record
-  cmp=$(gh_read "repos/$repo/compare/$base...$head") || return 2
+  local review_base previous
+  review_base=$base
+  if [ -s "$LEDGER" ]; then
+    previous=$(jq -rs --arg r "$repo" --argjson n "$n" '[.[] | select(.type == "round" and .repo == $r and .pr == $n)] | last | .head // empty' "$LEDGER")
+    [ -z "$previous" ] || review_base=$previous
+  fi
+  cmp=$(gh_read "repos/$repo/compare/$review_base...$head") || return 2
   merge_base=$(jq -r '.merge_base_commit.sha // empty' <<<"$cmp")
   if [ -z "$merge_base" ]; then
     printf 'GitHub could not be read: repos/%s/compare (no merge base)\n' "$repo" > "$READ_ERROR_FILE"
@@ -527,7 +537,8 @@ start_round() {  # <repo> <pr> <pr-url> <task> <head> <base-ref> <round>
   f="$OPEN/$key.round.json"
   mkdir -p "$OPEN" "$FM_HOME/data/$task"
   jq -c '{files: [.files[]? | {filename, status, patch: (.patch // null)}]}' <<<"$cmp" > "$OPEN/$key.compare.json"
-  reader_prompt "$url" "$head" "$merge_base" "$round" > "$FM_HOME/data/$task/reader-prompt-${head:0:8}.txt"
+  [ "$review_base" != "$base" ] || review_base=$merge_base
+  reader_prompt "$url" "$head" "$review_base" "$round" > "$FM_HOME/data/$task/reader-prompt-${head:0:8}.txt"
   jq -cn --arg repo "$repo" --argjson pr "$n" --arg url "$url" --arg task "$task" --arg head "$head" --arg mb "$merge_base" \
     --argjson round "$round" --argjson started "$started" --argjson committed "$committed" --arg a "$ASSISTANCE" \
     '{repo: $repo, pr: $pr, pr_url: $url, task: $task, head: $head, merge_base: $mb, round: $round, started: $started, committed: $committed,
@@ -536,11 +547,30 @@ start_round() {  # <repo> <pr> <pr-url> <task> <head> <base-ref> <round>
   content=$(reviewer_content "$task" "$url" "$head" "$merge_base" "$round")
   record=$(jq -cn --arg id "pr-review:$task:$n:${head:0:12}" --argjson at "$started" --arg c "$content" \
     '{schema: "fm-assistance-mentions.v1", messages: [{id: $id, arrival: $at, content: $c}]}')
+  if ! current_round "$f"; then
+    [ ! -f "$f" ] || { rm -f "$f" "$OPEN/$key.compare.json"; return 2; }
+    return 0
+  fi
   if deliver_record Reviewer "$ASSISTANCE" "$record"; then
     open_update "$f" '.reviewer.record = $b' --arg b "$DELIVER_BASE"
   else
     open_update "$f" '.reviewer.status = $s' --arg s "failed: ${DELIVER_ERROR#*ask not delivered: }"
   fi
+}
+
+# A moved head invalidates the entire round, including findings already captured. A failed
+# read leaves it pending and never authorizes an ask or delivery.
+current_round() {  # <round-or-result-file>
+  local f=$1 repo n head current key
+  repo=$(jq -r .repo "$f"); n=$(jq -r .pr "$f"); head=$(jq -r .head "$f")
+  current=$(gh_read "repos/$repo/pulls/$n") || return 1
+  [ -n "$(jq -r '.head.sha // empty' <<<"$current")" ] || return 1
+  [ "$(jq -r '.head.sha // empty' <<<"$current")" != "$head" ] || return 0
+  ledger_test '.type == "superseded" and .repo == $r and .pr == $n and .head == $h' --arg r "$repo" --argjson n "$n" --arg h "$head" \
+    || ledger_append "$(jq -c --argjson at "$(now)" '{type: "superseded", repo, pr, head, round, at: $at, delivered: false}' "$f")"
+  key=$(key_of "$repo" "$n" "$head")
+  rm -f "$OPEN/$key.round.json" "$OPEN/$key.compare.json"
+  return 1
 }
 
 # ---- the two reviewers -------------------------------------------------------
@@ -602,6 +632,7 @@ run_reader() {  # <open-file>
   elif [ -z "$chat" ]; then
     reason='failed: no chat in reader-session.md and no reader.project_url'
   else
+    current_round "$f" || return 0
     rm -f "$answer"
     outf=$(mktemp "${TMPDIR:-/tmp}/fm-pr-review-reader.XXXXXX") || return 1
     run_with_timeout "$READER_TIMEOUT" "$outf" "$READER_CMD" "$chat" "$prompt" "$answer"
@@ -731,6 +762,7 @@ poll_late() {
     base=$(jq -r .reviewer.record <<<"$row")
     report=$(reviewer_report "$base") || continue
     repo=$(jq -r .repo <<<"$row"); n=$(jq -r .pr <<<"$row"); head=$(jq -r .head <<<"$row")
+    ledger_test '.type == "superseded" and .repo == $r and .pr == $n and .head == $h' --arg r "$repo" --argjson n "$n" --arg h "$head" && continue
     scan=$(scan_findings "$report" "$OPEN/$(key_of "$repo" "$n" "$head").compare.json")
     EMIT=$(jq -c --arg r "$report" --argjson s "$scan" \
       '{schema: "fm-pr-review-result.v1", kind: "late", error: null, recovered: false, repo, pr, task, head, round,
@@ -749,10 +781,14 @@ pass() {
   local -a reader_pids=()
   EMIT=
   POLL_FAILED=0
+  for f in "$OPEN"/*.round.json; do
+    [ -f "$f" ] || continue
+    current_round "$f" || { [ ! -f "$f" ] || POLL_FAILED=1; }
+  done
   poll_prs
   rc=$?
   case "$rc" in 2) POLL_FAILED=1 ;; 10) return 0 ;; esac
-  # Rounds already open finish and time out even when GitHub cannot be read.
+  # Never ask or publish findings while the current head cannot be verified.
   # Each round's reader opens its own tab and bridge session, so every pending
   # round is asked in this pass, at most READER_JOBS at once.
   for f in "$OPEN"/*.round.json; do
@@ -770,6 +806,7 @@ pass() {
   done
   for f in "$OPEN"/*.round.json; do
     [ -f "$f" ] || continue
+    current_round "$f" || { [ ! -f "$f" ] || POLL_FAILED=1; continue; }
     check_reviewer "$f"
     if [ "$(jq -r .reviewer.status "$f")" != pending ] && [ "$(jq -r .reader.status "$f")" != pending ]; then
       EMIT=$(jq -c '{schema: "fm-pr-review-result.v1", kind: "round", error: null, recovered: false} + .' "$f")
@@ -877,7 +914,15 @@ cmd_autohandle() {  # <source-id> <sequence> <result-file>
   # A round whose in-scope findings reach a live worker's inbox wakes nobody: the worker is the one that
   # changes the code, so firstmate hears about that round at the worker's done instead.
   case "$kind" in
-    round|late) deliver_round "$result" "$task" && delivered=1 ;;
+    round|late)
+      if ! current_round "$result"; then
+        if ledger_test '.type == "superseded" and .repo == $r and .pr == $n and .head == $h' --arg r "$repo" --argjson n "$n" --arg h "$head"; then
+          "$SCRIPT_DIR/fm-procevent.sh" handled "$SOURCE_ID" "$seq" >/dev/null 2>&1
+          return $?
+        fi
+        return 1
+      fi
+      deliver_round "$result" "$task" && delivered=1 ;;
   esac
   case "$kind" in
     recovery)
