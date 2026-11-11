@@ -63,9 +63,10 @@
 //   changes  <task> --note WHY               review -> ready
 //   reopen   <task> --reason WHY             done -> ready, next actor firstmate; archived stays final
 //   archive  <task>                          triage|todo|ready|blocked|review|done -> archived
-//   delete   <task>... --reason WHY          any state but running, with no live worker and no open PR; deletes the
-//            task row, its events and their children, its steps, checks, owner items, deliveries, links on either side,
-//            and dismisses its undismissed notifications. There is no backup. A refused id leaves its rows untouched.
+//   delete   <task>... --reason WHY          any state but running, with no live worker and a PR that is not open or
+//            unreadable; deletes the task row, its events and their children, its steps, checks, owner items, deliveries,
+//            links on either side, and dismisses its undismissed notifications first. There is no backup, and one
+//            refusal or failure does not stop the other ids. A new event written after the checks refuse the id.
 //   home     <task> --home H                 sets the backlog home of a task that has none (any state but archived);
 //            the same home again is a no-op, another home is refused: a task belongs to one board
 //   describe <task> --document FILE.md [--document-title T]              any state; default title Description
@@ -343,6 +344,9 @@ async function taskEvents(taskId) {
   }
   return events;
 }
+// The raw event rows, without resolving note documents: a delete must still work after an earlier partial run removed a
+// note document, and a missing note is not a reason to keep the remaining rows forever.
+const rawTaskEvents = (taskId) => listAll('fm_task_event', { filter: `taskId eq ${lit(taskId)}`, orderby: 'seq' });
 const eventByKey = (key) => firstRow('fm_task_event', `idempotencyKey eq ${lit(key)}`);
 const taskRow = (taskId) => firstRow('fm_task', `taskId eq ${lit(taskId)}`);
 const checkRows = (taskId) => listAll('fm_task_check', { filter: `taskId eq ${lit(taskId)}`, orderby: 'scenarioId' });
@@ -1275,15 +1279,17 @@ function workerState(taskId) {
   return run.status === 0 && said === 'alive' ? 'alive' : run.status === 0 && said === 'dead' ? 'dead' : 'unknown';
 }
 
-// An unreadable or non-GitHub pull request is not proof that it is open, the same reading approve uses for checks.
-function prIsOpen(prUrl) {
-  if (!/^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+/.test(prUrl)) return false;
+// Only a definite answer closes the PR question: a failed, rejected, or unreadable lookup is not proof that the task's
+// PR is closed, so it refuses the delete instead of deleting under an open review.
+function prState(prUrl) {
+  if (!/^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+/.test(prUrl)) return 'unknown';
   const run = spawnSync(GH, ['pr', 'view', prUrl, '--json', 'state'], { encoding: 'utf8', timeout: 20000 });
-  if (run.error || typeof run.stdout !== 'string' || !run.stdout.trim()) return false;
+  if (run.error || run.status !== 0 || typeof run.stdout !== 'string' || !run.stdout.trim()) return 'unknown';
   try {
-    return String(JSON.parse(run.stdout)?.state ?? '').toUpperCase() === 'OPEN';
+    const state = String(JSON.parse(run.stdout)?.state ?? '').toUpperCase();
+    return state === 'OPEN' ? 'open' : state === 'CLOSED' || state === 'MERGED' ? 'closed' : 'unknown';
   } catch {
-    return false;
+    return 'unknown';
   }
 }
 
@@ -1309,11 +1315,16 @@ async function deleteRows(table, rows) {
   return count;
 }
 
-// Delete every row the task owns, children first, so a failure leaves the task row readable for a re-run.
+// Delete every row the task owns, children first, so a failure leaves the task row readable for a re-run. Notifications
+// are dismissed first: a failed dismissal then leaves every row in place and the next run can finish the same delete.
 async function deleteTaskRows(taskId, events) {
   const eventIds = events.map((e) => `fmTaskEventId eq ${e.id}`);
   const seqs = events.map((e) => `seq eq ${e.seq}`);
   let rows = 0;
+  const notices = await listAll('notification', { filter: `taskId eq ${lit(taskId)} and state ne 'dismissed'`, orderby: 'id', select: 'id' });
+  for (const notice of notices) {
+    ok(await http('PATCH', `/api/notification/${encodeURIComponent(notice.id)}`, { state: 'dismissed' }), 'dismiss the notification');
+  }
   for (const table of EVENT_CHILD_TABLES) rows += await deleteRows(table, await listByFilters(table, eventIds));
   for (const table of ['fm_task_step', 'fm_task_check', 'fm_owner_check']) {
     rows += await deleteRows(table, await listAll(table, { filter: `taskId eq ${lit(taskId)}`, orderby: 'id', select: 'id' }));
@@ -1325,15 +1336,38 @@ async function deleteTaskRows(taskId, events) {
     ...await listAll('fm_task_link', { filter: `childTaskId eq ${lit(taskId)}`, orderby: 'id', select: 'id' }),
   ]);
   rows += await deleteRows('fm_task', await listAll('fm_task', { filter: `taskId eq ${lit(taskId)}`, orderby: 'id', select: 'id' }));
-  const notices = await listAll('notification', { filter: `taskId eq ${lit(taskId)} and state ne 'dismissed'`, orderby: 'id', select: 'id' });
-  for (const notice of notices) {
-    ok(await http('PATCH', `/api/notification/${encodeURIComponent(notice.id)}`, { state: 'dismissed' }), 'dismiss the notification');
-  }
   return rows;
 }
 
 // delete <task>...: hard delete, no backup. A refusal is checked before any row of that task is written, and one
 // refused id does not stop the others.
+// Decide and perform one delete: every refusal happens before the first write, so a refused id is left untouched.
+async function deleteOutcome(taskId) {
+  // A partial earlier run leaves the task row without its events; that row is still deleted.
+  const events = await rawTaskEvents(taskId);
+  const task = fold(events);
+  const stored = task ? null : await firstRow('fm_task', `taskId eq ${lit(taskId)}`);
+  if (!task && !stored && !events.length) return { refuse: 'no such task' };
+  const state = task ? task.state : stored?.state;
+  const prUrl = task ? task.prUrl : stored?.prUrl;
+  if (state === 'running') return { refuse: 'running' };
+  const worker = workerState(taskId);
+  if (worker === 'alive') return { refuse: 'a live worker' };
+  if (worker === 'unknown') return { refuse: 'its worker state could not be read' };
+  if (prUrl) {
+    const pr = prState(prUrl);
+    if (pr === 'open') return { refuse: `open PR ${prUrl}` };
+    if (pr === 'unknown') return { refuse: 'its PR state could not be read' };
+  }
+  // A transition that appended while the checks ran would leave an event after the task row is gone; a changed
+  // snapshot refuses this id before anything is written.
+  const fresh = await rawTaskEvents(taskId);
+  if (fresh.length !== events.length || fresh.some((e, i) => e.id !== events[i].id)) {
+    return { refuse: 'its events changed while it was checked' };
+  }
+  return { rows: await deleteTaskRows(taskId, events) };
+}
+
 async function cmdDelete(args) {
   const ids = args.pos.tasks ?? [];
   if (!ids.length) throw usage('delete needs at least one task');
@@ -1348,34 +1382,9 @@ async function cmdDelete(args) {
       continue;
     }
     try {
-      // A partial earlier run leaves the task row without its events; that row is still deleted.
-      const events = await taskEvents(taskId);
-      const task = fold(events);
-      const stored = task ? null : await firstRow('fm_task', `taskId eq ${lit(taskId)}`);
-      if (!task && !stored) {
-        refused.push(`${taskId}: no such task`);
-        continue;
-      }
-      const state = task ? task.state : stored.state;
-      const prUrl = task ? task.prUrl : stored.prUrl;
-      if (state === 'running') {
-        refused.push(`${taskId}: running`);
-        continue;
-      }
-      const worker = workerState(taskId);
-      if (worker === 'alive') {
-        refused.push(`${taskId}: a live worker`);
-        continue;
-      }
-      if (worker === 'unknown') {
-        refused.push(`${taskId}: its worker state could not be read`);
-        continue;
-      }
-      if (prUrl && prIsOpen(prUrl)) {
-        refused.push(`${taskId}: open PR ${prUrl}`);
-        continue;
-      }
-      deleted.push(`${taskId} (${await deleteTaskRows(taskId, events)} rows)`);
+      const outcome = await deleteOutcome(taskId);
+      if (outcome.refuse) refused.push(`${taskId}: ${outcome.refuse}`);
+      else deleted.push(`${taskId} (${outcome.rows} rows)`);
     } catch (error) {
       failed.push(`${taskId}: ${error.message}`);
     }
