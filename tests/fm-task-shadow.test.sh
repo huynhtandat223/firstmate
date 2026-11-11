@@ -195,12 +195,14 @@ test_events_of_the_other_scripts() {
   assert_equals "$(printf '%s\n' \
     'block transient t1 --reason queued row --next-actor firstmate' \
     'event t1 comment --note held (captain): queued row')" "$(calls)" "a refused block leaves a comment"
-  # a hold the record already holds as transient for firstmate is not written again; the old ask shape (needs-decision, owner) is
+  # a hold the record already holds as transient for firstmate, or as the legacy ask (needs-decision, owner), is not written again
   make_case events-held-twice on
   FAKE_STATE=blocked FAKE_BLOCK_REASON='already held' FAKE_BLOCK_KIND=transient FAKE_NEXT_ACTOR=firstmate hook held t1 captain 'already held' || fail "the hook failed"
   assert_equals "" "$(calls)" "a captain hold the record holds as transient for firstmate writes nothing"
   FAKE_STATE=blocked FAKE_BLOCK_REASON='already held' FAKE_BLOCK_KIND=needs-decision FAKE_NEXT_ACTOR=owner hook held t1 captain 'already held' || fail "the hook failed"
-  assert_equals "$(printf '%s\n' 'unblock t1' 'assign t1 --to t1' 'start t1' 'block transient t1 --reason already held --next-actor firstmate')" "$(calls)" "a leftover ask-shaped hold is rewritten as a transient block"
+  assert_equals "" "$(calls)" "a captain hold already mirrored as an ask stays, so the writer never replays the old ask over a restarted task"
+  FAKE_STATE=blocked FAKE_BLOCK_REASON='already held' FAKE_BLOCK_KIND=needs-decision FAKE_NEXT_ACTOR=owner hook held t1 parked 'already held' || fail "the hook failed"
+  assert_equals "$(printf '%s\n' 'unblock t1' 'assign t1 --to t1' 'start t1' 'block transient t1 --reason already held --next-actor firstmate')" "$(calls)" "only a captain hold keeps the legacy ask shape"
   make_case events-release-twice on
   FAKE_SEQ=5 hook answered t1 released; FAKE_SEQ=5 hook answered t1 released; FAKE_SEQ=9 hook answered t1 released
   assert_equals "$(printf '%s\n' 'unblock t1 --key shadow:t1:answered-released-5' 'unblock t1 --key shadow:t1:answered-released-5' 'unblock t1 --key shadow:t1:answered-released-9')" \
@@ -627,7 +629,8 @@ mutate_hook 'a verification-pending hold keeps a rows task in review' test_rows_
 mutate_hook 'a captain hold is a transient block, never an ask' test_events_of_the_other_scripts $'    external)\n      w "hold-$key" block external' $'    captain) w "hold-$key" ask "$TASK" --question "$reason" ;;\n    external)\n      w "hold-$key" block external'
 mutate_hook 'a needs-decision line is a heartbeat note, never an ask' test_status_lines_map_to_writer_commands 'w "status-$key" heartbeat "$TASK" --note "needs-decision: $text"' 'w "status-$key" ask "$TASK" --question "$text"'
 mutate_hook 'a refused needs-decision heartbeat leaves a comment' test_status_lines_map_to_writer_commands '|| w "status-$key-comment" event' '|| : event'
-mutate_hook 'a hold the record holds as transient for firstmate is not written again' test_events_of_the_other_scripts $'case "$kind" in external) mapped_kind=external ;; esac' $'case "$kind" in captain) mapped_kind=needs-decision; mapped_actor=owner ;; external) mapped_kind=external ;; esac'
+mutate_hook 'a hold the record holds as transient for firstmate is not written again' test_events_of_the_other_scripts '[ "$held_kind/$held_actor" != "$mapped_kind/$mapped_actor" ] || return 0' ':'
+mutate_hook 'a captain hold mirrored as an ask is not rewritten' test_events_of_the_other_scripts '[ "$kind" != captain ] || [ "$held_kind/$held_actor" != needs-decision/owner ] || return 0' ':'
 mutate_hook 'a refused hold leaves a comment' test_events_of_the_other_scripts '|| w "hold-$key-comment" event' '|| : event'
 mutate_hook 'a close goes through done when the record holds the task running' test_events_of_the_other_scripts 'w "$1-done" "done" "$TASK" --summary "closed by the old source" --changed-files - --verification - --residual-risk - || return 1' 'return 1'
 pass 'every rule of the hook has a red mutation proof'

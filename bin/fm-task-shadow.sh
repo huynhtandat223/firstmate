@@ -30,7 +30,7 @@
 # done -> done (the line is the summary; the other template fields read "-"); needs-decision -> heartbeat with the line as a
 # note (a comment event when the record refuses the heartbeat), never an ask; blocked and paused -> block transient (paused
 # keeps its "until"); failed -> block failure; resolved -> unblock. A captain hold -> block transient to firstmate, never an
-# ask; an external hold -> block external. A writer rule refusal (a transition the record does not allow) is logged and left to the reconciler.
+# ask, and a captain hold the record already holds as an ask is left as it is; an external hold -> block external. A writer rule refusal (a transition the record does not allow) is logged and left to the reconciler.
 #
 # A task begun after T5 ('record: rows' in data/<task>/verify.md, bin/fm-verify-gate-lib.sh) is verified on check rows,
 # which bin/fm-procevent-deploy-verify.sh writes itself before its ask: a verification-pending hold leaves such a task
@@ -210,10 +210,14 @@ hold_event() {  # <hold-kind> <reason>: make the record capable of taking this o
     prior=$("$WRITER" show "$TASK" --json 2>/dev/null)
     local mapped_kind=transient mapped_actor=firstmate
     case "$kind" in external) mapped_kind=external ;; esac
-    if [ "$(printf '%s' "$prior" | jq -r '.blockReason')" = "$reason" ] \
-      && [ "$(printf '%s' "$prior" | jq -r '.blockKind')" = "$mapped_kind" ] \
-      && [ "$(printf '%s' "$prior" | jq -r '.nextActor')" = "$mapped_actor" ]; then
-      return 0
+    if [ "$(printf '%s' "$prior" | jq -r '.blockReason')" = "$reason" ]; then
+      local held_kind held_actor
+      held_kind=$(printf '%s' "$prior" | jq -r '.blockKind')
+      held_actor=$(printf '%s' "$prior" | jq -r '.nextActor')
+      [ "$held_kind/$held_actor" != "$mapped_kind/$mapped_actor" ] || return 0
+      # A captain hold already mirrored as an ask (needs-decision, owner) stays as it is until firstmate migrates it: a
+      # new block would reuse that ask's key, the writer would replay the ask, and the unblock above would leave the task running.
+      [ "$kind" != captain ] || [ "$held_kind/$held_actor" != needs-decision/owner ] || return 0
     fi
   fi
   if [ "$current" = review ] && rows_task && printf '%s' "$reason" | grep -qi 'verification pending'; then
