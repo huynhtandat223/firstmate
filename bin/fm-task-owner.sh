@@ -52,7 +52,7 @@ export FM_HOME="${FM_HOME:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 WRITER="${FM_TASK_OWNER_WRITER:-$SCRIPT_DIR/fm-task.sh}"
 HOLD="${FM_TASK_OWNER_HOLD:-$SCRIPT_DIR/fm-captain-hold.sh}"
 
-ACTION='' TASK='' OPTION='' ROW='' DECISION='' PLAN_SEQ='' NOTE='' OWNER='' TO='' ASK='' RULE='' ITEM='' SWITCH='' QUESTION='' SETUP='' REPLY_TO='' ANCHOR_QUOTE='' ANCHOR_PREFIX='' ANCHOR_SUFFIX=''
+ACTION='' TASK='' OPTION='' ROW='' DECISION='' PLAN_SEQ='' NOTE='' OWNER='' TO='' ASK='' RULE='' ITEM='' SWITCH='' QUESTION='' SETUP='' REPLY_TO='' ANCHOR_QUOTE='' ANCHOR_PREFIX='' ANCHOR_SUFFIX='' ANCHORED=''
 declare -A RULE_FIELD=()
 RULE_FLAGS='state harness model effort rank account hours scope enabled warning'
 WRITES='[]'
@@ -84,9 +84,9 @@ while [ "$#" -gt 0 ]; do
     --rule) RULE=$2 ;;
     --question) QUESTION=$2 ;;
     --reply-to) REPLY_TO=$2 ;;
-    --anchor-quote) ANCHOR_QUOTE=$2 ;;
-    --anchor-prefix) ANCHOR_PREFIX=$2 ;;
-    --anchor-suffix) ANCHOR_SUFFIX=$2 ;;
+    --anchor-quote) ANCHOR_QUOTE=$2 ANCHORED=1 ;;
+    --anchor-prefix) ANCHOR_PREFIX=$2 ANCHORED=1 ;;
+    --anchor-suffix) ANCHOR_SUFFIX=$2 ANCHORED=1 ;;
     --state|--harness|--model|--effort|--rank|--account|--hours|--scope|--enabled|--warning) RULE_FIELD[${1#--}]=$2 ;;
     --item) ITEM=$2 ;;
     *) usage "unknown argument $1" ;;
@@ -101,9 +101,10 @@ if [ -n "$ASK" ]; then
   [ "$ACTION" = comment ] || usage '--ask is only allowed for comment'
   case "$ASK" in why|how|wait-what) ;; *) usage '--ask must be why, how or wait-what' ;; esac
 fi
-if [ -n "$ANCHOR_QUOTE$ANCHOR_PREFIX$ANCHOR_SUFFIX" ]; then
+# Any anchor key that was sent, even empty, asks for a thread: an empty quote is refused, never read as no anchor.
+if [ -n "$ANCHORED" ]; then
   [ "$ACTION" = comment ] || usage '--anchor-quote is only allowed for comment'
-  [ -n "$ANCHOR_QUOTE" ] || usage '--anchor-prefix and --anchor-suffix need --anchor-quote'
+  [[ "$ANCHOR_QUOTE" =~ [^[:space:]] ]] || usage '--anchor-quote needs the quoted text; --anchor-prefix and --anchor-suffix need it too'
   [ -z "$REPLY_TO" ] || usage 'a comment opens a thread at --anchor-quote or answers one with --reply-to, not both'
 fi
 if [ -n "$REPLY_TO" ]; then
@@ -188,13 +189,16 @@ case "$ACTION" in
       [[ "$seq" =~ ^[0-9]+$ ]] || { ERROR='writer returned no comment sequence'; RC=3; }
       if [ "$RC" -eq 0 ]; then
         message="Owner comment on $TASK (seq $seq): $NOTE"
+        # Firstmate answers as itself: without --actor and --role its reply would be stored as a worker's.
+        answer_as=''
+        [ "$TO" != firstmate ] || answer_as=' --actor firstmate --role firstmate'
         if [ -n "$ANCHOR_QUOTE" ]; then
           message="Owner thread on $TASK (seq $seq) at \"$ANCHOR_QUOTE\": $NOTE"
-          message+=$'\n'"Reply with: bin/fm-task.sh comment $TASK --reply-to $seq --note <output>"
+          message+=$'\n'"Reply with: bin/fm-task.sh comment $TASK --reply-to $seq$answer_as --note <output>"
         fi
         if [ -n "$REPLY_TO" ]; then
           message="Owner reply to comment $REPLY_TO on $TASK (seq $seq): $NOTE"
-          message+=$'\n'"Reply with: bin/fm-task.sh comment $TASK --reply-to $seq --note <output>"
+          message+=$'\n'"Reply with: bin/fm-task.sh comment $TASK --reply-to $seq$answer_as --note <output>"
         fi
         if [ -n "$ASK" ]; then
           message+=$'\n'"Run the $ASK skill on task $TASK. Reply with: bin/fm-task.sh comment $TASK --reply-to $seq --role firstmate --note <output>"

@@ -2100,7 +2100,7 @@ case_owner_writer() {
   owner_reply=$(db fm_task_event | jq -r '[.[] | select(.kind == "comment")] | max_by(.seq).seq')
   db fm_task_event | jq -e --argjson s "$owner_reply" --argjson p "$parent" '.[] | select(.seq == $s) | (.body | fromjson | .replyTo) == $p' >/dev/null || return 1
   grep -R -F "Owner reply to comment $parent on $t (seq $owner_reply): Thread answer" "$FM_HOME/state/inbox" >/dev/null || return 1
-  grep -R -F "Reply with: bin/fm-task.sh comment $t --reply-to $owner_reply --note <output>" "$FM_HOME/state/inbox" >/dev/null || return 1
+  grep -R -F "Reply with: bin/fm-task.sh comment $t --reply-to $owner_reply --actor firstmate --role firstmate --note <output>" "$FM_HOME/state/inbox" >/dev/null || { echo 'reply command does not answer as firstmate'; return 1; }
   before=$(count fm_task_event)
   ow --action comment --task $t --reply-to "$parent" --note 'Thread answer' --owner u-1 --to firstmate
   must 'owner reply replay' 0 || return 1
@@ -2126,6 +2126,7 @@ case_owner_writer() {
   root=$(db fm_task_event | jq -r '[.[] | select(.kind == "comment")] | max_by(.seq).seq')
   db fm_task_event | jq -e --argjson s "$root" '.[] | select(.seq == $s) | (.body | fromjson) | .anchor == {quote: "the lane lists each task", prefix: "Observed: ", suffix: " whose pane"} and (has("thread") | not)' >/dev/null || { echo 'anchor not stored'; return 1; }
   grep -R -F "Owner thread on $t (seq $root) at \"the lane lists each task\": Is a blocked task listed?" "$FM_HOME/state/inbox" >/dev/null || { echo 'missing thread delivery'; return 1; }
+  grep -R -F "Reply with: bin/fm-task.sh comment $t --reply-to $root --actor firstmate --role firstmate --note <output>" "$FM_HOME/state/inbox" >/dev/null || { echo 'thread reply command does not answer as firstmate'; return 1; }
   ft comment $t --reply-to "$root" --role firstmate --note 'Yes, in any state'; must 'thread answer' 0 || return 1
   answer=$(seq_of)
   ow --action comment --task $t --reply-to "$answer" --note 'Thanks' --owner u-1 --to firstmate; must 'thread follow-up' 0 || return 1
@@ -2134,6 +2135,8 @@ case_owner_writer() {
   before=$(count fm_task_event)
   ow --action comment --task $t --reply-to "$root" --anchor-quote 'here' --note bad --owner u-1 --to firstmate; must 'anchor with reply-to' 2 || return 1
   ow --action comment --task $t --anchor-prefix 'here' --note bad --owner u-1 --to firstmate; must 'prefix without quote' 2 || return 1
+  ow --action comment --task $t --anchor-quote '' --note bad --owner u-1 --to firstmate; must 'empty quote' 2 || return 1
+  ow --action comment --task $t --reply-to "$root" --anchor-quote '' --note bad --owner u-1 --to firstmate; must 'empty quote with reply-to' 2 || return 1
   ft comment $t --anchor-quote "$(printf 'q%.0s' $(seq 501))" --note bad; must 'quote too long' 2 || return 1
   [ "$(count fm_task_event)" = "$before" ] || return 1
   ft create tk-foreign --title foreign --kind ship; must 'foreign setup' 0 || return 1
