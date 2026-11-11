@@ -22,6 +22,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
   assert self.path=='/api/notification'
   if body['dedupeKey']=='refused': return self.reply(403,{'message':'fixture-token'})
   if body['dedupeKey']=='bad-conflict': return self.reply(409,{'errorCode':'OTHER'})
+  if body['dedupeKey']=='alert':
+   # A system alert: a notice with no choices, never a question.
+   assert body['kind']=='notice' and 'actions' not in body and body['severity']=='error'
+   (root/'alert').write_text(json.dumps(body))
+   return self.reply(201,{'success':True,'data':{'id':'66666666-7777-8888-9999-000000000000'}})
   if notification is not None:
    return self.reply(409,{'errorCode':'UNIQUE_KEY_CONFLICT','details':{'existingId':ident}})
   assert 'producer' not in body and 'createdAt' not in body
@@ -66,6 +71,9 @@ fi
 [[ -z $("$cli" decision "$id") ]]
 touch "$work/decided"
 "$cli" decision "$id" | jq -e '.actionId=="approve" and .note=="Go" and .decidedBy=="owner"' >/dev/null
+# An alert posted without --action is a notice: no choices, never a question.
+[[ $("$cli" post --producer firstmate --dedupe alert --title 'DMS capture failed' --body 'Inspect it.' --severity error) == 66666666-7777-8888-9999-000000000000 ]]
+jq -e '.kind=="notice" and (has("actions")|not)' "$work/alert" >/dev/null
 reject() {
   local expected=$1; shift
   local status=0
@@ -95,4 +103,4 @@ FM_NOTIFY_RECIPIENT=fixture-owner "$cli" "${args[@]}" > "$work/override-out"
 [[ $(<"$work/override-out") == "$id" ]]
 "$cli" --help >/dev/null
 "$cli" decision --help >/dev/null
-printf 'ok - notify-me posts atomic actions, deduplicates, reads decisions, and refuses invalid input and unsafe credentials\n'
+printf 'ok - notify-me posts alerts as notices, questions with atomic actions, deduplicates, reads decisions, and refuses invalid input and unsafe credentials\n'

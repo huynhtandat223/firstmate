@@ -7,13 +7,17 @@
 # transcripts shaped like Claude's JSONL, never the live home:
 #   RL3  a Vietnamese reply passes; an English reply, and a `?` with no
 #        agent-ask call in the turn, are flagged; a `?` after an agent-ask call
+#        passes, and so does a `?` in code or a link, or a question whose
+#        paragraph links its Needs you card (?q=); config/enforce-reply-lint-question
+#        alone blocks the question and leaves the other checks log-only;
 #        passes; a turn already blocked once is not blocked again; no
 #        config/reply-language means the lint does nothing.
 #   RL4  two captain notes waiting in state/inbox/ block "Captain, mọi thứ ổn."
 #        once and name both note ids.
 #   RL5  a session that never read data/captain.md since its last SessionStart
 #        is blocked once, naming data/captain.md and the handoff to read.
-# Each hit is log-only until config/enforce-reply-lint holds `block`.
+# Each hit is log-only until config/enforce-reply-lint, or the check's own
+# config/enforce-reply-lint-<code>, holds `block`.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -104,12 +108,66 @@ test_rl3_question_needs_agent_ask() {
   t_reply "$tr" r1 "$VI_QUESTION"
   stop "$dir" "$tr"
   [ "$RC" -eq 2 ] || fail "a question with no agent-ask call must block, got exit $RC"
-  assert_contains "$ERR" "captain.md:20: post it with agent-ask (FM_TASK_ID, AGENT_ASK_ASKER=firstmate); chat carries its id" "the question block lacks its fix text"
+  assert_contains "$ERR" "captain.md:20: a question for the captain is not on Needs you: post it with agent-ask (FM_TASK_ID, AGENT_ASK_ASKER=firstmate); chat carries its link" "the question block lacks its fix text"
   t_tool "$tr" Bash '{"command":"FM_TASK_ID=x AGENT_ASK_ASKER=firstmate agent-ask post --board ..."}'
   t_reply "$tr" r2 "$VI_QUESTION"
   stop "$dir" "$tr"
   [ "$RC" -eq 0 ] && [ -z "$ERR" ] || fail "a question after an agent-ask call in the same turn must pass, got exit $RC: $ERR"
   pass "RL3: a ? blocks without an agent-ask call in the turn and passes after one"
+}
+
+# NY6 (kv2-needs-you-rest): only a question the reply itself asks counts. A `?`
+# inside code or a link is not one, and a paragraph that links its Needs you
+# card (outside code) has put its question there. A question beside a card link
+# in code, or in a paragraph without the link, still counts. A quoted question
+# is left out (quoted card titles), a known limit.
+test_rl3_only_an_asked_question_counts() {
+  local dir="$TMP_ROOT/rl3-prose" tr reply
+  make_primary "$dir" block
+  tr="$dir/t.jsonl"
+  t_session_start "$tr" in-reach
+  for reply in \
+    'Captain, card mới ở đây: https://ubuntu-hermes.tail3278eb.ts.net:8443/#firstmate-board?q=2625c445' \
+    'Captain, link `?q=` mở đúng card, em đã kiểm xong.' \
+    'Captain, card "Mã ngắn cho card Needs you: làm cách nào?" vẫn chờ anh: http://100.88.10.58:5001/#firstmate-board?q=f2b7b680' \
+    'Captain, em mở #firstmate-board?view=board&task=x rồi, mọi thứ ổn.' \
+    'Captain, hướng dẫn ở [Làm cách nào?](https://example.org/guide)' \
+    'Captain, card "Cho chạy việc chuyển skills lên 5001 không?" vẫn chờ anh.' \
+    'Captain, card vẫn chờ anh: anh chọn A hay B? https://ubuntu-hermes.tail3278eb.ts.net:8443/#firstmate-board?q=0a385fc0'; do
+    t_reply "$tr" "r-$RANDOM" "$reply"
+    stop "$dir" "$tr"
+    [ "$RC" -eq 0 ] && [ -z "$ERR" ] || fail "no question asked off Needs you, yet blocked ($reply): exit $RC: $ERR"
+  done
+  for reply in \
+    'Captain, có 5 task stale. Anh muốn em dọn luôn không?' \
+    'Captain, anh muốn deploy không? `#firstmate-board?q=0a385fc0`' \
+    $'Captain, anh chọn A hay B?\n\nCard khác vẫn chờ: https://ubuntu-hermes.tail3278eb.ts.net:8443/#firstmate-board?q=0a385fc0'; do
+    t_user "$tr" "u-$RANDOM"
+    t_reply "$tr" "r-$RANDOM" "$reply"
+    stop "$dir" "$tr"
+    [ "$RC" -eq 2 ] || fail "a question asked off Needs you must block ($reply), got exit $RC"
+  done
+  pass "RL3: a ? in code, a link or quotes, or beside its Needs you card link, passes; a question beside a link in code or in another paragraph blocks"
+}
+
+test_rl3_question_switch_blocks_only_the_question() {
+  local dir="$TMP_ROOT/rl3-switch" tr
+  make_primary "$dir"
+  printf 'block\n' > "$dir/config/enforce-reply-lint-question"
+  tr="$dir/t.jsonl"
+  t_session_start "$tr" in-reach
+  t_reply "$tr" r1 "$EN_REPLY"
+  stop "$dir" "$tr"
+  [ "$RC" -eq 0 ] && [ -z "$ERR" ] || fail "the question switch must leave the English check log-only, got exit $RC: $ERR"
+  grep -q 'would-block	english	' "$dir/state/enforce-reply-lint.log" || fail "the English hit was not logged: $(cat "$dir/state/enforce-reply-lint.log" 2>&1)"
+  t_user "$tr" u2
+  t_reply "$tr" r2 "$VI_QUESTION"
+  stop "$dir" "$tr"
+  [ "$RC" -eq 2 ] || fail "config/enforce-reply-lint-question must block a question off Needs you, got exit $RC"
+  assert_contains "$ERR" "reply lint [question]" "the block does not name the question check"
+  assert_contains "$ERR" "agent-ask" "the block does not point to agent-ask"
+  grep -q '	block	question	' "$dir/state/enforce-reply-lint.log" || fail "the question block was not logged as block"
+  pass "RL3: config/enforce-reply-lint-question blocks the question and leaves the other checks log-only"
 }
 
 test_rl3_blocked_once_per_turn() {
@@ -557,6 +615,8 @@ test_replay_lists_flagged_turns() {
 
 test_rl3_vietnamese_passes_english_is_flagged
 test_rl3_question_needs_agent_ask
+test_rl3_only_an_asked_question_counts
+test_rl3_question_switch_blocks_only_the_question
 test_rl3_blocked_once_per_turn
 test_rl3_one_block_per_user_turn_across_other_stop_hooks
 test_rl3_payload_only_block_does_not_reblock_the_caught_up_reply
