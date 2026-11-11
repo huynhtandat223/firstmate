@@ -4,7 +4,8 @@
 // transcript (JSONL) and decides which captain rules the end of each turn broke.
 // It never writes anything. Codes and the fix each one prints:
 //   english  no Vietnamese letter and 20+ Latin letters in the reply (captain.md:16)
-//   question a `?` in the last 400 characters and no agent-ask call in the turn (captain.md:20)
+//   question a sentence ending in `?` in the last 400 characters of the prose (code, links and quoted
+//            text left out), no agent-ask call in the turn and no Needs you card link (?q=) (captain.md:20)
 //   notes    captain notes wait in the inbox directory (--inbox-dir)
 //   unread   data/captain.md was not read since the last SessionStart
 // Usage:
@@ -190,6 +191,25 @@ function shellReadsCaptain(use) {
   });
 }
 
+// The prose a reader takes for the agent's own words: code, links and quoted text (a card title, the
+// captain's words) are left out, so a `?q=` link or a quoted question is not a question asked.
+function prose(text) {
+  return text
+    .replace(/```[\s\S]*?(```|$)/g, " ")
+    .replace(/`[^`\n]*`/g, " ")
+    .replace(/\[([^\]\n]*)\]\([^)\s]*\)/g, "$1")
+    .replace(/\b(?:https?:\/\/|www\.)\S+|#[\w.-]+\?\S*/g, " ")
+    .replace(/"[^"\n]*"|“[^”\n]*”|«[^»\n]*»/g, " ");
+}
+
+// A question asked of the reader: a `?` that ends a sentence of the reply's own prose, near its end.
+export function asksQuestion(text) {
+  return /\?+(?=[\s)*_]|$)/.test(prose(text).slice(-400));
+}
+
+// A Needs you card the reply points to: the board's `?q=<8 characters>` link puts the question there.
+const CARD_LINK = /[?&]q=[0-9a-f]{8}\b/i;
+
 function callsAgentAsk(use) {
   return use.name === "Bash" && shellCommands(commandOf(use)).some((c) => c.name === "agent-ask");
 }
@@ -207,7 +227,7 @@ export function findStops(rows, options = {}) {
     const codes = [];
     const latin = (text.match(/[A-Za-z]/g) ?? []).length;
     if (language === "vi" && !VIETNAMESE.test(text) && latin >= 20) codes.push("english");
-    if (text.slice(-400).includes("?") && !turnTools.some(callsAgentAsk)) codes.push("question");
+    if (asksQuestion(text) && !CARD_LINK.test(text) && !turnTools.some(callsAgentAsk)) codes.push("question");
     if (sessionStartIdx !== -1 && !readSince && !sessionStartInReach) codes.push("unread");
     return codes;
   };
@@ -243,7 +263,7 @@ export function findStops(rows, options = {}) {
 
 const MESSAGES = {
   english: "captain.md:16: resend in Vietnamese, technical terms stay English",
-  question: "captain.md:20: post it with agent-ask (FM_TASK_ID, AGENT_ASK_ASKER=firstmate); chat carries its id",
+  question: "captain.md:20: a question for the captain is not on Needs you: post it with agent-ask (FM_TASK_ID, AGENT_ASK_ASKER=firstmate); chat carries its link",
   unread: (handoff) =>
     `data/captain.md was not read since the last SessionStart: read data/captain.md${handoff ? ` and the handoff it names (${handoff})` : " and the handoff its Start here line names"} before replying`,
 };
