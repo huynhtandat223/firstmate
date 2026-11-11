@@ -259,6 +259,10 @@ const server = http.createServer((req, res) => {
         delay = { table: parts[2], ms: Number(url.searchParams.get('ms') || 0), n: Number(url.searchParams.get('n') || 1), verb: url.searchParams.get('verb') || 'patch' };
         return reply(res, 200, delay);
       }
+      if (parts[1] === 'fail-delete') {
+        delay = { table: parts[2], ms: 0, n: 1, verb: 'fail-delete' };
+        return reply(res, 200, {});
+      }
       if (parts[1] === 'drop') {
         db[parts[2]] = db[parts[2]].filter((r) => r.id !== parts[3]);
         return reply(res, 200, {});
@@ -288,6 +292,10 @@ const server = http.createServer((req, res) => {
     const verb = { GET: id ? 'get' : 'list', POST: 'create', PATCH: 'patch', DELETE: 'delete' }[req.method];
     if (!verb || !SCHEMA[table].ops.includes(verb)) return reply(res, 404);
     let out;
+    if (verb === 'delete' && delay.n > 0 && delay.verb === 'fail-delete' && delay.table === table) {
+      delay.n--;
+      return reply(res, 503, { success: false, message: 'test child delete failure' });
+    }
     if (verb === 'list' && delay.n > 0 && delay.verb === 'list' && delay.table === table) {
       // the read is held before it is answered, so a later call can finish first
       delay.n--;
@@ -1732,6 +1740,19 @@ case_delete() {
   [ "$(db fm_event_image | jq --arg e "$oeid" '[.[] | select(.fmTaskEventId == $e)] | length')" = 1 ] || { echo "another task's image was deleted"; return 1; }
   [ "$(db fm_event_video | jq --arg e "$oeid" '[.[] | select(.fmTaskEventId == $e)] | length')" = 1 ] || { echo "another task's video was deleted"; return 1; }
   [ "$(db notification | jq -r --arg t $other '.[] | select(.taskId == $t) | .state')" = open ] || { echo "another task's notification was dismissed"; return 1; }
+  # Induce an unsafe-to-reproduce real API failure at its HTTP boundary: child deletion must leave cards open.
+  # This proves failure ordering, not the real service's availability.
+  ft create del-child-fail --title 'Failed child delete' --kind ship >/dev/null || return 1
+  seed fm_task_step '{"taskId":"del-child-fail","state":"implement","position":0,"attempt":0,"status":"done"}'
+  seed notification '{"taskId":"del-child-fail","state":"open","kind":"needs-you","title":"retry","body":"b"}'
+  curl -s -X POST "$BASE/__x/fail-delete/fm_task_step" >/dev/null
+  ft delete del-child-fail --reason stale
+  case $OUT in *"deleted del-child-fail ("*) echo 'failed child delete reported success'; return 1 ;; esac
+  [ -n "$(task_row del-child-fail)" ] || { echo 'failed child delete removed the task'; return 1; }
+  [ "$(db notification | jq -r '.[] | select(.taskId == "del-child-fail") | .state')" = open ] || { echo 'failed child delete dismissed its notification'; return 1; }
+  ft delete del-child-fail --reason retry
+  must 'child failure retry' 0 || return 1
+  [ -z "$(task_row del-child-fail)" ] || { echo 'child failure retry kept the task'; return 1; }
   # running is refused before anything is written
   mk_running del-run >/dev/null || return 1
   before=$(count fm_task_event)
