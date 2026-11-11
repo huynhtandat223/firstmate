@@ -431,7 +431,7 @@ The first check is `drain-ack`: `bin/fm-drain-pretool-check.sh` denies one comma
 Both read `config/enforce-drain-ack`.
 A drain piped into `grep`, `head`, `cut` or `sed` is only ever logged.
 The second check is `reply-lint`: the Claude Stop hook `bin/fm-reply-lint.sh` reads the turn that just ended and flags a reply with no Vietnamese letter, a question for the captain that is not on Needs you, a waiting captain note, and a session that has not read `data/captain.md` since its last SessionStart.
-A question is on Needs you when the turn called `agent-ask` or the reply links its card (`?q=`); a `?` in code, a link or quoted text is not a question.
+A question is on Needs you when the turn called `agent-ask` or the question's own paragraph links its card (`?q=`, outside code); a `?` in code, a link or quoted text is not a question.
 It reads `config/enforce-reply-lint` for every check, and `config/enforce-reply-lint-<code>` (for example `config/enforce-reply-lint-question`) for one check alone; it does nothing until `config/reply-language` holds a language word (`vi` today); with the file absent the lint is off.
 A hit blocks at most once per turn, and `bin/fm-reply-lint.sh --replay <transcript>` lists the turn ends a past transcript would have flagged.
 The third check is `clone-git`: `bin/fm-clone-git-pretool-check.sh` denies a state-changing git command aimed at a clone under `projects/` (AGENTS.md hard rule 1).

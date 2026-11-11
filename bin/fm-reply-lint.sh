@@ -7,8 +7,8 @@
 # reads the turn that just ended and names the broken rule. bin/fm-reply-lint.mjs
 # owns the checks and the fix text each one prints:
 #   english  no Vietnamese letter and 20+ Latin letters in the reply
-#   question a sentence ending in `?` near the end (code, links, quotes left out),
-#            no agent-ask call in the turn and no Needs you card link (?q=)
+#   question a sentence ending in `?` near the end (code, links, quotes left out)
+#            whose paragraph links no Needs you card (?q=), and no agent-ask call
 #   notes    captain notes wait in state/inbox/
 #   unread   data/captain.md was not read since the last SessionStart
 #

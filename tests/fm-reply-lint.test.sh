@@ -7,8 +7,8 @@
 # transcripts shaped like Claude's JSONL, never the live home:
 #   RL3  a Vietnamese reply passes; an English reply, and a `?` with no
 #        agent-ask call in the turn, are flagged; a `?` after an agent-ask call
-#        passes, and so does a `?` that is code, a link or quoted text, or a
-#        reply that links its Needs you card (?q=); config/enforce-reply-lint-question
+#        passes, and so does a `?` in code or a link, or a question whose
+#        paragraph links its Needs you card (?q=); config/enforce-reply-lint-question
 #        alone blocks the question and leaves the other checks log-only;
 #        passes; a turn already blocked once is not blocked again; no
 #        config/reply-language means the lint does nothing.
@@ -117,8 +117,10 @@ test_rl3_question_needs_agent_ask() {
 }
 
 # NY6 (kv2-needs-you-rest): only a question the reply itself asks counts. A `?`
-# inside code, a link or quoted text is not one, and a reply that links its
-# Needs you card has put the question there.
+# inside code or a link is not one, and a paragraph that links its Needs you
+# card (outside code) has put its question there. A question beside a card link
+# in code, or in a paragraph without the link, still counts. A quoted question
+# is left out (quoted card titles), a known limit.
 test_rl3_only_an_asked_question_counts() {
   local dir="$TMP_ROOT/rl3-prose" tr reply
   make_primary "$dir" block
@@ -127,17 +129,25 @@ test_rl3_only_an_asked_question_counts() {
   for reply in \
     'Captain, card mới ở đây: https://ubuntu-hermes.tail3278eb.ts.net:8443/#firstmate-board?q=2625c445' \
     'Captain, link `?q=` mở đúng card, em đã kiểm xong.' \
-    'Captain, card "Mã ngắn cho card Needs you: làm cách nào?" đã có trên board.' \
+    'Captain, card "Mã ngắn cho card Needs you: làm cách nào?" vẫn chờ anh: http://100.88.10.58:5001/#firstmate-board?q=f2b7b680' \
     'Captain, em mở #firstmate-board?view=board&task=x rồi, mọi thứ ổn.' \
+    'Captain, hướng dẫn ở [Làm cách nào?](https://example.org/guide)' \
+    'Captain, card "Cho chạy việc chuyển skills lên 5001 không?" vẫn chờ anh.' \
     'Captain, card vẫn chờ anh: anh chọn A hay B? https://ubuntu-hermes.tail3278eb.ts.net:8443/#firstmate-board?q=0a385fc0'; do
     t_reply "$tr" "r-$RANDOM" "$reply"
     stop "$dir" "$tr"
     [ "$RC" -eq 0 ] && [ -z "$ERR" ] || fail "no question asked off Needs you, yet blocked ($reply): exit $RC: $ERR"
   done
-  t_reply "$tr" r-ask 'Captain, có 5 task stale. Anh muốn em dọn luôn không?'
-  stop "$dir" "$tr"
-  [ "$RC" -eq 2 ] || fail "a question asked with no card and no agent-ask must block, got exit $RC"
-  pass "RL3: a ? in code, a link or quotes, or beside a Needs you card link passes; an asked question blocks"
+  for reply in \
+    'Captain, có 5 task stale. Anh muốn em dọn luôn không?' \
+    'Captain, anh muốn deploy không? `#firstmate-board?q=0a385fc0`' \
+    $'Captain, anh chọn A hay B?\n\nCard khác vẫn chờ: https://ubuntu-hermes.tail3278eb.ts.net:8443/#firstmate-board?q=0a385fc0'; do
+    t_user "$tr" "u-$RANDOM"
+    t_reply "$tr" "r-$RANDOM" "$reply"
+    stop "$dir" "$tr"
+    [ "$RC" -eq 2 ] || fail "a question asked off Needs you must block ($reply), got exit $RC"
+  done
+  pass "RL3: a ? in code, a link or quotes, or beside its Needs you card link, passes; a question beside a link in code or in another paragraph blocks"
 }
 
 test_rl3_question_switch_blocks_only_the_question() {
