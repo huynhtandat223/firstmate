@@ -14,6 +14,8 @@ metadata:
 Handle each printed line as below, before dispatching work that depends on it.
 The line formats themselves are owned by `bin/fm-bootstrap.sh`'s header; this playbook owns the response to actionable lines.
 Session start runs exactly once unless a diagnostic line explicitly asks for a rerun; otherwise retry the affected bootstrap operation as below.
+Every full bootstrap retry below requires verified ownership of this home's session lock under `bin/fm-session-lock-lib.sh`.
+Without verified ownership, use only `FM_BOOTSTRAP_DETECT_ONLY=1 bin/fm-bootstrap.sh` and leave mutating repairs to the lock holder.
 The session-start rules in `session-start-recovery` still bind: detect, then consent, then install - never install anything the captain has not approved in this session - and no work is dispatched until the tools it needs are present and GitHub auth is good.
 When any diagnostic needs captain attention, report the plain consequence and requested action using `AGENTS.md` section 9's captain-facing translation contract; do not name the diagnostic label unless the captain needs to paste it into a command or issue.
 

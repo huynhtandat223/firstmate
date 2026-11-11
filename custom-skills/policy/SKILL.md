@@ -22,7 +22,7 @@ The role controls the role-allowed capability set and communication boundary.
 - `worker` may use this policy and only the capability named by its delivery path.
 - `firstmate` may use this policy and the ordinary Firstmate lifecycle owners.
 
-A `worker` may also use the verification capability when it verifies expected behavior or claims a task done, and the `how` and `why` capabilities when their trigger is active.
+A `worker` may also use the verification capability before implementation or test selection, when it verifies expected behavior or claims a task done, and the `how` and `why` capabilities when their trigger is active.
 `firstmate` may use the `why` capability when its trigger is active.
 Any role may use an interview or crystallization capability when the captain asks for it in that session.
 
@@ -44,7 +44,7 @@ Expand `~` to the current user's home for installed capabilities; the cfw-module
 | The captain explicitly asks to crystallize dependency-aware tickets | `../matt/engineering/to-tickets/SKILL.md` |
 | When to-tickets or to-spec writes an issue body after loading its crystallization procedure, or when creating or updating a task Description | `../ticket-template/SKILL.md` |
 | An implementation worker in `cfw-modules` builds or changes a business page, a component definition, a primitive or a design token | `.agents/skills/cfw-frontend-development/SKILL.md` in that checkout |
-| Verification of a task's expected behavior begins, or a completion claim is about to be made | `../../custom-skills/classical-testing/SKILL.md` |
+| Implementation or test selection is about to begin, verification of a task's expected behavior begins, or a completion claim is about to be made | `../../custom-skills/classical-testing/SKILL.md` |
 | A review task is opened | `../matt/engineering/code-review/SKILL.md` |
 | A diagnosis task is opened | `../matt/engineering/diagnosing-bugs/SKILL.md` |
 | A worker must change or judge existing behaviour it has not traced, or a placement or ownership question is open | `~/.agents/skills/how/SKILL.md` |

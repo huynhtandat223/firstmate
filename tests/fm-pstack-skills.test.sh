@@ -125,7 +125,7 @@ test_policy_holds_the_adapted_skill_edits() {
   assert_present "$POLICY" "capability router is missing"
   local line
   for line in \
-    'A `worker` may also use the verification capability when it verifies expected behavior or claims a task done, and the `how` and `why` capabilities when their trigger is active.' \
+    'A `worker` may also use the verification capability before implementation or test selection, when it verifies expected behavior or claims a task done, and the `how` and `why` capabilities when their trigger is active.' \
     '`firstmate` may use the `why` capability when its trigger is active.' \
     'The vendored bytes under `custom-skills/matt/` are immutable.' \
     'Adapted skills (`how`, `why`, `arena`, `swarm`) are not vendored: each carries a `PROVENANCE.md` naming its upstream commit and what changed.'; do
