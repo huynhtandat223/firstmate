@@ -2413,6 +2413,21 @@ case_owner_writer() {
   ow --action comment --task $t --anchor-prefix 'here' --note bad --owner u-1 --to firstmate; must 'prefix without quote' 2 || return 1
   ow --action comment --task $t --anchor-quote '' --note bad --owner u-1 --to firstmate; must 'empty quote' 2 || return 1
   ow --action comment --task $t --reply-to "$root" --anchor-quote '' --note bad --owner u-1 --to firstmate; must 'empty quote with reply-to' 2 || return 1
+  # The agent proposes the thread's outcome; the owner accepts it with no words; any later comment reopens the thread.
+  local proposal accepted
+  ft comment $t --reply-to "$again" --role firstmate --outcome 'Listed in any state' --note 'Proposed outcome'; must 'outcome proposal' 0 || return 1
+  proposal=$(seq_of)
+  ow --action comment --task $t --reply-to "$proposal" --accept yes --owner u-1 --to firstmate; must 'owner accepts the outcome' 0 || return 1
+  accepted=$(db fm_task_event | jq -r '[.[] | select(.kind == "comment")] | max_by(.seq).seq')
+  db fm_task_event | jq -e --argjson p "$proposal" --argjson a "$accepted" --argjson r "$root" '[.[] | select(.seq == $p or .seq == $a)] | sort_by(.seq) | map(.body | fromjson | {thread, outcome, accepted, note}) == [{thread: $r, outcome: "Listed in any state", accepted: null, note: "Proposed outcome"}, {thread: $r, outcome: "Listed in any state", accepted: $p, note: "Accepted: Listed in any state"}]' >/dev/null || { echo "outcome not resolved: $(db fm_task_event | jq -c --argjson a "$accepted" '.[] | select(.seq == $a) | .body')"; return 1; }
+  grep -R -F "Owner accepted the outcome proposed in comment $proposal on $t (seq $accepted); the thread is resolved." "$FM_HOME/state/inbox" >/dev/null || { echo 'missing accept delivery'; return 1; }
+  before=$(count fm_task_event)
+  ft comment $t --outcome 'No thread' --note bad; must 'outcome without reply-to' 2 || return 1
+  ft comment $t --reply-to "$question" --outcome 'Not a thread' --note bad; must 'outcome outside a thread' 5 || return 1
+  ow --action comment --task $t --reply-to "$again" --accept yes --owner u-1 --to firstmate; must 'accept without a proposal' 5 || return 1
+  ft comment $t --reply-to "$proposal" --accept; must 'accept by a worker' 5 || return 1
+  ft comment $t --reply-to "$again" --outcome $'two\nlines' --note bad; must 'two-line outcome' 2 || return 1
+  [ "$(count fm_task_event)" = "$before" ] || return 1
   ft comment $t --anchor-quote "$(printf 'q%.0s' $(seq 501))" --note bad; must 'quote too long' 2 || return 1
   [ "$(count fm_task_event)" = "$before" ] || return 1
   ft create tk-foreign --title foreign --kind ship; must 'foreign setup' 0 || return 1
@@ -3601,5 +3616,6 @@ mutate_owner_request 'a triage task is assigned before started' 'triage|todo) "$
 mutate_owner_request 'a cleanup refusal leaves the task open' 'try "$TEARDOWN" "$TASK" || refuse "$(refusal_text "$ERR")"' 'try "$TEARDOWN" "$TASK" || true'
 mutate_owner_request "the owner's setup names the spawn's runtime" 'runtime=(--harness "$harness")' 'runtime=()'
 mutate 'a reply joins the thread of the comment it answers' owner_writer 'bodyOf(parent).thread ?? ' ''
+mutate 'only the owner resolves a thread' owner_writer "if (accept && who.role !== 'owner') throw rule" 'if (false) throw rule'
 pass 'every guarded behavior has a red mutation proof'
 live_home_untouched
