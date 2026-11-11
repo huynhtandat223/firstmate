@@ -3367,7 +3367,7 @@ mutate 'an answer must be one of the question options' question_round "if (!opti
 mutate 'each owner question waits on its own answer' question_round "(question ? bodyOf(e).answer?.question === question :" "(question ? true :"
 mutate 'home refuses a task that is in another home' backlog_home "if (task.backlogHome && task.backlogHome !== home) throw rule" "if (false) throw rule"
 mutate 'home refuses an archived task' backlog_home "if (task.state === 'archived') throw rule(\`home is refused" "if (false) throw rule(\`home is refused"
-mutate 'a running task is refused' delete "if (task.state === 'running') {" "if (false) {"
+mutate 'a running task is refused' delete "if (state === 'running') {" "if (false) {"
 mutate 'a live worker is refused' delete "if (worker === 'alive') {" "if (false) {"
 mutate 'an unreadable worker is refused' delete "if (worker === 'unknown') {" "if (false) {"
 mutate 'an open PR is refused' delete 'if (task.prUrl && prIsOpen(task.prUrl)) {' 'if (false) {'
