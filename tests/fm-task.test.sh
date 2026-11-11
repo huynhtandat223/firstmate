@@ -2575,6 +2575,29 @@ case_owner_writer() {
   ow --action comment --task $t --reply-to "$question" --note bad --owner u-1 --to firstmate
   must 'owner foreign target' 5 || return 1
   before=$((before + 2))
+  # A marked area: one owner comment carries its picture, the worker gets the picture's file and the fix-proof command.
+  local png='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==' mark
+  ow --action comment --task $t --note 'Marked area: badge overlaps' --image-data "$png" --image-label 'marked area' --image-type image/png --owner u-1 --to firstmate
+  must 'owner image comment' 0 || return 1
+  mark=$(db fm_task_event | jq -r '[.[] | select(.kind == "comment")] | max_by(.seq).seq')
+  db fm_event_image | jq -e --arg png "$png" '[.[] | select(.label == "marked area" and .mediaType == "image/png" and .content == $png)] | length == 1' >/dev/null || { echo 'image not stored with its label and bytes'; return 1; }
+  cmp -s <(printf '%s' "$png" | base64 -d) "$FM_HOME/data/$t/owner-images/seq-$mark.png" || { echo 'picture file not kept for the worker'; return 1; }
+  grep -R -F "Add the fix proof to this thread with: bin/fm-task.sh comment $t --reply-to $mark --actor firstmate --role firstmate --image <proof.png> --image-label 'fix proof'" "$FM_HOME/state/inbox" >/dev/null || { echo 'missing fix-proof delivery'; return 1; }
+  ow --action comment --task $t --note 'Marked area: badge overlaps' --image-data "$png" --image-label 'marked area' --image-type image/png --owner u-1 --to firstmate
+  must 'owner image replay' 0 || return 1
+  [ "$(count fm_event_image)" = 1 ] || { echo 'replayed image stored twice'; return 1; }
+  before=$((before + 1))
+  ow --action comment --task $t --note x --image-data 'not base64!' --image-label 'marked area' --owner u-1
+  must 'owner image not base64' 2 || return 1
+  ow --action comment --task $t --note x --image-data "$png" --owner u-1
+  must 'owner image without label' 2 || return 1
+  ow --action comment --task $t --note x --image-data "$png" --image-label l --image-type image/svg+xml --owner u-1
+  must 'owner image wrong type' 2 || return 1
+  ow --action comment --task $t --note x --image-data "$(head -c 96004 /dev/zero | tr '\0' A)" --image-label l --owner u-1
+  must 'owner image too long' 2 || return 1
+  ow --action answer --task $t --option 'Option A' --image-data "$png" --image-label l --owner u-1
+  must 'owner image on answer' 2 || return 1
+  [ "$(count fm_task_event)" = "$before" ] && [ "$(count fm_event_image)" = 1 ] || { echo 'a refused image comment stored rows'; return 1; }
   ow --action comment --task $t --note bad --ask unknown --owner u-1
   must 'unknown skill' 2 || return 1
   ow --action answer --task $t --option 'Option A' --ask why --owner u-1
@@ -3901,6 +3924,8 @@ mutate_owner() {  # <label> <exact wrapper text> <replacement>: the owner_writer
 }
 mutate_owner 'the writer operation needs the owner the row appends' "case \"\$OWNER\" in ''|" "case \"\$OWNER\" in x|"
 mutate_owner 'the writer runs as the owner' 'FM_TASK_ROLE=owner' 'FM_TASK_ROLE=worker'
+mutate_owner 'an owner comment carries its image to the writer' '"${accept_args[@]}" "${image_args[@]}" --key' '"${accept_args[@]}" --key'
+mutate_owner 'an owner image fits one command argument' '[ "${#IMAGE_DATA}" -le 96000 ]' 'true'
 mutate_owner_hold() {  # <label> <exact source text> <replacement>
   cp "$TMP_ROOT/fm-task-owner.sh.orig" "$MBIN/fm-task-owner.sh"
   S="$2" R="$3" perl -0pi -e 's/\Q$ENV{S}\E/$ENV{R}/' "$MBIN/fm-task-owner.sh"

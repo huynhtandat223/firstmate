@@ -6,7 +6,7 @@
 # a page value. Each action runs bin/fm-task.sh, the one writer, with that owner as actor (`owner:<id>`, role
 # owner); the writer keeps seq, the transitions and the projection, and this file adds no rule of its own.
 #
-# Usage: fm-task-owner.sh --action ACTION --task TASK [--option O] [--row ID@W] [--item I --on|--off] [--decision approve|changes] [--plan-seq N] [--note N] [--to RECIPIENT] [--reply-to SEQ] [--anchor-quote Q [--anchor-prefix P] [--anchor-suffix S]] [--accept yes] [--ask why|how|wait-what] [--rule ID --state S ...] [--setup JSON] --owner ID
+# Usage: fm-task-owner.sh --action ACTION --task TASK [--option O] [--row ID@W] [--item I --on|--off] [--decision approve|changes] [--plan-seq N] [--note N] [--to RECIPIENT] [--reply-to SEQ] [--anchor-quote Q [--anchor-prefix P] [--anchor-suffix S]] [--accept yes] [--ask why|how|wait-what] [--image-data BASE64 --image-label L [--image-type T]] [--rule ID --state S ...] [--setup JSON] --owner ID
 #   delete   a task: delete TASK --reason "Removed by owner:<id> on the board"; writer refusals return ok=false
 #   inbox-task|inbox-link|inbox-delete resolve a notification (--task is its id; link needs --option task-id)
 #   subtask  a subtask:      create PARENT-<slug of the title> --title <note> --after TASK, with the parent's kind and
@@ -43,6 +43,9 @@
 #   (bin/fm-task-lib.mjs, comment); it delivers the quote and the reply command, and is refused with --reply-to.
 #   --accept yes on comment, with --reply-to naming the agent's proposed --outcome, resolves the thread with that outcome;
 #   its --note is optional.
+#   --image-data on comment attaches one picture (base64 bytes, at most 96000 characters, so one command argument holds it;
+#   --image-type image/jpeg (default) or image/png; --image-label names it): the marked area of a page the owner reports on
+#   the board (cfw-modules task kv2-prototype-review). Its delivery asks for the fix proof as a reply with an image.
 #   Dev 5001 maps each invoke body key to --key: send "reply-to": SEQ to its existing fm-task-owner row.
 #   Replayed comment keys do not deliver again.
 #   A pass or fail by role owner also sets the row's owner item (bin/fm-task-lib.mjs, check).
@@ -61,6 +64,7 @@ WRITER="${FM_TASK_OWNER_WRITER:-$SCRIPT_DIR/fm-task.sh}"
 HOLD="${FM_TASK_OWNER_HOLD:-$SCRIPT_DIR/fm-captain-hold.sh}"
 
 ACTION='' TASK='' OPTION='' RELATION='' ROW='' DECISION='' PLAN_SEQ='' NOTE='' OWNER='' TO='' ASK='' RULE='' ITEM='' SWITCH='' QUESTION='' SETUP='' REPLY_TO='' ANCHOR_QUOTE='' ANCHOR_PREFIX='' ANCHOR_SUFFIX='' ANCHORED='' ACCEPT=''
+IMAGE_DATA='' IMAGE_LABEL='' IMAGE_TYPE=''
 declare -A RULE_FIELD=()
 RULE_FLAGS='state harness model effort rank account hours scope enabled warning'
 WRITES='[]'
@@ -97,6 +101,9 @@ while [ "$#" -gt 0 ]; do
     --anchor-prefix) ANCHOR_PREFIX=$2 ANCHORED=1 ;;
     --anchor-suffix) ANCHOR_SUFFIX=$2 ANCHORED=1 ;;
     --accept) ACCEPT=$2 ;;
+    --image-data) IMAGE_DATA=$2 ;;
+    --image-label) IMAGE_LABEL=$2 ;;
+    --image-type) IMAGE_TYPE=$2 ;;
     --state|--harness|--model|--effort|--rank|--account|--hours|--scope|--enabled|--warning) RULE_FIELD[${1#--}]=$2 ;;
     --item) ITEM=$2 ;;
     *) usage "unknown argument $1" ;;
@@ -124,6 +131,16 @@ fi
 if [ -n "$REPLY_TO" ]; then
   [ "$ACTION" = comment ] || usage '--reply-to is only allowed for comment'
   [[ "$REPLY_TO" =~ ^[1-9][0-9]*$ ]] || usage '--reply-to must be a positive integer sequence'
+fi
+IMAGE_EXT=''
+if [ -n "$IMAGE_DATA$IMAGE_LABEL$IMAGE_TYPE" ]; then
+  [ "$ACTION" = comment ] || usage '--image-data is only allowed for comment'
+  [ -n "$IMAGE_DATA" ] || usage '--image-label and --image-type need --image-data'
+  [ "${#IMAGE_DATA}" -le 96000 ] || usage 'the image is longer than 96000 base64 characters'
+  [[ "$IMAGE_DATA" =~ ^[A-Za-z0-9+/]+={0,2}$ ]] || usage '--image-data must be base64'
+  [[ "$IMAGE_LABEL" =~ [^[:space:]] ]] || usage '--image-data needs a nonblank --image-label'
+  [ "${#IMAGE_LABEL}" -le 200 ] || usage 'the image label is longer than 200 characters'
+  case "${IMAGE_TYPE:-image/jpeg}" in image/jpeg) IMAGE_EXT=jpg ;; image/png) IMAGE_EXT=png ;; *) usage '--image-type must be image/jpeg or image/png' ;; esac
 fi
 export FM_TASK_ACTOR="owner:$OWNER" FM_TASK_ROLE=owner
 unset FM_TASK_ID
@@ -195,7 +212,10 @@ case "$ACTION" in
       if worker_live "$TASK"; then TO=$TASK; else TO=firstmate; fi
     fi
     [ "$TO" = firstmate ] || worker_live "$TO" || usage 'recipient must be firstmate or a live worker'
-    if [ -n "$ANCHOR_QUOTE" ]; then
+    if [ -n "$IMAGE_DATA" ]; then
+      # A picture is part of what the owner sent: another picture is another comment.
+      digest=$(printf '%s\0' "$OWNER" "$NOTE" "$ASK" "$REPLY_TO" anchor "$ANCHOR_QUOTE" "$ANCHOR_PREFIX" "$ANCHOR_SUFFIX" image "$IMAGE_LABEL" "$IMAGE_DATA" "$(date -u +%Y-%m-%dT%H:%M)" | sha256sum) || usage 'comment digest failed'
+    elif [ -n "$ANCHOR_QUOTE" ]; then
       # The same words at another passage are another thread.
       digest=$(printf '%s\0' "$OWNER" "$NOTE" "$ASK" anchor "$ANCHOR_QUOTE" "$ANCHOR_PREFIX" "$ANCHOR_SUFFIX" "$(date -u +%Y-%m-%dT%H:%M)" | sha256sum) || usage 'comment digest failed'
     elif [ -n "$REPLY_TO" ]; then
@@ -219,7 +239,14 @@ case "$ACTION" in
     [ -z "$ACCEPT" ] || accept_args=(--accept)
     note_args=()
     [ -z "$NOTE" ] || note_args=(--note "$NOTE")
-    run comment "$TASK" "${note_args[@]}" "${ask_args[@]}" "${reply_args[@]}" "${anchor_args[@]}" "${accept_args[@]}" --key "owner-comment:$TASK:$digest" || RC=$?
+    image_args=()
+    if [ -n "$IMAGE_DATA" ]; then
+      image_dir=$(mktemp -d "${TMPDIR:-/tmp}/fm-owner-image.XXXXXX") || usage 'no temporary directory'
+      trap 'rm -rf "$image_dir"' EXIT
+      printf '%s' "$IMAGE_DATA" | base64 -d > "$image_dir/image.$IMAGE_EXT" 2>/dev/null && [ -s "$image_dir/image.$IMAGE_EXT" ] || usage '--image-data is not decodable base64'
+      image_args=(--image "$image_dir/image.$IMAGE_EXT" --image-label "$IMAGE_LABEL")
+    fi
+    run comment "$TASK" "${note_args[@]}" "${ask_args[@]}" "${reply_args[@]}" "${anchor_args[@]}" "${accept_args[@]}" "${image_args[@]}" --key "owner-comment:$TASK:$digest" || RC=$?
     if [ "$RC" -eq 0 ] && ! [[ "$WRITES" == *'(already recorded)'* ]]; then
       seq=$(jq -r '.[0]' <<<"$WRITES")
       seq=${seq#seq=}; seq=${seq%% *}
@@ -239,6 +266,12 @@ case "$ACTION" in
         fi
         if [ -n "$ACCEPT" ]; then
           message="Owner accepted the outcome proposed in comment $REPLY_TO on $TASK (seq $seq); the thread is resolved.${NOTE:+ $NOTE}"
+        fi
+        if [ -n "$IMAGE_DATA" ]; then
+          # The worker reads the picture as a file: the writer keeps it only in the record.
+          image_copy="$FM_HOME/data/$TASK/owner-images/seq-$seq.$IMAGE_EXT"
+          mkdir -p "${image_copy%/*}" && cp "$image_dir/image.$IMAGE_EXT" "$image_copy" || image_copy='(not kept: see the task on the board)'
+          message+=$'\n'"It carries one image, \"$IMAGE_LABEL\": $image_copy. Add the fix proof to this thread with: bin/fm-task.sh comment $TASK --reply-to $seq$answer_as --image <proof.png> --image-label 'fix proof' --note <what changed>"
         fi
         if [ -n "$ASK" ]; then
           message+=$'\n'"Run the $ASK skill on task $TASK. Reply with: bin/fm-task.sh comment $TASK --reply-to $seq --role firstmate --note <output>"
