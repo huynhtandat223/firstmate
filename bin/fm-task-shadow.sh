@@ -17,7 +17,7 @@
 #   fm-task-shadow.sh status <config> <state>/<task>.status          the last status line          (the worker's status command)
 #   fm-task-shadow.sh cleaned-up <task>                              a comment event               (bin/fm-teardown.sh)
 #   fm-task-shadow.sh verified <task>                                a comment event               (bin/fm-verify-close.sh)
-#   fm-task-shadow.sh held <task> <hold-kind> <reason>               ask (captain) or block        (bin/fm-captain-hold.sh hold)
+#   fm-task-shadow.sh held <task> <hold-kind> <reason>               block (captain: transient)     (bin/fm-captain-hold.sh hold)
 #   fm-task-shadow.sh answered <task> <released|closed>              unblock or approve            (bin/fm-captain-hold.sh answer)
 #   fm-task-shadow.sh deploy-verify <task> <sha> <round> <issue>     a deploy event                (bin/fm-procevent-deploy-verify.sh)
 #   fm-task-shadow.sh step-start <task> <generation> <harness> [<model> [<effort> [<account>]]]   (an empty model keeps the setup's)
@@ -27,9 +27,10 @@
 #   fm-task-shadow.sh step-end <task> <generation> <reason>          step end, when a state runs     (bin/fm-teardown.sh, fm-control.sh exit)
 #
 # Status line to writer command: working -> heartbeat (after unblock and start when the record holds the task blocked);
-# done -> done (the line is the summary; the other template fields read "-"); needs-decision -> ask with the options
-# "Decide now" and "Decide later"; blocked and paused -> block transient (paused keeps its "until"); failed -> block failure;
-# resolved -> unblock. A writer rule refusal (a transition the record does not allow) is logged and left to the reconciler.
+# done -> done (the line is the summary; the other template fields read "-"); needs-decision -> heartbeat with the line as a
+# note (a comment event when the record refuses the heartbeat), never an ask; blocked and paused -> block transient (paused
+# keeps its "until"); failed -> block failure; resolved -> unblock. A captain hold -> block transient to firstmate, never an
+# ask; an external hold -> block external. A writer rule refusal (a transition the record does not allow) is logged and left to the reconciler.
 #
 # A task begun after T5 ('record: rows' in data/<task>/verify.md, bin/fm-verify-gate-lib.sh) is verified on check rows,
 # which bin/fm-procevent-deploy-verify.sh writes itself before its ask: a verification-pending hold leaves such a task
@@ -162,7 +163,9 @@ status_event() {
       [ -z "$url" ] || pr=(--pr-url "$url")
       w "status-$key" "done" "$TASK" --summary "$text" --changed-files - --verification - --residual-risk - ${pr[@]+"${pr[@]}"} ;;
     needs-decision)
-      w "status-$key" ask "$TASK" --question "$text" --option 'Decide now' --option 'Decide later' --recommendation - --why 'a needs-decision status line' ;;
+      # a note, never an ask: the owner's questions are written by the producer that has one, not by this hook
+      w "status-$key" heartbeat "$TASK" --note "needs-decision: $text" \
+        || w "status-$key-comment" event "$TASK" comment --note "needs-decision: $text" ;;
     blocked)
       w "status-$key" block transient "$TASK" --reason "$text" --next-actor firstmate ;;
     paused)
@@ -206,7 +209,7 @@ hold_event() {  # <hold-kind> <reason>: make the record capable of taking this o
     local prior
     prior=$("$WRITER" show "$TASK" --json 2>/dev/null)
     local mapped_kind=transient mapped_actor=firstmate
-    case "$kind" in captain) mapped_kind=needs-decision; mapped_actor=owner ;; external) mapped_kind=external ;; esac
+    case "$kind" in external) mapped_kind=external ;; esac
     if [ "$(printf '%s' "$prior" | jq -r '.blockReason')" = "$reason" ] \
       && [ "$(printf '%s' "$prior" | jq -r '.blockKind')" = "$mapped_kind" ] \
       && [ "$(printf '%s' "$prior" | jq -r '.nextActor')" = "$mapped_actor" ]; then
@@ -231,8 +234,6 @@ hold_event() {  # <hold-kind> <reason>: make the record capable of taking this o
     return 0
   fi
   case "$kind" in
-    captain)
-      w "hold-$key" ask "$TASK" --question "$reason" --option 'Decide now' --option 'Decide later' --recommendation - --why 'a captain hold' --next-actor owner ;;
     external)
       w "hold-$key" block external "$TASK" --reason "$reason" --next-actor firstmate ;;
     *)
