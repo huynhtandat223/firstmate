@@ -798,7 +798,7 @@ fi
 
 REQUIRED_SKILLS_SECTION=$(printf '%s\n' \
   '# Required skills and instructions' \
-  'Ask each decision the owner owes through agent-ask, with images when a picture decides it, including while the owner chats in your pane.' \
+  'While the owner chats with you in your pane, ask each decision he owes through agent-ask, with images when a picture decides it, rather than as a question in the pane.' \
   "Load $FM_ROOT/custom-skills/policy/SKILL.md once, then follow its trigger routing for this role." \
   "Before verifying behavior or claiming completion, load $FM_ROOT/custom-skills/classical-testing/SKILL.md.")
 if [ -f "$HOME/.agents/skills/writing-for-agents/SKILL.md" ]; then
