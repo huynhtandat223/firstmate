@@ -68,6 +68,8 @@
 //   thread   <task> [--since SEQ]                                       full comments, oldest first
 //   comment  <task> [--note T] [--image PATH --image-label L]... [--video PATH --video-label L]...
 //            [--ask why|how|wait-what] [--reply-to SEQ]                 any state; reply-to must name a comment of this task
+//            [--anchor-quote Q [--anchor-prefix P] [--anchor-suffix S]]   opens a thread at the quoted passage (not with
+//            --reply-to); a reply joins the thread of the comment it answers and stores it as `thread`
 //   event    <task> <kind> [--note N] [--pr-url U] [--head H] [--url U] kinds: steer comment pr deploy ci
 //            protocol_violation divergence link; --head on deploy (the deployed head, which user-visible passes count on
 //            from then) or on ci (the head the CI result read); --url on link; no other kind takes them
@@ -470,7 +472,7 @@ const SPECS = {
   plan: { pos: ['task'], flags: { document: 's', 'document-title': 's' } },
   'plan-decision': { pos: ['task'], flags: { decision: 's', 'plan-seq': 's' } },
   thread: { pos: ['task'], flags: { since: 's' } },
-  comment: { pos: ['task'], flags: { image: 'm', 'image-label': 'm', video: 'm', 'video-label': 'm', ask: 's', 'reply-to': 's' } },
+  comment: { pos: ['task'], flags: { image: 'm', 'image-label': 'm', video: 'm', 'video-label': 'm', ask: 's', 'reply-to': 's', 'anchor-quote': 's', 'anchor-prefix': 's', 'anchor-suffix': 's' } },
   event: { pos: ['task', 'kind'], flags: { 'pr-url': 's', head: 's', touched: 's', 'next-actor': 's', 'clears-on': 's', rows: 's', url: 's' } },
   checks: { pos: ['task'], flags: { 'as-deployed': 's', touched: 's' } },
   link: { pos: ['parent', 'child'], flags: {} },
@@ -1520,6 +1522,24 @@ async function cmdThread(args) {
   }
 }
 
+// The passage a thread opens at: the quoted words and a little text on each side, so a page finds them again.
+const ANCHOR_QUOTE_MAX = 500;
+const ANCHOR_SIDE_MAX = 160;
+function anchorOf(args) {
+  const quote = args.flags['anchor-quote'];
+  const prefix = args.flags['anchor-prefix'];
+  const suffix = args.flags['anchor-suffix'];
+  if (quote === undefined) {
+    if (prefix !== undefined || suffix !== undefined) throw usage('--anchor-prefix and --anchor-suffix need --anchor-quote');
+    return undefined;
+  }
+  if (!quote.trim() || quote.length > ANCHOR_QUOTE_MAX) throw usage(`--anchor-quote is 1 to ${ANCHOR_QUOTE_MAX} characters of quoted text`);
+  for (const [name, side] of [['prefix', prefix], ['suffix', suffix]]) {
+    if (side !== undefined && side.length > ANCHOR_SIDE_MAX) throw usage(`--anchor-${name} is at most ${ANCHOR_SIDE_MAX} characters`);
+  }
+  return { quote, ...(prefix ? { prefix } : {}), ...(suffix ? { suffix } : {}) };
+}
+
 async function cmdComment(args) {
   const taskId = taskIdOf(args);
   const who = identity(args, 'worker');
@@ -1530,10 +1550,15 @@ async function cmdComment(args) {
   if (ask !== undefined && !['why', 'how', 'wait-what'].includes(ask)) throw usage('--ask must be why, how or wait-what');
   const reply = args.flags['reply-to'];
   if (reply !== undefined && (!/^[1-9][0-9]*$/.test(reply) || !Number.isSafeInteger(Number(reply)))) throw usage('--reply-to must be a positive integer sequence');
+  const anchor = anchorOf(args);
+  if (anchor && reply !== undefined) throw usage('a comment opens a thread at --anchor-quote or answers one with --reply-to, not both');
   return write(taskId, who, async ({ task, events }) => {
     guard('comment', task);
-    if (reply !== undefined && !events.some((event) => event.seq === Number(reply) && event.kind === 'comment')) throw rule('--reply-to must name an existing comment of this task');
-    const spec = { kind: 'comment', note: noteOf(args), extra: { ...(ask ? { ask } : {}), ...(reply !== undefined ? { replyTo: Number(reply) } : {}) }, children: withVideos(withImages({}, images), videos) };
+    const parent = reply === undefined ? undefined : events.find((event) => event.seq === Number(reply) && event.kind === 'comment');
+    if (reply !== undefined && !parent) throw rule('--reply-to must name an existing comment of this task');
+    // A reply joins the thread of the comment it answers: that comment's thread, or the comment itself when it opened one.
+    const thread = parent ? (bodyOf(parent).thread ?? (bodyOf(parent).anchor ? parent.seq : undefined)) : undefined;
+    const spec = { kind: 'comment', note: noteOf(args), extra: { ...(ask ? { ask } : {}), ...(reply !== undefined ? { replyTo: Number(reply) } : {}), ...(thread ? { thread } : {}), ...(anchor ? { anchor } : {}) }, children: withVideos(withImages({}, images), videos) };
     return spec;
   });
 }
