@@ -259,8 +259,8 @@ const server = http.createServer((req, res) => {
         delay = { table: parts[2], ms: Number(url.searchParams.get('ms') || 0), n: Number(url.searchParams.get('n') || 1), verb: url.searchParams.get('verb') || 'patch' };
         return reply(res, 200, delay);
       }
-      if (parts[1] === 'fail-delete') {
-        delay = { table: parts[2], ms: 0, n: 1, verb: 'fail-delete' };
+      if (parts[1] === 'fail-delete' || parts[1] === 'fail-patch') {
+        delay = { table: parts[2], ms: 0, n: 1, verb: parts[1] };
         return reply(res, 200, {});
       }
       if (parts[1] === 'drop') {
@@ -292,7 +292,7 @@ const server = http.createServer((req, res) => {
     const verb = { GET: id ? 'get' : 'list', POST: 'create', PATCH: 'patch', DELETE: 'delete' }[req.method];
     if (!verb || !SCHEMA[table].ops.includes(verb)) return reply(res, 404);
     let out;
-    if (verb === 'delete' && delay.n > 0 && delay.verb === 'fail-delete' && delay.table === table) {
+    if (delay.n > 0 && delay.verb === `fail-${verb}` && delay.table === table) {
       delay.n--;
       return reply(res, 503, { success: false, message: 'test child delete failure' });
     }
@@ -1753,6 +1753,26 @@ case_delete() {
   ft delete del-child-fail --reason retry
   must 'child failure retry' 0 || return 1
   [ -z "$(task_row del-child-fail)" ] || { echo 'child failure retry kept the task'; return 1; }
+  # The same controlled HTTP failure at the final task DELETE must also preserve its card.
+  ft create del-final-fail --title 'Failed final delete' --kind ship >/dev/null || return 1
+  seed notification '{"taskId":"del-final-fail","state":"open","kind":"needs-you","title":"retry","body":"b"}'
+  curl -s -X POST "$BASE/__x/fail-delete/fm_task" >/dev/null
+  ft delete del-final-fail --reason stale
+  [ -n "$(task_row del-final-fail)" ] || { echo 'failed final delete removed the task'; return 1; }
+  [ "$(db notification | jq -r '.[] | select(.taskId == "del-final-fail") | .state')" = open ] || { echo 'failed final delete dismissed its notification'; return 1; }
+  ft delete del-final-fail --reason retry
+  must 'final delete retry' 0 || return 1
+  [ -z "$(task_row del-final-fail)" ] || { echo 'final delete retry kept the task'; return 1; }
+  # A failed notification PATCH is retryable even though all task rows are already gone.
+  ft create del-notice-fail --title 'Failed notification cleanup' --kind ship >/dev/null || return 1
+  seed notification '{"taskId":"del-notice-fail","state":"open","kind":"needs-you","title":"retry","body":"b"}'
+  curl -s -X POST "$BASE/__x/fail-patch/notification" >/dev/null
+  ft delete del-notice-fail --reason stale
+  [ -z "$(task_row del-notice-fail)" ] || { echo 'notification failure retained the task'; return 1; }
+  [ "$(db notification | jq -r '.[] | select(.taskId == "del-notice-fail") | .state')" = open ] || { echo 'failed notification PATCH changed its card'; return 1; }
+  ft delete del-notice-fail --reason retry
+  must 'notification cleanup retry' 0 || return 1
+  [ "$(db notification | jq -r '.[] | select(.taskId == "del-notice-fail") | .state')" = dismissed ] || { echo 'notification retry left its card open'; return 1; }
   # running is refused before anything is written
   mk_running del-run >/dev/null || return 1
   before=$(count fm_task_event)

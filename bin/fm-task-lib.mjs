@@ -65,7 +65,7 @@
 //   archive  <task>                          triage|todo|ready|blocked|review|done -> archived
 //   delete   <task>... --reason WHY          any state but running, with no live worker and a PR that is not open or
 //            unreadable; deletes the task row, its events and their children, its steps, checks, owner items, deliveries,
-//            links on either side, and dismisses its undismissed notifications before deleting the task row. There is no backup, and one
+//            links on either side, then dismisses its undismissed notifications after deleting the task row. There is no backup, and one
 //            refusal or failure does not stop the other ids. A new event written after the checks refuse the id.
 //   home     <task> --home H                 sets the backlog home of a task that has none (any state but archived);
 //            the same home again is a no-op, another home is refused: a task belongs to one board
@@ -1316,12 +1316,18 @@ async function deleteRows(table, rows) {
 }
 
 // Delete every row the task owns, children first, so a failure leaves the task row readable for a re-run. Notifications
-// are dismissed after the dependent rows, just before the task row, so a child-delete failure leaves its cards open.
+// are dismissed only after the task row is deleted, so any row-delete failure leaves its cards open.
+async function dismissTaskNotices(taskId) {
+  const notices = await listAll('notification', { filter: `taskId eq ${lit(taskId)} and state ne 'dismissed'`, orderby: 'id', select: 'id' });
+  for (const notice of notices) {
+    ok(await http('PATCH', `/api/notification/${encodeURIComponent(notice.id)}`, { state: 'dismissed' }), 'dismiss the notification');
+  }
+  return notices.length;
+}
 async function deleteTaskRows(taskId, events) {
   const eventIds = events.map((e) => `fmTaskEventId eq ${e.id}`);
   const seqs = events.map((e) => `seq eq ${e.seq}`);
   let rows = 0;
-  const notices = await listAll('notification', { filter: `taskId eq ${lit(taskId)} and state ne 'dismissed'`, orderby: 'id', select: 'id' });
   for (const table of EVENT_CHILD_TABLES) rows += await deleteRows(table, await listByFilters(table, eventIds));
   for (const table of ['fm_task_step', 'fm_task_check', 'fm_owner_check']) {
     rows += await deleteRows(table, await listAll(table, { filter: `taskId eq ${lit(taskId)}`, orderby: 'id', select: 'id' }));
@@ -1332,10 +1338,8 @@ async function deleteTaskRows(taskId, events) {
     ...await listAll('fm_task_link', { filter: `parentTaskId eq ${lit(taskId)}`, orderby: 'id', select: 'id' }),
     ...await listAll('fm_task_link', { filter: `childTaskId eq ${lit(taskId)}`, orderby: 'id', select: 'id' }),
   ]);
-  for (const notice of notices) {
-    ok(await http('PATCH', `/api/notification/${encodeURIComponent(notice.id)}`, { state: 'dismissed' }), 'dismiss the notification');
-  }
   rows += await deleteRows('fm_task', await listAll('fm_task', { filter: `taskId eq ${lit(taskId)}`, orderby: 'id', select: 'id' }));
+  await dismissTaskNotices(taskId);
   return rows;
 }
 
@@ -1347,7 +1351,11 @@ async function deleteOutcome(taskId) {
   const events = await rawTaskEvents(taskId);
   const task = fold(events);
   const stored = task ? null : await firstRow('fm_task', `taskId eq ${lit(taskId)}`);
-  if (!task && !stored && !events.length) return { refuse: 'no such task' };
+  if (!task && !stored && !events.length) {
+    // A failed notification PATCH can outlive the task row. Retry its cleanup without recreating the task.
+    const dismissed = await dismissTaskNotices(taskId);
+    return dismissed ? { rows: 0 } : { refuse: 'no such task' };
+  }
   const state = task ? task.state : stored?.state;
   const prUrl = task ? task.prUrl : stored?.prUrl;
   if (state === 'running') return { refuse: 'running' };
