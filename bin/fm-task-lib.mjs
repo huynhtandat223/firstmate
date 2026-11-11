@@ -3,7 +3,8 @@
 // bin/fm-task.sh runs this file. The record is ten API Builder tables on Dev 5001
 // (docs/fm-task-contract/definitions.json in cfw-modules): fm_task, fm_task_event, the event
 // children fm_event_done / fm_event_question / fm_event_block / fm_event_image, fm_task_check,
-// fm_owner_check, fm_task_link and fm_task_delivery. This file adds no table and no grant.
+// fm_owner_check, fm_task_link and fm_task_delivery. This file adds no table. Only `delete`
+// needs a grant of its own: the DELETE operation on those task tables for the writer account.
 //
 // Usage: fm-task.sh <command> [<positional>...] [--flag value ...]
 //   A <task> comes from the first positional (the second for `block`), --task, or FM_TASK_ID.
