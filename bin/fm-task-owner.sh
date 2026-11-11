@@ -8,6 +8,11 @@
 #
 # Usage: fm-task-owner.sh --action ACTION --task TASK [--option O] [--row ID@W] [--item I --on|--off] [--decision approve|changes] [--plan-seq N] [--note N] [--to RECIPIENT] [--reply-to SEQ] [--anchor-quote Q [--anchor-prefix P] [--anchor-suffix S]] [--ask why|how|wait-what] [--rule ID --state S ...] [--setup JSON] --owner ID
 #   inbox-task|inbox-link|inbox-delete resolve a notification (--task is its id; link needs --option task-id)
+#   subtask  a subtask:      create PARENT-<slug of the title> --title <note> --after TASK, with the parent's kind and
+#            repo; it starts in triage on the parent's board                                   needs a nonblank --note
+#   link     a link:         --relation parent: link TASK OPTION (TASK is the parent; hierarchy, no gate);
+#            relates or blocks: event link on both tasks, each with the other's board address and the note
+#            "Relates to", or "Blocks" on TASK and "Blocked by" on OPTION (informational)     needs --option and --relation
 #   setup    a setup only:   setup TASK --file <the JSON> --by owner, then a queued TASK moves to its first state   needs --setup
 #   comment  a task comment: store the note once per owner, note and minute              needs --note
 #   answer   a question:     with --question SEQ, answer TASK --question SEQ --option O [--note N] (one card of a
@@ -52,7 +57,7 @@ export FM_HOME="${FM_HOME:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 WRITER="${FM_TASK_OWNER_WRITER:-$SCRIPT_DIR/fm-task.sh}"
 HOLD="${FM_TASK_OWNER_HOLD:-$SCRIPT_DIR/fm-captain-hold.sh}"
 
-ACTION='' TASK='' OPTION='' ROW='' DECISION='' PLAN_SEQ='' NOTE='' OWNER='' TO='' ASK='' RULE='' ITEM='' SWITCH='' QUESTION='' SETUP='' REPLY_TO='' ANCHOR_QUOTE='' ANCHOR_PREFIX='' ANCHOR_SUFFIX='' ANCHORED=''
+ACTION='' TASK='' OPTION='' RELATION='' ROW='' DECISION='' PLAN_SEQ='' NOTE='' OWNER='' TO='' ASK='' RULE='' ITEM='' SWITCH='' QUESTION='' SETUP='' REPLY_TO='' ANCHOR_QUOTE='' ANCHOR_PREFIX='' ANCHOR_SUFFIX='' ANCHORED=''
 declare -A RULE_FIELD=()
 RULE_FLAGS='state harness model effort rank account hours scope enabled warning'
 WRITES='[]'
@@ -74,6 +79,7 @@ while [ "$#" -gt 0 ]; do
     --action) ACTION=$2 ;;
     --task) TASK=$2 ;;
     --option) OPTION=$2 ;;
+    --relation) RELATION=$2 ;;
     --row) ROW=$2 ;;
     --decision) DECISION=$2 ;;
     --plan-seq) PLAN_SEQ=$2 ;;
@@ -323,6 +329,38 @@ case "$ACTION" in
       "${FM_TASK_OWNER_INBOX:-$SCRIPT_DIR/fm-inbox.sh}" note --request-id "owner-$ACTION-$TASK-$(date -u +%Y%m%dT%H%M%S)" -- "The owner $verb task $TASK on the board: $words" >/dev/null || { RC=$?; ERROR="$ACTION stored but firstmate delivery failed"; }
     fi
     ;;
-  *) usage "--action must be setup, comment, answer, unblock, pass, fail, plan, checklist, hold, release, close, start, rule-add, rule-set, rule-delete, inbox-task, inbox-link or inbox-delete" ;;
+  subtask)
+    title=$(printf '%s' "$NOTE" | tr '\n\r\t' '   ' | sed 's/^ *//; s/ *$//')
+    [ -n "$title" ] || usage 'subtask needs a nonblank --note (the title)'
+    parent=$("$WRITER" show "$TASK" --json 2>/dev/null </dev/null) || usage "parent $TASK does not exist"
+    slug=$(printf '%s' "$title" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/^-*//; s/-*$//' | cut -c1-40 | sed 's/-*$//')
+    [ -n "$slug" ] || slug=$(printf '%s' "$title" | sha256sum | cut -c1-8)
+    child="$TASK-$slug"
+    [ "${#child}" -le 128 ] || usage 'the subtask id would be longer than 128 characters'
+    repo_args=()
+    repo=$(jq -r '.repo // ""' <<<"$parent"); [ -z "$repo" ] || repo_args=(--repo "$repo")
+    run create "$child" --title "$title" --kind "$(jq -r '.kind' <<<"$parent")" "${repo_args[@]}" --after "$TASK" || RC=$?
+    ;;
+  link)
+    [ -n "$OPTION" ] || usage 'link needs --option (the other task id)'
+    board="${FM_BOARD_URL:-${FM_TASK_BASE_URL:-http://127.0.0.1:5001}}"; board=${board%/}
+    case "$RELATION" in
+      parent) run link "$TASK" "$OPTION" || RC=$? ;;
+      relates|blocks)
+        "$WRITER" show "$OPTION" --json >/dev/null 2>&1 </dev/null || usage "task $OPTION does not exist"
+        [ "$OPTION" != "$TASK" ] || usage 'a task cannot link to itself'
+        here='Relates to' there='Relates to'
+        [ "$RELATION" = relates ] || { here='Blocks'; there='Blocked by'; }
+        run event "$TASK" link --url "$board/#firstmate-board?view=board&task=$OPTION" --note "$here" \
+          --key "owner-link:$TASK:$OPTION:$RELATION" || RC=$?
+        if [ "$RC" -eq 0 ]; then
+          run event "$OPTION" link --url "$board/#firstmate-board?view=board&task=$TASK" --note "$there" \
+            --key "owner-link:$OPTION:$TASK:$RELATION" || RC=$?
+        fi
+        ;;
+      *) usage '--relation must be parent, relates or blocks' ;;
+    esac
+    ;;
+  *) usage "--action must be setup, comment, answer, unblock, pass, fail, plan, checklist, hold, release, close, start, rule-add, rule-set, rule-delete, inbox-task, inbox-link, inbox-delete, subtask or link" ;;
 esac
 if [ "$RC" -eq 0 ]; then reply true; else reply false "$ERROR"; fi

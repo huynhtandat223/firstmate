@@ -12,7 +12,7 @@
 //            [--surface user-visible|internal] [--after PARENT]...
 //   import   <task> --title T --kind K --state S --assignee A --next-actor N [--repo R] [--issue U] [--pr-url U] [--surface S]
 //            [--block-kind K --block-reason R] [--until ISO] [--since ISO]   the backfill: a task at the state an old source holds, once
-//   assign   <task> --to ASSIGNEE            triage|todo|ready -> ready (todo while a parent is open)
+//   assign   <task> --to ASSIGNEE            triage|todo|ready -> ready (todo while a dependency block's parent is open)
 //   reassign <task> --to ASSIGNEE --reason WHY  changes only assignee; refused from done and archived
 //   start    <task>                          ready -> running
 //   setup    <task> --file JSON [--by firstmate|owner]   {"steps":[{state,harness,model,effort,fallbacks:[{harness,model,effort}]}]}
@@ -47,7 +47,7 @@
 //            --next-actor owner also asks from blocked while every open call is an owner question (a round), and leaves
 //            blockRepeats as it was; each owner question waits on its own answer
 //   answer   <task> --question SEQ [--option O] [--note N]   one open question of the task (role owner by default):
-//            event answered; the last answer moves blocked -> ready, next actor worker (todo while a parent is open)
+//            event answered; the last answer moves blocked -> ready, next actor worker (todo while a dependency block's parent is open)
 //   block    <kind> <task> --reason R --next-actor A [--until ISO] [--on PARENT]
 //            kind: transient|dependency|external|credential|failure; running -> blocked,
 //            a dependency waits in todo on --on PARENT; a third block of one kind goes to triage.
@@ -99,7 +99,7 @@
 //            flag, names every id). approve, routing and gate accept a carried pass; gate prints each with its head.
 //   checks   <task> [--as-deployed HEAD [--touched IDS]]   read only: JSON of the open rows with their newest values,
 //            `carried`, and `due` (the Tester checks it on the head); --as-deployed reads as if HEAD were deployed next
-//   link     <parent> <child>                the child waits in todo while the parent is open
+//   link     <parent> <child>                parent and child (hierarchy only: the child keeps its state and can start)
 //   rows     <task> [task:<id>|issue-url] [--surface all|user-visible]   defaults to the task Description; one check row per scenario x width from
 //            fm-acceptance.mjs; user-visible adds, resets and retires the Tester's rows only
 //   check    <task> <id>@<width> pass|fail|pending [--evidence E | --evidence-image PATH [--evidence-label L]]
@@ -163,7 +163,7 @@
 // events that are really before it). Each event body is JSON {"v":1,"note":...,"set":{...}} and `set` holds
 // the task fields the event changes. fm_task is the projection: the fold of every `set` in seq order. After
 // each event the writer folds again and patches the row; `reproject` does the same on demand and creates a
-// missing row. Tasks start in triage (todo while a parent is open); the state of each command is the table
+// missing row. Tasks start in triage, a subtask too (create --after); the state of each command is the table
 // below.
 //
 // Exit codes: 0 done; 2 usage or configuration; 3 the API did not answer (an event whose answer was lost is
@@ -639,7 +639,11 @@ function guard(command, task) {
   }
 }
 
+// The open parents a task waits on. A parent link alone is hierarchy and gates nothing (the board's Jira-style parent and
+// child); a task waits only while it holds a dependency block (`block dependency --on PARENT`), on its open parents.
 async function openParents(taskId) {
+  const task = fold(await taskEvents(taskId));
+  if (task?.blockKind !== 'dependency') return [];
   const links = await listAll('fm_task_link', { filter: `childTaskId eq ${lit(taskId)}`, orderby: 'parentTaskId' });
   const open = [];
   for (const link of links) {
@@ -678,7 +682,7 @@ async function release(parentId, who) {
     if (!child || child.state !== 'todo' || (await openParents(link.childTaskId)).length) continue;
     await append(link.childTaskId, { ...who, key: `${who.key}:release:${link.childTaskId}` }, async ({ task }) => {
       if (task.state !== 'todo') throw rule('already released');
-      return { kind: 'promoted', note: `parent ${parentId} is closed`, set: { state: 'ready', nextActor: task.assignee && task.assignee !== '-' ? 'worker' : 'firstmate' } };
+      return { kind: 'promoted', note: `parent ${parentId} is closed`, set: { state: 'ready', nextActor: task.assignee && task.assignee !== '-' ? 'worker' : 'firstmate', blockKind: null, blockReason: null } };
     }).catch((error) => {
       if (!(error instanceof Fail && error.code === 5)) throw error;
     });
@@ -1128,16 +1132,17 @@ async function cmdCreate(args) {
     who,
     async ({ task: existing }) => {
       if (existing) throw rule(`task ${taskId} already exists`);
-      let waiting = false;
+      // A subtask starts in triage like any task, and belongs to its first parent's board.
+      let home = homeSet();
       for (const parent of parents) {
         const p = fold(await taskEvents(parent));
         if (!p) throw rule(`parent ${parent} does not exist`);
-        if (!CLOSED.includes(p.state)) waiting = true;
+        if (parent === parents[0] && p.backlogHome) home = { backlogHome: p.backlogHome };
       }
       return {
         kind: 'created',
         note: noteOf(args),
-        set: { title: f.title, repo: f.repo ?? null, kind, state: waiting ? 'todo' : 'triage', assignee: '-', nextActor: 'firstmate', blockKind: null, blockReason: null, blockRepeats: 0, issueUrl: f.issue ?? null, prUrl: null, surface, holdUntil: null, ...homeSet() },
+        set: { title: f.title, repo: f.repo ?? null, kind, state: 'triage', assignee: '-', nextActor: 'firstmate', blockKind: null, blockReason: null, blockRepeats: 0, issueUrl: f.issue ?? null, prUrl: null, surface, holdUntil: null, ...home },
       };
     },
     async () => {
@@ -1874,7 +1879,7 @@ async function cmdAsk(args) {
 }
 
 // The owner answers one open question of a round (plan v2 D3): an `answered` event names the question seq, the option
-// and the note. The task leaves blocked (ready, next actor worker; todo while a parent is open) only when its last open
+// and the note. The task leaves blocked (ready, next actor worker; todo while a dependency block's parent is open) only when its last open
 // question is answered; until then it stays blocked on the owner with the next open question as its reason.
 async function cmdAnswer(args) {
   const taskId = taskIdOf(args);
@@ -1954,29 +1959,22 @@ async function cmdLink(args) {
   const { parent, child } = args.pos;
   if (!parent || !child) throw usage('link needs <parent> <child>');
   for (const id of [parent, child]) if (!TASK_ID.test(id)) throw usage(`${id} is not a task id`);
-  const who = identity(args, 'firstmate');
-  if (parent === child) throw rule('a task cannot wait on itself');
+  identity(args, 'firstmate');
+  if (parent === child) throw rule('a task cannot be its own parent');
   const p = fold(await taskEvents(parent));
   const c = fold(await taskEvents(child));
   if (!p) throw rule(`parent ${parent} does not exist`);
   if (!c) throw rule(`child ${child} does not exist`);
-  if (!['triage', 'todo', 'ready'].includes(c.state)) throw rule(`a task in state ${c.state} cannot take a new parent`);
+  if (c.state === 'archived') throw rule(`child ${child} is archived`);
   const existing = await firstRow('fm_task_link', `parentTaskId eq ${lit(parent)} and childTaskId eq ${lit(child)}`);
-  if (!existing && (await wouldCycle(parent, child))) throw rule(`${parent} already waits on ${child}`);
-  const needsMove = !CLOSED.includes(p.state) && c.state === 'ready';
-  if (existing && !needsMove) {
+  if (!existing && (await wouldCycle(parent, child))) throw rule(`${parent} is already under ${child}`);
+  if (existing) {
     out(`link ${parent} -> ${child} (already linked)`);
     return;
   }
+  // The link is hierarchy only: the child keeps its state and can start while the parent is open.
   await ensureLink(parent, child);
-  if (!needsMove) {
-    out(`link ${parent} -> ${child}`);
-    return;
-  }
-  await write(child, who, async ({ task }) => {
-    guard('assign', task);
-    return { kind: 'linked', note: `waits on ${parent}`, set: { state: 'todo' } };
-  });
+  out(`link ${parent} -> ${child}`);
 }
 
 // The check rows an issue asks for now, keyed <id>@<width>, each with the digest of its scenario as the issue reads it.

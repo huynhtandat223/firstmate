@@ -716,7 +716,7 @@ put_in_state() {  # <task> <state>
   local t=$1
   case $2 in
     triage) ft create "$t" --title "T $t" --kind ship ;;
-    todo) ft create "$t-parent" --title "P $t" --kind ship >/dev/null && ft create "$t" --title "T $t" --kind ship --after "$t-parent" ;;
+    todo) ft create "$t-parent" --title "P $t" --kind ship >/dev/null && mk_running "$t" >/dev/null && ft block dependency "$t" --on "$t-parent" --reason waiting --next-actor worker ;;
     ready) mk_ready "$t" ;;
     running) mk_running "$t" ;;
     blocked) mk_running "$t" && ft block transient "$t" --reason waiting --next-actor firstmate ;;
@@ -813,6 +813,7 @@ case_parents() {
   # the parent finishing releases the child to ready, with an event
   ft "done" $p "${DONE_FLAGS[@]}" >/dev/null; ft approve $p >/dev/null
   [ "$(task_state $c)" = ready ] || { echo "the child was not released when the parent was approved: $(task_state $c)"; return 1; }
+  [ "$(task_row $c | jq -r .blockKind)" = null ] || { echo "the released child still holds its dependency block: $(task_row $c)"; return 1; }
   db fm_task_event | jq -e --arg c $c 'any(.[]; .taskId == $c and .kind == "promoted")' >/dev/null || { echo "no promoted event for the released child"; return 1; }
   # a dependency needs an open parent that exists
   mk_running tk12c2 >/dev/null
@@ -822,17 +823,19 @@ case_parents() {
   must 'dependency on a missing parent' 5 || return 1
   ft block dependency tk12c2 --reason r --next-actor worker
   [ "$RC" -ne 0 ] && [ "$(task_state tk12c2)" = running ] || { echo "a dependency with no --on was stored"; return 1; }
-  # create --after an open parent waits; a link cannot make a cycle
-  mk_running tk12p2 >/dev/null
+  # create --after an open parent is a triage subtask on the parent's board; a link cannot make a cycle
+  mk_running tk12p2 >/dev/null; ft home tk12p2 --home probe-h >/dev/null
   ft create tk12c3 --title c3 --kind ship --after tk12p2
   must 'create --after' 0 || return 1
-  [ "$(task_state tk12c3)" = todo ] || { echo "create --after an open parent: $(task_state tk12c3)"; return 1; }
+  [ "$(task_state tk12c3)" = triage ] || { echo "create --after an open parent: $(task_state tk12c3), want triage"; return 1; }
+  [ "$(task_row tk12c3 | jq -r .backlogHome)" = probe-h ] || { echo "the subtask is not on its parent's board: $(task_row tk12c3)"; return 1; }
+  db fm_task_link | jq -e 'any(.[]; .parentTaskId == "tk12p2" and .childTaskId == "tk12c3")' >/dev/null || { echo "no link row for create --after"; return 1; }
   ft create tk12a --title a --kind ship >/dev/null; ft create tk12b --title b --kind ship >/dev/null
   ft link tk12a tk12b
   must 'link' 0 || return 1
   ft link tk12b tk12a
   must 'link cycle' 5 || return 1
-  case $ERR in *waits*) ;; *) echo "the cycle refusal does not say who waits on whom: $ERR"; return 1 ;; esac
+  case $ERR in *'already under'*) ;; *) echo "the cycle refusal does not say which task is under which: $ERR"; return 1 ;; esac
   ft link tk12p2 tk12p2
   must 'link to itself' 5 || return 1
   links=$(count fm_task_link); events=$(count fm_task_event)
@@ -1114,16 +1117,29 @@ case_route() {
   [ "$(task_row $t)" = "$row" ] || { echo "reproject changed the routed row"; return 1; }
 }
 
-# start refuses while a parent is open, even when the link was written but the child's todo event was not.
+# A parent link is hierarchy: a child starts while its parent is open (TN4 of task kv2-detail-leftovers). Only a
+# dependency block gates, and start refuses it even on a ready child: a child released before release cleared the
+# block (state ready, blockKind dependency) with another open parent.
 case_start_parent() {
   BIN=$1; reset_db
+  local high
   mk_running tk-sp-parent >/dev/null; mk_ready tk-sp-child >/dev/null
-  api -X POST "$BASE/api/fm_task_link" -d '{"parentTaskId":"tk-sp-parent","childTaskId":"tk-sp-child"}' >/dev/null
-  [ "$(task_state tk-sp-child)" = ready ] || { echo "setup: the child is not ready"; return 1; }
+  ft link tk-sp-parent tk-sp-child
+  must 'link a ready child' 0 || return 1
+  [ "$(task_state tk-sp-child)" = ready ] || { echo "the link moved the child to $(task_state tk-sp-child)"; return 1; }
   ft start tk-sp-child
-  must 'start with an open parent' 5 || return 1
-  case $ERR in *tk-sp-parent*) ;; *) echo "the refusal does not name the parent: $ERR"; return 1 ;; esac
-  [ "$(task_state tk-sp-child)" = ready ] || { echo "start moved the child"; return 1; }
+  must 'start a child while its parent is open' 0 || return 1
+  [ "$(task_state tk-sp-child)" = running ] || { echo "start left the child in $(task_state tk-sp-child)"; return 1; }
+  mk_running tk-sp-p2 >/dev/null; mk_running tk-sp-c2 >/dev/null
+  ft block dependency tk-sp-c2 --on tk-sp-p2 --reason 'needs p2' --next-actor worker >/dev/null
+  high=$(db fm_task_event | jq '[.[].seq] | max')
+  api -X POST "$BASE/api/fm_task_event" -d "$(jq -cn --argjson seq $((high + 1)) '{seq: $seq, taskId: "tk-sp-c2", kind: "promoted", actorRole: "firstmate", actor: "firstmate", idempotencyKey: "k-sp-stale", body: ({v: 1, note: "released before the block was cleared", set: {state: "ready"}} | tojson)}')" >/dev/null
+  ft reproject tk-sp-c2 >/dev/null
+  [ "$(task_state tk-sp-c2)" = ready ] && [ "$(task_row tk-sp-c2 | jq -r .blockKind)" = dependency ] || { echo "setup: $(task_row tk-sp-c2)"; return 1; }
+  ft start tk-sp-c2
+  must 'start with a dependency on an open parent' 5 || return 1
+  case $ERR in *tk-sp-p2*) ;; *) echo "the refusal does not name the parent: $ERR"; return 1 ;; esac
+  [ "$(task_state tk-sp-c2)" = ready ] || { echo "start moved the child"; return 1; }
 }
 
 # approve needs rows for a user-visible task, passed on the head of the latest done.
@@ -1984,12 +2000,55 @@ case_link_triage() {
   ft assign tk-lt-c1 --to w; must 'assign after the parent closed' 0 || return 1
   [ "$(task_state tk-lt-c1)" = ready ] || { echo "assign after the parent closed gave $(task_state tk-lt-c1), want ready"; return 1; }
   ft start tk-lt-c1; must 'start the released child' 0 || return 1
-  # assign while the parent is still open waits in todo, and the parent closing releases it
+  # assign while the parent is still open is ready too: a parent link gates nothing
   mk_running tk-lt-p2 >/dev/null; ft create tk-lt-c2 --title c2 --kind ship >/dev/null
   ft link tk-lt-p2 tk-lt-c2 >/dev/null; ft assign tk-lt-c2 --to w >/dev/null
-  [ "$(task_state tk-lt-c2)" = todo ] || { echo "assign with an open parent gave $(task_state tk-lt-c2), want todo"; return 1; }
-  ft "done" tk-lt-p2 "${DONE_FLAGS[@]}" >/dev/null; ft approve tk-lt-p2 >/dev/null
-  [ "$(task_state tk-lt-c2)" = ready ] || { echo "the parent closing left the child in $(task_state tk-lt-c2)"; return 1; }
+  [ "$(task_state tk-lt-c2)" = ready ] || { echo "assign with an open parent gave $(task_state tk-lt-c2), want ready"; return 1; }
+  ft start tk-lt-c2; must 'start a child while its parent is open' 0 || return 1
+}
+
+# TN3 and TN4 of task kv2-detail-leftovers: the board's Add subtask and Link task through fm-task-owner.sh.
+case_owner_nav() {
+  BIN=$1; reset_db
+  local child links events
+  ow() { OUT=$("$BIN/fm-task-owner.sh" "$@" 2>"$TMP_ROOT/err"); RC=$?; ERR=$(cat "$TMP_ROOT/err"); }
+  mk_running tk-on-p >/dev/null; ft home tk-on-p --home probe-x >/dev/null
+  ow --action subtask --task tk-on-p --note '  Add the chips  ' --owner u-1
+  must 'subtask' 0 || return 1
+  child=$(task_row tk-on-p-add-the-chips)
+  [ "$(jq -r '[.title, .state, .kind, .repo, .backlogHome] | join("|")' <<<"$child")" = 'Add the chips|triage|ship|example/repo|probe-x' ] \
+    || { echo "the subtask row: $child"; return 1; }
+  db fm_task_link | jq -e 'any(.[]; .parentTaskId == "tk-on-p" and .childTaskId == "tk-on-p-add-the-chips")' >/dev/null || { echo "no parent link for the subtask"; return 1; }
+  ow --action subtask --task tk-on-p --note '   ' --owner u-1
+  must 'subtask with a blank title' 2 || return 1
+  ow --action subtask --task no-such-task --note 'x' --owner u-1
+  must 'subtask of a missing parent' 2 || return 1
+  # parent of: hierarchy only, the child starts while its parent is open
+  mk_ready tk-on-c >/dev/null
+  ow --action link --task tk-on-p --option tk-on-c --relation parent --owner u-1
+  must 'link parent' 0 || return 1
+  db fm_task_link | jq -e 'any(.[]; .parentTaskId == "tk-on-p" and .childTaskId == "tk-on-c")' >/dev/null || { echo "no link row"; return 1; }
+  [ "$(task_state tk-on-c)" = ready ] || { echo "the link moved the child to $(task_state tk-on-c)"; return 1; }
+  ft start tk-on-c; must 'start the linked child while the parent is open' 0 || return 1
+  # relates to and blocks: a link event on each task, naming the other; a repeat writes nothing
+  ft create tk-on-r --title r --kind ship >/dev/null
+  ow --action link --task tk-on-p --option tk-on-r --relation blocks --owner u-1
+  must 'link blocks' 0 || return 1
+  db fm_task_event | jq -e '[.[] | select(.kind == "link") | (.body | fromjson) as $b | {t: .taskId, n: $b.note, u: $b.url}]
+    | any(.[]; .t == "tk-on-p" and .n == "Blocks" and (.u | endswith("#firstmate-board?view=board&task=tk-on-r")))
+      and any(.[]; .t == "tk-on-r" and .n == "Blocked by" and (.u | endswith("#firstmate-board?view=board&task=tk-on-p")))' >/dev/null \
+    || { echo "the blocks link events: $(db fm_task_event | jq -c '[.[] | select(.kind == "link")]')"; return 1; }
+  events=$(count fm_task_event); links=$(count fm_task_link)
+  ow --action link --task tk-on-p --option tk-on-r --relation blocks --owner u-1
+  must 'repeat link blocks' 0 || return 1
+  [ "$(count fm_task_event)" = "$events" ] && [ "$(count fm_task_link)" = "$links" ] || { echo "a repeat link wrote again"; return 1; }
+  ow --action link --task tk-on-p --option tk-on-r --relation relates --owner u-1
+  must 'link relates' 0 || return 1
+  [ "$(db fm_task_event | jq '[.[] | select(.kind == "link") | .body | fromjson | select(.note == "Relates to")] | length')" = 2 ] || { echo "relates to is not on both tasks"; return 1; }
+  ow --action link --task tk-on-p --option tk-on-r --relation sibling --owner u-1; must 'unknown relation' 2 || return 1
+  ow --action link --task tk-on-p --relation relates --owner u-1;                 must 'link without --option' 2 || return 1
+  ow --action link --task tk-on-p --option no-such-task --relation relates --owner u-1; must 'link to a missing task' 2 || return 1
+  ow --action link --task tk-on-p --option tk-on-p --relation relates --owner u-1;      must 'link to itself' 2 || return 1
 }
 
 # T7: a backlog row in the record (row, notes, section), verbatim; a long one travels in a document child.
@@ -3264,7 +3323,7 @@ case_setup_rules() {
   return 0
 }
 
-CASES=${FM_TASK_CASES:-"plan_task description_thread terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed long_notes status_view verify_view owner_writer workflow stage wait carry slice_c model_rules checklist question_round setup_rules backlog_home owner_hold owner_request gate_before_approval handoff_gate delete"}
+CASES=${FM_TASK_CASES:-"plan_task description_thread terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed long_notes status_view verify_view owner_writer workflow stage wait carry slice_c model_rules checklist question_round setup_rules backlog_home owner_hold owner_request gate_before_approval handoff_gate delete owner_nav"}
 
 # ---- real command -------------------------------------------------------------------
 
@@ -3332,6 +3391,8 @@ mutate 'resume gives the last terminal call with its fields' resume 'for (const 
 mutate 'reproject rebuilds a damaged row' resume 'if (diff.length) {' 'if (false) {'
 mutate 'an API that does not answer is exit 3' connection 'throw new Fail(3, `${method} ${pathname}: no answer' 'throw new Fail(1, `${method} ${pathname}: no answer'
 mutate 'the last passed row routes the task to firstmate' route 'if (!(await needed())) return;' 'return;'
+mutate 'a parent link alone gates nothing' start_parent "if (task?.blockKind !== 'dependency') return [];" ''
+mutate 'release clears the dependency block' parents "nextActor: task.assignee && task.assignee !== '-' ? 'worker' : 'firstmate', blockKind: null, blockReason: null }" "nextActor: task.assignee && task.assignee !== '-' ? 'worker' : 'firstmate' }"
 mutate 'start waits for an open parent' start_parent 'if (parents.length) throw rule(`start is refused' 'if (false) throw rule(`start is refused'
 mutate 'a user-visible task needs check rows to be approved' approve_head 'if (task.surface === '"'"'user-visible'"'"' && !visible.length)' 'if (false)'
 mutate 'a pass counts only on the head of the latest done' approve_head 'if (stale.length) throw rule(`approve is refused' 'if (false) throw rule(`approve is refused'
