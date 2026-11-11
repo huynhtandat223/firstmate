@@ -376,7 +376,7 @@ While the home runs the host, main's lease-checked commands also take the per-ta
 
 ## Dispatch plan gate (config/dispatch-plan-gate)
 
-The presence of `config/dispatch-plan-gate` requires a fresh ship or scout to link an approved open GitHub issue through its backlog item's `doc:` links.
+The presence of `config/dispatch-plan-gate` requires a fresh ship or scout to have an approved plan: the gate reads an open GitHub issue linked through the backlog item's `doc:` links, or the task Description when given a task identifier or task URL.
 Batch pairs are checked separately.
 Relaunches, secondmates, and assistance launches are exempt; homes without the file retain their existing behavior.
 The gate requires the automatic tasks-axi backlog preflight and refuses when that source is unavailable or manual.

@@ -136,15 +136,15 @@ test_policy_holds_the_adapted_skill_edits() {
 
 test_policy_routes_how_then_why_after_diagnosis() {
   local diagnosis how why
-  diagnosis=$(line_equal '| A diagnosis task is opened | `/home/dathuynh/codes/firstmate/custom-skills/matt/engineering/diagnosing-bugs/SKILL.md` |' "$POLICY")
-  how=$(line_equal '| A worker must change or judge existing behaviour it has not traced, or a placement or ownership question is open | `/home/dathuynh/.agents/skills/how/SKILL.md` |' "$POLICY")
-  why=$(line_equal '| A worker or firstmate is about to change, remove or overrule something whose reason is not in front of it (a regression stays with the diagnosis row) | `/home/dathuynh/.agents/skills/why/SKILL.md` |' "$POLICY")
+  diagnosis=$(line_equal '| A diagnosis task is opened | `../matt/engineering/diagnosing-bugs/SKILL.md` |' "$POLICY")
+  how=$(line_equal '| A worker must change or judge existing behaviour it has not traced, or a placement or ownership question is open | `~/.agents/skills/how/SKILL.md` |' "$POLICY")
+  why=$(line_equal '| A worker or firstmate is about to change, remove or overrule something whose reason is not in front of it (a regression stays with the diagnosis row) | `~/.agents/skills/why/SKILL.md` |' "$POLICY")
   [ -n "$diagnosis" ] || fail "capability router lost the diagnosis row"
-  [ -n "$how" ] || fail "capability router has no exact how row routed to /home/dathuynh/.agents/skills/how/SKILL.md"
-  [ -n "$why" ] || fail "capability router has no exact why row routed to /home/dathuynh/.agents/skills/why/SKILL.md"
+  [ -n "$how" ] || fail "capability router has no exact how row routed to ~/.agents/skills/how/SKILL.md"
+  [ -n "$why" ] || fail "capability router has no exact why row routed to ~/.agents/skills/why/SKILL.md"
   [ "$diagnosis" -lt "$how" ] || fail "the how row no longer comes after the diagnosis row"
   [ "$how" -lt "$why" ] || fail "the why row no longer comes after the how row"
-  pass "capability router routes how, then why, after the diagnosis row by absolute path"
+  pass "capability router routes how, then why, after the diagnosis row by portable path"
 }
 
 test_arena_keeps_its_phases_and_rules

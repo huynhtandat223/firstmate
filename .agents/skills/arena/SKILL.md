@@ -22,7 +22,8 @@ Every seat gets the same task text, so the task text is the contract.
    The rubric is the picker's and the judge's tool; seats see only the task.
 3. Read the usage meters before fan-out and record each reading in the backlog note: the Claude status line (5 h and week) of every Claude account a seat may use, and the 9router quota (the "Model quota truth" paragraph in `data/5001-ops/README.md`).
    A seat whose account is at its limit moves to another account of the same family, said in the note.
-4. Pick the seats from `data/captain.md` "Workers and models", from at least two model families, never Fable or `cx/gpt-6-astra`.
+4. Pick the seats from the model rules table returned by `bin/fm-task.sh rules`; use `data/captain.md` "Workers and models" only while that table is empty.
+   Use at least two model families, never Fable or `cx/gpt-6-astra`.
    A seat is a worker started by `bin/fm-spawn.sh`, with its own worktree, pane and `state/<id>.meta`.
    - For a plan, the seats are two scouts briefed with the Planner charter: claude `claude-opus-5-5` high on Claude3 or Claude4, and Pi `9route/cx/gpt-6.1-sol` high.
      Each writes its plan as its scout report, `data/<id>/report.md` (the report is the plan), and files nothing: no issue, PR or comment.
