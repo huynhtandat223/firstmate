@@ -19,7 +19,10 @@ vg_install_gh "$TMP_ROOT/gh"
 mk_writer() {  # <dir>: a fake bin/fm-task.sh that records one line per call
   cat > "$1/fake-writer" <<'SH'
 #!/usr/bin/env bash
-if [ "${1:-}" = show ]; then printf '{"state":"%s","lastSeq":%s}\n' "${FAKE_STATE:-running}" "${FAKE_SEQ:-0}"; exit 0; fi
+if [ "${1:-}" = show ]; then
+  printf '{"state":"%s","lastSeq":%s,"blockReason":"%s","blockKind":"%s","nextActor":"%s"}\n' "${FAKE_STATE:-running}" "${FAKE_SEQ:-0}" "${FAKE_BLOCK_REASON:-}" "${FAKE_BLOCK_KIND:-}" "${FAKE_NEXT_ACTOR:-}"
+  exit 0
+fi
 # a call matching $FAKE_LATE is recorded 1.5 s late, once, as an API that answers late
 case "$*" in *"${FAKE_LATE:-@none@}"*) [ -e "$FAKE_CALLS.late" ] || { : > "$FAKE_CALLS.late"; sleep 1.5; } ;; esac
 printf '%s\n' "$*" >> "$FAKE_CALLS"
@@ -108,7 +111,10 @@ test_status_lines_map_to_writer_commands() {
   status_line 'done: ready in branch'
   assert_equals 'done t1 --summary ready in branch --changed-files - --verification - --residual-risk -' "$(calls)" "done without a PR"
   status_line 'needs-decision [key=pick]: choose a or b'
-  assert_equals "ask t1 --question choose a or b --option Decide now --option Decide later --recommendation - --why a needs-decision status line" "$(calls)" "needs-decision"
+  assert_equals 'heartbeat t1 --note needs-decision: choose a or b' "$(calls)" "needs-decision is a heartbeat note, never an ask"
+  : > "$CALLS"
+  FAKE_FAIL=heartbeat hook status "$HOME_DIR/config" "$HOME_DIR/state/t1.status" || fail "the status hook failed on a refused heartbeat"
+  assert_equals "$(printf '%s\n' 'heartbeat t1 --note needs-decision: choose a or b' 'event t1 comment --note needs-decision: choose a or b')" "$(calls)" "a refused heartbeat leaves a comment, never an ask"
   status_line 'blocked [at=1790000002]: waiting for the token'
   assert_equals 'block transient t1 --reason waiting for the token --next-actor firstmate' "$(calls)" "blocked"
   status_line 'paused [at=1790000003]: waiting for CI until 2026-10-26T08:00Z'
@@ -176,7 +182,7 @@ test_events_of_the_other_scripts() {
   assert_equals "$(printf '%s\n' \
     'event t1 comment --note cleaned up by bin/fm-teardown.sh' \
     'event t1 comment --note verification record complete (bin/fm-verify-close.sh)' \
-    'ask t1 --question pick a path --option Decide now --option Decide later --recommendation - --why a captain hold --next-actor owner' \
+    'block transient t1 --reason pick a path --next-actor firstmate' \
     'block external t1 --reason waiting for G --next-actor firstmate' \
     'block transient t1 --reason later --next-actor firstmate' \
     'block external t1 --reason an encoded reason --next-actor firstmate' \
@@ -185,10 +191,18 @@ test_events_of_the_other_scripts() {
     'approve t1' \
     'event t1 deploy --note deploy 1 at abc123: verify ask sent (https://github.com/o/r/issues/9)')" "$(calls)" "the events of the other scripts"
   make_case events-refused on
-  FAKE_FAIL=ask hook held t1 captain "queued row" || fail "the hook failed"
+  FAKE_FAIL=block hook held t1 captain "queued row" || fail "the hook failed"
   assert_equals "$(printf '%s\n' \
-    'ask t1 --question queued row --option Decide now --option Decide later --recommendation - --why a captain hold --next-actor owner' \
-    'event t1 comment --note held (captain): queued row')" "$(calls)" "a refused ask leaves a comment"
+    'block transient t1 --reason queued row --next-actor firstmate' \
+    'event t1 comment --note held (captain): queued row')" "$(calls)" "a refused block leaves a comment"
+  # a hold the record already holds as transient for firstmate, or as the legacy ask (needs-decision, owner), is not written again
+  make_case events-held-twice on
+  FAKE_STATE=blocked FAKE_BLOCK_REASON='already held' FAKE_BLOCK_KIND=transient FAKE_NEXT_ACTOR=firstmate hook held t1 captain 'already held' || fail "the hook failed"
+  assert_equals "" "$(calls)" "a captain hold the record holds as transient for firstmate writes nothing"
+  FAKE_STATE=blocked FAKE_BLOCK_REASON='already held' FAKE_BLOCK_KIND=needs-decision FAKE_NEXT_ACTOR=owner hook held t1 captain 'already held' || fail "the hook failed"
+  assert_equals "" "$(calls)" "a captain hold already mirrored as an ask stays, so the writer never replays the old ask over a restarted task"
+  FAKE_STATE=blocked FAKE_BLOCK_REASON='already held' FAKE_BLOCK_KIND=needs-decision FAKE_NEXT_ACTOR=owner hook held t1 parked 'already held' || fail "the hook failed"
+  assert_equals "$(printf '%s\n' 'unblock t1' 'assign t1 --to t1' 'start t1' 'block transient t1 --reason already held --next-actor firstmate')" "$(calls)" "only a captain hold keeps the legacy ask shape"
   make_case events-release-twice on
   FAKE_SEQ=5 hook answered t1 released; FAKE_SEQ=5 hook answered t1 released; FAKE_SEQ=9 hook answered t1 released
   assert_equals "$(printf '%s\n' 'unblock t1 --key shadow:t1:answered-released-5' 'unblock t1 --key shadow:t1:answered-released-5' 'unblock t1 --key shadow:t1:answered-released-9')" \
@@ -364,7 +378,7 @@ test_captain_hold_writes_the_record() {
   fm_test_tasks_toml "$HOME_DIR/.tasks.toml"
   printf '%s\n' '## In flight' '' '## Queued' '' '## Done' > "$HOME_DIR/data/backlog.md"
   out=$(in_home "$SBIN/fm-captain-hold.sh" hold "$TASK" --title 'Pick a path' --reason 'which path do we take?' 2>&1) || fail "captain hold failed: $out"
-  assert_equals "ask $TASK --question which path do we take? --option Decide now --option Decide later --recommendation - --why a captain hold --next-actor owner" "$(calls)" "the hold reaches the record"
+  assert_equals "block transient $TASK --reason which path do we take? --next-actor firstmate" "$(calls)" "the hold reaches the record as a block, never an ask"
   assert_equals "$TASK" "$out" "the hold still prints the task id"
   printf 'Take the first path.\n' > "$CASE_DIR/decision.md"
   : > "$CALLS"
@@ -612,7 +626,11 @@ mutate_hook 'the hook always exits 0' test_the_hook_never_fails_the_script $'esa
 mutate_hook 'the flag file hands the writer its settings' test_the_flag_file_carries_the_writer_settings 'export "${line?}"' ':'
 mutate_hook 'the flag file hands over only the writer settings' test_the_flag_file_carries_the_writer_settings 'FM_TASK_BASE_URL=*|FM_TASK_AUTH=*|FM_TASK_TOKEN_FILE=*' '*=*'
 mutate_hook 'a verification-pending hold keeps a rows task in review' test_rows_task_hold_keeps_review '  if [ "$current" = review ] && rows_task &&' '  if false &&'
-mutate_hook 'a captain hold is an ask for the owner' test_events_of_the_other_scripts '--why '"'"'a captain hold'"'"' --next-actor owner' '--why '"'"'a captain hold'"'"''
+mutate_hook 'a captain hold is a transient block, never an ask' test_events_of_the_other_scripts $'    external)\n      w "hold-$key" block external' $'    captain) w "hold-$key" ask "$TASK" --question "$reason" ;;\n    external)\n      w "hold-$key" block external'
+mutate_hook 'a needs-decision line is a heartbeat note, never an ask' test_status_lines_map_to_writer_commands 'w "status-$key" heartbeat "$TASK" --note "needs-decision: $text"' 'w "status-$key" ask "$TASK" --question "$text"'
+mutate_hook 'a refused needs-decision heartbeat leaves a comment' test_status_lines_map_to_writer_commands '|| w "status-$key-comment" event' '|| : event'
+mutate_hook 'a hold the record holds as transient for firstmate is not written again' test_events_of_the_other_scripts '[ "$held_kind/$held_actor" != "$mapped_kind/$mapped_actor" ] || return 0' ':'
+mutate_hook 'a captain hold mirrored as an ask is not rewritten' test_events_of_the_other_scripts '[ "$kind" != captain ] || [ "$held_kind/$held_actor" != needs-decision/owner ] || return 0' ':'
 mutate_hook 'a refused hold leaves a comment' test_events_of_the_other_scripts '|| w "hold-$key-comment" event' '|| : event'
 mutate_hook 'a close goes through done when the record holds the task running' test_events_of_the_other_scripts 'w "$1-done" "done" "$TASK" --summary "closed by the old source" --changed-files - --verification - --residual-risk - || return 1' 'return 1'
 pass 'every rule of the hook has a red mutation proof'
