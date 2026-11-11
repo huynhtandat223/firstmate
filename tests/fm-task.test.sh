@@ -3370,7 +3370,7 @@ mutate 'home refuses an archived task' backlog_home "if (task.state === 'archive
 mutate 'a running task is refused' delete "if (state === 'running') {" "if (false) {"
 mutate 'a live worker is refused' delete "if (worker === 'alive') {" "if (false) {"
 mutate 'an unreadable worker is refused' delete "if (worker === 'unknown') {" "if (false) {"
-mutate 'an open PR is refused' delete 'if (task.prUrl && prIsOpen(task.prUrl)) {' 'if (false) {'
+mutate 'an open PR is refused' delete 'if (prUrl && prIsOpen(prUrl)) {' 'if (false) {'
 mutate 'event children are deleted' delete 'for (const table of EVENT_CHILD_TABLES) rows += await deleteRows(table, await listByFilters(table, eventIds));' ''
 mutate 'deliveries are deleted by seq' delete 'rows += await deleteRows('"'"'fm_task_delivery'"'"', await listByFilters('"'"'fm_task_delivery'"'"', seqs));' ''
 mutate 'both sides of a link are deleted' delete '...await listAll('"'"'fm_task_link'"'"', { filter: `childTaskId eq ${lit(taskId)}`, orderby: '"'"'id'"'"', select: '"'"'id'"'"' }),' ''
