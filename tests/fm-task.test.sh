@@ -44,14 +44,16 @@ chmod 600 "$TMP_ROOT/token"
 # ---- the stand-in for Dev 5001 ------------------------------------------------
 
 cat > "$TMP_ROOT/schema.json" <<'JSON'
-{"fm_task":{"ops":["list","get","create","patch"],"f":{"assignee":{"t":"s","m":64},"blockKind":{"t":"s","n":1,"m":32},"blockReason":{"t":"s","n":1,"m":2000},"blockRepeats":{"t":"i"},"createdAt":{"t":"d","sv":"now"},"createdBy":{"t":"s","m":64,"sv":"callerId"},"holdUntil":{"t":"d","n":1},"issueUrl":{"t":"s","n":1,"m":2048},"kind":{"t":"s","m":32},"lastSeq":{"t":"i"},"nextActor":{"t":"s","m":32},"prUrl":{"t":"s","n":1,"m":2048},"repo":{"t":"s","n":1,"m":200},"state":{"t":"s","m":32},"surface":{"t":"s","n":1,"m":32},"taskId":{"t":"s","m":128},"title":{"t":"s","m":300}},"u":[["taskId"]]},"fm_task_event":{"ops":["list","get","create"],"f":{"actor":{"t":"s","m":64},"actorRole":{"t":"s","m":32},"body":{"t":"s","m":8000},"createdAt":{"t":"d","sv":"now"},"createdBy":{"t":"s","m":64,"sv":"callerId"},"idempotencyKey":{"t":"s","m":200},"kind":{"t":"s","m":32},"seq":{"t":"i"},"taskId":{"t":"s","m":128}},"u":[["seq"],["idempotencyKey"]]},"fm_event_done":{"ops":["list","get","create"],"f":{"changedFiles":{"t":"s","m":4000},"head":{"t":"s","n":1,"m":64},"prUrl":{"t":"s","n":1,"m":2048},"residualRisk":{"t":"s","m":2000},"rows":{"t":"s"},"summary":{"t":"s","m":4000},"verification":{"t":"s","m":4000}},"u":[["fmTaskEventId"]],"parent":["fmTaskEvent","done"]},"fm_event_question":{"ops":["list","get","create"],"f":{"document":{"t":"s","n":1,"m":2048},"options":{"t":"s","m":8000},"question":{"t":"s","m":2000},"recommendation":{"t":"s","m":2000},"why":{"t":"s","m":4000}},"u":[["fmTaskEventId"]],"parent":["fmTaskEvent","question"]},"fm_event_block":{"ops":["list","get","create"],"f":{"blockKind":{"t":"s","m":32},"nextActor":{"t":"s","m":32},"reason":{"t":"s","m":2000},"until":{"t":"d","n":1}},"u":[["fmTaskEventId"]],"parent":["fmTaskEvent","block"]},"fm_event_image":{"ops":["list","get","create"],"f":{"content":{"t":"s"},"label":{"t":"s","m":200},"mediaType":{"t":"s","m":32},"position":{"t":"i","n":1}},"u":[],"parent":["fmTaskEvent","images"]},"fm_task_check":{"ops":["list","get","create","patch"],"f":{"acceptanceDigest":{"t":"s","m":128},"checkedAt":{"t":"d","n":1},"controls":{"t":"s","m":2000},"data":{"t":"s","m":2000},"evidence":{"t":"s","n":1,"m":4000},"head":{"t":"s","n":1,"m":64},"line":{"t":"s","m":4000},"nextActor":{"t":"s","m":32},"page":{"t":"s","m":200},"proof":{"t":"s","m":4000},"scenarioId":{"t":"s","m":64},"status":{"t":"s","m":32},"surface":{"t":"s","m":32},"taskId":{"t":"s","m":128},"width":{"t":"s","m":32}},"u":[["taskId","scenarioId","width"]]},"fm_owner_check":{"ops":["list","get","create","patch"],"f":{"data":{"t":"s","m":4000},"decidedAt":{"t":"d","n":1},"expected":{"t":"s","m":4000},"note":{"t":"s","n":1,"m":4000},"pageTitle":{"t":"s","m":200},"scenarioId":{"t":"s","m":64},"status":{"t":"s","m":16},"steps":{"t":"s","m":8000},"taskId":{"t":"s","m":128},"url":{"t":"s","m":2048},"width":{"t":"s","m":32}},"u":[["taskId","scenarioId","width"]]},"fm_task_link":{"ops":["list","get","create","delete"],"f":{"childTaskId":{"t":"s","m":128},"parentTaskId":{"t":"s","m":128}},"u":[["parentTaskId","childTaskId"]]},"fm_task_delivery":{"ops":["list","get","create"],"f":{"consumer":{"t":"s","m":64},"deliveredAt":{"t":"d","sv":"now"},"seq":{"t":"i"}},"u":[["consumer","seq"]]}}
+{"fm_task":{"ops":["list","get","create","patch","delete"],"f":{"assignee":{"t":"s","m":64},"blockKind":{"t":"s","n":1,"m":32},"blockReason":{"t":"s","n":1,"m":2000},"blockRepeats":{"t":"i"},"createdAt":{"t":"d","sv":"now"},"createdBy":{"t":"s","m":64,"sv":"callerId"},"holdUntil":{"t":"d","n":1},"issueUrl":{"t":"s","n":1,"m":2048},"kind":{"t":"s","m":32},"lastSeq":{"t":"i"},"nextActor":{"t":"s","m":32},"prUrl":{"t":"s","n":1,"m":2048},"repo":{"t":"s","n":1,"m":200},"state":{"t":"s","m":32},"surface":{"t":"s","n":1,"m":32},"taskId":{"t":"s","m":128},"title":{"t":"s","m":300}},"u":[["taskId"]]},"fm_task_event":{"ops":["list","get","create","delete"],"f":{"actor":{"t":"s","m":64},"actorRole":{"t":"s","m":32},"body":{"t":"s","m":8000},"createdAt":{"t":"d","sv":"now"},"createdBy":{"t":"s","m":64,"sv":"callerId"},"idempotencyKey":{"t":"s","m":200},"kind":{"t":"s","m":32},"seq":{"t":"i"},"taskId":{"t":"s","m":128}},"u":[["seq"],["idempotencyKey"]]},"fm_event_done":{"ops":["list","get","create","delete"],"f":{"changedFiles":{"t":"s","m":4000},"head":{"t":"s","n":1,"m":64},"prUrl":{"t":"s","n":1,"m":2048},"residualRisk":{"t":"s","m":2000},"rows":{"t":"s"},"summary":{"t":"s","m":4000},"verification":{"t":"s","m":4000}},"u":[["fmTaskEventId"]],"parent":["fmTaskEvent","done"]},"fm_event_question":{"ops":["list","get","create","delete"],"f":{"document":{"t":"s","n":1,"m":2048},"options":{"t":"s","m":8000},"question":{"t":"s","m":2000},"recommendation":{"t":"s","m":2000},"why":{"t":"s","m":4000}},"u":[["fmTaskEventId"]],"parent":["fmTaskEvent","question"]},"fm_event_block":{"ops":["list","get","create","delete"],"f":{"blockKind":{"t":"s","m":32},"nextActor":{"t":"s","m":32},"reason":{"t":"s","m":2000},"until":{"t":"d","n":1}},"u":[["fmTaskEventId"]],"parent":["fmTaskEvent","block"]},"fm_event_image":{"ops":["list","get","create","delete"],"f":{"content":{"t":"s"},"label":{"t":"s","m":200},"mediaType":{"t":"s","m":32},"position":{"t":"i","n":1}},"u":[],"parent":["fmTaskEvent","images"]},"fm_task_check":{"ops":["list","get","create","patch","delete"],"f":{"acceptanceDigest":{"t":"s","m":128},"checkedAt":{"t":"d","n":1},"controls":{"t":"s","m":2000},"data":{"t":"s","m":2000},"evidence":{"t":"s","n":1,"m":4000},"head":{"t":"s","n":1,"m":64},"line":{"t":"s","m":4000},"nextActor":{"t":"s","m":32},"page":{"t":"s","m":200},"proof":{"t":"s","m":4000},"scenarioId":{"t":"s","m":64},"status":{"t":"s","m":32},"surface":{"t":"s","m":32},"taskId":{"t":"s","m":128},"width":{"t":"s","m":32}},"u":[["taskId","scenarioId","width"]]},"fm_owner_check":{"ops":["list","get","create","patch","delete"],"f":{"data":{"t":"s","m":4000},"decidedAt":{"t":"d","n":1},"expected":{"t":"s","m":4000},"note":{"t":"s","n":1,"m":4000},"pageTitle":{"t":"s","m":200},"scenarioId":{"t":"s","m":64},"status":{"t":"s","m":16},"steps":{"t":"s","m":8000},"taskId":{"t":"s","m":128},"url":{"t":"s","m":2048},"width":{"t":"s","m":32}},"u":[["taskId","scenarioId","width"]]},"fm_task_link":{"ops":["list","get","create","delete"],"f":{"childTaskId":{"t":"s","m":128},"parentTaskId":{"t":"s","m":128}},"u":[["parentTaskId","childTaskId"]]},"fm_task_delivery":{"ops":["list","get","create","delete"],"f":{"consumer":{"t":"s","m":64},"deliveredAt":{"t":"d","sv":"now"},"seq":{"t":"i"}},"u":[["consumer","seq"]]}}
 JSON
 node - "$TMP_ROOT/schema.json" <<'JS'
 const fs = require('fs');
 const file = process.argv[2]; const s = JSON.parse(fs.readFileSync(file));
-s.fm_event_document = {ops:['list','get','create'],f:{title:{t:'s',m:200},mediaType:{t:'s',m:100},content:{t:'s'}},u:[['fmTaskEventId']],parent:['fmTaskEvent','documents']};
+s.fm_event_document = {ops:['list','get','create','delete'],f:{title:{t:'s',m:200},mediaType:{t:'s',m:100},content:{t:'s'}},u:[['fmTaskEventId']],parent:['fmTaskEvent','documents']};
 s.fm_event_video = {ops:['list','get','create','delete'],f:{label:{t:'s',m:200},mediaType:{t:'s',m:32},size:{t:'i'},content:{t:'s'}},u:[],parent:['fmTaskEvent','videos']};
 s.fm_model_rule = {ops:['list','get','create','patch','delete'],f:{state:{t:'s',n:1,m:16},harness:{t:'s',n:1,m:32},model:{t:'s',n:1,m:128},effort:{t:'s',n:1,m:16},rank:{t:'i',n:1},account:{t:'s',n:1,m:64},hours:{t:'s',n:1,m:64},scope:{t:'s',n:1,m:200},enabled:{t:'b',n:1},warning:{t:'s',n:1,m:200},note:{t:'s',n:1,m:300}},u:[]};
+for (const t of ['fm_event_done','fm_event_question','fm_event_block','fm_event_image','fm_event_document','fm_event_video']) s[t].f.fmTaskEventId = {t:'s',n:1,m:64};
+s.notification = {ops:['list','get','patch','create'],f:{taskId:{t:'s',m:128},state:{t:'s',m:32},kind:{t:'s',m:32},title:{t:'s',m:200},body:{t:'s'},createdAt:{t:'d',sv:'now'}},u:[]};
 Object.assign(s.fm_task.f, {backlogHome:{t:'s',n:1,m:64},row:{t:'s',n:1},notes:{t:'s',n:1},section:{t:'s',n:1,m:32},
   stage:{t:'s',n:1,m:16},stageSince:{t:'d',n:1},lastEventAt:{t:'d',n:1},lastNote:{t:'s',n:1,m:300},reviewer:{t:'s',n:1,m:64},
   planSeq:{t:'i',n:1},planDecision:{t:'s',n:1,m:16},planDecidedAt:{t:'d',n:1}});
@@ -182,22 +184,37 @@ const literal = (text) => {
   return Number(text);
 };
 
-function list(table, query) {
-  let rows = db[table];
-  const filter = query.get('$filter');
-  if (filter) {
-    for (const clause of filter.split(/ and /)) {
-      const m = /^(\w+) (eq|ne|gt|ge|lt|le) (.+)$/s.exec(clause.trim());
-      if (!m || !(m[1] in SCHEMA[table].f || m[1] === 'id' || m[1] === 'fmTaskEventId')) return refusal(400, 'INVALID_QUERY', `Could not find a property named '${m ? m[1] : clause}' on type ${table}.`);
-      let want = literal(m[3]);
-      const isGuid = m[1] === 'id' || m[1] === 'fmTaskEventId';
-      // the real API types these two as Edm.Guid: a quoted string is refused, a bare guid is the only literal
-      if (isGuid !== (typeof want === 'object' && want !== null)) return refusal(400, 'INVALID_QUERY', `A binary operator with incompatible types was detected on '${m[1]}'.`);
-      if (isGuid) want = want.guid;
-      const op = { eq: (a) => a === want, ne: (a) => a !== want, gt: (a) => a > want, ge: (a) => a >= want, lt: (a) => a < want, le: (a) => a <= want }[m[2]];
-      rows = rows.filter((r) => op(r[m[1]]));
+function clause(table, rows, text) {
+  const m = /^(\w+) (eq|ne|gt|ge|lt|le) (.+)$/s.exec(text.trim());
+  if (!m || !(m[1] in SCHEMA[table].f || m[1] === 'id' || m[1] === 'fmTaskEventId')) return { error: refusal(400, 'INVALID_QUERY', `Could not find a property named '${m ? m[1] : text}' on type ${table}.`) };
+  let want = literal(m[3]);
+  const isGuid = m[1] === 'id' || m[1] === 'fmTaskEventId';
+  // the real API types these two as Edm.Guid: a quoted string is refused, a bare guid is the only literal
+  if (isGuid !== (typeof want === 'object' && want !== null)) return { error: refusal(400, 'INVALID_QUERY', `A binary operator with incompatible types was detected on '${m[1]}'.`) };
+  if (isGuid) want = want.guid;
+  const op = { eq: (a) => a === want, ne: (a) => a !== want, gt: (a) => a > want, ge: (a) => a >= want, lt: (a) => a < want, le: (a) => a <= want }[m[2]];
+  return { rows: rows.filter((r) => op(r[m[1]])) };
+}
+
+function filtered(table, filter) {
+  const hit = new Map();
+  for (const group of filter.split(/ or /)) {
+    let rows = db[table];
+    for (const text of group.split(/ and /)) {
+      const step = clause(table, rows, text);
+      if (step.error) return step;
+      rows = step.rows;
     }
+    for (const row of rows) hit.set(row.id, row);
   }
+  return { rows: [...hit.values()] };
+}
+
+function list(table, query) {
+  const filter = query.get('$filter');
+  const found = filter ? filtered(table, filter) : { rows: db[table] };
+  if (found.error) return found.error;
+  let rows = found.rows;
   const order = query.get('$orderby');
   if (order) {
     const [field, dir] = order.split(' ');
@@ -242,6 +259,10 @@ const server = http.createServer((req, res) => {
         delay = { table: parts[2], ms: Number(url.searchParams.get('ms') || 0), n: Number(url.searchParams.get('n') || 1), verb: url.searchParams.get('verb') || 'patch' };
         return reply(res, 200, delay);
       }
+      if (parts[1] === 'fail-delete' || parts[1] === 'fail-patch') {
+        delay = { table: parts[2], ms: 0, n: 1, verb: parts[1] };
+        return reply(res, 200, {});
+      }
       if (parts[1] === 'drop') {
         db[parts[2]] = db[parts[2]].filter((r) => r.id !== parts[3]);
         return reply(res, 200, {});
@@ -271,6 +292,10 @@ const server = http.createServer((req, res) => {
     const verb = { GET: id ? 'get' : 'list', POST: 'create', PATCH: 'patch', DELETE: 'delete' }[req.method];
     if (!verb || !SCHEMA[table].ops.includes(verb)) return reply(res, 404);
     let out;
+    if (delay.n > 0 && delay.verb === `fail-${verb}` && delay.table === table) {
+      delay.n--;
+      return reply(res, 503, { success: false, message: 'test child delete failure' });
+    }
     if (verb === 'list' && delay.n > 0 && delay.verb === 'list' && delay.table === table) {
       // the read is held before it is answered, so a later call can finish first
       delay.n--;
@@ -330,8 +355,16 @@ JS
 
 cat > "$TMP_ROOT/fakebin/gh" <<'SH'
 #!/usr/bin/env bash
-[ "${1:-}" = issue ] && [ "${2:-}" = view ] && [ "${4:-}" = --json ] && [ "${5:-}" = body ] || exit 2
-jq -Rs '{body: .}' "$FAKE_GH_BODY_FILE"
+case ${1:-} in
+  issue)
+    [ "${2:-}" = view ] && [ "${4:-}" = --json ] && [ "${5:-}" = body ] || exit 2
+    jq -Rs '{body: .}' "$FAKE_GH_BODY_FILE" ;;
+  pr)
+    [ "${2:-}" = view ] || exit 2
+    [ "${FAKE_GH_PR_STATE:-OPEN}" = FAIL ] && { echo 'gh: authentication failed' >&2; exit 1; }
+    printf '{"state":"%s"}\n' "${FAKE_GH_PR_STATE:-OPEN}" ;;
+  *) exit 2 ;;
+esac
 SH
 chmod +x "$TMP_ROOT/fakebin/gh"
 
@@ -1649,6 +1682,190 @@ case_import() {
   # an imported task works with the other commands: unblock moves it on
   ft unblock tk-im1 >/dev/null; must 'unblock an imported task' 0 || return 1
   [ "$(task_state tk-im1)" = ready ] || { echo "unblock gave $(task_state tk-im1)"; return 1; }
+}
+
+# delete hard-deletes every row a task owns and dismisses its notifications; a task that is running, has a
+# live worker, or names an open PR is refused with nothing written for it, and one refusal does not stop the others.
+case_delete() {
+  BIN=$1; reset_db
+  local t=del-a other=del-b other2=del-c eid seq before
+  export FM_TASK_GH="$TMP_ROOT/fakebin/gh" FAKE_GH_PR_STATE=OPEN
+  unset FM_TASK_AGENT_STATE
+  seed() { api -X POST "$BASE/api/$1" -H 'content-type: application/json' -d "$2" >/dev/null; }
+  # tarefa: one comment event with a row in every child table, plus a step, a check, an owner item, a delivery,
+  # a link on each side, and an open notification.
+  ft create $t --title 'Delete me' --kind ship >/dev/null || return 1
+  ft comment $t --note hi >/dev/null || return 1
+  seq=$(seq_of)
+  eid=$(db fm_task_event | jq -r --arg t $t --argjson s "$seq" '.[] | select(.taskId == $t and .seq == $s) | .id')
+  [ -n "$eid" ] || { echo 'the comment event is missing'; return 1; }
+  ft create $other --title 'Keep me' --kind ship >/dev/null || return 1
+  ft comment $other --note keep >/dev/null || return 1
+  local oseq oeid; oseq=$(seq_of)
+  oeid=$(db fm_task_event | jq -r --arg t $other --argjson s "$oseq" '.[] | select(.taskId == $t and .seq == $s) | .id')
+  seed fm_event_done "{\"fmTaskEventId\":\"$eid\",\"summary\":\"s\",\"changedFiles\":\"f\",\"verification\":\"v\",\"residualRisk\":\"r\",\"rows\":\"x\"}"
+  seed fm_event_question "{\"fmTaskEventId\":\"$eid\",\"question\":\"q\",\"options\":\"a\",\"recommendation\":\"a\",\"why\":\"w\"}"
+  seed fm_event_block "{\"fmTaskEventId\":\"$eid\",\"blockKind\":\"needs-decision\",\"nextActor\":\"owner\",\"reason\":\"r\"}"
+  seed fm_event_image "{\"fmTaskEventId\":\"$eid\",\"content\":\"aGk=\",\"label\":\"shot\",\"mediaType\":\"image/png\"}"
+  seed fm_event_document "{\"fmTaskEventId\":\"$eid\",\"title\":\"doc\",\"mediaType\":\"text/markdown\",\"content\":\"hello\"}"
+  seed fm_event_video "{\"fmTaskEventId\":\"$eid\",\"content\":\"aGk=\",\"label\":\"clip\",\"mediaType\":\"video/mp4\"}"
+  seed fm_task_step "{\"taskId\":\"$t\",\"state\":\"implement\",\"position\":0,\"attempt\":0,\"status\":\"done\"}"
+  seed fm_task_check "{\"taskId\":\"$t\",\"scenarioId\":\"A2\",\"width\":\"-\",\"status\":\"pass\",\"acceptanceDigest\":\"d\",\"controls\":\"c\",\"data\":\"d\",\"line\":\"l\",\"page\":\"p\",\"proof\":\"p\",\"surface\":\"internal\"}"
+  seed fm_owner_check "{\"taskId\":\"$t\",\"scenarioId\":\"A1\",\"width\":\"390\",\"status\":\"pending\",\"data\":\"d\",\"expected\":\"e\",\"pageTitle\":\"p\",\"steps\":\"s\",\"url\":\"u\"}"
+  seed fm_task_delivery "{\"consumer\":\"read:$t\",\"seq\":$seq}"
+  seed fm_task_link "{\"parentTaskId\":\"$t\",\"childTaskId\":\"$other\"}"
+  seed fm_task_link "{\"parentTaskId\":\"$other\",\"childTaskId\":\"$t\"}"
+  seed notification "{\"taskId\":\"$t\",\"state\":\"open\",\"kind\":\"needs-you\",\"title\":\"mine\",\"body\":\"b\"}"
+  seed notification "{\"taskId\":\"$other\",\"state\":\"open\",\"kind\":\"needs-you\",\"title\":\"theirs\",\"body\":\"b\"}"
+  seed fm_event_image "{\"fmTaskEventId\":\"$oeid\",\"content\":\"aGk=\",\"label\":\"keep\",\"mediaType\":\"image/png\"}"
+  seed fm_event_video "{\"fmTaskEventId\":\"$oeid\",\"content\":\"aGk=\",\"label\":\"keep\",\"mediaType\":\"video/mp4\"}"
+  [ "$(db fm_event_image | jq length)" = 2 ] || { echo 'the image rows are not seeded'; return 1; }
+  [ "$(db fm_event_video | jq length)" = 2 ] || { echo 'the video rows are not seeded'; return 1; }
+  ft delete $t --reason stale
+  must 'delete' 0 || return 1
+  case $OUT in *"deleted $t ("*) ;; *) echo "delete does not report the deleted rows: $OUT"; return 1 ;; esac
+  [ -z "$(task_row $t)" ] || { echo 'the task row survived the delete'; return 1; }
+  [ "$(db fm_task_event | jq --arg t $t '[.[] | select(.taskId == $t)] | length')" = 0 ] || { echo 'an event survived'; return 1; }
+  local table
+  for table in fm_event_done fm_event_question fm_event_block fm_event_document fm_event_image fm_event_video; do
+    [ "$(db $table | jq --arg e "$eid" '[.[] | select(.fmTaskEventId == $e)] | length')" = 0 ] || { echo "$table kept its row"; return 1; }
+  done
+  [ "$(db fm_task_step | jq --arg t $t '[.[] | select(.taskId == $t)] | length')" = 0 ] || { echo 'the step survived'; return 1; }
+  [ "$(db fm_task_check | jq --arg t $t '[.[] | select(.taskId == $t)] | length')" = 0 ] || { echo 'the check survived'; return 1; }
+  [ "$(db fm_owner_check | jq --arg t $t '[.[] | select(.taskId == $t)] | length')" = 0 ] || { echo 'the owner item survived'; return 1; }
+  [ "$(db fm_task_delivery | jq --argjson s "$seq" '[.[] | select(.seq == $s)] | length')" = 0 ] || { echo 'the delivery survived'; return 1; }
+  [ "$(db fm_task_link | jq -r '.[] | [.parentTaskId, .childTaskId] | join(">")' | grep -c "$t")" = 0 ] || { echo 'a link survived'; return 1; }
+  [ "$(db notification | jq -r --arg t $t '.[] | select(.taskId == $t) | .state')" = dismissed ] || { echo 'the notification is still open'; return 1; }
+  [ "$(task_row $other | jq -r .state)" = triage ] || { echo 'another task was changed'; return 1; }
+  [ "$(db fm_event_image | jq --arg e "$oeid" '[.[] | select(.fmTaskEventId == $e)] | length')" = 1 ] || { echo "another task's image was deleted"; return 1; }
+  [ "$(db fm_event_video | jq --arg e "$oeid" '[.[] | select(.fmTaskEventId == $e)] | length')" = 1 ] || { echo "another task's video was deleted"; return 1; }
+  [ "$(db notification | jq -r --arg t $other '.[] | select(.taskId == $t) | .state')" = open ] || { echo "another task's notification was dismissed"; return 1; }
+  # Induce an unsafe-to-reproduce real API failure at its HTTP boundary: child deletion must leave cards open.
+  # This proves failure ordering, not the real service's availability.
+  ft create del-child-fail --title 'Failed child delete' --kind ship >/dev/null || return 1
+  seed fm_task_step '{"taskId":"del-child-fail","state":"implement","position":0,"attempt":0,"status":"done"}'
+  seed notification '{"taskId":"del-child-fail","state":"open","kind":"needs-you","title":"retry","body":"b"}'
+  curl -s -X POST "$BASE/__x/fail-delete/fm_task_step" >/dev/null
+  ft delete del-child-fail --reason stale
+  case $OUT in *"deleted del-child-fail ("*) echo 'failed child delete reported success'; return 1 ;; esac
+  [ -n "$(task_row del-child-fail)" ] || { echo 'failed child delete removed the task'; return 1; }
+  [ "$(db notification | jq -r '.[] | select(.taskId == "del-child-fail") | .state')" = open ] || { echo 'failed child delete dismissed its notification'; return 1; }
+  ft delete del-child-fail --reason retry
+  must 'child failure retry' 0 || return 1
+  [ -z "$(task_row del-child-fail)" ] || { echo 'child failure retry kept the task'; return 1; }
+  # The same controlled HTTP failure at the final task DELETE must also preserve its card.
+  ft create del-final-fail --title 'Failed final delete' --kind ship >/dev/null || return 1
+  seed notification '{"taskId":"del-final-fail","state":"open","kind":"needs-you","title":"retry","body":"b"}'
+  curl -s -X POST "$BASE/__x/fail-delete/fm_task" >/dev/null
+  ft delete del-final-fail --reason stale
+  [ -n "$(task_row del-final-fail)" ] || { echo 'failed final delete removed the task'; return 1; }
+  [ "$(db notification | jq -r '.[] | select(.taskId == "del-final-fail") | .state')" = open ] || { echo 'failed final delete dismissed its notification'; return 1; }
+  ft delete del-final-fail --reason retry
+  must 'final delete retry' 0 || return 1
+  [ -z "$(task_row del-final-fail)" ] || { echo 'final delete retry kept the task'; return 1; }
+  # A failed notification PATCH is retryable even though all task rows are already gone.
+  ft create del-notice-fail --title 'Failed notification cleanup' --kind ship >/dev/null || return 1
+  seed notification '{"taskId":"del-notice-fail","state":"open","kind":"needs-you","title":"retry","body":"b"}'
+  curl -s -X POST "$BASE/__x/fail-patch/notification" >/dev/null
+  ft delete del-notice-fail --reason stale
+  [ -z "$(task_row del-notice-fail)" ] || { echo 'notification failure retained the task'; return 1; }
+  [ "$(db notification | jq -r '.[] | select(.taskId == "del-notice-fail") | .state')" = open ] || { echo 'failed notification PATCH changed its card'; return 1; }
+  ft delete del-notice-fail --reason retry
+  must 'notification cleanup retry' 0 || return 1
+  [ "$(db notification | jq -r '.[] | select(.taskId == "del-notice-fail") | .state')" = dismissed ] || { echo 'notification retry left its card open'; return 1; }
+  # running is refused before anything is written
+  mk_running del-run >/dev/null || return 1
+  before=$(count fm_task_event)
+  ft delete del-run --reason stale
+  must 'running refused' 0 || return 1
+  case $OUT in *"refused del-run: running"*) ;; *) echo "running is not refused: $OUT"; return 1 ;; esac
+  [ "$(task_state del-run)" = running ] || { echo 'the running task moved'; return 1; }
+  [ "$(count fm_task_event)" = "$before" ] || { echo 'the refused delete wrote an event'; return 1; }
+  # a live worker is refused
+  mk_ready del-live >/dev/null || return 1
+  printf 'x\n' > "$FM_HOME/state/del-live.meta"
+  printf '#!/bin/sh\necho alive\n' > "$TMP_ROOT/alive"; chmod +x "$TMP_ROOT/alive"
+  export FM_TASK_AGENT_STATE="$TMP_ROOT/alive"
+  ft delete del-live --reason stale
+  must 'live worker refused' 0 || return 1
+  case $OUT in *"refused del-live: a live worker"*) ;; *) echo "a live worker is not refused: $OUT"; return 1 ;; esac
+  [ -n "$(task_row del-live)" ] || { echo 'the live task was deleted'; return 1; }
+  printf '#!/bin/sh\necho unknown\n' > "$TMP_ROOT/unknown"; chmod +x "$TMP_ROOT/unknown"
+  export FM_TASK_AGENT_STATE="$TMP_ROOT/unknown"
+  ft delete del-live --reason stale
+  must 'unknown worker refused' 0 || return 1
+  case $OUT in *"refused del-live: its worker state could not be read"*) ;; *) echo "an unreadable worker is not refused: $OUT"; return 1 ;; esac
+  [ -n "$(task_row del-live)" ] || { echo 'the unreadable-worker task was deleted'; return 1; }
+  unset FM_TASK_AGENT_STATE
+  # an open PR is refused; a merged one is not
+  ft import del-pr --title pr --kind ship --state blocked --assignee w --next-actor owner --pr-url https://github.com/example/repo/pull/7 >/dev/null || return 1
+  export FAKE_GH_PR_STATE=OPEN
+  ft delete del-pr --reason stale
+  must 'open PR refused' 0 || return 1
+  case $OUT in *"refused del-pr: open PR"*) ;; *) echo "an open PR is not refused: $OUT"; return 1 ;; esac
+  [ -n "$(task_row del-pr)" ] || { echo 'the open-PR task was deleted'; return 1; }
+  export FAKE_GH_PR_STATE=MERGED
+  ft delete del-pr --reason stale
+  must 'merged PR deleted' 0 || return 1
+  [ -z "$(task_row del-pr)" ] || { echo 'the merged-PR task survived'; return 1; }
+  # an unreadable PR is refused, never read as closed
+  ft import del-prfail --title pr --kind ship --state blocked --assignee w --next-actor owner --pr-url https://github.com/example/repo/pull/8 >/dev/null || return 1
+  export FAKE_GH_PR_STATE=FAIL
+  ft delete del-prfail --reason stale
+  must 'unreadable PR refused' 0 || return 1
+  case $OUT in *"refused del-prfail: its PR state could not be read"*) ;; *) echo "an unreadable PR is not refused: $OUT"; return 1 ;; esac
+  [ -n "$(task_row del-prfail)" ] || { echo 'the unreadable-PR task was deleted'; return 1; }
+  # an event appended after the first read refuses the id before anything is written
+  ft create del-race --title race --kind ship >/dev/null || return 1
+  printf 'x\n' > "$FM_HOME/state/del-race.meta"
+  printf '#!/bin/sh\nsleep 0.4\necho dead\n' > "$TMP_ROOT/slow-dead"
+  chmod +x "$TMP_ROOT/slow-dead"
+  export FM_TASK_AGENT_STATE="$TMP_ROOT/slow-dead"
+  ( "$BIN/fm-task.sh" delete del-race --reason stale > "$TMP_ROOT/del-race.out" 2>&1 ) &
+  pids=($!)
+  sleep 0.15
+  curl -s -X POST "$BASE/__x/delay/fm_task_event?ms=500&n=1&verb=list" >/dev/null
+  nseq=$(db fm_task_event | jq -r '[.[].seq] | max // 0')
+  api -X POST "$BASE/api/fm_task_event" -H 'content-type: application/json'     -d "$(jq -cn --arg t del-race --argjson s "$((nseq + 1))" '{seq:$s,taskId:$t,kind:"comment",actor:"tester-bot",actorRole:"worker",body:"{\"v\":1,\"note\":\"raced\",\"set\":{}}",idempotencyKey:"raced-event"}')" >/dev/null
+  wait "${pids[@]}"
+  OUT=$(cat "$TMP_ROOT/del-race.out")
+  case $OUT in *"refused del-race: its events changed while it was checked"*) ;; *) echo "an event written during the checks is not refused: $OUT"; return 1 ;; esac
+  [ -n "$(task_row del-race)" ] || { echo 'the raced task was deleted'; return 1; }
+  [ "$(db fm_task_event | jq --arg t del-race '[.[] | select(.taskId == $t)] | length')" = 2 ] || { echo 'the raced event was not left for a re-run'; return 1; }
+  unset FM_TASK_AGENT_STATE
+  rm -f "$FM_HOME/state/del-race.meta"
+  ft delete del-race --reason stale
+  must 'raced task deleted on the retry' 0 || return 1
+  [ -z "$(task_row del-race)" ] || { echo 'the raced task survived its retry'; return 1; }
+  # a note document removed by a partial earlier run does not block the delete
+  ft create del-note --title note --kind ship >/dev/null || return 1
+  ft comment del-note --note "$(head -c 9000 /dev/zero | tr '\0' x)" >/dev/null || return 1
+  neid=$(db fm_task_event | jq -r --arg t del-note '.[] | select(.taskId == $t and .kind == "comment") | .id')
+  ndoc=$(db fm_event_document | jq -r --arg e "$neid" '.[] | select(.fmTaskEventId == $e) | .id')
+  [ -n "$ndoc" ] && [ "$ndoc" != null ] || { echo 'the long note did not move to a document'; return 1; }
+  api -X DELETE "$BASE/api/fm_event_document/$ndoc" >/dev/null || return 1
+  ft delete del-note --reason stale
+  must 'missing note document deleted' 0 || return 1
+  [ -z "$(task_row del-note)" ] || { echo 'the task with a missing note document survived'; return 1; }
+  # an unknown id is refused; the ids after it are still deleted
+  ft create del-keep --title keep --kind ship >/dev/null || return 1
+  ft delete del-keep no-such-task del-run --reason stale
+  must 'mixed ids' 0 || return 1
+  case $OUT in *"deleted del-keep ("*) ;; *) echo "the later id is not deleted: $OUT"; return 1 ;; esac
+  case $OUT in *"refused no-such-task: no such task"*) ;; *) echo "the unknown id is not refused: $OUT"; return 1 ;; esac
+  [ -z "$(task_row del-keep)" ] || { echo 'the deletable id in a mixed call survived'; return 1; }
+  [ -n "$(task_row del-run)" ] || { echo 'the refused id in a mixed call was deleted'; return 1; }
+  # a task row left without its events by a partial earlier run is still deletable
+  seed fm_task "{\"taskId\":\"del-orphan\",\"title\":\"t\",\"kind\":\"ship\",\"state\":\"triage\"}"
+  ft delete del-orphan --reason stale
+  must 'orphan row deleted' 0 || return 1
+  [ -z "$(task_row del-orphan)" ] || { echo 'the orphan task row survived'; return 1; }
+  # usage
+  ft delete del-run
+  [ "$RC" = 2 ] || { echo "delete without --reason exited $RC"; return 1; }
+  ft delete --reason stale
+  [ "$RC" = 2 ] || { echo "delete without a task exited $RC"; return 1; }
+  unset FM_TASK_GH
 }
 
 # A re-sent key carries the values of its first event; a retry with other values is refused.
@@ -3047,7 +3264,7 @@ case_setup_rules() {
   return 0
 }
 
-CASES=${FM_TASK_CASES:-"plan_task description_thread terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed long_notes status_view verify_view owner_writer workflow stage wait carry slice_c model_rules checklist question_round setup_rules backlog_home owner_hold owner_request gate_before_approval handoff_gate"}
+CASES=${FM_TASK_CASES:-"plan_task description_thread terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed long_notes status_view verify_view owner_writer workflow stage wait carry slice_c model_rules checklist question_round setup_rules backlog_home owner_hold owner_request gate_before_approval handoff_gate delete"}
 
 # ---- real command -------------------------------------------------------------------
 
@@ -3255,6 +3472,20 @@ mutate 'an answer must be one of the question options' question_round "if (!opti
 mutate 'each owner question waits on its own answer' question_round "(question ? bodyOf(e).answer?.question === question :" "(question ? true :"
 mutate 'home refuses a task that is in another home' backlog_home "if (task.backlogHome && task.backlogHome !== home) throw rule" "if (false) throw rule"
 mutate 'home refuses an archived task' backlog_home "if (task.state === 'archived') throw rule(\`home is refused" "if (false) throw rule(\`home is refused"
+mutate 'a running task is refused' delete "if (state === 'running') return { refuse: 'running' };" "if (false) return { refuse: 'running' };"
+mutate 'a live worker is refused' delete "if (worker === 'alive') return { refuse: 'a live worker' };" "if (false) return { refuse: 'a live worker' };"
+mutate 'an unreadable worker is refused' delete "if (worker === 'unknown') return { refuse: 'its worker state could not be read' };" "if (false) return { refuse: 'its worker state could not be read' };"
+mutate 'an open PR is refused' delete 'if (pr === '"'"'open'"'"') return { refuse: `open PR ${prUrl}` };' 'if (false) return { refuse: `open PR ${prUrl}` };'
+mutate 'an unreadable PR is refused' delete "if (pr === 'unknown') return { refuse: 'its PR state could not be read' };" "if (false) return { refuse: 'its PR state could not be read' };"
+mutate 'event children are deleted' delete 'for (const table of EVENT_CHILD_TABLES) rows += await deleteRows(table, await listByFilters(table, eventIds));' ''
+mutate 'deliveries are deleted by seq' delete 'rows += await deleteRows('"'"'fm_task_delivery'"'"', await listByFilters('"'"'fm_task_delivery'"'"', seqs));' ''
+mutate 'both sides of a link are deleted' delete '...await listAll('"'"'fm_task_link'"'"', { filter: `childTaskId eq ${lit(taskId)}`, orderby: '"'"'id'"'"', select: '"'"'id'"'"' }),' ''
+mutate 'the task row is deleted' delete 'rows += await deleteRows('"'"'fm_task'"'"', await listAll('"'"'fm_task'"'"', { filter: `taskId eq ${lit(taskId)}`, orderby: '"'"'id'"'"', select: '"'"'id'"'"' }));' ''
+mutate 'open notifications are dismissed' delete 'for (const notice of notices) {' 'for (const notice of []) {'
+mutate 'event videos are deleted' delete ", 'fm_event_video'];" "];"
+mutate 'an unreadable PR state is refused' delete "if (pr === 'unknown') return { refuse: 'its PR state could not be read' };" "if (false) return { refuse: 'its PR state could not be read' };"
+mutate 'an event that appeared during the checks refuses the id' delete "if (fresh.length !== events.length || fresh.some((e, i) => e.id !== events[i].id)) {" "if (false) {"
+mutate 'a delete reads raw events, not note-resolved ones' delete 'const events = await rawTaskEvents(taskId);' 'const events = await taskEvents(taskId);'
 mutate_owner() {  # <label> <exact wrapper text> <replacement>: the owner_writer case goes red
   cp "$TMP_ROOT/fm-task-lib.mjs.orig" "$LIB"
   cp "$TMP_ROOT/fm-task-owner.sh.orig" "$MBIN/fm-task-owner.sh"

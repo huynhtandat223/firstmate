@@ -3,7 +3,8 @@
 // bin/fm-task.sh runs this file. The record is ten API Builder tables on Dev 5001
 // (docs/fm-task-contract/definitions.json in cfw-modules): fm_task, fm_task_event, the event
 // children fm_event_done / fm_event_question / fm_event_block / fm_event_image, fm_task_check,
-// fm_owner_check, fm_task_link and fm_task_delivery. This file adds no table and no grant.
+// fm_owner_check, fm_task_link and fm_task_delivery. This file adds no table. Only `delete`
+// needs a grant of its own: the DELETE operation on those task tables for the writer account.
 //
 // Usage: fm-task.sh <command> [<positional>...] [--flag value ...]
 //   A <task> comes from the first positional (the second for `block`), --task, or FM_TASK_ID.
@@ -62,6 +63,10 @@
 //   changes  <task> --note WHY               review -> ready
 //   reopen   <task> --reason WHY             done -> ready, next actor firstmate; archived stays final
 //   archive  <task>                          triage|todo|ready|blocked|review|done -> archived
+//   delete   <task>... --reason WHY          any state but running, with no live worker and a PR that is not open or
+//            unreadable; deletes the task row, its events and their children, its steps, checks, owner items, deliveries,
+//            links on either side, then dismisses its undismissed notifications after deleting the task row. There is no backup, and one
+//            refusal or failure does not stop the other ids. A new event written after the checks refuse the id.
 //   home     <task> --home H                 sets the backlog home of a task that has none (any state but archived);
 //            the same home again is a no-op, another home is refused: a task belongs to one board
 //   describe <task> --document FILE.md [--document-title T]              any state; default title Description
@@ -341,6 +346,9 @@ async function taskEvents(taskId) {
   }
   return events;
 }
+// The raw event rows, without resolving note documents: a delete must still work after an earlier partial run removed a
+// note document, and a missing note is not a reason to keep the remaining rows forever.
+const rawTaskEvents = (taskId) => listAll('fm_task_event', { filter: `taskId eq ${lit(taskId)}`, orderby: 'seq' });
 const eventByKey = (key) => firstRow('fm_task_event', `idempotencyKey eq ${lit(key)}`);
 const taskRow = (taskId) => firstRow('fm_task', `taskId eq ${lit(taskId)}`);
 const checkRows = (taskId) => listAll('fm_task_check', { filter: `taskId eq ${lit(taskId)}`, orderby: 'scenarioId' });
@@ -467,6 +475,7 @@ const SPECS = {
   reopen: { pos: ['task'], flags: { reason: 's' } },
   reassign: { pos: ['task'], flags: { to: 's', reason: 's' } },
   archive: { pos: ['task'], flags: {} },
+  delete: { pos: [], rest: 'tasks', flags: { reason: 's' } },
   home: { pos: ['task'], flags: { home: 's' } },
   describe: { pos: ['task'], flags: { document: 's', 'document-title': 's' } },
   plan: { pos: ['task'], flags: { document: 's', 'document-title': 's' } },
@@ -527,10 +536,11 @@ function parseArgs(command, argv) {
     if (type === 'm') (given[name] ||= []).push(value);
     else given[name] = value;
   }
-  if (positional.length > spec.pos.length) throw usage(`unexpected argument ${positional[spec.pos.length]} for ${command}`);
+  if (positional.length > spec.pos.length && !spec.rest) throw usage(`unexpected argument ${positional[spec.pos.length]} for ${command}`);
   spec.pos.forEach((name, i) => {
     if (positional[i] !== undefined) pos[name] = positional[i];
   });
+  if (spec.rest) pos[spec.rest] = positional.slice(spec.pos.length);
   return { pos, flags: given };
 }
 
@@ -1255,6 +1265,146 @@ async function cmdHome(args) {
 }
 
 const cmdArchive = simple('archive', 'archived', async () => ({ state: 'archived', nextActor: 'firstmate' }));
+
+// The worker state of a task is the endpoint recorded in this home, read through the backend contract in bin/.
+// A delete is irreversible, so an unreadable endpoint is not taken as proof that nobody is running.
+function workerState(taskId) {
+  const home = process.env.FM_HOME;
+  if (!home) return 'unknown';
+  const meta = path.join(process.env.FM_STATE_OVERRIDE || path.join(home, 'state'), `${taskId}.meta`);
+  if (!fs.existsSync(meta)) return 'dead';
+  const probe = process.env.FM_TASK_AGENT_STATE;
+  const run = probe
+    ? spawnSync(probe, [meta], { encoding: 'utf8', timeout: 20000 })
+    : spawnSync('bash', ['-c', '. "$1/fm-backend.sh"; b=$(fm_backend_of_meta "$2") || exit 1; t=$(fm_backend_target_of_meta "$2") || exit 1; [ -n "$t" ] || exit 1; fm_backend_agent_alive "$b" "$t"', 'fm-task-delete-check', HERE, meta], { encoding: 'utf8', timeout: 20000 });
+  const said = String(run.stdout ?? '').trim();
+  return run.status === 0 && said === 'alive' ? 'alive' : run.status === 0 && said === 'dead' ? 'dead' : 'unknown';
+}
+
+// Only a definite answer closes the PR question: a failed, rejected, or unreadable lookup is not proof that the task's
+// PR is closed, so it refuses the delete instead of deleting under an open review.
+function prState(prUrl) {
+  if (!/^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+/.test(prUrl)) return 'unknown';
+  const run = spawnSync(GH, ['pr', 'view', prUrl, '--json', 'state'], { encoding: 'utf8', timeout: 20000 });
+  if (run.error || run.status !== 0 || typeof run.stdout !== 'string' || !run.stdout.trim()) return 'unknown';
+  try {
+    const state = String(JSON.parse(run.stdout)?.state ?? '').toUpperCase();
+    return state === 'OPEN' ? 'open' : state === 'CLOSED' || state === 'MERGED' ? 'closed' : 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
+const EVENT_CHILD_TABLES = ['fm_event_done', 'fm_event_question', 'fm_event_block', 'fm_event_image', 'fm_event_document', 'fm_event_video'];
+const filterBatches = (expressions, size = 20) => {
+  const out = [];
+  for (let i = 0; i < expressions.length; i += size) out.push(expressions.slice(i, i + size).join(' or '));
+  return out;
+};
+async function listByFilters(table, expressions) {
+  const rows = [];
+  for (const filter of filterBatches(expressions)) rows.push(...await listAll(table, { filter, orderby: 'id', select: 'id' }));
+  return rows;
+}
+async function deleteRows(table, rows) {
+  let count = 0;
+  for (const row of rows) {
+    const res = await http('DELETE', `/api/${table}/${encodeURIComponent(row.id)}`);
+    if (res.status === 404) continue;
+    ok(res, `delete ${table} ${row.id}`);
+    count++;
+  }
+  return count;
+}
+
+// Delete every row the task owns, children first, so a failure leaves the task row readable for a re-run. Notifications
+// are dismissed only after the task row is deleted, so any row-delete failure leaves its cards open.
+async function dismissTaskNotices(taskId) {
+  const notices = await listAll('notification', { filter: `taskId eq ${lit(taskId)} and state ne 'dismissed'`, orderby: 'id', select: 'id' });
+  for (const notice of notices) {
+    ok(await http('PATCH', `/api/notification/${encodeURIComponent(notice.id)}`, { state: 'dismissed' }), 'dismiss the notification');
+  }
+  return notices.length;
+}
+async function deleteTaskRows(taskId, events) {
+  const eventIds = events.map((e) => `fmTaskEventId eq ${e.id}`);
+  const seqs = events.map((e) => `seq eq ${e.seq}`);
+  let rows = 0;
+  for (const table of EVENT_CHILD_TABLES) rows += await deleteRows(table, await listByFilters(table, eventIds));
+  for (const table of ['fm_task_step', 'fm_task_check', 'fm_owner_check']) {
+    rows += await deleteRows(table, await listAll(table, { filter: `taskId eq ${lit(taskId)}`, orderby: 'id', select: 'id' }));
+  }
+  rows += await deleteRows('fm_task_delivery', await listByFilters('fm_task_delivery', seqs));
+  rows += await deleteRows('fm_task_event', events);
+  rows += await deleteRows('fm_task_link', [
+    ...await listAll('fm_task_link', { filter: `parentTaskId eq ${lit(taskId)}`, orderby: 'id', select: 'id' }),
+    ...await listAll('fm_task_link', { filter: `childTaskId eq ${lit(taskId)}`, orderby: 'id', select: 'id' }),
+  ]);
+  rows += await deleteRows('fm_task', await listAll('fm_task', { filter: `taskId eq ${lit(taskId)}`, orderby: 'id', select: 'id' }));
+  await dismissTaskNotices(taskId);
+  return rows;
+}
+
+// delete <task>...: hard delete, no backup. A refusal is checked before any row of that task is written, and one
+// refused id does not stop the others.
+// Decide and perform one delete: every refusal happens before the first write, so a refused id is left untouched.
+async function deleteOutcome(taskId) {
+  // A partial earlier run leaves the task row without its events; that row is still deleted.
+  const events = await rawTaskEvents(taskId);
+  const task = fold(events);
+  const stored = task ? null : await firstRow('fm_task', `taskId eq ${lit(taskId)}`);
+  if (!task && !stored && !events.length) {
+    // A failed notification PATCH can outlive the task row. Retry its cleanup without recreating the task.
+    const dismissed = await dismissTaskNotices(taskId);
+    return dismissed ? { rows: 0 } : { refuse: 'no such task' };
+  }
+  const state = task ? task.state : stored?.state;
+  const prUrl = task ? task.prUrl : stored?.prUrl;
+  if (state === 'running') return { refuse: 'running' };
+  const worker = workerState(taskId);
+  if (worker === 'alive') return { refuse: 'a live worker' };
+  if (worker === 'unknown') return { refuse: 'its worker state could not be read' };
+  if (prUrl) {
+    const pr = prState(prUrl);
+    if (pr === 'open') return { refuse: `open PR ${prUrl}` };
+    if (pr === 'unknown') return { refuse: 'its PR state could not be read' };
+  }
+  // A transition that appended while the checks ran would leave an event after the task row is gone; a changed
+  // snapshot refuses this id before anything is written.
+  const fresh = await rawTaskEvents(taskId);
+  if (fresh.length !== events.length || fresh.some((e, i) => e.id !== events[i].id)) {
+    return { refuse: 'its events changed while it was checked' };
+  }
+  return { rows: await deleteTaskRows(taskId, events) };
+}
+
+async function cmdDelete(args) {
+  const ids = args.pos.tasks ?? [];
+  if (!ids.length) throw usage('delete needs at least one task');
+  if (!args.flags.reason?.trim()) throw usage('delete needs --reason');
+  identity(args, 'firstmate');
+  const deleted = [];
+  const refused = [];
+  const failed = [];
+  for (const taskId of ids) {
+    if (!TASK_ID.test(taskId)) {
+      refused.push(`${taskId}: not a task id`);
+      continue;
+    }
+    try {
+      const outcome = await deleteOutcome(taskId);
+      if (outcome.refuse) refused.push(`${taskId}: ${outcome.refuse}`);
+      else deleted.push(`${taskId} (${outcome.rows} rows)`);
+    } catch (error) {
+      failed.push(`${taskId}: ${error.message}`);
+    }
+  }
+  for (const id of deleted) out(`deleted ${id}`);
+  for (const id of refused) out(`refused ${id}`);
+  for (const id of failed) out(`failed ${id}`);
+  out(`summary deleted=${deleted.length} refused=${refused.length} failed=${failed.length} reason=${JSON.stringify(args.flags.reason)}`);
+  if (failed.length) throw new Fail(4, `delete failed for ${failed.length} task(s)`);
+}
 // A user-visible pass counts for the head that was built or deployed last: the head of the newest done call, or of a
 // newer deploy event that names one (the Tester checks the deployed head, which a merge makes differ from the worker's).
 const lastHeadEvent = (events) => [...events].reverse().find((e) => e.kind === 'done' || (e.kind === 'deploy' && bodyOf(e).head));
@@ -2745,7 +2895,7 @@ const COMMANDS = {
   rules: cmdRules, rule: cmdRule, answer: cmdAnswer,
   'turn-end': cmdTurnEnd, deliver: cmdDeliver, requests: cmdRequests, 'read-mark': cmdReadMark, inbox: cmdInbox, describe: cmdDescribe, plan: cmdPlan, 'plan-decision': cmdPlanDecision, thread: cmdThread,
   create: cmdCreate, import: cmdImport, assign: cmdAssign, start: cmdStart, heartbeat: cmdHeartbeat, done: cmdDone, ask: cmdAsk, block: cmdBlock,
-  unblock: cmdUnblock, approve: cmdApprove, changes: cmdChanges, reopen: cmdReopen, reassign: cmdReassign, archive: cmdArchive, home: cmdHome, comment: cmdComment, event: cmdEvent,
+  unblock: cmdUnblock, approve: cmdApprove, changes: cmdChanges, reopen: cmdReopen, reassign: cmdReassign, archive: cmdArchive, delete: cmdDelete, home: cmdHome, comment: cmdComment, event: cmdEvent,
   'plan-spec': cmdPlanSpec, 'plan-approve': cmdPlanApprove, 'plan-check': cmdPlanCheck, document: cmdDocument, link: cmdLink, rows: cmdRows, check: cmdCheck, 'owner-check': cmdOwnerCheck, gate: cmdGate, show: cmdShow, list: cmdList, resume: cmdResume, reproject: cmdReproject,
   checks: cmdChecks, checklist: cmdChecklist,
 };
