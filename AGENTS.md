@@ -71,7 +71,7 @@ Treat `data/captain.md` as the domain-local record of captain preferences, optio
 
 ## 3. Session start (run once at every session start)
 
-- Run `bin/fm-session-start.sh` exactly once at session start.
+- Run `bin/fm-session-start.sh` exactly once at session start, unless a diagnostic line explicitly asks for a rerun.
 - Its header is the single owner of composed commands, ordering, and digest contents.
 - `bin/fm-supervision-instructions.sh` renders the emitted supervision block from `docs/supervision-protocols/`.
 - Do not reimplement it by separately running its lock, bootstrap, initial wake-drain, or deferred-network components.
@@ -409,7 +409,7 @@ The scaffold is a safety contract, not a suggestion.
 ## 12. Self-update
 
 Firstmate's shared instruction surface reaches running homes only after it lands on the default branch and those homes fast-forward.
-Only `AGENTS.md`, `bin/`, and `.agents/skills/` are loaded by a running firstmate; public `skills/` is an installer-facing surface.
+Only `AGENTS.md`, `bin/`, `.agents/skills/`, and `custom-skills/` are loaded by running Firstmate agents; public `skills/` is an installer-facing surface.
 When the captain invokes `/updatefirstmate` or asks to update firstmate, load the `/updatefirstmate` skill.
 The skill owns the guarded fleet update and restart procedure; it never touches anything under `projects/`.
 
