@@ -6,7 +6,7 @@
 # a page value. Each action runs bin/fm-task.sh, the one writer, with that owner as actor (`owner:<id>`, role
 # owner); the writer keeps seq, the transitions and the projection, and this file adds no rule of its own.
 #
-# Usage: fm-task-owner.sh --action ACTION --task TASK [--option O] [--row ID@W] [--item I --on|--off] [--decision approve|changes] [--plan-seq N] [--note N] [--to RECIPIENT] [--reply-to SEQ] [--anchor-quote Q [--anchor-prefix P] [--anchor-suffix S]] [--ask why|how|wait-what] [--rule ID --state S ...] [--setup JSON] --owner ID
+# Usage: fm-task-owner.sh --action ACTION --task TASK [--option O] [--row ID@W] [--item I --on|--off] [--decision approve|changes] [--plan-seq N] [--note N] [--to RECIPIENT] [--reply-to SEQ] [--anchor-quote Q [--anchor-prefix P] [--anchor-suffix S]] [--accept yes] [--ask why|how|wait-what] [--rule ID --state S ...] [--setup JSON] --owner ID
 #   inbox-task|inbox-link|inbox-delete resolve a notification (--task is its id; link needs --option task-id)
 #   subtask  a subtask:      create PARENT-<slug of the title> --title <note> --after TASK, with the parent's kind and
 #            repo; it starts in triage on the parent's board                                   needs a nonblank --note
@@ -40,6 +40,8 @@
 #   --reply-to on comment threads the note under an existing comment of this task and delivers the reply command.
 #   --anchor-quote (with --anchor-prefix and --anchor-suffix) on comment opens a thread at a highlighted passage
 #   (bin/fm-task-lib.mjs, comment); it delivers the quote and the reply command, and is refused with --reply-to.
+#   --accept yes on comment, with --reply-to naming the agent's proposed --outcome, resolves the thread with that outcome;
+#   its --note is optional.
 #   Dev 5001 maps each invoke body key to --key: send "reply-to": SEQ to its existing fm-task-owner row.
 #   Replayed comment keys do not deliver again.
 #   A pass or fail by role owner also sets the row's owner item (bin/fm-task-lib.mjs, check).
@@ -57,7 +59,7 @@ export FM_HOME="${FM_HOME:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 WRITER="${FM_TASK_OWNER_WRITER:-$SCRIPT_DIR/fm-task.sh}"
 HOLD="${FM_TASK_OWNER_HOLD:-$SCRIPT_DIR/fm-captain-hold.sh}"
 
-ACTION='' TASK='' OPTION='' RELATION='' ROW='' DECISION='' PLAN_SEQ='' NOTE='' OWNER='' TO='' ASK='' RULE='' ITEM='' SWITCH='' QUESTION='' SETUP='' REPLY_TO='' ANCHOR_QUOTE='' ANCHOR_PREFIX='' ANCHOR_SUFFIX='' ANCHORED=''
+ACTION='' TASK='' OPTION='' RELATION='' ROW='' DECISION='' PLAN_SEQ='' NOTE='' OWNER='' TO='' ASK='' RULE='' ITEM='' SWITCH='' QUESTION='' SETUP='' REPLY_TO='' ANCHOR_QUOTE='' ANCHOR_PREFIX='' ANCHOR_SUFFIX='' ANCHORED='' ACCEPT=''
 declare -A RULE_FIELD=()
 RULE_FLAGS='state harness model effort rank account hours scope enabled warning'
 WRITES='[]'
@@ -93,6 +95,7 @@ while [ "$#" -gt 0 ]; do
     --anchor-quote) ANCHOR_QUOTE=$2 ANCHORED=1 ;;
     --anchor-prefix) ANCHOR_PREFIX=$2 ANCHORED=1 ;;
     --anchor-suffix) ANCHOR_SUFFIX=$2 ANCHORED=1 ;;
+    --accept) ACCEPT=$2 ;;
     --state|--harness|--model|--effort|--rank|--account|--hours|--scope|--enabled|--warning) RULE_FIELD[${1#--}]=$2 ;;
     --item) ITEM=$2 ;;
     *) usage "unknown argument $1" ;;
@@ -112,6 +115,10 @@ if [ -n "$ANCHORED" ]; then
   [ "$ACTION" = comment ] || usage '--anchor-quote is only allowed for comment'
   [[ "$ANCHOR_QUOTE" =~ [^[:space:]] ]] || usage '--anchor-quote needs the quoted text; --anchor-prefix and --anchor-suffix need it too'
   [ -z "$REPLY_TO" ] || usage 'a comment opens a thread at --anchor-quote or answers one with --reply-to, not both'
+fi
+if [ -n "$ACCEPT" ]; then
+  [ "$ACCEPT" = yes ] || usage '--accept takes yes'
+  [ "$ACTION" = comment ] && [ -n "$REPLY_TO" ] || usage '--accept is a comment that answers a proposed outcome with --reply-to'
 fi
 if [ -n "$REPLY_TO" ]; then
   [ "$ACTION" = comment ] || usage '--reply-to is only allowed for comment'
@@ -161,7 +168,7 @@ case "$ACTION" in
     fi
     ;;
   comment)
-    [[ "$NOTE" =~ [^[:space:]] ]] || usage 'comment needs a nonblank --note'
+    [ -n "$ACCEPT" ] || [[ "$NOTE" =~ [^[:space:]] ]] || usage 'comment needs a nonblank --note'
     # shellcheck source=bin/fm-backend.sh
     . "$SCRIPT_DIR/fm-backend.sh"
     if [ -z "$TO" ]; then
@@ -172,7 +179,7 @@ case "$ACTION" in
       # The same words at another passage are another thread.
       digest=$(printf '%s\0' "$OWNER" "$NOTE" "$ASK" anchor "$ANCHOR_QUOTE" "$ANCHOR_PREFIX" "$ANCHOR_SUFFIX" "$(date -u +%Y-%m-%dT%H:%M)" | sha256sum) || usage 'comment digest failed'
     elif [ -n "$REPLY_TO" ]; then
-      digest=$(printf '%s\0' "$OWNER" "$NOTE" "$ASK" "$REPLY_TO" "$(date -u +%Y-%m-%dT%H:%M)" | sha256sum) || usage 'comment digest failed'
+      digest=$(printf '%s\0' "$OWNER" "$NOTE" "$ASK" "$REPLY_TO" "$ACCEPT" "$(date -u +%Y-%m-%dT%H:%M)" | sha256sum) || usage 'comment digest failed'
     elif [ -z "$ASK" ]; then
       digest=$(printf '%s\0%s\0%s' "$OWNER" "$NOTE" "$(date -u +%Y-%m-%dT%H:%M)" | sha256sum) || usage 'comment digest failed'
     else
@@ -188,7 +195,11 @@ case "$ACTION" in
     [ -z "$ANCHOR_QUOTE" ] || anchor_args=(--anchor-quote "$ANCHOR_QUOTE")
     [ -z "$ANCHOR_PREFIX" ] || anchor_args+=(--anchor-prefix "$ANCHOR_PREFIX")
     [ -z "$ANCHOR_SUFFIX" ] || anchor_args+=(--anchor-suffix "$ANCHOR_SUFFIX")
-    run comment "$TASK" --note "$NOTE" "${ask_args[@]}" "${reply_args[@]}" "${anchor_args[@]}" --key "owner-comment:$TASK:$digest" || RC=$?
+    accept_args=()
+    [ -z "$ACCEPT" ] || accept_args=(--accept)
+    note_args=()
+    [ -z "$NOTE" ] || note_args=(--note "$NOTE")
+    run comment "$TASK" "${note_args[@]}" "${ask_args[@]}" "${reply_args[@]}" "${anchor_args[@]}" "${accept_args[@]}" --key "owner-comment:$TASK:$digest" || RC=$?
     if [ "$RC" -eq 0 ] && ! [[ "$WRITES" == *'(already recorded)'* ]]; then
       seq=$(jq -r '.[0]' <<<"$WRITES")
       seq=${seq#seq=}; seq=${seq%% *}
@@ -205,6 +216,9 @@ case "$ACTION" in
         if [ -n "$REPLY_TO" ]; then
           message="Owner reply to comment $REPLY_TO on $TASK (seq $seq): $NOTE"
           message+=$'\n'"Reply with: bin/fm-task.sh comment $TASK --reply-to $seq$answer_as --note <output>"
+        fi
+        if [ -n "$ACCEPT" ]; then
+          message="Owner accepted the outcome proposed in comment $REPLY_TO on $TASK (seq $seq); the thread is resolved.${NOTE:+ $NOTE}"
         fi
         if [ -n "$ASK" ]; then
           message+=$'\n'"Run the $ASK skill on task $TASK. Reply with: bin/fm-task.sh comment $TASK --reply-to $seq --role firstmate --note <output>"

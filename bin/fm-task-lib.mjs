@@ -75,6 +75,9 @@
 //            [--ask why|how|wait-what] [--reply-to SEQ]                 any state; reply-to must name a comment of this task
 //            [--anchor-quote Q [--anchor-prefix P] [--anchor-suffix S]]   opens a thread at the quoted passage (not with
 //            --reply-to); a reply joins the thread of the comment it answers and stores it as `thread`
+//            [--outcome LINE]   with --reply-to inside a thread: proposes the line the thread resolved with
+//            [--accept]         with --reply-to naming a proposal, role owner: resolves the thread with its outcome
+//                               (note optional); any later comment in the thread reopens it
 //   event    <task> <kind> [--note N] [--pr-url U] [--head H] [--url U] kinds: steer comment pr deploy ci
 //            protocol_violation divergence link; --head on deploy (the deployed head, which user-visible passes count on
 //            from then) or on ci (the head the CI result read); --url on link; no other kind takes them
@@ -481,7 +484,7 @@ const SPECS = {
   plan: { pos: ['task'], flags: { document: 's', 'document-title': 's' } },
   'plan-decision': { pos: ['task'], flags: { decision: 's', 'plan-seq': 's' } },
   thread: { pos: ['task'], flags: { since: 's' } },
-  comment: { pos: ['task'], flags: { image: 'm', 'image-label': 'm', video: 'm', 'video-label': 'm', ask: 's', 'reply-to': 's', 'anchor-quote': 's', 'anchor-prefix': 's', 'anchor-suffix': 's' } },
+  comment: { pos: ['task'], flags: { image: 'm', 'image-label': 'm', video: 'm', 'video-label': 'm', ask: 's', 'reply-to': 's', 'anchor-quote': 's', 'anchor-prefix': 's', 'anchor-suffix': 's', outcome: 's', accept: 'b' } },
   event: { pos: ['task', 'kind'], flags: { 'pr-url': 's', head: 's', touched: 's', 'next-actor': 's', 'clears-on': 's', rows: 's', url: 's' } },
   checks: { pos: ['task'], flags: { 'as-deployed': 's', touched: 's' } },
   link: { pos: ['parent', 'child'], flags: {} },
@@ -1680,6 +1683,8 @@ async function cmdThread(args) {
 // The passage a thread opens at: the quoted words and a little text on each side, so a page finds them again.
 const ANCHOR_QUOTE_MAX = 500;
 const ANCHOR_SIDE_MAX = 160;
+// The one line a thread resolves with: what was decided or found, as its end shows it.
+const OUTCOME_MAX = 200;
 function anchorOf(args) {
   const quote = args.flags['anchor-quote'];
   const prefix = args.flags['anchor-prefix'];
@@ -1700,7 +1705,12 @@ async function cmdComment(args) {
   const who = identity(args, 'worker');
   const images = imagesOf(args);
   const videos = videosOf(args);
-  if (!args.flags.note && !images.length && !videos.length) throw usage('comment needs --note, --image or --video');
+  const outcome = args.flags.outcome;
+  const accept = Boolean(args.flags.accept);
+  if (!args.flags.note && !images.length && !videos.length && !accept) throw usage('comment needs --note, --image or --video');
+  if ((outcome !== undefined || accept) && args.flags['reply-to'] === undefined) throw usage('--outcome and --accept answer a comment of a thread: give --reply-to');
+  if (outcome !== undefined && accept) throw usage('a comment proposes an --outcome or accepts one, not both');
+  if (outcome !== undefined && (!outcome.trim() || outcome.length > OUTCOME_MAX || /[\r\n]/.test(outcome))) throw usage(`--outcome is one line of 1 to ${OUTCOME_MAX} characters`);
   const ask = args.flags.ask;
   if (ask !== undefined && !['why', 'how', 'wait-what'].includes(ask)) throw usage('--ask must be why, how or wait-what');
   const reply = args.flags['reply-to'];
@@ -1713,7 +1723,13 @@ async function cmdComment(args) {
     if (reply !== undefined && !parent) throw rule('--reply-to must name an existing comment of this task');
     // A reply joins the thread of the comment it answers: that comment's thread, or the comment itself when it opened one.
     const thread = parent ? (bodyOf(parent).thread ?? (bodyOf(parent).anchor ? parent.seq : undefined)) : undefined;
-    const spec = { kind: 'comment', note: noteOf(args), extra: { ...(ask ? { ask } : {}), ...(reply !== undefined ? { replyTo: Number(reply) } : {}), ...(thread ? { thread } : {}), ...(anchor ? { anchor } : {}) }, children: withVideos(withImages({}, images), videos) };
+    if ((outcome !== undefined || accept) && !thread) throw rule('--outcome and --accept belong to a thread: --reply-to must name a comment of one');
+    // Only the owner resolves a thread, and only with an outcome the agent proposed.
+    if (accept && who.role !== 'owner') throw rule('--accept is the owner\'s: it resolves the thread');
+    const proposed = accept ? bodyOf(parent).outcome : undefined;
+    if (accept && !proposed) throw rule('--accept must answer a comment that proposes an --outcome');
+    const settled = outcome !== undefined ? { outcome } : accept ? { outcome: proposed, accepted: parent.seq } : {};
+    const spec = { kind: 'comment', note: noteOf(args) || (accept ? `Accepted: ${proposed}` : ''), extra: { ...(ask ? { ask } : {}), ...(reply !== undefined ? { replyTo: Number(reply) } : {}), ...(thread ? { thread } : {}), ...(anchor ? { anchor } : {}), ...settled }, children: withVideos(withImages({}, images), videos) };
     return spec;
   });
 }
