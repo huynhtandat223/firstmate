@@ -2094,7 +2094,28 @@ case_owner_writer() {
     # the printed reply is drawn as Firstmate's on the board, not a worker's
     db fm_task_event | jq -e --argjson seq "$reply_seq" --argjson q "$question" '.[] | select(.seq == $seq) | (.body | fromjson | .replyTo) == $q and .actorRole == "firstmate"' >/dev/null || return 1
   done
+  local parent=$question owner_reply
+  ow --action comment --task $t --reply-to "$parent" --note 'Thread answer' --owner u-1 --to firstmate
+  must 'owner threaded reply' 0 || return 1
+  owner_reply=$(db fm_task_event | jq -r '[.[] | select(.kind == "comment")] | max_by(.seq).seq')
+  db fm_task_event | jq -e --argjson s "$owner_reply" --argjson p "$parent" '.[] | select(.seq == $s) | (.body | fromjson | .replyTo) == $p' >/dev/null || return 1
+  grep -R -F "Owner reply to comment $parent on $t (seq $owner_reply): Thread answer" "$FM_HOME/state/inbox" >/dev/null || return 1
+  grep -R -F "Reply with: bin/fm-task.sh comment $t --reply-to $owner_reply --note <output>" "$FM_HOME/state/inbox" >/dev/null || return 1
   before=$(count fm_task_event)
+  ow --action comment --task $t --reply-to "$parent" --note 'Thread answer' --owner u-1 --to firstmate
+  must 'owner reply replay' 0 || return 1
+  [ "$(count fm_task_event)" = "$before" ] || return 1
+  ow --action comment --task $t --reply-to "$reply_seq" --note 'Thread answer' --owner u-1 --to firstmate
+  must 'same text different parent' 0 || return 1
+  [ "$(count fm_task_event)" = "$((before + 1))" ] || return 1
+  before=$(count fm_task_event)
+  ow --action comment --task $t --reply-to 1 --note bad --owner u-1 --to firstmate
+  must 'owner noncomment target' 5 || return 1
+  ow --action comment --task $t --reply-to 999999 --note bad --owner u-1 --to firstmate
+  must 'owner missing target' 5 || return 1
+  ow --action comment --task $t --reply-to 1.5 --note bad --owner u-1 --to firstmate
+  must 'owner malformed target' 2 || return 1
+  [ "$(count fm_task_event)" = "$before" ] || return 1
   ft comment $t --reply-to 1 --note 'not a comment'; must 'noncomment target' 5 || return 1
   ft comment $t --reply-to 999999 --note 'missing'; must 'missing target' 5 || return 1
   ft comment $t --reply-to 1.5 --note 'fraction'; must 'invalid sequence' 2 || return 1
@@ -2102,6 +2123,8 @@ case_owner_writer() {
   ft comment tk-foreign --note foreign; must 'foreign comment' 0 || return 1
   question=$(seq_of)
   ft comment $t --reply-to "$question" --note 'foreign target'; must 'foreign task target' 5 || return 1
+  ow --action comment --task $t --reply-to "$question" --note bad --owner u-1 --to firstmate
+  must 'owner foreign target' 5 || return 1
   before=$((before + 2))
   ow --action comment --task $t --note bad --ask unknown --owner u-1
   must 'unknown skill' 2 || return 1
