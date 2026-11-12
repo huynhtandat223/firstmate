@@ -2807,6 +2807,11 @@ case_stage() {
   [ "$(task_row $t | jq -r .reviewer)" = reviewer-1 ] || { echo "reviewer is not the actor of the newest changes: $(task_row $t)"; return 1; }
   ft start $t; step 'started after changes' working new || return 1
   ft "done" $t "${DONE_FLAGS[@]}"; step 'done again is pr' pr new || return 1
+  # a merged pull request is a pr event that says so in its body: no step of its own, and no other kind takes the flag
+  ft event $t pr --merged --note 'merged at m1'; step 'a merged pr event keeps the step' pr same || return 1
+  db fm_task_event | jq -e --arg t $t --argjson seq "$(seq_of)" '[.[] | select(.taskId == $t and .kind == "pr") | {seq, merged: (.body | fromjson | .merged)}] | map(select(.merged == true) | .seq) == [$seq] and all(.[]; .seq == $seq or .merged == null)' >/dev/null \
+    || { echo "only the --merged pr event holds merged: true: $(db fm_task_event | jq -c --arg t $t '[.[] | select(.taskId == $t and .kind == "pr") | .body]')"; return 1; }
+  ft event $t deploy --merged --head abc123; must '--merged on another kind' 2 || return 1
   ft event $t deploy --note 'deployed' --head abc123; step 'a deploy after the newest done is dev' dev new || return 1
   ft comment $t --note 'looks fine'; step 'a comment stays dev' dev same || return 1
   ft approve $t --actor firstmate-1; step 'approved: done is passed' passed new || return 1
@@ -3524,6 +3529,8 @@ mutate 'a machine record does not become lastNote' stage "if (!isMachineRecord(e
 mutate 'a machine record is one only under its own key' stage "if (!Object.hasOwn(MACHINE_RECORDS, prefix) || taskId !== event.taskId) return false;" ";"
 mutate 'a reconcile divergence is a machine record' stage "{ backfill: 'sha256,source', reconcile: 'field,oldSource,record' }" "{ backfill: 'sha256,source' }"
 mutate 'lastNote is cut to 300' stage "task.lastNote = note.slice(0, 300) || null" "task.lastNote = note || null"
+mutate '--merged goes only on a pr event' stage "if (merged && kind !== 'pr') throw usage" "if (false) throw usage"
+mutate 'a merged pr event says so in its body' stage "merged ? { extra: { merged: true } } : {}" "{}"
 mutate 'reproject --all repairs every row' stage "      const result = await project(taskId);
       if (!result?.changed.length) continue;" "      continue;"
 mutate 'approve judges a row by its newest check event' approve_newest "return v ? { ...r, status: v.status," "return false ? { ...r, status: v.status,"

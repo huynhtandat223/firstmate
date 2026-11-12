@@ -81,6 +81,7 @@ test_assistance_producers_write_nothing() {
   hook cleaned-up t1
   hook verified t1
   hook deploy-verify t1 abc round issue
+  hook merged t1 https://github.com/o/r/pull/7
   hook started t1 occurrence
   assert_equals '' "$(calls)" 'an assistance producer wrote to the task record'
   assert_absent "$HOME_DIR/state/task-shadow.log" 'an assistance reached the writer'
@@ -203,6 +204,7 @@ test_events_of_the_other_scripts() {
   hook held t1 external "fm-hold-v1:$(printf '%s' 'an encoded reason' | base64 -w0)"
   hook answered t1 released; hook answered t1 closed
   hook deploy-verify t1 abc123 1 https://github.com/o/r/issues/9
+  hook merged t1 https://github.com/o/r/pull/7
   assert_equals "$(printf '%s\n' \
     'event t1 comment --note cleaned up by bin/fm-teardown.sh' \
     'event t1 comment --note verification record complete (bin/fm-verify-close.sh)' \
@@ -213,7 +215,8 @@ test_events_of_the_other_scripts() {
     'unblock t1' \
     'done t1 --summary closed by the old source --changed-files - --verification - --residual-risk -' \
     'approve t1' \
-    'event t1 deploy --note deploy 1 at abc123: verify ask sent (https://github.com/o/r/issues/9)')" "$(calls)" "the events of the other scripts"
+    'event t1 deploy --note deploy 1 at abc123: verify ask sent (https://github.com/o/r/issues/9)' \
+    'event t1 pr --merged --pr-url https://github.com/o/r/pull/7 --note merged https://github.com/o/r/pull/7')" "$(calls)" "the events of the other scripts"
   make_case events-refused on
   FAKE_FAIL=block hook held t1 captain "queued row" || fail "the hook failed"
   assert_equals "$(printf '%s\n' \
@@ -234,7 +237,7 @@ test_events_of_the_other_scripts() {
   make_case events-close on
   hook answered t1 closed
   assert_equals "$(printf '%s\n' 'done t1 --summary closed by the old source --changed-files - --verification - --residual-risk -' 'approve t1')" "$(calls)" "approve of a task the record holds running"
-  pass "cleaned-up, verified, held, answered and deploy-verify become the writer commands the header names"
+  pass "cleaned-up, verified, held, answered, deploy-verify and merged become the writer commands the header names"
 }
 
 # A task begun after T5 ('record: rows' in firstmate's record) is verified on check rows, which deploy-verify writes
@@ -394,6 +397,24 @@ test_verify_close_writes_the_record() {
   assert_contains "$(calls)" "event $TASK comment --note verification record complete (bin/fm-verify-close.sh)" "verify-close writes its close to the record"
   case "$(calls)" in *"approve $TASK"*) fail "the backlog close still reached the record through the retired backlog hook" ;; esac
   pass "verify-close: the verified close reaches the record, with no retired backlog hook"
+}
+
+# The shared PR merge outcome (bin/fm-merge-outcome-lib.sh): the merge this home performs and the merge its poll then
+# sees are one outcome, so the record takes one merged pr event.
+test_merge_outcome_writes_the_record() {
+  local pr_url=https://github.com/acme/sample/pull/7
+  merge_outcome() {  # <origin>: publish the outcome of t1's merged PR in the case home
+    env FM_TASK_SHADOW_WRITER="$WRITER" FAKE_CALLS="$CALLS" FM_CONFIG_OVERRIDE="$HOME_DIR/config" \
+      bash -c '. "$1/fm-merge-outcome-lib.sh"; fm_merge_outcome_report "$2" "$2/state" t1 "$3" "$4"' _ "$SBIN" "$HOME_DIR" "$pr_url" "$1"
+  }
+  make_case merge-outcome on
+  merge_outcome self || fail "the merge outcome was not recorded"
+  merge_outcome poll || fail "the repeated merge outcome failed"
+  assert_equals "event t1 pr --merged --pr-url $pr_url --note merged $pr_url" "$(calls)" "a merge performed here and then seen by its poll"
+  make_case merge-outcome-off off
+  merge_outcome self || fail "the merge outcome failed with the flag absent"
+  assert_equals "" "$(cat "$CALLS")" "a merge with the flag absent writes nothing to the record"
+  pass "merge outcome: a confirmed PR merge reaches the record once as a merged pr event, and not at all without the flag"
 }
 
 test_captain_hold_writes_the_record() {
@@ -622,6 +643,7 @@ test_spawn_writes_the_record
 test_worker_status_command_writes_the_record
 test_teardown_writes_the_record
 test_verify_close_writes_the_record
+test_merge_outcome_writes_the_record
 test_captain_hold_writes_the_record
 
 # ---- mutation proofs: remove one rule of the hook, the case guarding it goes red ------------------------------
@@ -660,6 +682,7 @@ mutate_hook 'a refused needs-decision heartbeat leaves a comment' test_status_li
 mutate_hook 'a hold the record holds as transient for firstmate is not written again' test_events_of_the_other_scripts '[ "$held_kind/$held_actor" != "$mapped_kind/$mapped_actor" ] || return 0' ':'
 mutate_hook 'a captain hold mirrored as an ask is not rewritten' test_events_of_the_other_scripts '[ "$kind" != captain ] || [ "$held_kind/$held_actor" != needs-decision/owner ] || return 0' ':'
 mutate_hook 'a refused hold leaves a comment' test_events_of_the_other_scripts '|| w "hold-$key-comment" event' '|| : event'
+mutate_hook 'a merge is a pr event that says merged' test_events_of_the_other_scripts 'event "$TASK" pr --merged ' 'event "$TASK" pr '
 mutate_hook 'a close goes through done when the record holds the task running' test_events_of_the_other_scripts 'w "$1-done" "done" "$TASK" --summary "closed by the old source" --changed-files - --verification - --residual-risk - || return 1' 'return 1'
 pass 'every rule of the hook has a red mutation proof'
 
@@ -684,6 +707,7 @@ mutate_script 'fm-teardown.sh writes the cleanup' test_teardown_writes_the_recor
 mutate_script 'fm-spawn.sh starts the workflow step' test_spawn_writes_the_record fm-spawn.sh 'fm-task-shadow.sh" step-start'
 mutate_script 'fm-teardown.sh ends the workflow step' test_teardown_writes_the_record fm-teardown.sh 'fm-task-shadow.sh" step-end'
 mutate_script 'fm-verify-close.sh writes the verified close' test_verify_close_writes_the_record fm-verify-close.sh 'fm-task-shadow.sh" verified'
+mutate_script 'the merge outcome writes the merged pr event' test_merge_outcome_writes_the_record fm-merge-outcome-lib.sh 'fm-task-shadow.sh" merged'
 mutate_script 'fm-captain-hold.sh writes the hold' test_captain_hold_writes_the_record fm-captain-hold.sh 'shadow_record held'
 mutate_script 'fm-captain-hold.sh writes the closing answer' test_captain_hold_writes_the_record fm-captain-hold.sh 'shadow_record answered "$1" closed'
 mutate_script 'fm-captain-hold.sh writes the release' test_captain_hold_writes_the_record fm-captain-hold.sh 'shadow_record answered "$1" released'

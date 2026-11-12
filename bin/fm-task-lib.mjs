@@ -83,9 +83,10 @@
 //            [--outcome LINE]   with --reply-to inside a thread: proposes the line the thread resolved with
 //            [--accept]         with --reply-to naming a proposal, role owner: resolves the thread with its outcome
 //                               (note optional); any later comment in the thread reopens it
-//   event    <task> <kind> [--note N] [--pr-url U] [--head H] [--url U] kinds: steer comment pr deploy ci
+//   event    <task> <kind> [--note N] [--pr-url U] [--head H] [--url U] [--merged] kinds: steer comment pr deploy ci
 //            protocol_violation divergence link; --head on deploy (the deployed head, which user-visible passes count on
-//            from then) or on ci (the head the CI result read); --url on link; no other kind takes them
+//            from then) or on ci (the head the CI result read); --url on link; --merged on pr (the pull request merged:
+//            the event body holds merged: true); no other kind takes them
 //   event    <task> close-request|start-request [--note N]   the owner's Done or Start on the board (next actor
 //            firstmate; refused on a done or archived task, start-request also on a running one, and while a request of
 //            the same kind is still open). Each stays open until
@@ -490,7 +491,7 @@ const SPECS = {
   'plan-decision': { pos: ['task'], flags: { decision: 's', 'plan-seq': 's' } },
   thread: { pos: ['task'], flags: { since: 's' } },
   comment: { pos: ['task'], flags: { image: 'm', 'image-label': 'm', video: 'm', 'video-label': 'm', ask: 's', 'reply-to': 's', 'anchor-quote': 's', 'anchor-prefix': 's', 'anchor-suffix': 's', outcome: 's', accept: 'b' } },
-  event: { pos: ['task', 'kind'], flags: { 'pr-url': 's', head: 's', touched: 's', 'next-actor': 's', 'clears-on': 's', rows: 's', url: 's' } },
+  event: { pos: ['task', 'kind'], flags: { 'pr-url': 's', head: 's', touched: 's', 'next-actor': 's', 'clears-on': 's', rows: 's', url: 's', merged: 'b' } },
   checks: { pos: ['task'], flags: { 'as-deployed': 's', touched: 's' } },
   link: { pos: ['parent', 'child'], flags: {} },
   rows: { pos: ['task', 'issue'], flags: { surface: 's' } },
@@ -1779,6 +1780,8 @@ async function cmdEvent(args) {
   if (head !== undefined && !headKind) throw usage('--head names a head a deploy or a ci event reports: give it only on one of those');
   if (args.flags.touched !== undefined && !(kind === 'deploy' && head)) throw usage('--touched names the scenarios a deploy touched: give it only on a deploy event with --head');
   if (url !== undefined && kind !== 'link') throw usage('--url goes only on a link event');
+  const merged = args.flags.merged === true;
+  if (merged && kind !== 'pr') throw usage('--merged says a pull request merged: give it only on a pr event');
   if (kind === 'link' && (!url || !/^https?:\/\/\S+$/.test(url) || url.length > 2048)) throw rule('a link event needs --url with an http or https URL up to 2048 characters');
   const touched = touchedOf(args.flags.touched);
   if (kind === 'wait') {
@@ -1809,7 +1812,7 @@ async function cmdEvent(args) {
       if (kind === 'closed' && task.state !== 'done') throw rule(`closed is refused: ${taskId} is ${task.state}, not approved`);
       return { kind, note: noteOf(args), set: kind === 'closed' ? {} : { nextActor: 'owner' } };
     }
-    return { kind, note: noteOf(args) || (kind === 'link' ? url : ''), set: kind === 'pr' && prUrl ? { prUrl } : {}, ...(head ? { extra: { head, ...(touched ? { touched } : {}) } } : kind === 'link' ? { extra: { url } } : {}) };
+    return { kind, note: noteOf(args) || (kind === 'link' ? url : ''), set: kind === 'pr' && prUrl ? { prUrl } : {}, ...(head ? { extra: { head, ...(touched ? { touched } : {}) } } : kind === 'link' ? { extra: { url } } : merged ? { extra: { merged: true } } : {}) };
   }, kind === 'deploy' && head ? () => routeReview(taskId, who) : undefined);
 }
 
