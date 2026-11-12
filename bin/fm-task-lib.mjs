@@ -69,7 +69,8 @@
 //   archive  <task>                          triage|todo|ready|blocked|review|done -> archived
 //   delete   <task>... --reason WHY          any state but running, with no live worker and a PR that is not open or
 //            unreadable; deletes the task row, its events and their children, its steps, checks, owner items, deliveries,
-//            links on either side, then dismisses its undismissed notifications after deleting the task row. There is no backup, and one
+//            links on either side, then dismisses its undismissed notifications after deleting the task row and removes
+//            the owner's picture files of the task (data/<task>/owner-images). There is no backup, and one
 //            refusal or failure does not stop the other ids. A new event written after the checks refuse the id.
 //            --assistance-record-only removes an obsolete assistance row even while its pane runs; requires both
 //            the row and state/<id>.meta to have kind assistance. It never changes or stops the session.
@@ -1363,6 +1364,14 @@ async function dismissTaskNotices(taskId) {
   }
   return notices.length;
 }
+// The owner's pictures kept as files for the worker (bin/fm-task-owner.sh, comment --image-data) go with their task.
+function removeOwnerImages(taskId) {
+  const data = process.env.FM_DATA_OVERRIDE || (process.env.FM_HOME && path.join(process.env.FM_HOME, 'data'));
+  const dir = data && path.join(data, taskId, 'owner-images');
+  if (!dir || !fs.existsSync(dir)) return false;
+  fs.rmSync(dir, { recursive: true });
+  return true;
+}
 async function deleteTaskRows(taskId, events) {
   const eventIds = events.map((e) => `fmTaskEventId eq ${e.id}`);
   const seqs = events.map((e) => `seq eq ${e.seq}`);
@@ -1379,6 +1388,7 @@ async function deleteTaskRows(taskId, events) {
   ]);
   rows += await deleteRows('fm_task', await listAll('fm_task', { filter: `taskId eq ${lit(taskId)}`, orderby: 'id', select: 'id' }));
   await dismissTaskNotices(taskId);
+  removeOwnerImages(taskId);
   return rows;
 }
 
@@ -1391,9 +1401,10 @@ async function deleteOutcome(taskId, assistanceRecordOnly = false) {
   const task = fold(events);
   const stored = task ? null : await firstRow('fm_task', `taskId eq ${lit(taskId)}`);
   if (!task && !stored && !events.length) {
-    // A failed notification PATCH can outlive the task row. Retry its cleanup without recreating the task.
+    // A failed notification PATCH or picture removal can outlive the task row. Retry the cleanup without recreating the task.
     const dismissed = await dismissTaskNotices(taskId);
-    return dismissed ? { rows: 0 } : { refuse: 'no such task' };
+    const pictures = removeOwnerImages(taskId);
+    return dismissed || pictures ? { rows: 0 } : { refuse: 'no such task' };
   }
   const state = task ? task.state : stored?.state;
   const prUrl = task ? task.prUrl : stored?.prUrl;

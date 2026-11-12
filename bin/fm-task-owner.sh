@@ -46,6 +46,8 @@
 #   --image-data on comment attaches one picture (base64 bytes, at most 96000 characters, so one command argument holds it;
 #   --image-type image/jpeg (default) or image/png; --image-label names it): the marked area of a page the owner reports on
 #   the board (cfw-modules task kv2-prototype-review). Its delivery asks for the fix proof as a reply with an image.
+#   The worker reads the picture as a file: a copy is kept as data/<task>/owner-images/seq-<seq>.<jpg|png>, under
+#   FM_DATA_OVERRIDE when it is set, and `fm-task.sh delete` removes that directory with the task.
 #   Dev 5001 maps each invoke body key to --key: send "reply-to": SEQ to its existing fm-task-owner row.
 #   Replayed comment keys do not deliver again.
 #   A pass or fail by role owner also sets the row's owner item (bin/fm-task-lib.mjs, check).
@@ -140,7 +142,8 @@ if [ -n "$IMAGE_DATA$IMAGE_LABEL$IMAGE_TYPE" ]; then
   [[ "$IMAGE_DATA" =~ ^[A-Za-z0-9+/]+={0,2}$ ]] || usage '--image-data must be base64'
   [[ "$IMAGE_LABEL" =~ [^[:space:]] ]] || usage '--image-data needs a nonblank --image-label'
   [ "${#IMAGE_LABEL}" -le 200 ] || usage 'the image label is longer than 200 characters'
-  case "${IMAGE_TYPE:-image/jpeg}" in image/jpeg) IMAGE_EXT=jpg ;; image/png) IMAGE_EXT=png ;; *) usage '--image-type must be image/jpeg or image/png' ;; esac
+  IMAGE_TYPE=${IMAGE_TYPE:-image/jpeg}
+  case "$IMAGE_TYPE" in image/jpeg) IMAGE_EXT=jpg ;; image/png) IMAGE_EXT=png ;; *) usage '--image-type must be image/jpeg or image/png' ;; esac
 fi
 export FM_TASK_ACTOR="owner:$OWNER" FM_TASK_ROLE=owner
 unset FM_TASK_ID
@@ -213,8 +216,8 @@ case "$ACTION" in
     fi
     [ "$TO" = firstmate ] || worker_live "$TO" || usage 'recipient must be firstmate or a live worker'
     if [ -n "$IMAGE_DATA" ]; then
-      # A picture is part of what the owner sent: another picture is another comment.
-      digest=$(printf '%s\0' "$OWNER" "$NOTE" "$ASK" "$REPLY_TO" anchor "$ANCHOR_QUOTE" "$ANCHOR_PREFIX" "$ANCHOR_SUFFIX" image "$IMAGE_LABEL" "$IMAGE_DATA" "$(date -u +%Y-%m-%dT%H:%M)" | sha256sum) || usage 'comment digest failed'
+      # A picture is part of what the owner sent: another picture, or the same bytes as another type, is another comment.
+      digest=$(printf '%s\0' "$OWNER" "$NOTE" "$ASK" "$REPLY_TO" anchor "$ANCHOR_QUOTE" "$ANCHOR_PREFIX" "$ANCHOR_SUFFIX" image "$IMAGE_LABEL" "$IMAGE_TYPE" "$IMAGE_DATA" "$(date -u +%Y-%m-%dT%H:%M)" | sha256sum) || usage 'comment digest failed'
     elif [ -n "$ANCHOR_QUOTE" ]; then
       # The same words at another passage are another thread.
       digest=$(printf '%s\0' "$OWNER" "$NOTE" "$ASK" anchor "$ANCHOR_QUOTE" "$ANCHOR_PREFIX" "$ANCHOR_SUFFIX" "$(date -u +%Y-%m-%dT%H:%M)" | sha256sum) || usage 'comment digest failed'
@@ -269,7 +272,7 @@ case "$ACTION" in
         fi
         if [ -n "$IMAGE_DATA" ]; then
           # The worker reads the picture as a file: the writer keeps it only in the record.
-          image_copy="$FM_HOME/data/$TASK/owner-images/seq-$seq.$IMAGE_EXT"
+          image_copy="${FM_DATA_OVERRIDE:-$FM_HOME/data}/$TASK/owner-images/seq-$seq.$IMAGE_EXT"
           mkdir -p "${image_copy%/*}" && cp "$image_dir/image.$IMAGE_EXT" "$image_copy" || image_copy='(not kept: see the task on the board)'
           message+=$'\n'"It carries one image, \"$IMAGE_LABEL\": $image_copy. Add the fix proof to this thread with: bin/fm-task.sh comment $TASK --reply-to $seq$answer_as --image <proof.png> --image-label 'fix proof' --note <what changed>"
         fi
