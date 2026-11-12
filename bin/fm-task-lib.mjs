@@ -384,11 +384,14 @@ function bodyOf(event) {
 // workflowSince and the card's step fields (stepHarness, stepModel, stepEffort, stepAlive) in their own `set`.
 // The step follows the state: done is passed; review is dev once a deploy follows the newest done, else pr; running is
 // pr once a pr event follows the newest started or changes, else working; triage, todo and ready are queued; blocked
-// (and archived) keep the step they had. stageSince is the time of the event that set the step. lastEventAt and
-// lastNote come from the newest real event: a backlog view `row` event is not one. A machine record is not a note
-// either, so it leaves lastNote as it was: an import's source stamp (`{"source","sha256"}` under a `backfill:<task>:`
-// key, fm-task-backfill-lib.mjs) and a reconcile divergence (`{"field","oldSource","record"}` under a `reconcile:<task>:`
-// key, fm-task-reconcile-lib.mjs). The same JSON in a real comment is a note.
+// (and archived) keep the step they had. stageSince is the time of the event that set the step. lastEventAt comes from
+// the newest real event: a backlog view `row` event is not one. lastNote is the newest real event's note; an event with
+// no note leaves it as it was. A machine record is not a note either, so it leaves lastNote as it was: an import's source
+// stamp (`{"source","sha256"}` under a `backfill:<task>:` key, fm-task-backfill-lib.mjs) and a reconcile divergence
+// (`{"field","oldSource","record"}` under a `reconcile:<task>:` key, fm-task-reconcile-lib.mjs). The same JSON in a real
+// comment is a note. Nor is the wait a command writes after its own event (waitOn: that event's key plus `:wait`, its
+// note the PR or the question), so the caller's --note stays; a wait the caller writes itself is a note.
+const isFollowUpWait = (event, keys) => event.kind === 'wait' && /:wait$/.test(event.idempotencyKey ?? '') && keys.has(event.idempotencyKey.slice(0, -5));
 const MACHINE_RECORDS = { backfill: 'sha256,source', reconcile: 'field,oldSource,record' };
 const isMachineRecord = (event, note) => {
   const [prefix, taskId] = String(event.idempotencyKey ?? '').split(':');
@@ -404,6 +407,7 @@ function fold(events) {
   let task = null;
   let deployed = false;
   let pullRequest = false;
+  const keys = new Set();
   for (const event of [...events].sort((a, b) => a.seq - b.seq)) {
     const set = { ...(bodyOf(event).set || {}), ...(event.rowText || {}) };
     if (event.kind === 'created' && !task) task = { taskId: event.taskId };
@@ -420,8 +424,9 @@ function fold(events) {
     if (event.kind !== 'row' && event.kind !== 'checklist') {
       const note = String(bodyOf(event).note ?? '');
       task.lastEventAt = event.createdAt ?? null;
-      if (!isMachineRecord(event, note)) task.lastNote = note.slice(0, 300) || null;
+      if (note && !isMachineRecord(event, note) && !isFollowUpWait(event, keys)) task.lastNote = note.slice(0, 300);
     }
+    keys.add(event.idempotencyKey);
     if (REVIEWER_KINDS.includes(event.kind)) task.reviewer = event.actor ?? null;
   }
   if (!task) return null;

@@ -2880,8 +2880,8 @@ case_gate_no_surface() {
 }
 
 # SG1 (#176 Step 5): every write folds the board card's step onto the row: stage by the step rule, stageSince only
-# when the step changes, lastEventAt and lastNote from the newest event that is not a backlog view row event,
-# reviewer from the newest check, owner-check, approved or changes event.
+# when the step changes, lastEventAt from the newest event that is not a backlog view row event, lastNote from the
+# newest such event with a note, reviewer from the newest check, owner-check, approved or changes event.
 case_stage() {
   BIN=$1; reset_db
   local t=tk-sg row since prev long
@@ -2922,7 +2922,7 @@ case_stage() {
   ft approve $t --actor firstmate-1; step 'approved: done is passed' passed new || return 1
   [ "$(task_row $t | jq -r .reviewer)" = firstmate-1 ] || { echo "reviewer is not the actor of the newest approved: $(task_row $t)"; return 1; }
   ft archive $t; step 'archived keeps its step' passed same || return 1
-  # lastNote is cut to 300; an event with no note clears it
+  # lastNote is cut to 300
   t=tk-sg2; prev=''
   mk_running $t >/dev/null || { echo "setup: $ERR"; return 1; }
   long=$(printf 'x%.0s' $(seq 1 400))
@@ -2970,6 +2970,60 @@ case_stage() {
   ft reproject --all; must 'reproject --all again' 0 || return 1
   [ "$OUT" = 'reproject --all: 2 tasks, 0 repaired' ] || { echo "a second reproject --all repaired again: $OUT"; return 1; }
   return 0
+}
+
+# Latest is the newest note: <label> <task> <note> <kind>: the task's newest event is of that kind, lastEventAt is its time
+# and lastNote is the note.
+latest_is() {
+  local ev
+  ev=$(db fm_task_event | jq -c --arg t "$2" '[.[] | select(.taskId == $t)] | max_by(.seq)')
+  [ "$(jq -r .kind <<<"$ev")" = "$4" ] || { echo "$1: the newest event is $(jq -r .kind <<<"$ev"), want $4"; return 1; }
+  task_row "$2" | jq -e --arg note "$3" --arg at "$(jq -r .createdAt <<<"$ev")" '.lastNote == $note and .lastEventAt == $at' >/dev/null \
+    || { echo "$1: want lastNote [$3] at the $4 event: $(task_row "$2")"; return 1; }
+}
+
+# The wait done --pr-url or ask --next-actor owner writes after its own event leaves the worker's status on Latest; a
+# wait the worker writes itself, and any later note, still replace it. The command projects before it writes that wait,
+# so the next projection (a reproject, as a backlog view row event runs) is the one that reads it.
+case_latest_wait() {
+  BIN=$1; reset_db
+  local status=$'Built the fix.\nPR open, waiting on merge.' asked=$'Two ways to go.\nAsked the owner which one.'
+  mk_running tk-lw1 >/dev/null || { echo "setup: $ERR"; return 1; }
+  ft "done" tk-lw1 "${DONE_FLAGS[@]}" --pr-url https://github.com/example/repo/pull/9 --head h1 --note "$status"
+  must 'done --pr-url' 0 || return 1
+  ft reproject tk-lw1; must 'reproject after done --pr-url' 0 || return 1
+  latest_is 'done --pr-url' tk-lw1 "$status" wait || return 1
+  mk_running tk-lw2 >/dev/null || { echo "setup: $ERR"; return 1; }
+  ft ask tk-lw2 "${ASK_FLAGS[@]}" --next-actor owner --note "$asked"
+  must 'ask --next-actor owner' 0 || return 1
+  ft reproject tk-lw2; must 'reproject after ask --next-actor owner' 0 || return 1
+  latest_is 'ask --next-actor owner' tk-lw2 "$asked" wait || return 1
+  ft event tk-lw2 wait --next-actor owner --clears-on answer --note 'waiting on the owner'
+  must "the worker's own wait" 0 || return 1
+  latest_is "the worker's own wait" tk-lw2 'waiting on the owner' wait || return 1
+  ft comment tk-lw1 --note 'merge after the release'
+  must 'a later comment' 0 || return 1
+  latest_is 'a later comment' tk-lw1 'merge after the release' comment || return 1
+}
+
+# An event with no note leaves Latest as it was: a bare pr event and a describe; lastEventAt still moves to it.
+case_latest_no_note() {
+  BIN=$1; reset_db
+  local status=$'Building the fix.\nNext: open the PR.'
+  mk_running tk-ln1 >/dev/null || { echo "setup: $ERR"; return 1; }
+  ft heartbeat tk-ln1 --note "$status"
+  must 'heartbeat' 0 || return 1
+  latest_is 'heartbeat' tk-ln1 "$status" heartbeat || return 1
+  ft event tk-ln1 pr --pr-url https://github.com/example/repo/pull/10
+  must 'a bare pr event' 0 || return 1
+  latest_is 'a bare pr event' tk-ln1 "$status" pr || return 1
+  printf '# Probe\n\nFull description.\n' > "$TMP_ROOT/latest-description.md"
+  ft describe tk-ln1 --document "$TMP_ROOT/latest-description.md"
+  must 'describe' 0 || return 1
+  latest_is 'describe' tk-ln1 "$status" description || return 1
+  ft comment tk-ln1 --note 'a newer note'
+  must 'a later comment' 0 || return 1
+  latest_is 'a later comment' tk-ln1 'a newer note' comment || return 1
 }
 
 # Slice C: plan and plan-decision, done --document for scout/plan, comment --video and approve video cleanup,
@@ -3530,7 +3584,7 @@ case_setup_rules() {
   return 0
 }
 
-CASES=${FM_TASK_CASES:-"plan_task description_thread describe_rows describe_issue terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed long_notes status_view verify_view owner_writer workflow gate_internal gate_no_surface stage wait carry slice_c model_rules checklist question_round setup_rules backlog_home owner_hold owner_request gate_before_approval handoff_gate delete owner_nav"}
+CASES=${FM_TASK_CASES:-"plan_task description_thread describe_rows describe_issue terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed long_notes status_view verify_view owner_writer workflow gate_internal gate_no_surface stage latest_wait latest_no_note wait carry slice_c model_rules checklist question_round setup_rules backlog_home owner_hold owner_request gate_before_approval handoff_gate delete owner_nav"}
 
 # ---- real command -------------------------------------------------------------------
 
@@ -3651,10 +3705,13 @@ mutate 'the Solution gate holds a ship with no surface' gate_no_surface "task.ki
 mutate 'the Solution gate leaves another kind alone' workflow "if (to === 'implement' && task.kind === 'ship' && task.planDecision" "if (to === 'implement' && task.planDecision"
 mutate 'the reviewer is the actor of the newest review event' stage "if (REVIEWER_KINDS.includes(event.kind)) task.reviewer = event.actor ?? null;" ";"
 mutate 'a row event does not move lastNote or lastEventAt' stage "if (event.kind !== 'row' && event.kind !== 'checklist') {" "if (event.kind !== 'checklist') {"
-mutate 'a machine record does not become lastNote' stage "if (!isMachineRecord(event, note)) task.lastNote" "task.lastNote"
+mutate 'a machine record does not become lastNote' stage "if (note && !isMachineRecord(event, note) && " "if (note && "
 mutate 'a machine record is one only under its own key' stage "if (!Object.hasOwn(MACHINE_RECORDS, prefix) || taskId !== event.taskId) return false;" ";"
 mutate 'a reconcile divergence is a machine record' stage "{ backfill: 'sha256,source', reconcile: 'field,oldSource,record' }" "{ backfill: 'sha256,source' }"
-mutate 'lastNote is cut to 300' stage "task.lastNote = note.slice(0, 300) || null" "task.lastNote = note || null"
+mutate 'lastNote is cut to 300' stage "task.lastNote = note.slice(0, 300);" "task.lastNote = note;"
+mutate 'an event with no note leaves lastNote' latest_no_note "if (note && !isMachineRecord(event, note)" "if (!isMachineRecord(event, note)"
+mutate "the wait a command writes after its own event leaves lastNote" latest_wait " && !isFollowUpWait(event, keys)) task.lastNote" ") task.lastNote"
+mutate "a wait the caller writes itself is a note" latest_wait "event.kind === 'wait' && /:wait\$/.test(event.idempotencyKey ?? '') && keys.has(event.idempotencyKey.slice(0, -5))" "event.kind === 'wait'"
 mutate '--merged goes only on a pr event' stage "if (merged && kind !== 'pr') throw usage" "if (false) throw usage"
 mutate 'a merged pr event says so in its body' stage "merged ? { extra: { merged: true } } : {}" "{}"
 mutate 'reproject --all repairs every row' stage "      const result = await project(taskId);
