@@ -72,6 +72,9 @@
 //   home     <task> --home H                 sets the backlog home of a task that has none (any state but archived);
 //            the same home again is a no-op, another home is refused: a task belongs to one board
 //   describe <task> --document FILE.md [--document-title T]              any state; default title Description
+//            A task that holds no scenario check row yet gets them from this Description, as `rows <task>` writes them;
+//            a task that holds one keeps its rows (`rows` is the re-sync). A Description that sync refuses (no scenarios,
+//            a parser refusal) is stored all the same, and describe prints `rows not seeded: <why>` and exits 0.
 //   thread   <task> [--since SEQ]                                       full comments, oldest first
 //   comment  <task> [--note T] [--image PATH --image-label L]... [--video PATH --video-label L]...
 //            [--ask why|how|wait-what] [--reply-to SEQ]                 any state; reply-to must name a comment of this task
@@ -1578,10 +1581,21 @@ async function cmdDescribe(args) {
   const f = args.flags;
   if (!f.document || !['.md', '.markdown'].includes(path.extname(f.document).toLowerCase())) throw usage('describe needs --document FILE.md');
   const document = documentOf({ ...f, 'document-title': f['document-title'] ?? 'Description' });
-  return write(taskIdOf(args), identity(args, 'firstmate'), async ({ task }) => {
+  const taskId = taskIdOf(args);
+  const who = identity(args, 'firstmate');
+  await write(taskId, who, async ({ task }) => {
     if (!task) throw rule('no such task');
     return { kind: 'description', children: { documents: [document] } };
   });
+  // A task with no scenario row yet takes its rows from this Description, through the sync `rows <task>` runs. A task
+  // that holds one keeps its rows, so a re-describe resets no result; a Description the sync refuses still stands.
+  if ((await checkRows(taskId)).some((row) => !isChecklist(row))) return;
+  try {
+    await cmdRows({ pos: { task: taskId }, flags: { actor: who.actor, role: who.role } });
+  } catch (error) {
+    if (!(error instanceof Fail) || error.code !== 5) throw error;
+    out(`rows not seeded: ${error.message}`);
+  }
 }
 
 async function cmdPlan(args) {

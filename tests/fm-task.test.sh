@@ -2338,6 +2338,58 @@ case_description_thread() {
   must 'missing description' 2 || return 1
 }
 
+# A task's first Description seeds its check rows through the sync `rows <task>` runs; a task that holds a scenario row
+# keeps its rows on a re-describe; a Description that sync refuses is stored and says why no row was seeded.
+case_describe_rows() {
+  BIN=$1; reset_db
+  local t=tk-dr1 doc="$TMP_ROOT/describe-rows.md" rows
+  scenario_rows() { db fm_task_check | jq -c --arg t "$1" '[.[] | select(.taskId == $t and (.scenarioId | startswith("cl:") | not))]'; }
+  # a user-visible ship holds its checklist rows from create: they are not scenario rows, so the Description still seeds
+  ft create $t --title t --kind ship --surface user-visible >/dev/null || return 1
+  [ "$(count fm_task_check)" = 4 ] && [ "$(scenario_rows $t)" = '[]' ] || { echo "setup: $(db fm_task_check)"; return 1; }
+  issue_body v1 > "$doc"
+  ft describe $t --document "$doc"
+  must 'first describe' 0 || return 1
+  [[ "$(head -n 1 <<<"$OUT")" == *' event=description '* && "$OUT" == *'rows added=4 reset=0 retired=0 updated=0 unchanged=0 total=4' ]] || { echo "first describe printed: $OUT"; return 1; }
+  rows=$(scenario_rows $t)
+  jq -e 'length == 4 and all(.[]; .status == "pending") and ([.[] | select(.scenarioId == "A1") | .nextActor] == ["tester","tester"]) and ([.[] | select(.scenarioId != "A1") | .nextActor] | unique) == ["worker"]' <<<"$rows" >/dev/null \
+    || { echo "the first Description did not seed every scenario x width: $rows"; return 1; }
+  # a re-describe leaves the rows it finds: a passed row keeps its result though its scenario changed, and no row is added
+  ft check $t A2@- pass --evidence 'unit run' >/dev/null || return 1
+  issue_body v2 > "$doc"
+  ft describe $t --document "$doc"
+  must 're-describe' 0 || return 1
+  [[ "$OUT" != *rows* ]] || { echo "a re-describe ran the sync: $OUT"; return 1; }
+  rows=$(scenario_rows $t)
+  jq -e 'length == 4 and (.[] | select(.scenarioId == "A2") | .status == "pass" and .evidence == "unit run") and (.[] | select(.scenarioId == "A1" and .width == "1440") | .line == "WHEN a user acts, THE page SHALL answer.")' <<<"$rows" >/dev/null \
+    || { echo "a re-describe changed the rows: $rows"; return 1; }
+  # rows stays the explicit re-sync, from the Description
+  ft rows $t
+  must 'rows re-sync' 0 || return 1
+  rows=$(scenario_rows $t)
+  jq -e 'length == 5 and (.[] | select(.scenarioId == "A2") | .status == "pending") and any(.[]; .scenarioId == "A4")' <<<"$rows" >/dev/null || { echo "rows did not re-sync from the Description: $rows"; return 1; }
+  # a Description with no scenarios is stored, and describe says why no row was seeded
+  t=tk-dr2
+  ft create $t --title t --kind other >/dev/null || return 1
+  printf '# Probe\n\nNo scenarios here.\n' > "$doc"
+  ft describe $t --document "$doc"
+  must 'describe with no scenarios' 0 || return 1
+  [ "$(grep -c '^rows not seeded: ' <<<"$OUT")" = 1 ] && [[ "$OUT" == *'no ## Scenarios section'* ]] || { echo "no scenarios printed: $OUT"; return 1; }
+  ft document $t; [ "$OUT" = "$(cat "$doc")" ] || { echo "the Description with no scenarios was not stored: $OUT"; return 1; }
+  # a Description the acceptance parser refuses (a scenario with a missing field) is stored the same way
+  issue_body v1 | grep -v '^  - proof: ' > "$doc"
+  ft describe $t --document "$doc"
+  must 'describe with a refused Description' 0 || return 1
+  [ "$(grep -c '^rows not seeded: ' <<<"$OUT")" = 1 ] && [[ "$OUT" == *'missing field proof'* ]] || { echo "a refused Description printed: $OUT"; return 1; }
+  ft document $t; [ "$OUT" = "$(cat "$doc")" ] || { echo "the refused Description was not stored: $OUT"; return 1; }
+  [ "$(scenario_rows $t)" = '[]' ] || { echo "a refused Description seeded rows: $(scenario_rows $t)"; return 1; }
+  # the task still holds no row, so its next valid Description seeds them
+  issue_body v1 > "$doc"
+  ft describe $t --document "$doc"
+  must 'describe after a refused one' 0 || return 1
+  [ "$(scenario_rows $t | jq length)" = 4 ] || { echo "a valid Description after a refused one seeded: $(scenario_rows $t)"; return 1; }
+}
+
 case_owner_writer() {
   BIN=$1; reset_db
   export FM_HOME="$TMP_ROOT/owner-writer-home"
@@ -3354,7 +3406,7 @@ case_setup_rules() {
   return 0
 }
 
-CASES=${FM_TASK_CASES:-"plan_task description_thread terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed long_notes status_view verify_view owner_writer workflow stage wait carry slice_c model_rules checklist question_round setup_rules backlog_home owner_hold owner_request gate_before_approval handoff_gate delete owner_nav"}
+CASES=${FM_TASK_CASES:-"plan_task description_thread describe_rows terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed long_notes status_view verify_view owner_writer workflow stage wait carry slice_c model_rules checklist question_round setup_rules backlog_home owner_hold owner_request gate_before_approval handoff_gate delete owner_nav"}
 
 # ---- real command -------------------------------------------------------------------
 
@@ -3394,6 +3446,10 @@ mutate() {  # <label> <case> <exact source text> <replacement>
 }
 
 mutate 'thread prints full comments' description_thread "bodyOf(event).note ?? ''}" "''}"
+mutate 'a first Description seeds the check rows' describe_rows "await cmdRows({ pos: { task: taskId }, flags: { actor: who.actor, role: who.role } });" ";"
+mutate 'a re-describe leaves the rows it finds' describe_rows "if ((await checkRows(taskId)).some((row) => !isChecklist(row))) return;" ";"
+mutate 'checklist rows do not stop the first seeding' describe_rows "if ((await checkRows(taskId)).some((row) => !isChecklist(row))) return;" "if ((await checkRows(taskId)).length) return;"
+mutate 'a Description the sync refuses still stands' describe_rows "if (!(error instanceof Fail) || error.code !== 5) throw error;" "throw error;"
 mutate 'the event and its child travel in one request' terminal 'Object.assign(body, spec.children || {});' ';'
 mutate 'an empty value is refused' terminal "if (value === '') throw usage" 'if (false) throw usage'
 mutate 'the option count is checked' terminal 'if (options.length < 2 || options.length > 6)' 'if (false)'
