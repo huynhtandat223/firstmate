@@ -410,6 +410,11 @@ ASK_FLAGS=(--question 'Which one?' --option 'Option A' --option 'Option B' --rec
 
 mk_ready() { ft create "$1" --title "Task $1" --kind ship --repo example/repo && ft assign "$1" --to worker-1; }
 mk_running() { mk_ready "$1" && ft start "$1"; }
+approve_solution() {  # <task>: the owner approves a Solution of the task, which opens implement on a ship task
+  printf '## How it is used\nu\n\n## How it is built\nb\n\n## How it is tested\nt\n' > "$TMP_ROOT/solution.md"
+  ft plan "$1" --document "$TMP_ROOT/solution.md" --document-title Solution; must "plan $1" 0 || return 1
+  ft plan-decision "$1" --decision approve --plan-seq "$(seq_of)"; must "approve the Solution of $1" 0
+}
 cl_off() {  # <task> <item>...: turn checklist items off, so a case about other rows can approve
   local t=$1 item; shift
   for item in "$@"; do ft checklist "$t" off "$item" --reason 'not this case' >/dev/null || return 1; done
@@ -2220,6 +2225,14 @@ SH
   grep -q '^resolved .*wait-' "$FM_HOME/state/tk-w3.status" && { echo "a pr event that is no merge cleared the wait"; return 1; }
   ft event tk-w3 pr --note 'merged at m1' >/dev/null
   tail -n 1 "$FM_HOME/state/tk-w3.status" | grep -q '^resolved .*the wait on merge cleared: pr event' || { echo "merge: $(tail -n 1 "$FM_HOME/state/tk-w3.status")"; return 1; }
+  # a pr event given --merged and no note clears the merge wait too
+  mk_running tk-w4 >/dev/null || return 1
+  ft "done" tk-w4 "${DONE_FLAGS[@]}" --pr-url https://github.com/example/repo/pull/9 --head h4
+  must 'done pr' 0 || return 1
+  tail -n 1 "$FM_HOME/state/tk-w4.status" | grep -q '^paused .*waiting on merge: ' || { echo "done pr: $(tail -n 1 "$FM_HOME/state/tk-w4.status")"; return 1; }
+  ft event tk-w4 pr --merged
+  must 'pr --merged with no note' 0 || return 1
+  tail -n 1 "$FM_HOME/state/tk-w4.status" | grep -q '^resolved .*the wait on merge cleared: pr event' || { echo "pr --merged left the merge wait open: $(tail -n 1 "$FM_HOME/state/tk-w4.status")"; return 1; }
   ft event tk-w3 wait --next-actor tester --clears-on rows
   must 'wait without a note' 2 || return 1
   ft event tk-w3 wait --next-actor nobody --clears-on rows --note x
@@ -2336,6 +2349,94 @@ case_description_thread() {
   [[ "$OUT" != *'first full comment'* && "$OUT" == *$'second\nfull comment'* ]] || return 1
   ft describe "$t" --document "$TMP_ROOT/missing.md"
   must 'missing description' 2 || return 1
+}
+
+# A task's first Description seeds its check rows through the sync `rows <task>` runs; a task that holds a scenario row
+# keeps its rows on a re-describe; a Description that sync refuses is stored and says why no row was seeded.
+case_describe_rows() {
+  BIN=$1; reset_db
+  local t=tk-dr1 doc="$TMP_ROOT/describe-rows.md" rows
+  scenario_rows() { db fm_task_check | jq -c --arg t "$1" '[.[] | select(.taskId == $t and (.scenarioId | startswith("cl:") | not))]'; }
+  # a user-visible ship holds its checklist rows from create: they are not scenario rows, so the Description still seeds
+  ft create $t --title t --kind ship --surface user-visible >/dev/null || return 1
+  [ "$(count fm_task_check)" = 4 ] && [ "$(scenario_rows $t)" = '[]' ] || { echo "setup: $(db fm_task_check)"; return 1; }
+  issue_body v1 > "$doc"
+  ft describe $t --document "$doc"
+  must 'first describe' 0 || return 1
+  [[ "$(head -n 1 <<<"$OUT")" == *' event=description '* && "$OUT" == *'rows added=4 reset=0 retired=0 updated=0 unchanged=0 total=4' ]] || { echo "first describe printed: $OUT"; return 1; }
+  rows=$(scenario_rows $t)
+  jq -e 'length == 4 and all(.[]; .status == "pending") and ([.[] | select(.scenarioId == "A1") | .nextActor] == ["tester","tester"]) and ([.[] | select(.scenarioId != "A1") | .nextActor] | unique) == ["worker"]' <<<"$rows" >/dev/null \
+    || { echo "the first Description did not seed every scenario x width: $rows"; return 1; }
+  # a re-describe leaves the rows it finds: a passed row keeps its result though its scenario changed, and no row is added
+  ft check $t A2@- pass --evidence 'unit run' >/dev/null || return 1
+  issue_body v2 > "$doc"
+  ft describe $t --document "$doc"
+  must 're-describe' 0 || return 1
+  [[ "$OUT" != *rows* ]] || { echo "a re-describe ran the sync: $OUT"; return 1; }
+  rows=$(scenario_rows $t)
+  jq -e 'length == 4 and (.[] | select(.scenarioId == "A2") | .status == "pass" and .evidence == "unit run") and (.[] | select(.scenarioId == "A1" and .width == "1440") | .line == "WHEN a user acts, THE page SHALL answer.")' <<<"$rows" >/dev/null \
+    || { echo "a re-describe changed the rows: $rows"; return 1; }
+  # rows stays the explicit re-sync, from the Description
+  ft rows $t
+  must 'rows re-sync' 0 || return 1
+  rows=$(scenario_rows $t)
+  jq -e 'length == 5 and (.[] | select(.scenarioId == "A2") | .status == "pending") and any(.[]; .scenarioId == "A4")' <<<"$rows" >/dev/null || { echo "rows did not re-sync from the Description: $rows"; return 1; }
+  # a Description with no scenarios is stored, and describe says why no row was seeded
+  t=tk-dr2
+  ft create $t --title t --kind other >/dev/null || return 1
+  printf '# Probe\n\nNo scenarios here.\n' > "$doc"
+  ft describe $t --document "$doc"
+  must 'describe with no scenarios' 0 || return 1
+  [ "$(grep -c '^rows not seeded: ' <<<"$OUT")" = 1 ] && [[ "$OUT" == *'no ## Scenarios section'* ]] || { echo "no scenarios printed: $OUT"; return 1; }
+  ft document $t; [ "$OUT" = "$(cat "$doc")" ] || { echo "the Description with no scenarios was not stored: $OUT"; return 1; }
+  # a Description the acceptance parser refuses (a scenario with a missing field) is stored the same way
+  issue_body v1 | grep -v '^  - proof: ' > "$doc"
+  ft describe $t --document "$doc"
+  must 'describe with a refused Description' 0 || return 1
+  [ "$(grep -c '^rows not seeded: ' <<<"$OUT")" = 1 ] && [[ "$OUT" == *'missing field proof'* ]] || { echo "a refused Description printed: $OUT"; return 1; }
+  ft document $t; [ "$OUT" = "$(cat "$doc")" ] || { echo "the refused Description was not stored: $OUT"; return 1; }
+  [ "$(scenario_rows $t)" = '[]' ] || { echo "a refused Description seeded rows: $(scenario_rows $t)"; return 1; }
+  # the task still holds no row, so its next valid Description seeds them
+  issue_body v1 > "$doc"
+  ft describe $t --document "$doc"
+  must 'describe after a refused one' 0 || return 1
+  [ "$(scenario_rows $t | jq length)" = 4 ] || { echo "a valid Description after a refused one seeded: $(scenario_rows $t)"; return 1; }
+}
+
+# A task created with an external issue keeps that issue as the source of its rows, which deploy verify and the gate
+# read: its first Description seeds no row and says why, the task keeps the URL as its issueUrl in the record, show and
+# resume, and `rows <task> <issue>` seeds it. A task with no external issue is unchanged: its Description seeds its rows
+# and its issueUrl goes from none to its own id, as `rows <task>` sets it.
+case_describe_issue() {
+  BIN=$1; reset_db
+  local t=tk-di1 url=$ISSUE doc="$TMP_ROOT/describe-issue.md" row
+  ft create $t --title t --kind ship --issue "$url" >/dev/null || return 1
+  issue_body v1 > "$doc"
+  ft describe $t --document "$doc"
+  must 'describe a task with an external issue' 0 || return 1
+  [ "$(grep -c '^rows not seeded: ' <<<"$OUT")" = 1 ] && [[ "$OUT" == *"$url"* && "$OUT" != *'rows added='* ]] || { echo "the Description seeded the rows of an external issue: $OUT"; return 1; }
+  [ "$(db fm_task_check | jq --arg t $t '[.[] | select(.taskId == $t and (.scenarioId | startswith("cl:") | not))] | length')" = 0 ] || { echo "the Description seeded check rows"; return 1; }
+  ft document $t; [ "$OUT" = "$(cat "$doc")" ] || { echo "the Description was not stored: $OUT"; return 1; }
+  row=$(db fm_task | jq -c --arg t $t '.[] | select(.taskId == $t)')
+  jq -e --arg u "$url" '.issueUrl == $u' <<<"$row" >/dev/null || { echo "the record lost its issue: $row"; return 1; }
+  ft show $t; must 'show' 0 || return 1
+  grep -qxF "issueUrl=$url" <<<"$OUT" || { echo "show lost the issue: $OUT"; return 1; }
+  ft resume $t; must 'resume' 0 || return 1
+  grep -qF "issue: $url " <<<"$OUT" || { echo "resume lost the issue: $OUT"; return 1; }
+  # rows with the issue seeds the task from its issue, which stays its issueUrl
+  use_issue v1
+  ft rows $t "$url"
+  must 'rows from the external issue' 0 || return 1
+  [[ "$OUT" == *'rows added=4 reset=0 retired=0 updated=0 unchanged=0 total=4' ]] || { echo "rows did not seed from the issue: $OUT"; return 1; }
+  [ "$(db fm_task | jq -r --arg t $t '.[] | select(.taskId == $t) | .issueUrl')" = "$url" ] || { echo "rows changed the issue: $(db fm_task)"; return 1; }
+  # a task with no external issue: its Description seeds the rows, and its issueUrl goes from none to its own id
+  t=tk-di2
+  ft create $t --title t --kind ship >/dev/null || return 1
+  [ "$(db fm_task | jq -r --arg t $t '.[] | select(.taskId == $t) | .issueUrl')" = null ] || { echo "a new task holds an issue"; return 1; }
+  ft describe $t --document "$doc"
+  must 'describe a task with no issue' 0 || return 1
+  [[ "$OUT" == *'rows added=4 reset=0 retired=0 updated=0 unchanged=0 total=4' ]] || { echo "the Description did not seed a task with no issue: $OUT"; return 1; }
+  [ "$(db fm_task | jq -r --arg t $t '.[] | select(.taskId == $t) | .issueUrl')" = $t ] || { echo "a task with no issue does not hold its own id: $(db fm_task)"; return 1; }
 }
 
 case_owner_writer() {
@@ -2634,6 +2735,7 @@ case_workflow() {
   step_of merge | jq -e '.status == "skipped"' >/dev/null || { echo "a removed pending state is not skipped: $(step_of merge)"; return 1; }
   ft setup tk-flow --file "$TMP_ROOT/setup.json"; must 'restore setup selection' 0 || return 1
   ft move tk-flow --to testing; must 'a state outside the setup' 5 || return 1
+  approve_solution tk-flow || return 1
   ft move tk-flow --to implement; must move 0 || return 1
   printf '%s' '{"steps":[{"state":"implement","harness":"claude","model":"edited","effort":"low"},{"state":"merge"}]}' > "$TMP_ROOT/setup-edit.json"
   ft setup tk-flow --file "$TMP_ROOT/setup-edit.json"; must 'edit the current pending state' 0 || return 1
@@ -2670,6 +2772,7 @@ case_workflow() {
   # the owner's Approve & start: setup by owner, then the task moves to its first state
   export FM_HOME="$TMP_ROOT/workflow-home"; rm -rf "$FM_HOME"; mkdir -p "$FM_HOME/state"
   mk_running tk-own >/dev/null || return 1
+  approve_solution tk-own || return 1
   OUT=$("$BIN/fm-task-owner.sh" --action setup --task tk-own --setup "$(cat "$TMP_ROOT/setup.json")" --owner u-1 2>"$TMP_ROOT/err"); RC=$?; ERR=$(cat "$TMP_ROOT/err")
   must 'owner setup' 0 || return 1
   jq -e '.ok == true and (.writes | length) == 2' <<<"$OUT" >/dev/null || { echo "owner setup reply: $OUT"; return 1; }
@@ -2688,7 +2791,7 @@ case_workflow() {
   [ "$(task_row tk-own | jq -r .workflowState)" = merge ] || { echo "a re-approval changed the state: $(task_row tk-own)"; return 1; }
   # approve closes the flow from any state: a state that never started is skipped
   printf '%s' '{"steps":[{"state":"implement","harness":"pi","model":"example","effort":"high"},{"state":"merge"},{"state":"verify","harness":"pi","model":"example"}]}' > "$TMP_ROOT/setup-verify.json"
-  mk_running tk-close >/dev/null || return 1
+  mk_running tk-close >/dev/null && approve_solution tk-close || return 1
   ft setup tk-close --file "$TMP_ROOT/setup-verify.json"; must 'close setup' 0 || return 1
   ft move tk-close --to implement; must 'close move' 0 || return 1
   ft step tk-close start --harness pi --generation c1; must 'start on the harness default model' 0 || return 1
@@ -2701,7 +2804,7 @@ case_workflow() {
     || { echo "approve left steps open: $(db fm_task_step | jq -c '.[] | select(.taskId == "tk-close")')"; return 1; }
   # testing fails back to implement: implement ran last although testing sits later in the setup
   printf '%s' '{"steps":[{"state":"implement","harness":"pi","model":"example"},{"state":"testing","harness":"pi","model":"example"},{"state":"merge"}]}' > "$TMP_ROOT/setup-test.json"
-  mk_running tk-back >/dev/null || return 1
+  mk_running tk-back >/dev/null && approve_solution tk-back || return 1
   ft setup tk-back --file "$TMP_ROOT/setup-test.json"; must 'back setup' 0 || return 1
   ft move tk-back --to implement; must 'back implement' 0 || return 1
   ft step tk-back start --harness pi --generation b1; must 'back start implement' 0 || return 1
@@ -2719,7 +2822,61 @@ case_workflow() {
   [ "$(task_row tk-close | jq -r .workflowState)" = implement ] || { echo "reopen did not return to the last state that ran: $(task_row tk-close)"; return 1; }
   db fm_task_step | jq -e '[.[] | select(.taskId == "tk-close")] | map({(.state): .status}) | add | .verify == "pending" and .merge == "pending"' >/dev/null \
     || { echo "reopen left the approved skips: $(db fm_task_step | jq -c '.[] | select(.taskId == "tk-close")')"; return 1; }
+  # the Solution gate: a ship task moves to implement only while its current plan is approved
+  local pseq
+  printf '## How it is used\nu\n\n## How it is built\nb\n\n## How it is tested\nt\n' > "$TMP_ROOT/solution.md"
+  ft create tk-gate --title 'Gate' --kind ship --surface user-visible --repo example/repo >/dev/null || return 1
+  ft setup tk-gate --file "$TMP_ROOT/setup-test.json"; must 'gate setup' 0 || return 1
+  ft move tk-gate --to implement; must 'implement with no Solution' 5 || return 1
+  [[ "$ERR" == *'has no Solution'* && "$ERR" == *'fm-task.sh plan tk-gate --document solution.md'* && "$ERR" == *'Solution tab'* ]] || { echo "the refusal does not say what to do next: $ERR"; return 1; }
+  [ "$(task_row tk-gate | jq -r .workflowState)" = queued ] || { echo "a refused move moved the task: $(task_row tk-gate)"; return 1; }
+  # the worker brief (bin/fm-brief.sh) reads the Solution's state from these two lines of show
+  ft show tk-gate; grep -qx 'planSeq=-' <<<"$OUT" || { echo "show names a plan on a task with none: $OUT"; return 1; }
+  ft plan tk-gate --document "$TMP_ROOT/solution.md" --document-title Solution; must 'gate plan' 0 || return 1
+  pseq=$(seq_of)
+  ft move tk-gate --to implement; must 'implement on an undecided Solution' 5 || return 1
+  ft plan-decision tk-gate --decision changes --plan-seq "$pseq" >/dev/null || return 1
+  ft move tk-gate --to implement; must 'implement after the owner asked for changes' 5 || return 1
+  ft plan tk-gate --document "$TMP_ROOT/solution.md" --document-title Solution >/dev/null || return 1
+  ft plan-decision tk-gate --decision approve --plan-seq "$(seq_of)" >/dev/null || return 1
+  ft show tk-gate; grep -qx 'planDecision=approve' <<<"$OUT" || { echo "show does not name the approval: $OUT"; return 1; }
+  ft move tk-gate --to implement; must 'implement on an approved Solution' 0 || return 1
+  [ "$(task_row tk-gate | jq -r .workflowState)" = implement ] || { echo "an approved Solution did not open implement: $(task_row tk-gate)"; return 1; }
+  # the retry on a failed row passes the same gate: it runs on the approved plan, and waits again once the plan is replaced
+  ft move tk-gate --to testing; must 'gate testing' 0 || return 1
+  api -X POST "$BASE/api/fm_task_check" -d '{"taskId":"tk-gate","scenarioId":"T1","width":"1440","status":"fail","nextActor":"worker","surface":"user-visible","page":"p","line":"l","controls":"-","data":"-","proof":"-","acceptanceDigest":"d"}' >/dev/null
+  ft move tk-gate --to implement; must 'retry on an approved Solution' 0 || return 1
+  ft move tk-gate --to testing; must 'gate testing again' 0 || return 1
+  ft plan tk-gate --document "$TMP_ROOT/solution.md" --document-title Solution >/dev/null || return 1
+  pseq=$(seq_of)
+  ft move tk-gate --to implement; must 'retry after the Solution was replaced' 5 || return 1
+  [ "$(task_row tk-gate | jq -r .workflowState)" = testing ] || { echo "a refused retry moved the task: $(task_row tk-gate)"; return 1; }
+  ft plan-decision tk-gate --decision approve --plan-seq "$pseq" >/dev/null || return 1
+  ft move tk-gate --to implement; must 'retry once the new Solution is approved' 0 || return 1
+  # a task of another kind moves with no plan
+  ft create tk-gate-plan --title 'Plan task' --kind plan --surface user-visible --repo example/repo >/dev/null || return 1
+  ft setup tk-gate-plan --file "$TMP_ROOT/setup-test.json" >/dev/null && ft move tk-gate-plan --to implement; must 'a user-visible task of another kind moves with no plan' 0 || return 1
   export FM_HOME="$TMP_ROOT/home"
+}
+
+# The Solution gate holds every ship task, whatever its surface: a ship task with surface internal, or with none, moves
+# to implement only once the owner approved its current plan.
+solution_gate_holds() {  # <task> [create flags...]
+  local t=$1; shift
+  printf '%s' '{"steps":[{"state":"implement","harness":"pi","model":"example"},{"state":"merge"}]}' > "$TMP_ROOT/setup-gate.json"
+  ft create "$t" --title 'Gate' --kind ship --repo example/repo "$@"; must "create $t" 0 || return 1
+  ft setup "$t" --file "$TMP_ROOT/setup-gate.json"; must "setup $t" 0 || return 1
+  ft move "$t" --to implement; must "$t with no Solution" 5 || return 1
+  [[ "$ERR" == *"$t is a ship task and has no Solution"* ]] || { echo "the refusal does not name the missing Solution: $ERR"; return 1; }
+  [ "$(task_row "$t" | jq -r .workflowState)" = queued ] || { echo "a refused move moved the task: $(task_row "$t")"; return 1; }
+  approve_solution "$t" || return 1
+  ft move "$t" --to implement; must "$t on an approved Solution" 0 || return 1
+}
+case_gate_internal() { BIN=$1; reset_db; solution_gate_holds tk-gate-int --surface internal; }
+case_gate_no_surface() {
+  BIN=$1; reset_db
+  solution_gate_holds tk-gate-none || return 1
+  [ "$(task_row tk-gate-none | jq -r .surface)" = null ] || { echo "the task holds a surface: $(task_row tk-gate-none)"; return 1; }
 }
 
 # SG1 (#176 Step 5): every write folds the board card's step onto the row: stage by the step rule, stageSince only
@@ -2755,6 +2912,11 @@ case_stage() {
   [ "$(task_row $t | jq -r .reviewer)" = reviewer-1 ] || { echo "reviewer is not the actor of the newest changes: $(task_row $t)"; return 1; }
   ft start $t; step 'started after changes' working new || return 1
   ft "done" $t "${DONE_FLAGS[@]}"; step 'done again is pr' pr new || return 1
+  # a merged pull request is a pr event that says so in its body: no step of its own, and no other kind takes the flag
+  ft event $t pr --merged --note 'merged at m1'; step 'a merged pr event keeps the step' pr same || return 1
+  db fm_task_event | jq -e --arg t $t --argjson seq "$(seq_of)" '[.[] | select(.taskId == $t and .kind == "pr") | {seq, merged: (.body | fromjson | .merged)}] | map(select(.merged == true) | .seq) == [$seq] and all(.[]; .seq == $seq or .merged == null)' >/dev/null \
+    || { echo "only the --merged pr event holds merged: true: $(db fm_task_event | jq -c --arg t $t '[.[] | select(.taskId == $t and .kind == "pr") | .body]')"; return 1; }
+  ft event $t deploy --merged --head abc123; must '--merged on another kind' 2 || return 1
   ft event $t deploy --note 'deployed' --head abc123; step 'a deploy after the newest done is dev' dev new || return 1
   ft comment $t --note 'looks fine'; step 'a comment stays dev' dev same || return 1
   ft approve $t --actor firstmate-1; step 'approved: done is passed' passed new || return 1
@@ -2848,6 +3010,20 @@ case_slice_c() {
   local pseq2
   pseq2=$(seq_of)
   task_row "$t" | jq -e --argjson s "$pseq2" '.planSeq == $s and .planDecision == null and .planDecidedAt == null' >/dev/null || { echo "plan v2 reset failed: $(task_row "$t")"; return 1; }
+
+  # A plan carries pictures as image children of its event, with the refusals of a comment's images
+  ft plan "$t" --document "$plan_file" --image "$img_file"
+  must 'plan image without a label' 2 || return 1
+  ft plan "$t" --document "$plan_file" --image "$plan_file" --image-label 'not an image'
+  must 'plan image with a bad extension' 5 || return 1
+  [ "$(task_row "$t" | jq -r .planSeq)" = "$pseq2" ] || { echo "a refused plan image stored a plan: $(task_row "$t")"; return 1; }
+  ft plan "$t" --document "$plan_file" --document-title 'Plan v2' --image "$img_file" --image-label 'How it is used' --image "$img_file" --image-label 'How it is built'
+  must 'plan with images' 0 || return 1
+  pseq2=$(seq_of)
+  db fm_event_image | jq -e --arg id "$(db fm_task_event | jq -r --argjson s "$pseq2" '.[] | select(.seq == $s and .kind == "plan") | .id')" \
+    '[.[] | select(.fmTaskEventId == $id)] | sort_by(.position) | all(.[]; .content | length > 0) and map([.position, .label, .mediaType]) == [[1, "How it is used", "image/png"], [2, "How it is built", "image/png"]]' >/dev/null \
+    || { echo "plan image children wrong: $(db fm_event_image | jq -c 'map(del(.content))')"; return 1; }
+  db fm_event_document | jq -e --arg id "$(db fm_task_event | jq -r --argjson s "$pseq2" '.[] | select(.seq == $s) | .id')" 'any(.[]; .fmTaskEventId == $id and .title == "Plan v2")' >/dev/null || { echo "a plan with images lost its document"; return 1; }
 
   # fm-task-owner.sh --action plan delivers inbox note and steers planner when registered
   local steer_log="$TMP_ROOT/planner-steer.log" fake_assist="$TMP_ROOT/fake-assistance.sh"
@@ -3152,7 +3328,7 @@ STUB
 
   # ACT4: Approve & start with an edited setup, then the spawn on the step's runtime; a refused spawn is the result
   t=tk-or4; : > "$calls"
-  ft create $t --title "Task $t" --kind ship --repo example/repo >/dev/null || return 1
+  ft create $t --title "Task $t" --kind ship --repo example/repo >/dev/null && approve_solution $t || return 1
   ow --action start --task $t --setup '{"steps":[{"state":"implement","harness":"claude","model":"claude-opus-5-5","effort":"high"},{"state":"merge"}]}' --owner u-1
   must 'start with a setup' 0 || rc=1
   db fm_task_step | jq -e --arg t $t '.[] | select(.taskId == $t and .state == "implement") | .source == "owner" and .model == "claude-opus-5-5"' >/dev/null || { echo "owner setup: $(db fm_task_step)"; rc=1; }
@@ -3354,7 +3530,7 @@ case_setup_rules() {
   return 0
 }
 
-CASES=${FM_TASK_CASES:-"plan_task description_thread terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed long_notes status_view verify_view owner_writer workflow stage wait carry slice_c model_rules checklist question_round setup_rules backlog_home owner_hold owner_request gate_before_approval handoff_gate delete owner_nav"}
+CASES=${FM_TASK_CASES:-"plan_task description_thread describe_rows describe_issue terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed long_notes status_view verify_view owner_writer workflow gate_internal gate_no_surface stage wait carry slice_c model_rules checklist question_round setup_rules backlog_home owner_hold owner_request gate_before_approval handoff_gate delete owner_nav"}
 
 # ---- real command -------------------------------------------------------------------
 
@@ -3394,6 +3570,11 @@ mutate() {  # <label> <case> <exact source text> <replacement>
 }
 
 mutate 'thread prints full comments' description_thread "bodyOf(event).note ?? ''}" "''}"
+mutate 'a first Description seeds the check rows' describe_rows "await cmdRows({ pos: { task: taskId }, flags: { actor: who.actor, role: who.role } });" ";"
+mutate 'a re-describe leaves the rows it finds' describe_rows "if ((await checkRows(taskId)).some((row) => !isChecklist(row))) return;" ";"
+mutate 'checklist rows do not stop the first seeding' describe_rows "if ((await checkRows(taskId)).some((row) => !isChecklist(row))) return;" "if ((await checkRows(taskId)).length) return;"
+mutate 'a Description the sync refuses still stands' describe_rows "if (!(error instanceof Fail) || error.code !== 5) throw error;" "throw error;"
+mutate 'a Description seeds no row for an external issue' describe_issue "if (/^https?:\\/\\//.test(issue) && !boardLink(issue)) {" "if (false) {"
 mutate 'the event and its child travel in one request' terminal 'Object.assign(body, spec.children || {});' ';'
 mutate 'an empty value is refused' terminal "if (value === '') throw usage" 'if (false) throw usage'
 mutate 'the option count is checked' terminal 'if (options.length < 2 || options.length > 6)' 'if (false)'
@@ -3462,12 +3643,20 @@ mutate 'a setup edit of the current pending state shows on the card' workflow "s
 mutate 'reopen returns to the state that ran last in event order' workflow "const last = steps.find(s => s.state === lastRan);" "const last = steps.filter(s => ['done', 'failed', 'running'].includes(s.status)).at(-1);"
 mutate 'approve skips the states that never started' workflow ": s.status === 'pending' ? [{ state: s.state, status: 'skipped', endReason: 'approved' }] : []);" ": []);"
 mutate 'a move ends the running attempt of the state left behind' workflow "const stepWrites = left ? [{ state: left.state, status: 'done'" "const stepWrites = false ? [{ state: left.state, status: 'done'"
+mutate 'an unapproved Solution holds a ship before implement' workflow "task.kind === 'ship' && task.planDecision !== 'approve') {" "task.kind === 'ship' && false) {"
+mutate 'the Solution gate needs the approval, not just a plan' workflow "task.kind === 'ship' && task.planDecision !== 'approve') {" "task.kind === 'ship' && !task.planSeq) {"
+mutate 'a retry passes the Solution gate too' workflow "if (to === 'implement' && task.kind === 'ship'" "if (to === 'implement' && !retry && task.kind === 'ship'"
+mutate 'the Solution gate holds an internal ship' gate_internal "task.kind === 'ship' && task.planDecision" "task.kind === 'ship' && task.surface === 'user-visible' && task.planDecision"
+mutate 'the Solution gate holds a ship with no surface' gate_no_surface "task.kind === 'ship' && task.planDecision" "task.kind === 'ship' && task.surface === 'user-visible' && task.planDecision"
+mutate 'the Solution gate leaves another kind alone' workflow "if (to === 'implement' && task.kind === 'ship' && task.planDecision" "if (to === 'implement' && task.planDecision"
 mutate 'the reviewer is the actor of the newest review event' stage "if (REVIEWER_KINDS.includes(event.kind)) task.reviewer = event.actor ?? null;" ";"
 mutate 'a row event does not move lastNote or lastEventAt' stage "if (event.kind !== 'row' && event.kind !== 'checklist') {" "if (event.kind !== 'checklist') {"
 mutate 'a machine record does not become lastNote' stage "if (!isMachineRecord(event, note)) task.lastNote" "task.lastNote"
 mutate 'a machine record is one only under its own key' stage "if (!Object.hasOwn(MACHINE_RECORDS, prefix) || taskId !== event.taskId) return false;" ";"
 mutate 'a reconcile divergence is a machine record' stage "{ backfill: 'sha256,source', reconcile: 'field,oldSource,record' }" "{ backfill: 'sha256,source' }"
 mutate 'lastNote is cut to 300' stage "task.lastNote = note.slice(0, 300) || null" "task.lastNote = note || null"
+mutate '--merged goes only on a pr event' stage "if (merged && kind !== 'pr') throw usage" "if (false) throw usage"
+mutate 'a merged pr event says so in its body' stage "merged ? { extra: { merged: true } } : {}" "{}"
 mutate 'reproject --all repairs every row' stage "      const result = await project(taskId);
       if (!result?.changed.length) continue;" "      continue;"
 mutate 'approve judges a row by its newest check event' approve_newest "return v ? { ...r, status: v.status," "return false ? { ...r, status: v.status,"
@@ -3512,7 +3701,8 @@ mutate 'deliver resolves a wait that another home cleared' wait "  await waitVie
 mutate 'a question to the owner waits on the answer' wait "nextActor === 'owner' ? (result) => waitOn(" "false ? (result) => waitOn("
 mutate 'a PR-ready done waits after its own line' wait "  if (wait) await wait(result);
   await waitView(taskId);" "  await waitView(taskId);"
-mutate 'only a merged pr event clears a merge wait' wait "e.kind === 'pr' && /\\bmerged\\b/i.test(" "e.kind === 'pr' && /./.test("
+mutate 'only a merged pr event clears a merge wait' wait "bodyOf(e).merged === true || /\\bmerged\\b/i.test(" "bodyOf(e).merged === true || /./.test("
+mutate 'a pr event given --merged clears a merge wait' wait "(bodyOf(e).merged === true || /\\bmerged\\b/i.test(bodyOf(e).note ?? ''))" "/\\bmerged\\b/i.test(bodyOf(e).note ?? '')"
 mutate 'a pass carries while no later deploy names its id' carry "  return later.every((e) => Array.isArray(bodyOf(e).touched) && !bodyOf(e).touched.includes(row.scenarioId));" "  return false;"
 mutate 'a deploy that names an id brings its row back' carry "Array.isArray(bodyOf(e).touched) && !bodyOf(e).touched.includes(row.scenarioId)" "Array.isArray(bodyOf(e).touched)"
 mutate 'a deploy that records nothing touches every row' carry "Array.isArray(bodyOf(e).touched) && !bodyOf(e).touched.includes(row.scenarioId)" "!(bodyOf(e).touched || []).includes(row.scenarioId)"
@@ -3529,6 +3719,8 @@ mutate 'approve replaces video evidence with Tester screenshot' slice_c 'if (!re
 mutate 'check --evidence-image records event:<seq>#image:1' slice_c 'evidence = `event:${imgRes.event.seq}#image:1`;' 'evidence = null;'
 mutate 'gate checks event:<seq>#image:<n> references' slice_c 'if (!(await eventEvidenceExists(events, ev))) problems.push' 'if (false) problems.push'
 mutate 'link event requires http or https --url' slice_c "if (kind === 'link' && (!url || !/^https?:\\/\\/\\S+\$/.test(url) || url.length > 2048)) throw rule" 'if (false) throw rule'
+mutate 'a plan stores its images' slice_c "children: withImages({ documents: [document] }, images)," "children: { documents: [document] },"
+mutate 'a plan image takes the refusals of a comment image' slice_c $'const document = documentOf(f);\n  const images = imagesOf(args);' $'const document = documentOf(f);\n  const images = [];'
 mutate 'create writes the checklist template' checklist 'await applyChecklist(taskId);
     },' '},'
 mutate 'rows leaves cl: rows alone' checklist '.filter((row) => !isChecklist(row)).map((row) => [rowKey(row), row]));' '.map((row) => [rowKey(row), row]));'

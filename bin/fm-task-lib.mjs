@@ -27,6 +27,9 @@
 //            on a failed check row; a state outside the setup is refused (exit 5). The running attempt of the state
 //            left behind ends with the move. Done comes only through approve, which ends a running step and skips a
 //            state that never started; reopen returns to the last state that ran and lets the skipped states wait again.
+//            A ship task, whatever its surface, moves to implement, a retry too, only while its current plan (its
+//            Solution) is approved; with no plan or another decision it is refused (exit 5): write the Solution with
+//            `plan`, and the owner approves it on the task's Solution tab.
 //   step     <task> start --harness H [--model M] [--effort E] [--account A] [--generation G]   the current state runs;
 //            without --model (a harness default) the setup's model and effort for the state stand
 //   step     <task> alive|dead [--generation G]   on a change only     step <task> end --reason R [--generation G]
@@ -38,8 +41,9 @@
 //            (required when task kind is scout or plan; refused exit 5 otherwise).
 //            Document: UTF-8 .md/.markdown or .html/.htm, 1 byte to 2 MiB; one-line title 1..200
 //            characters (default file name). Invalid files/options exit 2 before any API write.
-//   plan     <task> --document FILE [--document-title T] [--note N]        attaches a plan document and sets
-//            planSeq = seq, planDecision = null, planDecidedAt = null (default role planner)
+//   plan     <task> --document FILE [--document-title T] [--note N] [--image PATH --image-label L]...
+//            attaches a plan document and sets planSeq = seq, planDecision = null, planDecidedAt = null (default role
+//            planner); each --image is stored as an image child of the plan event, with the limits of comment's images
 //   plan-decision <task> --decision approve|changes --plan-seq N [--note WHY]
 //            sets planDecision and planDecidedAt (refused exit 5 when N !== task.planSeq or task has no plan)
 //   ask      <task> --question Q --option O (2 to 6 times) --recommendation R --why W
@@ -72,6 +76,11 @@
 //   home     <task> --home H                 sets the backlog home of a task that has none (any state but archived);
 //            the same home again is a no-op, another home is refused: a task belongs to one board
 //   describe <task> --document FILE.md [--document-title T]              any state; default title Description
+//            A task that holds no scenario check row yet gets them from this Description, as `rows <task>` writes them;
+//            a task that holds one keeps its rows (`rows` is the re-sync). A task with an external http(s) issue keeps that
+//            issue as the source of its rows: describe seeds none, and `rows <task> <issue>` seeds them. There, and for a
+//            Description that sync refuses (no scenarios, a parser refusal), the Description is stored all the same, and
+//            describe prints `rows not seeded: <why>` and exits 0.
 //   thread   <task> [--since SEQ]                                       full comments, oldest first
 //   comment  <task> [--note T] [--image PATH --image-label L]... [--video PATH --video-label L]...
 //            [--ask why|how|wait-what] [--reply-to SEQ]                 any state; reply-to must name a comment of this task
@@ -80,9 +89,10 @@
 //            [--outcome LINE]   with --reply-to inside a thread: proposes the line the thread resolved with
 //            [--accept]         with --reply-to naming a proposal, role owner: resolves the thread with its outcome
 //                               (note optional); any later comment in the thread reopens it
-//   event    <task> <kind> [--note N] [--pr-url U] [--head H] [--url U] kinds: steer comment pr deploy ci
+//   event    <task> <kind> [--note N] [--pr-url U] [--head H] [--url U] [--merged] kinds: steer comment pr deploy ci
 //            protocol_violation divergence link; --head on deploy (the deployed head, which user-visible passes count on
-//            from then) or on ci (the head the CI result read); --url on link; no other kind takes them
+//            from then) or on ci (the head the CI result read); --url on link; --merged on pr (the pull request merged:
+//            the event body holds merged: true); no other kind takes them
 //   event    <task> close-request|start-request [--note N]   the owner's Done or Start on the board (next actor
 //            firstmate; refused on a done or archived task, start-request also on a running one, and while a request of
 //            the same kind is still open). Each stays open until
@@ -95,10 +105,11 @@
 //   event    <task> wait --next-actor tester|owner|merge|ci --clears-on rows|answer|merge|ci --note WHY [--rows ID@W,...]
 //            a declared wait (G1); `ask --next-actor owner` (answer) and `done --pr-url` (rows on the Tester, else merge)
 //            write one too. Its status line is `paused [at=E] [key=wait-<seq>]: waiting on <actor>: WHY (clears on X)`; the
-//            clearing event (the asked rows each with a newer result that is not pending, an unblocked event, a pr event whose
-//            note says merged, a ci event, or an approved or archived event) adds `resolved` with that key, in the home
-//            holding the line. `wait --next-actor ci --clears-on ci` is how a worker waits for its PR's checks: the
-//            pr-review source writes the ci event for the current head, green or failed, and delivers a failure to the inbox.
+//            clearing event (the asked rows each with a newer result that is not pending, an unblocked event, a pr event given
+//            --merged or whose note says merged, a ci event, or an approved or archived event) adds `resolved` with that
+//            key, in the home holding the line. `wait --next-actor ci --clears-on ci` is how a worker waits for its PR's
+//            checks: the pr-review source writes the ci event for the current head, green or failed, and delivers a failure
+//            to the inbox.
 //            deploy --touched none|all|ID,...: the scenarios the deployed PRs name (`Scenarios touched:`); a user-visible pass
 //            on an earlier deployed head carries to later deployed heads while no later deploy names its id (all, or no
 //            flag, names every id). approve, routing and gate accept a carried pass; gate prints each with its head.
@@ -483,11 +494,11 @@ const SPECS = {
   delete: { pos: [], rest: 'tasks', flags: { reason: 's', 'assistance-record-only': 'b' } },
   home: { pos: ['task'], flags: { home: 's' } },
   describe: { pos: ['task'], flags: { document: 's', 'document-title': 's' } },
-  plan: { pos: ['task'], flags: { document: 's', 'document-title': 's' } },
+  plan: { pos: ['task'], flags: { document: 's', 'document-title': 's', image: 'm', 'image-label': 'm' } },
   'plan-decision': { pos: ['task'], flags: { decision: 's', 'plan-seq': 's' } },
   thread: { pos: ['task'], flags: { since: 's' } },
   comment: { pos: ['task'], flags: { image: 'm', 'image-label': 'm', video: 'm', 'video-label': 'm', ask: 's', 'reply-to': 's', 'anchor-quote': 's', 'anchor-prefix': 's', 'anchor-suffix': 's', outcome: 's', accept: 'b' } },
-  event: { pos: ['task', 'kind'], flags: { 'pr-url': 's', head: 's', touched: 's', 'next-actor': 's', 'clears-on': 's', rows: 's', url: 's' } },
+  event: { pos: ['task', 'kind'], flags: { 'pr-url': 's', head: 's', touched: 's', 'next-actor': 's', 'clears-on': 's', rows: 's', url: 's', merged: 'b' } },
   checks: { pos: ['task'], flags: { 'as-deployed': 's', touched: 's' } },
   link: { pos: ['parent', 'child'], flags: {} },
   rows: { pos: ['task', 'issue'], flags: { surface: 's' } },
@@ -834,8 +845,8 @@ const statusFile = (taskId) => path.join(process.env.FM_STATE_OVERRIDE || path.j
 
 // A declared wait (G1): `event <task> wait`, which the Tester ask builder, `ask --next-actor owner` and `done --pr-url`
 // also write. The status view writes it as a paused line keyed wait-<seq>; the record event that clears it is the asked
-// rows each holding a newer result that is not pending (rows), an unblocked event (answer), a `pr` event whose note says
-// merged (merge), or for any of them an approved or archived event.
+// rows each holding a newer result that is not pending (rows), an unblocked event (answer), a `pr` event given --merged
+// or whose note says merged (merge), or for any of them an approved or archived event.
 function clearingEvent(wait, events) {
   const { clearsOn, rows = [] } = bodyOf(wait).wait || {};
   const later = events.filter((e) => e.seq > wait.seq);
@@ -844,7 +855,7 @@ function clearingEvent(wait, events) {
     const { question } = bodyOf(wait).wait || {};
     return later.find((e) => e.kind === 'unblocked' || (e.kind === 'answered' && (question ? bodyOf(e).answer?.question === question : bodyOf(e).set?.state !== undefined))) ?? closing;
   }
-  if (clearsOn === 'merge') return later.find((e) => e.kind === 'pr' && /\bmerged\b/i.test(bodyOf(e).note ?? '')) ?? closing;
+  if (clearsOn === 'merge') return later.find((e) => e.kind === 'pr' && (bodyOf(e).merged === true || /\bmerged\b/i.test(bodyOf(e).note ?? ''))) ?? closing;
   // The pr-review source writes one ci event for the PR's current head once its checks finish, green or failed,
   // so the delivered CI result is that event whatever head the worker was waiting on.
   if (clearsOn === 'ci') {
@@ -1032,6 +1043,12 @@ async function cmdMove(args) {
     const next = task.workflowState === 'queued' ? steps[0] : steps[index + 1];
     const retry = ['testing', 'verify'].includes(task.workflowState) && to === 'implement' && (await checkRows(taskId)).some(r => r.status === 'fail');
     if (!target || (next?.state !== to && !retry)) throw rule('move must follow setup; Done requires approve');
+    // The Solution gate: the owner's approval of the current plan opens Implement on a ship task, whatever its surface. A
+    // retry passes the same gate, so a plan replaced after its approval waits for the owner again.
+    if (to === 'implement' && task.kind === 'ship' && task.planDecision !== 'approve') {
+      const solution = !task.planSeq ? 'has no Solution' : task.planDecision === 'changes' ? 'has a Solution the owner asked to change' : 'has a Solution the owner has not approved yet';
+      throw rule(`move to implement is refused: ${taskId} is a ship task and ${solution}. Write the Solution with fm-task.sh plan ${taskId} --document solution.md; the owner approves it on the task's Solution tab.`);
+    }
     // the state left behind stops running: its attempt ends with the move
     const now = new Date().toISOString();
     const left = steps.find(s => s.state === task.workflowState && s.status === 'running');
@@ -1578,16 +1595,35 @@ async function cmdDescribe(args) {
   const f = args.flags;
   if (!f.document || !['.md', '.markdown'].includes(path.extname(f.document).toLowerCase())) throw usage('describe needs --document FILE.md');
   const document = documentOf({ ...f, 'document-title': f['document-title'] ?? 'Description' });
-  return write(taskIdOf(args), identity(args, 'firstmate'), async ({ task }) => {
+  const taskId = taskIdOf(args);
+  const who = identity(args, 'firstmate');
+  const { task } = await write(taskId, who, async ({ task }) => {
     if (!task) throw rule('no such task');
     return { kind: 'description', children: { documents: [document] } };
   });
+  // A task with no scenario row yet takes its rows from this Description, through the sync `rows <task>` runs. A task
+  // that holds one keeps its rows, so a re-describe resets no result; a Description the sync refuses still stands.
+  // A task with an external issue keeps it as the source of its rows, which deploy verify and the gate read: the
+  // Description seeds nothing there, and `rows` seeds it.
+  if ((await checkRows(taskId)).some((row) => !isChecklist(row))) return;
+  const issue = task?.issueUrl ?? '';
+  if (/^https?:\/\//.test(issue) && !boardLink(issue)) {
+    out(`rows not seeded: ${taskId} has the external issue ${issue}, the source of its rows; seed them with rows ${taskId} ${issue}`);
+    return;
+  }
+  try {
+    await cmdRows({ pos: { task: taskId }, flags: { actor: who.actor, role: who.role } });
+  } catch (error) {
+    if (!(error instanceof Fail) || error.code !== 5) throw error;
+    out(`rows not seeded: ${error.message}`);
+  }
 }
 
 async function cmdPlan(args) {
   const f = args.flags;
   if (!f.document) throw usage('plan needs --document FILE');
   const document = documentOf(f);
+  const images = imagesOf(args);
   const taskId = taskIdOf(args);
   return write(taskId, identity(args, 'planner'), async ({ task, seq }) => {
     if (!task) throw rule('no such task');
@@ -1596,7 +1632,7 @@ async function cmdPlan(args) {
       kind: 'plan',
       note: noteOf(args) || document.title,
       set: { planSeq: seq, planDecision: null, planDecidedAt: null },
-      children: { documents: [document] },
+      children: withImages({ documents: [document] }, images),
     };
   });
 }
@@ -1765,6 +1801,8 @@ async function cmdEvent(args) {
   if (head !== undefined && !headKind) throw usage('--head names a head a deploy or a ci event reports: give it only on one of those');
   if (args.flags.touched !== undefined && !(kind === 'deploy' && head)) throw usage('--touched names the scenarios a deploy touched: give it only on a deploy event with --head');
   if (url !== undefined && kind !== 'link') throw usage('--url goes only on a link event');
+  const merged = args.flags.merged === true;
+  if (merged && kind !== 'pr') throw usage('--merged says a pull request merged: give it only on a pr event');
   if (kind === 'link' && (!url || !/^https?:\/\/\S+$/.test(url) || url.length > 2048)) throw rule('a link event needs --url with an http or https URL up to 2048 characters');
   const touched = touchedOf(args.flags.touched);
   if (kind === 'wait') {
@@ -1795,7 +1833,7 @@ async function cmdEvent(args) {
       if (kind === 'closed' && task.state !== 'done') throw rule(`closed is refused: ${taskId} is ${task.state}, not approved`);
       return { kind, note: noteOf(args), set: kind === 'closed' ? {} : { nextActor: 'owner' } };
     }
-    return { kind, note: noteOf(args) || (kind === 'link' ? url : ''), set: kind === 'pr' && prUrl ? { prUrl } : {}, ...(head ? { extra: { head, ...(touched ? { touched } : {}) } } : kind === 'link' ? { extra: { url } } : {}) };
+    return { kind, note: noteOf(args) || (kind === 'link' ? url : ''), set: kind === 'pr' && prUrl ? { prUrl } : {}, ...(head ? { extra: { head, ...(touched ? { touched } : {}) } } : kind === 'link' ? { extra: { url } } : merged ? { extra: { merged: true } } : {}) };
   }, kind === 'deploy' && head ? () => routeReview(taskId, who) : undefined);
 }
 
@@ -2039,6 +2077,9 @@ async function wantedRows(issue) {
   return wanted;
 }
 
+// A board link names a task, so its rows come from that task's Description, as from task:<id>.
+const boardLink = (issue) => /^https?:\/\/[^\s]+[?&]task=/.test(issue);
+
 async function cmdRows(args) {
   const taskId = taskIdOf(args);
   const issue = args.pos.issue || taskId;
@@ -2093,7 +2134,7 @@ async function cmdRows(args) {
   const summary = `rows added=${counts.added} reset=${counts.reset} retired=${counts.retired} updated=${counts.updated} unchanged=${counts.unchanged} total=${wanted.size}`;
   const parser = process.env.FM_TASK_ACCEPTANCE || path.join(HERE, 'fm-acceptance.mjs');
   const digestRun = spawnSync('node', [parser, 'digest', issue, '--strict'], { encoding: 'utf8', timeout: 60000 });
-  const taskNative = !args.pos.issue || issue.startsWith('task:') || /^https?:\/\/[^\s]+[?&]task=/.test(issue);
+  const taskNative = !args.pos.issue || issue.startsWith('task:') || boardLink(issue);
   if (taskNative && (digestRun.status !== 0 || !/^[a-f0-9]{64}\s*$/.test(digestRun.stdout))) throw rule('acceptance digest could not be read');
   const sets = { ...(taskNative && task.acceptanceDigest !== digestRun.stdout.trim() ? { acceptanceDigest: digestRun.stdout.trim() } : {}), ...(taskNative ? (task.issueUrl !== issue ? { issueUrl: issue } : {}) : (args.pos.issue && !/^https?:\/\//.test(task.issueUrl ?? '') ? { issueUrl: issue } : {})) };
   if (counts.added + counts.reset + counts.retired + counts.updated === 0 && !Object.keys(sets).length) {
