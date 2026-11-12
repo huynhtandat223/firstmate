@@ -77,10 +77,11 @@
 //            the same home again is a no-op, another home is refused: a task belongs to one board
 //   describe <task> --document FILE.md [--document-title T]              any state; default title Description
 //            A task that holds no scenario check row yet gets them from this Description, as `rows <task>` writes them;
-//            a task that holds one keeps its rows (`rows` is the re-sync). A task with an external http(s) issue keeps that
-//            issue as the source of its rows: describe seeds none, and `rows <task> <issue>` seeds them. There, and for a
-//            Description that sync refuses (no scenarios, a parser refusal), the Description is stored all the same, and
-//            describe prints `rows not seeded: <why>` and exits 0.
+//            a task that holds one keeps its rows (`rows` is the re-sync). Only a task whose issue is none, its own id,
+//            task:<its id> or a board link naming it is seeded; any other issue (an external http(s) issue, another task's
+//            task:<id> or board link) stays the source of its rows: describe seeds none, and `rows <task> <issue>` seeds
+//            them. There, and for a Description that sync refuses (no scenarios, a parser refusal), the Description is
+//            stored all the same, and describe prints `rows not seeded: <why>` and exits 0.
 //   thread   <task> [--since SEQ]                                       full comments, oldest first
 //   comment  <task> [--note T] [--image PATH --image-label L]... [--video PATH --video-label L]...
 //            [--ask why|how|wait-what] [--reply-to SEQ]                 any state; reply-to must name a comment of this task
@@ -384,11 +385,18 @@ function bodyOf(event) {
 // workflowSince and the card's step fields (stepHarness, stepModel, stepEffort, stepAlive) in their own `set`.
 // The step follows the state: done is passed; review is dev once a deploy follows the newest done, else pr; running is
 // pr once a pr event follows the newest started or changes, else working; triage, todo and ready are queued; blocked
-// (and archived) keep the step they had. stageSince is the time of the event that set the step. lastEventAt and
-// lastNote come from the newest real event: a backlog view `row` event is not one. A machine record is not a note
-// either, so it leaves lastNote as it was: an import's source stamp (`{"source","sha256"}` under a `backfill:<task>:`
-// key, fm-task-backfill-lib.mjs) and a reconcile divergence (`{"field","oldSource","record"}` under a `reconcile:<task>:`
-// key, fm-task-reconcile-lib.mjs). The same JSON in a real comment is a note.
+// (and archived) keep the step they had. stageSince is the time of the event that set the step. lastEventAt comes from
+// the newest real event: a backlog view `row` event is not one. lastNote is the newest real event's note; an event with
+// no note leaves it as it was. A machine record is not a note either, so it leaves lastNote as it was: an import's source
+// stamp (`{"source","sha256"}` under a `backfill:<task>:` key, fm-task-backfill-lib.mjs) and a reconcile divergence
+// (`{"field","oldSource","record"}` under a `reconcile:<task>:` key, fm-task-reconcile-lib.mjs). The same JSON in a real
+// comment is a note. Nor is the wait a command writes after its own event (waitOn, which done --pr-url,
+// ask --next-actor owner and the no-model stop call: its note the PR or the question), so the caller's --note stays.
+// waitOn marks that wait `followUp: true` in its body. A wait written before the mark is one when its key is an earlier
+// event's key plus `:wait` and that event wrote one: a done holding a prUrl, or a needs-decision to the owner. A wait
+// the caller writes itself is a note, under any key.
+const wroteWait = (event) => (event?.kind === 'done' && Boolean(bodyOf(event).set?.prUrl)) || (event?.kind === 'needs-decision' && bodyOf(event).set?.nextActor === 'owner');
+const isFollowUpWait = (event, byKey) => event.kind === 'wait' && (bodyOf(event).followUp === true || (/:wait$/.test(event.idempotencyKey ?? '') && wroteWait(byKey.get(event.idempotencyKey.slice(0, -5)))));
 const MACHINE_RECORDS = { backfill: 'sha256,source', reconcile: 'field,oldSource,record' };
 const isMachineRecord = (event, note) => {
   const [prefix, taskId] = String(event.idempotencyKey ?? '').split(':');
@@ -404,6 +412,7 @@ function fold(events) {
   let task = null;
   let deployed = false;
   let pullRequest = false;
+  const byKey = new Map();
   for (const event of [...events].sort((a, b) => a.seq - b.seq)) {
     const set = { ...(bodyOf(event).set || {}), ...(event.rowText || {}) };
     if (event.kind === 'created' && !task) task = { taskId: event.taskId };
@@ -420,8 +429,9 @@ function fold(events) {
     if (event.kind !== 'row' && event.kind !== 'checklist') {
       const note = String(bodyOf(event).note ?? '');
       task.lastEventAt = event.createdAt ?? null;
-      if (!isMachineRecord(event, note)) task.lastNote = note.slice(0, 300) || null;
+      if (note && !isMachineRecord(event, note) && !isFollowUpWait(event, byKey)) task.lastNote = note.slice(0, 300);
     }
+    byKey.set(event.idempotencyKey, event);
     if (REVIEWER_KINDS.includes(event.kind)) task.reviewer = event.actor ?? null;
   }
   if (!task) return null;
@@ -907,12 +917,12 @@ async function waitView(taskId, known) {
   }
 }
 
-// Append a wait for a task, keyed on the call that asks for it, and write its paused line.
+// Append a wait for a task, keyed on the call that asks for it and marked followUp, and write its paused line.
 async function waitOn(taskId, who, { actor, clearsOn, note, rows = [], question }) {
   const result = await append(taskId, { ...who, key: `${who.key}:wait` }, async ({ task }) => {
     if (!task) throw rule('no such task');
     if (CLOSED.includes(task.state)) throw rule(`wait is refused: ${taskId} is ${task.state}`);
-    return { kind: 'wait', note, extra: { wait: { actor, clearsOn, rows, ...(question ? { question } : {}) } } };
+    return { kind: 'wait', note, extra: { followUp: true, wait: { actor, clearsOn, rows, ...(question ? { question } : {}) } } };
   });
   await statusView(result.event);
   return result;
@@ -1603,12 +1613,12 @@ async function cmdDescribe(args) {
   });
   // A task with no scenario row yet takes its rows from this Description, through the sync `rows <task>` runs. A task
   // that holds one keeps its rows, so a re-describe resets no result; a Description the sync refuses still stands.
-  // A task with an external issue keeps it as the source of its rows, which deploy verify and the gate read: the
-  // Description seeds nothing there, and `rows` seeds it.
+  // A task whose issue is another source (an external issue, another task) keeps it as the source of its rows, which
+  // deploy verify and the gate read: the Description seeds nothing there, and `rows` seeds it.
   if ((await checkRows(taskId)).some((row) => !isChecklist(row))) return;
   const issue = task?.issueUrl ?? '';
-  if (/^https?:\/\//.test(issue) && !boardLink(issue)) {
-    out(`rows not seeded: ${taskId} has the external issue ${issue}, the source of its rows; seed them with rows ${taskId} ${issue}`);
+  if (!['', taskId, `task:${taskId}`].includes(issue) && boardTask(issue) !== taskId) {
+    out(`rows not seeded: ${taskId} has the issue ${issue}, the source of its rows; seed them with rows ${taskId} ${issue}`);
     return;
   }
   try {
@@ -2078,7 +2088,8 @@ async function wantedRows(issue) {
 }
 
 // A board link names a task, so its rows come from that task's Description, as from task:<id>.
-const boardLink = (issue) => /^https?:\/\/[^\s]+[?&]task=/.test(issue);
+const boardTask = (issue) => /^https?:\/\/[^\s]+[?&]task=([^&#\s]*)/.exec(issue)?.[1];
+const boardLink = (issue) => boardTask(issue) !== undefined;
 
 async function cmdRows(args) {
   const taskId = taskIdOf(args);
