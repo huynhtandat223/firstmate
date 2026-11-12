@@ -73,7 +73,9 @@
 //            the owner's picture files of the task (data/<task>/owner-images). There is no backup, and one
 //            refusal or failure does not stop the other ids. A new event written after the checks refuse the id.
 //            --assistance-record-only removes an obsolete assistance row even while its pane runs; requires both
-//            the row and state/<id>.meta to have kind assistance. It never changes or stops the session.
+//            the row and state/<id>.meta to have kind assistance. It never changes or stops the session, and it
+//            keeps the owner's picture files, which the live session may not have read yet: a delete without the
+//            flag, run after the session ended, removes them.
 //   home     <task> --home H                 sets the backlog home of a task that has none (any state but archived);
 //            the same home again is a no-op, another home is refused: a task belongs to one board
 //   describe <task> --document FILE.md [--document-title T]              any state; default title Description
@@ -1364,7 +1366,8 @@ async function dismissTaskNotices(taskId) {
   }
   return notices.length;
 }
-// The owner's pictures kept as files for the worker (bin/fm-task-owner.sh, comment --image-data) go with their task.
+// The owner's pictures kept as files for the worker (bin/fm-task-owner.sh, comment --image-data) go with their task,
+// except on a record-only delete, whose session still runs (deleteOutcome decides).
 function removeOwnerImages(taskId) {
   const data = process.env.FM_DATA_OVERRIDE || (process.env.FM_HOME && path.join(process.env.FM_HOME, 'data'));
   const dir = data && path.join(data, taskId, 'owner-images');
@@ -1388,7 +1391,6 @@ async function deleteTaskRows(taskId, events) {
   ]);
   rows += await deleteRows('fm_task', await listAll('fm_task', { filter: `taskId eq ${lit(taskId)}`, orderby: 'id', select: 'id' }));
   await dismissTaskNotices(taskId);
-  removeOwnerImages(taskId);
   return rows;
 }
 
@@ -1403,7 +1405,7 @@ async function deleteOutcome(taskId, assistanceRecordOnly = false) {
   if (!task && !stored && !events.length) {
     // A failed notification PATCH or picture removal can outlive the task row. Retry the cleanup without recreating the task.
     const dismissed = await dismissTaskNotices(taskId);
-    const pictures = removeOwnerImages(taskId);
+    const pictures = !assistanceRecordOnly && removeOwnerImages(taskId);
     return dismissed || pictures ? { rows: 0 } : { refuse: 'no such task' };
   }
   const state = task ? task.state : stored?.state;
@@ -1434,7 +1436,10 @@ async function deleteOutcome(taskId, assistanceRecordOnly = false) {
   if (fresh.length !== events.length || fresh.some((e, i) => e.id !== events[i].id)) {
     return { refuse: 'its events changed while it was checked' };
   }
-  return { rows: await deleteTaskRows(taskId, events) };
+  const rows = await deleteTaskRows(taskId, events);
+  // The session of a record-only delete still runs and may not have read a picture yet: its files stay.
+  if (!assistanceRecordOnly) removeOwnerImages(taskId);
+  return { rows };
 }
 
 async function cmdDelete(args) {

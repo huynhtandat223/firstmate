@@ -1838,10 +1838,21 @@ case_delete() {
   must 'metadata mismatch refuses cleanup' 0 || return 1
   [ -n "$(task_row del-assist)" ] || { echo 'cleanup ignored the metadata kind'; return 1; }
   printf 'kind=assistance\nwindow=live-pane\n' > "$FM_HOME/state/del-assist.meta"
+  # The live session may not have read a picture the owner sent yet: record-only cleanup keeps the files.
+  local kept="$FM_HOME/data/del-assist/owner-images/seq-1.png"
+  mkdir -p "${kept%/*}"; : > "$kept"
   ft delete del-assist --reason stale --assistance-record-only
   must 'running assistance record deleted' 0 || return 1
   [ -z "$(task_row del-assist)" ] || { echo 'assistance record survived'; return 1; }
   grep -qx 'window=live-pane' "$FM_HOME/state/del-assist.meta" || { echo 'cleanup changed session metadata'; return 1; }
+  [ -e "$kept" ] || { echo 'record-only cleanup removed a picture of the live session'; return 1; }
+  # A repeated record-only run finds no row and keeps them too; the delete after the session ended removes them.
+  ft delete del-assist --reason stale --assistance-record-only
+  [ -e "$kept" ] || { echo 'a repeated record-only cleanup removed a picture of the live session'; return 1; }
+  ft delete del-assist --reason 'session ended'
+  must 'pictures removed after the session' 0 || return 1
+  case $OUT in *'deleted del-assist (0 rows)'*) ;; *) echo "the picture removal after the session was not reported: $OUT"; return 1 ;; esac
+  [ ! -e "${kept%/*}" ] || { echo 'the delete after the session kept the picture files'; return 1; }
   printf '#!/bin/sh\necho unknown\n' > "$TMP_ROOT/unknown"; chmod +x "$TMP_ROOT/unknown"
   export FM_TASK_AGENT_STATE="$TMP_ROOT/unknown"
   ft delete del-live --reason stale
@@ -3930,7 +3941,9 @@ mutate 'home refuses an archived task' backlog_home "if (task.state === 'archive
 mutate 'a running task is refused' delete "if (state === 'running' && !assistanceRecordOnly) return { refuse: 'running' };" "if (false) return { refuse: 'running' };"
 mutate 'a live worker is refused' delete "if (worker === 'alive') return { refuse: 'a live worker' };" "if (false) return { refuse: 'a live worker' };"
 mutate 'an unreadable worker is refused' delete "if (worker === 'unknown') return { refuse: 'its worker state could not be read' };" "if (false) return { refuse: 'its worker state could not be read' };"
-mutate 'a deleted task takes its owner picture files' delete '  removeOwnerImages(taskId);' '  ;'
+mutate 'a deleted task takes its owner picture files' delete '  if (!assistanceRecordOnly) removeOwnerImages(taskId);' '  ;'
+mutate 'a record-only delete keeps the owner picture files' delete '  if (!assistanceRecordOnly) removeOwnerImages(taskId);' '  removeOwnerImages(taskId);'
+mutate 'a repeated record-only delete keeps the owner picture files' delete 'const pictures = !assistanceRecordOnly && removeOwnerImages(taskId);' 'const pictures = removeOwnerImages(taskId);'
 mutate 'an open PR is refused' delete 'if (pr === '"'"'open'"'"') return { refuse: `open PR ${prUrl}` };' 'if (false) return { refuse: `open PR ${prUrl}` };'
 mutate 'an unreadable PR is refused' delete "if (pr === 'unknown') return { refuse: 'its PR state could not be read' };" "if (false) return { refuse: 'its PR state could not be read' };"
 mutate 'event children are deleted' delete 'for (const table of EVENT_CHILD_TABLES) rows += await deleteRows(table, await listByFilters(table, eventIds));' ''
