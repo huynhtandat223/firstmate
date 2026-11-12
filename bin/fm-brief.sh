@@ -118,9 +118,10 @@
 # --surface <user-visible|internal> is an optional ship-only input; absent means
 # internal and leaves the brief unchanged. user-visible adds the done-gate wording
 # that bin/fm-dod-lib.sh owns (record: bin/fm-verify-gate-lib.sh).
-# Ship and scout briefs name the task's Solution document and the `bin/fm-task.sh plan`
-# call that attaches it. --surface user-visible adds that the owner approves it before
-# implementation starts, and a ship brief whose mode opens a pull request says one task has one.
+# Ship briefs name the task's Solution document and the `bin/fm-task.sh plan` call that
+# attaches it; a scout brief names none. --surface user-visible adds that the owner approves
+# it before implementation starts, and a ship brief whose mode opens a pull request says one
+# task has one.
 # --issue <source> is an optional ship-only acceptance input: task:<id> or
 # https://<host>/<owner>/<repo>/issues/<n>. It adds an `# Acceptance` section that
 # names the issue and the command `bin/fm-acceptance.mjs rows <issue-url> --surface all` (every scenario, internal ones too), so the
@@ -871,17 +872,14 @@ else
   SETUP_BASE="You are in a disposable git worktree of $REPO, at a detached HEAD on a clean default branch."
 fi
 
-# The owner's task rules, where the worker reads its task-record commands: every task carries a Solution document
-# (custom-skills/ticket-template/SKILL.md owns its form), a user-visible ship waits for the owner's approval of it,
-# and a task that opens a pull request opens one. A scout keeps the file in its scratch worktree.
+# The owner's task rules for a ship task, where the worker reads its task-record commands: it carries a Solution document
+# (custom-skills/ticket-template/SKILL.md owns its form), a user-visible ship waits for the owner's approval of it, and a
+# ship that opens a pull request opens one. A scout brief holds none of them: a scout's deliverable is its report, and a
+# Tester verify run (bin/fm-procevent-deploy-verify.sh) and every probe is a scout, whose Solution would only ask the
+# owner to approve it. A Planner's plan already reaches the record through `plan`.
 SOLUTION_FILE="$DATA/$ID/solution.md"
-SOLUTION_BEFORE=implement
-if [ "$KIND" = scout ]; then
-  SOLUTION_FILE=solution.md
-  SOLUTION_BEFORE=investigate
-fi
 TASK_RULES="Solution: every task has one document with exactly the headings \`## How it is used\`, \`## How it is built\`, \`## How it is tested\`.
-While \`$FM_ROOT/bin/fm-task.sh show $ID\` prints \`planSeq=-\` the task has none: write it to \`$SOLUTION_FILE\` before you $SOLUTION_BEFORE, and attach it with \`$FM_ROOT/bin/fm-task.sh plan $ID --document $SOLUTION_FILE --document-title Solution [--image PATH --image-label L]...\`.
+While \`$FM_ROOT/bin/fm-task.sh show $ID\` prints \`planSeq=-\` the task has none: write it to \`$SOLUTION_FILE\` before you implement, and attach it with \`$FM_ROOT/bin/fm-task.sh plan $ID --document $SOLUTION_FILE --document-title Solution [--image PATH --image-label L]...\`.
 A new \`plan\` replaces the Solution and its approval."
 if [ "$SURFACE" = user-visible ]; then
   TASK_RULES="$TASK_RULES
@@ -921,7 +919,6 @@ Attach the report to your terminal call with \`$FM_ROOT/bin/fm-task.sh done $ID 
 # Rules
 Terminal call: end each worker turn with exactly one \`$FM_ROOT/bin/fm-task.sh done|ask|block $ID\` and its template fields from \`--help\`.
 Read \`$FM_ROOT/bin/fm-task.sh resume $ID\` first when starting or resuming this task; name its state in the terminal call's note.
-$TASK_RULES
 Use \`heartbeat $ID --note <activity>\` for activity and \`block transient $ID --reason <wait> --next-actor worker --until <ISO>\` for a wait.
 The terminal call also writes your status line.
 1. Never push to any remote and never open a PR.

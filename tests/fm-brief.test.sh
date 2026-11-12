@@ -350,11 +350,12 @@ check_brief_case() {  # <bin-dir>: 0 when --check refuses every range form and p
   return 0
 }
 
-# The owner's task rules sit where a worker reads its task-record commands, before rule 1: every ship and scout brief
-# names the Solution document and the plan call that attaches it, only a user-visible ship waits for the owner's
-# approval of it, and only a ship whose mode opens a pull request says one task has one.
+# The owner's task rules sit where a worker reads its task-record commands, before rule 1: every ship brief names the
+# Solution document and the plan call that attaches it, only a user-visible ship waits for the owner's approval of it,
+# and only a ship whose mode opens a pull request says one task has one. A scout brief holds none of them: a Tester
+# verify run and every probe is a scout, and a Solution there would only ask the owner to approve it.
 task_rules_brief_case() {  # <bin-dir>: 0 when each brief carries the task rules that apply to it
-  local bin=$1 home id solution preamble
+  local bin=$1 home id preamble needle
   home=$(mktemp -d "$TMP_ROOT/rules-home.XXXXXX")
   mkdir -p "$home/data"
   FM_HOME="$home" "$bin/fm-brief.sh" rules-pr some-proj --mode direct-PR >/dev/null 2>&1 || { echo 'direct-PR brief did not scaffold'; return 1; }
@@ -362,14 +363,18 @@ task_rules_brief_case() {  # <bin-dir>: 0 when each brief carries the task rules
   FM_HOME="$home" FM_ACCEPTANCE_TASK=false "$bin/fm-brief.sh" rules-visible some-proj --mode no-mistakes --surface user-visible >/dev/null 2>&1 || { echo 'user-visible brief did not scaffold'; return 1; }
   FM_HOME="$home" "$bin/fm-brief.sh" rules-local some-proj --mode local-only >/dev/null 2>&1 || { echo 'local-only brief did not scaffold'; return 1; }
   FM_HOME="$home" "$bin/fm-brief.sh" rules-scout some-proj --scout >/dev/null 2>&1 || { echo 'scout brief did not scaffold'; return 1; }
-  for id in rules-pr rules-visible rules-local rules-scout; do
+  # shellcheck disable=SC2016 # the backticks are literal text of the brief
+  for needle in '## How it is used' 'bin/fm-task.sh plan rules-scout' 'A new `plan` replaces the Solution' 'Solution tab'; do
+    ! grep -qF "$needle" "$home/data/rules-scout/brief.md" || { echo "rules-scout: a scout brief holds the Solution line [$needle]"; return 1; }
+  done
+  for id in rules-pr rules-visible rules-local; do
     preamble=$(awk '/^# Rules$/ { rules = 1; next } rules && /^1\. / { exit } rules' "$home/data/$id/brief.md")
     # shellcheck disable=SC2016 # the backticks are literal text of the brief
     grep -qF 'exactly the headings `## How it is used`, `## How it is built`, `## How it is tested`' <<<"$preamble" || { echo "$id: the rules name no Solution headings before rule 1"; return 1; }
-    # a ship keeps the file with its task material, outside the worktree it must leave clean; a scout's worktree is scratch
-    solution=solution.md
-    [ "$id" = rules-scout ] || solution="$home/data/$id/solution.md"
-    grep -qF "bin/fm-task.sh plan $id --document $solution --document-title Solution [--image PATH --image-label L]..." <<<"$preamble" || { echo "$id: the rules name no plan call for $solution"; return 1; }
+    # a ship keeps the file with its task material, outside the worktree it must leave clean
+    grep -qF "bin/fm-task.sh plan $id --document $home/data/$id/solution.md --document-title Solution [--image PATH --image-label L]..." <<<"$preamble" || { echo "$id: the rules name no plan call"; return 1; }
+    # shellcheck disable=SC2016 # the backticks are literal text of the brief
+    grep -qF 'A new `plan` replaces the Solution and its approval.' <<<"$preamble" || { echo "$id: the rules do not say a new plan replaces the Solution"; return 1; }
     case "$id" in
       rules-visible) grep -qF "the owner approves the Solution on the task's Solution tab before implementation starts" <<<"$preamble" || { echo "$id: no approval before implementation"; return 1; } ;;
       *) ! grep -qF 'Solution tab' <<<"$preamble" || { echo "$id: a task that is not user-visible waits for an approval"; return 1; } ;;
@@ -385,7 +390,7 @@ task_rules_brief_case() {  # <bin-dir>: 0 when each brief carries the task rules
 test_task_rules_reach_the_briefs() {
   local out
   out=$(task_rules_brief_case "$ROOT/bin" 2>&1) || fail "task rules: $out"
-  pass 'fm-brief.sh: ship and scout briefs name the Solution, a user-visible ship its approval, and a PR ship its one pull request'
+  pass 'fm-brief.sh: ship briefs name the Solution and a scout brief none, a user-visible ship its approval, and a PR ship its one pull request'
 }
 
 test_issue_names_the_parser_command() {
@@ -422,7 +427,7 @@ test_issue_and_check_guards_are_needed() {
 --check reads the dash form|check_brief_case|s/\(-\|–\|—\|\\\.\\\.\|/(|/
 --check reads the to form|check_brief_case|s/\|\[\[:space:\]\]to\[\[:space:\]\]\)/)/
 the briefs carry the task rules|task_rules_brief_case|s/^\$TASK_RULES\n//mg
-a scout keeps its Solution in the worktree|task_rules_brief_case|s/  SOLUTION_FILE=solution.md\n//
+a scout brief holds no Solution lines|task_rules_brief_case|s/^(Use \\`heartbeat \$ID --note)/\$TASK_RULES\n$1/m
 only a user-visible ship waits for the approval|task_rules_brief_case|s/if \[ "\$SURFACE" = user-visible \]; then\n  TASK_RULES/if true; then\n  TASK_RULES/
 a user-visible ship waits for the approval|task_rules_brief_case|s/if \[ "\$SURFACE" = user-visible \]; then\n  TASK_RULES/if false; then\n  TASK_RULES/
 only a ship that opens a pull request names it|task_rules_brief_case|s/if \[ "\$KIND" = ship \] && \[ "\$MODE" != local-only \]; then/if true; then/
