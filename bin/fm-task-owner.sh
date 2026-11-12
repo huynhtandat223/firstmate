@@ -160,7 +160,12 @@ case "$ACTION" in
       refusal=$(jq -r '.[] | select(startswith("refused ") or startswith("failed "))' <<<"$WRITES")
       if [ -n "$refusal" ]; then
         RC=5
-        ERROR=$refusal
+        case "$refusal" in
+          "refused $TASK: running") ERROR='This task is running, so it was not removed.' ;;
+          "refused $TASK: a live worker") ERROR='A worker is still active on this task, so it was not removed.' ;;
+          "refused $TASK: open PR "*) ERROR='This task has an open pull request, so it was not removed.' ;;
+          *) ERROR=$refusal ;;
+        esac
       elif ! jq -e --arg prefix "deleted $TASK (" 'any(.[]; startswith($prefix))' <<<"$WRITES" >/dev/null; then
         RC=3
         ERROR='Task deletion was not confirmed.'
