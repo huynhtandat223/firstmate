@@ -99,9 +99,9 @@ fx_runs() {  # <id:status:conclusion:sha-seed>...
   done
   gh_put "repos/$REPO/actions/runs?branch=main&event=push&per_page=30" "$(jq -c '{workflow_runs: .}' <<<"$json")"
 }
-fx_jobs() {  # <run-id> <conclusion>
+fx_jobs() {  # <run-id> <job-conclusion> [deploy-step-conclusion]
   gh_put "repos/$REPO/actions/runs/$1/jobs?per_page=100" \
-    "{\"jobs\":[{\"name\":\"Build\",\"conclusion\":\"success\"},{\"name\":\"Deploy Development host (5001)\",\"conclusion\":\"$2\",\"completed_at\":\"2026-10-20T14:30:20Z\"}]}"
+    "{\"jobs\":[{\"name\":\"Build\",\"conclusion\":\"success\"},{\"name\":\"Deploy Development host (5001)\",\"conclusion\":\"$2\",\"completed_at\":\"2026-10-20T14:30:20Z\",\"steps\":[{\"name\":\"Deploy Development environment\",\"conclusion\":\"${3:-$2}\",\"completed_at\":\"2026-10-20T14:29:00Z\"}]}]}"
 }
 fx_compare() {  # <base-seed> <head-seed> <commit-seed>...
   local base=$1 head=$2 c json='[]'
@@ -251,28 +251,29 @@ scenario_skips() {
   done
 }
 
-# A skipped, cancelled or failed deploy asks nothing; the next green deploy
-# carries the commits of every run since the last green one.
+# Failed or skipped deploy steps ask nothing even when their job succeeds.
+# A successful step deploys even when a later step cancels its job.
 scenario_not_deployed() {
   new_lab "$1"
   backlog_task alpha 31 500; backlog_task beta 32 600
   fx_issue 500 A1:user-visible; fx_issue 600 A1:user-visible
-  fx_runs "1:completed:success:s0" "2:completed:cancelled:s1" "3:completed:success:s2"
-  fx_jobs 2 skipped; fx_jobs 3 success
-  fx_compare s0 s2 c1 c2
+  fx_runs "1:completed:success:s0" "2:completed:success:s1" "3:completed:success:s2" "4:completed:cancelled:s3"
+  fx_jobs 2 success skipped; fx_jobs 3 success failure; fx_jobs 4 cancelled success
+  fx_compare s0 s3 c1 c2
   fx_commit_prs c1 31:500; fx_commit_prs c2 32:600
-  # The cancelled run's own commit must never be asked on its own.
-  fx_compare s0 s1 c1
+  # Each unsuccessful step would produce an observable ask if accepted.
+  fx_compare s0 s1 c1; fx_compare s0 s2 c1
   set_cursor 1 s0
   cycle
   [ "$CYCLE_AUTO" = 0 ] || { echo "autohandle=$CYCLE_AUTO"; return 1; }
   [ "$(ledger_count '.type == "ask"')" = 2 ] || { echo "asks: $(ledger_count '.type == "ask"')"; return 1; }
-  [ "$(ledger_count ".type == \"ask\" and .sha == \"$(sha s2)\"")" = 2 ] || { echo 'asks do not name the green deploy'; return 1; }
+  [ "$(ledger_count ".type == \"ask\" and .sha == \"$(sha s3)\" ")" = 2 ] || { echo 'asks do not name the successful step head and time'; return 1; }
+  jq -e '.asks | all(.arrival == 1792506540)' <<<"$LAST_RESULT" >/dev/null || { echo 'deploy time is not the step completion'; return 1; }
   # A run still in progress holds the cursor.
-  fx_runs "1:completed:success:s0" "2:completed:cancelled:s1" "3:completed:success:s2" "4:in_progress::s3"
-  fx_jobs 4 in_progress
+  fx_runs "4:completed:cancelled:s3" "5:in_progress::s4"
+  fx_jobs 5 in_progress
   cycle
-  [ "$(jq -r .cursor_run "$H/data/deploy-verify/state.json")" = 3 ] || { echo 'cursor moved past a run in progress'; return 1; }
+  [ "$(jq -r .cursor_run "$H/data/deploy-verify/state.json")" = 4 ] || { echo 'cursor moved past a run in progress'; return 1; }
 }
 
 # Draft round: each new head of a task PR whose issue has (draft) lines gets one
@@ -1267,7 +1268,9 @@ mutate 'internal tasks are skipped' skips \
   's/if \[ "\$surface" = internal \]; then\n      while/if false; then\n      while/'
 mutate 'issues with no user-visible line are skipped' skips \
   's/if \[ -z "\$lines" \]; then\n      while/if false; then\n      while/'
-mutate 'only a green deploy job asks' not_deployed \
+mutate 'the job conclusion cannot replace the deploy step conclusion' not_deployed \
+  's/\[\.steps\[\]\? \| select\(\.name == \$s\)\] \| first \| \.conclusion/.conclusion/'
+mutate 'only a successful deploy step asks' not_deployed \
   's/if \[ "\$conclusion" = success \]; then/if true; then/'
 mutate 'a run in progress holds the cursor' not_deployed \
   's/\[ "\$status" = completed \] \|\| break/:/'
