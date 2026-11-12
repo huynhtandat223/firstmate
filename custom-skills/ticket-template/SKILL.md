@@ -74,7 +74,7 @@ Name the visible controls by role and label, or use `controls: -` where none app
 
 ## One pull request and the Solution
 
-Scope each task by the owner's one-pull-request rule, and give it a Solution document separate from its Description; [`../kanban-v2/SKILL.md`](../kanban-v2/SKILL.md) owns that rule, the Solution's headings and the command that attaches it.
+Scope each task by the owner's one-pull-request rule, and give it a Solution document separate from its Description; the installed skill `~/.agents/skills/kanban-v2/SKILL.md` owns that rule, the Solution's headings and the command that attaches it.
 On a user-visible task, write it and have the owner approve it on the task's Solution tab before implementation starts.
 
 ## Verification record rows

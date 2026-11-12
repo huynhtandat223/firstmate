@@ -364,7 +364,7 @@ task_rules_brief_case() {  # <bin-dir>: 0 when each brief carries the task rules
   FM_HOME="$home" "$bin/fm-brief.sh" rules-local some-proj --mode local-only >/dev/null 2>&1 || { echo 'local-only brief did not scaffold'; return 1; }
   FM_HOME="$home" "$bin/fm-brief.sh" rules-scout some-proj --scout >/dev/null 2>&1 || { echo 'scout brief did not scaffold'; return 1; }
   # shellcheck disable=SC2016 # the backticks are literal text of the brief
-  pointer="Task page: before your first \`fm-task.sh\` write, load \`$(cd "$bin/.." && pwd)/custom-skills/kanban-v2/SKILL.md\`; the owner follows this task on its Kanban v2 page"
+  pointer="Task page: before your first \`fm-task.sh\` write, load \`$HOME/.agents/skills/kanban-v2/SKILL.md\`; the owner follows this task on its Kanban v2 page"
   for id in rules-pr rules-visible rules-local rules-scout; do
     preamble=$(awk '/^# Rules$/ { rules = 1; next } rules && /^1\. / { exit } rules' "$home/data/$id/brief.md")
     grep -qF "$pointer" <<<"$preamble" || { echo "$id: the rules hold no Kanban v2 skill pointer before rule 1"; return 1; }
@@ -387,9 +387,6 @@ task_rules_brief_case() {  # <bin-dir>: 0 when each brief carries the task rules
 test_task_rules_reach_the_briefs() {
   local out
   out=$(task_rules_brief_case "$ROOT/bin" 2>&1) || fail "task rules: $out"
-  # the pointer names the skill under the firstmate root; the skill is there and holds the words the brief leaves to it
-  assert_grep '## How it is used' "$ROOT/custom-skills/kanban-v2/SKILL.md" 'the Kanban v2 skill names no Solution headings'
-  assert_grep 'One task has one pull request; a second pull request is its own subtask, which firstmate files.' "$ROOT/custom-skills/kanban-v2/SKILL.md" 'the Kanban v2 skill holds no one-pull-request rule'
   pass 'fm-brief.sh: ship and scout briefs point to the Kanban v2 skill, name the Solution, and a user-visible ship its approval'
 }
 

@@ -321,10 +321,6 @@
       "audience": "agent-runtime"
     },
     {
-      "path": "custom-skills/kanban-v2/SKILL.md",
-      "audience": "agent-runtime"
-    },
-    {
       "path": "custom-skills/ticket-template/SKILL.md",
       "audience": "agent-runtime"
     },
