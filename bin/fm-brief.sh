@@ -118,6 +118,9 @@
 # --surface <user-visible|internal> is an optional ship-only input; absent means
 # internal and leaves the brief unchanged. user-visible adds the done-gate wording
 # that bin/fm-dod-lib.sh owns (record: bin/fm-verify-gate-lib.sh).
+# Ship and scout briefs name the task's Solution document and the `bin/fm-task.sh plan`
+# call that attaches it. --surface user-visible adds that the owner approves it before
+# implementation starts, and a ship brief whose mode opens a pull request says one task has one.
 # --issue <source> is an optional ship-only acceptance input: task:<id> or
 # https://<host>/<owner>/<repo>/issues/<n>. It adds an `# Acceptance` section that
 # names the issue and the command `bin/fm-acceptance.mjs rows <issue-url> --surface all` (every scenario, internal ones too), so the
@@ -868,6 +871,27 @@ else
   SETUP_BASE="You are in a disposable git worktree of $REPO, at a detached HEAD on a clean default branch."
 fi
 
+# The owner's task rules, where the worker reads its task-record commands: every task carries a Solution document
+# (custom-skills/ticket-template/SKILL.md owns its form), a user-visible ship waits for the owner's approval of it,
+# and a task that opens a pull request opens one. A scout keeps the file in its scratch worktree.
+SOLUTION_FILE="$DATA/$ID/solution.md"
+SOLUTION_BEFORE=implement
+if [ "$KIND" = scout ]; then
+  SOLUTION_FILE=solution.md
+  SOLUTION_BEFORE=investigate
+fi
+TASK_RULES="Solution: every task has one document with exactly the headings \`## How it is used\`, \`## How it is built\`, \`## How it is tested\`.
+While \`$FM_ROOT/bin/fm-task.sh show $ID\` prints \`planSeq=-\` the task has none: write it to \`$SOLUTION_FILE\` before you $SOLUTION_BEFORE, and attach it with \`$FM_ROOT/bin/fm-task.sh plan $ID --document $SOLUTION_FILE --document-title Solution [--image PATH --image-label L]...\`.
+A new \`plan\` replaces the Solution and its approval."
+if [ "$SURFACE" = user-visible ]; then
+  TASK_RULES="$TASK_RULES
+This task is user-visible: the owner approves the Solution on the task's Solution tab before implementation starts, so implement only once \`show\` prints \`planDecision=approve\`."
+fi
+if [ "$KIND" = ship ] && [ "$MODE" != local-only ]; then
+  TASK_RULES="$TASK_RULES
+One task has one pull request; a second pull request is its own subtask, which firstmate files."
+fi
+
 if [ "$KIND" = scout ]; then
 SCOUT_WRITE_PATHS='the report and the status file below'
 if [ "${#ALSO_WRITE[@]}" -gt 0 ]; then
@@ -897,6 +921,7 @@ Attach the report to your terminal call with \`$FM_ROOT/bin/fm-task.sh done $ID 
 # Rules
 Terminal call: end each worker turn with exactly one \`$FM_ROOT/bin/fm-task.sh done|ask|block $ID\` and its template fields from \`--help\`.
 Read \`$FM_ROOT/bin/fm-task.sh resume $ID\` first when starting or resuming this task; name its state in the terminal call's note.
+$TASK_RULES
 Use \`heartbeat $ID --note <activity>\` for activity and \`block transient $ID --reason <wait> --next-actor worker --until <ISO>\` for a wait.
 The terminal call also writes your status line.
 1. Never push to any remote and never open a PR.
@@ -998,6 +1023,7 @@ If the top-level path is the primary checkout or not the worktree you were launc
 Terminal call: end each worker turn with exactly one \`$FM_ROOT/bin/fm-task.sh done|ask|block $ID\` and its template fields from \`--help\`.
 When the task asks for an HTML explanation, attach that file to done with \`--document <explanation.html>\` and optional \`--document-title <title>\`.
 Read \`$FM_ROOT/bin/fm-task.sh resume $ID\` first when starting or resuming this task; name its state in the terminal call's note.
+$TASK_RULES
 Use \`$FM_ROOT/bin/fm-task.sh heartbeat $ID --note <activity>\` for activity, not a turn end.
 The terminal call also writes your status line.
 $RULE1
