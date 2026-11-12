@@ -67,6 +67,8 @@
 //            unreadable; deletes the task row, its events and their children, its steps, checks, owner items, deliveries,
 //            links on either side, then dismisses its undismissed notifications after deleting the task row. There is no backup, and one
 //            refusal or failure does not stop the other ids. A new event written after the checks refuse the id.
+//            --assistance-record-only removes an obsolete assistance row even while its pane runs; requires both
+//            the row and state/<id>.meta to have kind assistance. It never changes or stops the session.
 //   home     <task> --home H                 sets the backlog home of a task that has none (any state but archived);
 //            the same home again is a no-op, another home is refused: a task belongs to one board
 //   describe <task> --document FILE.md [--document-title T]              any state; default title Description
@@ -478,7 +480,7 @@ const SPECS = {
   reopen: { pos: ['task'], flags: { reason: 's' } },
   reassign: { pos: ['task'], flags: { to: 's', reason: 's' } },
   archive: { pos: ['task'], flags: {} },
-  delete: { pos: [], rest: 'tasks', flags: { reason: 's' } },
+  delete: { pos: [], rest: 'tasks', flags: { reason: 's', 'assistance-record-only': 'b' } },
   home: { pos: ['task'], flags: { home: 's' } },
   describe: { pos: ['task'], flags: { document: 's', 'document-title': 's' } },
   plan: { pos: ['task'], flags: { document: 's', 'document-title': 's' } },
@@ -1356,7 +1358,7 @@ async function deleteTaskRows(taskId, events) {
 // delete <task>...: hard delete, no backup. A refusal is checked before any row of that task is written, and one
 // refused id does not stop the others.
 // Decide and perform one delete: every refusal happens before the first write, so a refused id is left untouched.
-async function deleteOutcome(taskId) {
+async function deleteOutcome(taskId, assistanceRecordOnly = false) {
   // A partial earlier run leaves the task row without its events; that row is still deleted.
   const events = await rawTaskEvents(taskId);
   const task = fold(events);
@@ -1368,8 +1370,19 @@ async function deleteOutcome(taskId) {
   }
   const state = task ? task.state : stored?.state;
   const prUrl = task ? task.prUrl : stored?.prUrl;
-  if (state === 'running') return { refuse: 'running' };
-  const worker = workerState(taskId);
+  if (assistanceRecordOnly) {
+    // Retire an obsolete task projection, not the live assistance session.
+    const kind = task ? task.kind : stored?.kind;
+    const home = process.env.FM_HOME;
+    const meta = path.join(process.env.FM_STATE_OVERRIDE || path.join(home, 'state'), `${taskId}.meta`);
+    let metadata;
+    try { metadata = fs.readFileSync(meta, 'utf8'); } catch { return { refuse: 'assistance metadata could not be read' }; }
+    if (kind !== 'assistance' || !metadata.split('\n').includes('kind=assistance')) {
+      return { refuse: 'record-only deletion requires an assistance row and assistance metadata' };
+    }
+  }
+  if (state === 'running' && !assistanceRecordOnly) return { refuse: 'running' };
+  const worker = assistanceRecordOnly ? 'dead' : workerState(taskId);
   if (worker === 'alive') return { refuse: 'a live worker' };
   if (worker === 'unknown') return { refuse: 'its worker state could not be read' };
   if (prUrl) {
@@ -1400,7 +1413,7 @@ async function cmdDelete(args) {
       continue;
     }
     try {
-      const outcome = await deleteOutcome(taskId);
+      const outcome = await deleteOutcome(taskId, args.flags['assistance-record-only']);
       if (outcome.refuse) refused.push(`${taskId}: ${outcome.refuse}`);
       else deleted.push(`${taskId} (${outcome.rows} rows)`);
     } catch (error) {

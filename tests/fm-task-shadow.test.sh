@@ -67,6 +67,30 @@ keys() { sed -n 's/.* --key \([^ ]*\) --actor shadow --role system$/\1/p' "$CALL
 
 # ---- the hook itself ----------------------------------------------------------
 
+test_assistance_producers_write_nothing() {
+  make_case assistance on
+  printf 'kind=assistance\nspawn_gen=g1\n' > "$HOME_DIR/state/t1.meta"
+  printf 'working [at=1]: session active\n' > "$HOME_DIR/state/t1.status"
+  hook dispatched t1 assistance r pi
+  hook step-start t1 g1 pi
+  hook status "$HOME_DIR/config" "$HOME_DIR/state/t1.status"
+  hook held t1 captain reason occurrence
+  hook answered t1 released
+  hook answered t1 closed
+  hook step-end t1 g1 cleanup
+  hook cleaned-up t1
+  hook verified t1
+  hook deploy-verify t1 abc round issue
+  hook started t1 occurrence
+  assert_equals '' "$(calls)" 'an assistance producer wrote to the task record'
+  assert_absent "$HOME_DIR/state/task-shadow.log" 'an assistance reached the writer'
+  # A real task in the same home still reaches the writer.
+  printf 'kind=ship\n' > "$HOME_DIR/state/t1.meta"
+  hook step-start t1 g1 pi
+  assert_contains "$(calls)" 'step t1 start' 'the guard suppressed a real task'
+  pass 'assistance spawn, relaunch, status, hold, answer and cleanup produce no task writes'
+}
+
 test_flag_absent_writes_nothing() {
   make_case off off
   hook dispatched t1 ship repo claude || fail "the hook failed with the flag absent"
@@ -479,6 +503,7 @@ make_step_case() {  # <name>: five tasks, each with a live window
 test_step_loop_writes_every_task_liveness() {
   local steps first out
   make_step_case step-loop
+  printf 'kind=assistance\nwindow=fmses:w1\nharness=claude\nspawn_gen=a1\n' > "$HOME_DIR/state/assist.meta"
   # t3's first write gets no answer from the API (3), so the next pass tries it again
   out=$(FAKE_FAIL='step t3' FAKE_FAIL_ONCE=1 FAKE_FAIL_CODE=3 loop start)
   assert_contains "$out" "task-step-loop: started pid=" "the first start starts the loop"
@@ -487,6 +512,7 @@ test_step_loop_writes_every_task_liveness() {
   assert_equals "task-step-loop: running pid=$first" "$out" "a second start keeps the one loop of the home"
   wait_calls 3 '^step t5 alive' || { loop stop; end_session; fail "the fifth task's liveness did not reach the record within one pass: $(cat "$CALLS")"; }
   wait_count 3 '^step t3 ' 2 || true
+  assert_equals '' "$(grep '^step assist ' "$CALLS" || true)" 'the liveness loop wrote an assistance event'
   steps=$(grep -c '^step ' "$CALLS")
   [ "$steps" -eq 6 ] || { loop stop; end_session; fail "five tasks and one unanswered call should make six step calls, got $steps: $(cat "$CALLS")"; }
   # no watcher runs in this home: a pane closed now still stops its dot within one interval
@@ -590,6 +616,7 @@ test_the_hook_never_fails_the_script
 test_the_flag_file_carries_the_writer_settings
 test_events_of_the_other_scripts
 test_step_events
+test_assistance_producers_write_nothing
 test_rows_task_hold_keeps_review
 test_spawn_writes_the_record
 test_worker_status_command_writes_the_record
@@ -615,6 +642,7 @@ mutate_hook() {  # <label> <case function> <exact source text> <replacement>
   pass "rule '$1' is needed: $2 goes red without it"
 }
 
+mutate_hook 'assistance sessions never write task records' test_assistance_producers_write_nothing 'if grep -qx '\''kind=assistance'\'' "$STATE/$TASK.meta" 2>/dev/null; then exit 0; fi' ':'
 mutate_hook 'the flag file switches the hook on' test_flag_absent_writes_nothing '[ -e "$FLAG" ] || exit 0' ':'
 mutate_hook 'every call carries a stable key' test_dispatched_creates_assigns_and_starts '--key "shadow:$TASK:$suffix" ' ''
 mutate_hook 'the title comes from the backlog row' test_dispatched_creates_assigns_and_starts 'title=$(backlog_field title' 'title=$(: title'
@@ -663,4 +691,5 @@ mutate_script 'fm-watch-arm.sh starts the step loop' test_arm_starts_the_step_lo
 mutate_script 'fm-watch.sh hands delivery the flag settings' test_arm_starts_the_step_loop fm-watch.sh '|| fm_task_shadow_config "$CONFIG/task-shadow"'
 mutate_script 'a stop waits for the in-flight write' test_step_loop_stop_waits_for_the_write fm-task-step-loop.sh "trap 'STOP=1' TERM INT HUP"
 mutate_script 'an interrupted wait waits again for the write' test_step_loop_stop_waits_for_the_write fm-task-step-loop.sh 'while ! wait "$writer" && kill -0 "$writer"'
+mutate_script 'the loop excludes assistance sessions' test_step_loop_writes_every_task_liveness fm-task-step-loop.sh '[ "$(fm_meta_get "$meta" kind)" != assistance ] || continue'
 mutate_script 'the loop ends with the session' test_step_loop_ends_with_the_session fm-task-step-loop.sh 'case "$FM_LOCK_INSPECT_STATE" in free|stale) return 1 ;; esac'

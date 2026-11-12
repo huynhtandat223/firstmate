@@ -76,6 +76,10 @@ LOG="$STATE/task-shadow.log"
 TASK=${1:-}
 case "$TASK" in ''|.*|*[!A-Za-z0-9._-]*) exit 0 ;; esac
 
+# Assistances are sessions, not tasks. All producers (including relaunch and cleanup)
+# cross this boundary while the task meta still exists; never mirror their events.
+if grep -qx 'kind=assistance' "$STATE/$TASK.meta" 2>/dev/null; then exit 0; fi
+
 short() { printf '%s' "$1" | cksum | awk '{ printf "%x", $1 }'; }  # a short stable digest for a key
 oneline() { printf '%s' "$1" | tr '\n\r\t' '   ' | sed 's/  */ /g; s/^ //; s/ $//'; }
 cut_to() { local text; text=$(oneline "$1"); printf '%s' "${text:0:$2}"; }
