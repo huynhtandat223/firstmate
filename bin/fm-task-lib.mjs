@@ -103,10 +103,11 @@
 //   event    <task> wait --next-actor tester|owner|merge|ci --clears-on rows|answer|merge|ci --note WHY [--rows ID@W,...]
 //            a declared wait (G1); `ask --next-actor owner` (answer) and `done --pr-url` (rows on the Tester, else merge)
 //            write one too. Its status line is `paused [at=E] [key=wait-<seq>]: waiting on <actor>: WHY (clears on X)`; the
-//            clearing event (the asked rows each with a newer result that is not pending, an unblocked event, a pr event whose
-//            note says merged, a ci event, or an approved or archived event) adds `resolved` with that key, in the home
-//            holding the line. `wait --next-actor ci --clears-on ci` is how a worker waits for its PR's checks: the
-//            pr-review source writes the ci event for the current head, green or failed, and delivers a failure to the inbox.
+//            clearing event (the asked rows each with a newer result that is not pending, an unblocked event, a pr event given
+//            --merged or whose note says merged, a ci event, or an approved or archived event) adds `resolved` with that
+//            key, in the home holding the line. `wait --next-actor ci --clears-on ci` is how a worker waits for its PR's
+//            checks: the pr-review source writes the ci event for the current head, green or failed, and delivers a failure
+//            to the inbox.
 //            deploy --touched none|all|ID,...: the scenarios the deployed PRs name (`Scenarios touched:`); a user-visible pass
 //            on an earlier deployed head carries to later deployed heads while no later deploy names its id (all, or no
 //            flag, names every id). approve, routing and gate accept a carried pass; gate prints each with its head.
@@ -842,8 +843,8 @@ const statusFile = (taskId) => path.join(process.env.FM_STATE_OVERRIDE || path.j
 
 // A declared wait (G1): `event <task> wait`, which the Tester ask builder, `ask --next-actor owner` and `done --pr-url`
 // also write. The status view writes it as a paused line keyed wait-<seq>; the record event that clears it is the asked
-// rows each holding a newer result that is not pending (rows), an unblocked event (answer), a `pr` event whose note says
-// merged (merge), or for any of them an approved or archived event.
+// rows each holding a newer result that is not pending (rows), an unblocked event (answer), a `pr` event given --merged
+// or whose note says merged (merge), or for any of them an approved or archived event.
 function clearingEvent(wait, events) {
   const { clearsOn, rows = [] } = bodyOf(wait).wait || {};
   const later = events.filter((e) => e.seq > wait.seq);
@@ -852,7 +853,7 @@ function clearingEvent(wait, events) {
     const { question } = bodyOf(wait).wait || {};
     return later.find((e) => e.kind === 'unblocked' || (e.kind === 'answered' && (question ? bodyOf(e).answer?.question === question : bodyOf(e).set?.state !== undefined))) ?? closing;
   }
-  if (clearsOn === 'merge') return later.find((e) => e.kind === 'pr' && /\bmerged\b/i.test(bodyOf(e).note ?? '')) ?? closing;
+  if (clearsOn === 'merge') return later.find((e) => e.kind === 'pr' && (bodyOf(e).merged === true || /\bmerged\b/i.test(bodyOf(e).note ?? ''))) ?? closing;
   // The pr-review source writes one ci event for the PR's current head once its checks finish, green or failed,
   // so the delivered CI result is that event whatever head the worker was waiting on.
   if (clearsOn === 'ci') {

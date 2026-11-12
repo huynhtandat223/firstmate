@@ -2220,6 +2220,14 @@ SH
   grep -q '^resolved .*wait-' "$FM_HOME/state/tk-w3.status" && { echo "a pr event that is no merge cleared the wait"; return 1; }
   ft event tk-w3 pr --note 'merged at m1' >/dev/null
   tail -n 1 "$FM_HOME/state/tk-w3.status" | grep -q '^resolved .*the wait on merge cleared: pr event' || { echo "merge: $(tail -n 1 "$FM_HOME/state/tk-w3.status")"; return 1; }
+  # a pr event given --merged and no note clears the merge wait too
+  mk_running tk-w4 >/dev/null || return 1
+  ft "done" tk-w4 "${DONE_FLAGS[@]}" --pr-url https://github.com/example/repo/pull/9 --head h4
+  must 'done pr' 0 || return 1
+  tail -n 1 "$FM_HOME/state/tk-w4.status" | grep -q '^paused .*waiting on merge: ' || { echo "done pr: $(tail -n 1 "$FM_HOME/state/tk-w4.status")"; return 1; }
+  ft event tk-w4 pr --merged
+  must 'pr --merged with no note' 0 || return 1
+  tail -n 1 "$FM_HOME/state/tk-w4.status" | grep -q '^resolved .*the wait on merge cleared: pr event' || { echo "pr --merged left the merge wait open: $(tail -n 1 "$FM_HOME/state/tk-w4.status")"; return 1; }
   ft event tk-w3 wait --next-actor tester --clears-on rows
   must 'wait without a note' 2 || return 1
   ft event tk-w3 wait --next-actor nobody --clears-on rows --note x
@@ -3661,7 +3669,8 @@ mutate 'deliver resolves a wait that another home cleared' wait "  await waitVie
 mutate 'a question to the owner waits on the answer' wait "nextActor === 'owner' ? (result) => waitOn(" "false ? (result) => waitOn("
 mutate 'a PR-ready done waits after its own line' wait "  if (wait) await wait(result);
   await waitView(taskId);" "  await waitView(taskId);"
-mutate 'only a merged pr event clears a merge wait' wait "e.kind === 'pr' && /\\bmerged\\b/i.test(" "e.kind === 'pr' && /./.test("
+mutate 'only a merged pr event clears a merge wait' wait "bodyOf(e).merged === true || /\\bmerged\\b/i.test(" "bodyOf(e).merged === true || /./.test("
+mutate 'a pr event given --merged clears a merge wait' wait "(bodyOf(e).merged === true || /\\bmerged\\b/i.test(bodyOf(e).note ?? ''))" "/\\bmerged\\b/i.test(bodyOf(e).note ?? '')"
 mutate 'a pass carries while no later deploy names its id' carry "  return later.every((e) => Array.isArray(bodyOf(e).touched) && !bodyOf(e).touched.includes(row.scenarioId));" "  return false;"
 mutate 'a deploy that names an id brings its row back' carry "Array.isArray(bodyOf(e).touched) && !bodyOf(e).touched.includes(row.scenarioId)" "Array.isArray(bodyOf(e).touched)"
 mutate 'a deploy that records nothing touches every row' carry "Array.isArray(bodyOf(e).touched) && !bodyOf(e).touched.includes(row.scenarioId)" "!(bodyOf(e).touched || []).includes(row.scenarioId)"
