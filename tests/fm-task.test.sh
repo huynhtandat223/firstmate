@@ -1808,6 +1808,20 @@ case_delete() {
   must 'owner live worker refused' 5 || return 1
   jq -e '.ok == false and (.error | contains("refused del-live: a live worker"))' <<<"$OUT" >/dev/null || { echo "a live worker is not refused: $OUT"; return 1; }
   [ -n "$(task_row del-live)" ] || { echo 'the live task was deleted'; return 1; }
+  # Record-only cleanup is limited to assistance rows with matching metadata.
+  ft delete del-live --reason stale --assistance-record-only
+  must 'ship cannot use assistance cleanup' 0 || return 1
+  [ -n "$(task_row del-live)" ] || { echo 'assistance cleanup deleted a ship'; return 1; }
+  ft import del-assist --title session --kind assistance --state running --assignee w --next-actor worker >/dev/null || return 1
+  printf 'kind=ship\n' > "$FM_HOME/state/del-assist.meta"
+  ft delete del-assist --reason stale --assistance-record-only
+  must 'metadata mismatch refuses cleanup' 0 || return 1
+  [ -n "$(task_row del-assist)" ] || { echo 'cleanup ignored the metadata kind'; return 1; }
+  printf 'kind=assistance\nwindow=live-pane\n' > "$FM_HOME/state/del-assist.meta"
+  ft delete del-assist --reason stale --assistance-record-only
+  must 'running assistance record deleted' 0 || return 1
+  [ -z "$(task_row del-assist)" ] || { echo 'assistance record survived'; return 1; }
+  grep -qx 'window=live-pane' "$FM_HOME/state/del-assist.meta" || { echo 'cleanup changed session metadata'; return 1; }
   printf '#!/bin/sh\necho unknown\n' > "$TMP_ROOT/unknown"; chmod +x "$TMP_ROOT/unknown"
   export FM_TASK_AGENT_STATE="$TMP_ROOT/unknown"
   ft delete del-live --reason stale
@@ -3550,7 +3564,7 @@ mutate 'an answer must be one of the question options' question_round "if (!opti
 mutate 'each owner question waits on its own answer' question_round "(question ? bodyOf(e).answer?.question === question :" "(question ? true :"
 mutate 'home refuses a task that is in another home' backlog_home "if (task.backlogHome && task.backlogHome !== home) throw rule" "if (false) throw rule"
 mutate 'home refuses an archived task' backlog_home "if (task.state === 'archived') throw rule(\`home is refused" "if (false) throw rule(\`home is refused"
-mutate 'a running task is refused' delete "if (state === 'running') return { refuse: 'running' };" "if (false) return { refuse: 'running' };"
+mutate 'a running task is refused' delete "if (state === 'running' && !assistanceRecordOnly) return { refuse: 'running' };" "if (false) return { refuse: 'running' };"
 mutate 'a live worker is refused' delete "if (worker === 'alive') return { refuse: 'a live worker' };" "if (false) return { refuse: 'a live worker' };"
 mutate 'an unreadable worker is refused' delete "if (worker === 'unknown') return { refuse: 'its worker state could not be read' };" "if (false) return { refuse: 'its worker state could not be read' };"
 mutate 'an open PR is refused' delete 'if (pr === '"'"'open'"'"') return { refuse: `open PR ${prUrl}` };' 'if (false) return { refuse: `open PR ${prUrl}` };'
