@@ -74,18 +74,7 @@ Name the visible controls by role and label, or use `controls: -` where none app
 
 ## One pull request and the Solution
 
-Scope each task to one pull request; a second pull request is its own subtask.
-Every task also gets a Solution document, separate from its Description, with exactly these three `## ` headings.
-
-```markdown
-## How it is used
-
-## How it is built
-
-## How it is tested
-```
-
-Attach it with `bin/fm-task.sh plan <task> --document solution.md --document-title Solution [--image PATH --image-label L]...`.
+Scope each task by the owner's one-pull-request rule, and give it a Solution document separate from its Description; [`../kanban-v2/SKILL.md`](../kanban-v2/SKILL.md) owns that rule, the Solution's headings and the command that attaches it.
 On a user-visible task, write it and have the owner approve it on the task's Solution tab before implementation starts.
 
 ## Verification record rows

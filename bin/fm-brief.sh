@@ -118,9 +118,10 @@
 # --surface <user-visible|internal> is an optional ship-only input; absent means
 # internal and leaves the brief unchanged. user-visible adds the done-gate wording
 # that bin/fm-dod-lib.sh owns (record: bin/fm-verify-gate-lib.sh).
-# Ship and scout briefs name the task's Solution document and the `bin/fm-task.sh plan`
-# call that attaches it. --surface user-visible adds that the owner approves it before
-# implementation starts, and a ship brief whose mode opens a pull request says one task has one.
+# Ship and scout briefs point to custom-skills/kanban-v2/SKILL.md (what each part of the
+# owner's task page shows, which command writes it, and his task rules) and name the task's
+# Solution document and the `bin/fm-task.sh plan` call that attaches it. --surface
+# user-visible adds that the owner approves it before implementation starts.
 # --issue <source> is an optional ship-only acceptance input: task:<id> or
 # https://<host>/<owner>/<repo>/issues/<n>. It adds an `# Acceptance` section that
 # names the issue and the command `bin/fm-acceptance.mjs rows <issue-url> --surface all` (every scenario, internal ones too), so the
@@ -871,25 +872,23 @@ else
   SETUP_BASE="You are in a disposable git worktree of $REPO, at a detached HEAD on a clean default branch."
 fi
 
-# The owner's task rules, where the worker reads its task-record commands: every task carries a Solution document
-# (custom-skills/ticket-template/SKILL.md owns its form), a user-visible ship waits for the owner's approval of it,
-# and a task that opens a pull request opens one. A scout keeps the file in its scratch worktree.
+# The owner's task rules, where the worker reads its task-record commands: the pointer to custom-skills/kanban-v2/SKILL.md,
+# which owns what each part of the owner's task page shows, the Solution's headings and the owner's status and
+# one-pull-request rules; every task carries a Solution document, and a user-visible ship waits for the owner's approval
+# of it. A scout keeps the file in its scratch worktree.
 SOLUTION_FILE="$DATA/$ID/solution.md"
 SOLUTION_BEFORE=implement
 if [ "$KIND" = scout ]; then
   SOLUTION_FILE=solution.md
   SOLUTION_BEFORE=investigate
 fi
-TASK_RULES="Solution: every task has one document with exactly the headings \`## How it is used\`, \`## How it is built\`, \`## How it is tested\`.
+TASK_RULES="Task page: before your first \`fm-task.sh\` write, load \`$FM_ROOT/custom-skills/kanban-v2/SKILL.md\`; the owner follows this task on its Kanban v2 page, and the skill says what each write shows there and the status you write each turn.
+Solution: every task has one document, under the three headings that skill names.
 While \`$FM_ROOT/bin/fm-task.sh show $ID\` prints \`planSeq=-\` the task has none: write it to \`$SOLUTION_FILE\` before you $SOLUTION_BEFORE, and attach it with \`$FM_ROOT/bin/fm-task.sh plan $ID --document $SOLUTION_FILE --document-title Solution [--image PATH --image-label L]...\`.
 A new \`plan\` replaces the Solution and its approval."
 if [ "$SURFACE" = user-visible ]; then
   TASK_RULES="$TASK_RULES
 This task is user-visible: the owner approves the Solution on the task's Solution tab before implementation starts, so implement only once \`show\` prints \`planDecision=approve\`."
-fi
-if [ "$KIND" = ship ] && [ "$MODE" != local-only ]; then
-  TASK_RULES="$TASK_RULES
-One task has one pull request; a second pull request is its own subtask, which firstmate files."
 fi
 
 if [ "$KIND" = scout ]; then

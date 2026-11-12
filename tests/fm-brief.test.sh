@@ -351,10 +351,11 @@ check_brief_case() {  # <bin-dir>: 0 when --check refuses every range form and p
 }
 
 # The owner's task rules sit where a worker reads its task-record commands, before rule 1: every ship and scout brief
-# names the Solution document and the plan call that attaches it, only a user-visible ship waits for the owner's
-# approval of it, and only a ship whose mode opens a pull request says one task has one.
+# points to the Kanban v2 skill before the first task-record write, names the Solution document and the plan call
+# that attaches it, and leaves the skill's own words (the Solution headings, the one-pull-request rule) to the skill;
+# only a user-visible ship waits for the owner's approval of the Solution.
 task_rules_brief_case() {  # <bin-dir>: 0 when each brief carries the task rules that apply to it
-  local bin=$1 home id solution preamble
+  local bin=$1 home id solution preamble pointer
   home=$(mktemp -d "$TMP_ROOT/rules-home.XXXXXX")
   mkdir -p "$home/data"
   FM_HOME="$home" "$bin/fm-brief.sh" rules-pr some-proj --mode direct-PR >/dev/null 2>&1 || { echo 'direct-PR brief did not scaffold'; return 1; }
@@ -362,10 +363,15 @@ task_rules_brief_case() {  # <bin-dir>: 0 when each brief carries the task rules
   FM_HOME="$home" FM_ACCEPTANCE_TASK=false "$bin/fm-brief.sh" rules-visible some-proj --mode no-mistakes --surface user-visible >/dev/null 2>&1 || { echo 'user-visible brief did not scaffold'; return 1; }
   FM_HOME="$home" "$bin/fm-brief.sh" rules-local some-proj --mode local-only >/dev/null 2>&1 || { echo 'local-only brief did not scaffold'; return 1; }
   FM_HOME="$home" "$bin/fm-brief.sh" rules-scout some-proj --scout >/dev/null 2>&1 || { echo 'scout brief did not scaffold'; return 1; }
+  # shellcheck disable=SC2016 # the backticks are literal text of the brief
+  pointer="Task page: before your first \`fm-task.sh\` write, load \`$(cd "$bin/.." && pwd)/custom-skills/kanban-v2/SKILL.md\`; the owner follows this task on its Kanban v2 page"
   for id in rules-pr rules-visible rules-local rules-scout; do
     preamble=$(awk '/^# Rules$/ { rules = 1; next } rules && /^1\. / { exit } rules' "$home/data/$id/brief.md")
-    # shellcheck disable=SC2016 # the backticks are literal text of the brief
-    grep -qF 'exactly the headings `## How it is used`, `## How it is built`, `## How it is tested`' <<<"$preamble" || { echo "$id: the rules name no Solution headings before rule 1"; return 1; }
+    grep -qF "$pointer" <<<"$preamble" || { echo "$id: the rules hold no Kanban v2 skill pointer before rule 1"; return 1; }
+    grep -qF 'Solution: every task has one document, under the three headings that skill names.' <<<"$preamble" || { echo "$id: the rules name no Solution before rule 1"; return 1; }
+    # the skill keeps its own words: the brief holds neither the Solution headings nor the one-pull-request rule
+    ! grep -qF '## How it is used' "$home/data/$id/brief.md" || { echo "$id: the brief repeats the Solution headings the skill owns"; return 1; }
+    ! grep -qF 'One task has one pull request' "$home/data/$id/brief.md" || { echo "$id: the brief repeats the one-pull-request rule the skill owns"; return 1; }
     # a ship keeps the file with its task material, outside the worktree it must leave clean; a scout's worktree is scratch
     solution=solution.md
     [ "$id" = rules-scout ] || solution="$home/data/$id/solution.md"
@@ -374,10 +380,6 @@ task_rules_brief_case() {  # <bin-dir>: 0 when each brief carries the task rules
       rules-visible) grep -qF "the owner approves the Solution on the task's Solution tab before implementation starts" <<<"$preamble" || { echo "$id: no approval before implementation"; return 1; } ;;
       *) ! grep -qF 'Solution tab' <<<"$preamble" || { echo "$id: a task that is not user-visible waits for an approval"; return 1; } ;;
     esac
-    case "$id" in
-      rules-pr|rules-visible) grep -qF 'One task has one pull request; a second pull request is its own subtask' <<<"$preamble" || { echo "$id: no one-pull-request rule"; return 1; } ;;
-      *) ! grep -qF 'pull request' <<<"$preamble" || { echo "$id: a brief that opens no pull request names one"; return 1; } ;;
-    esac
   done
   return 0
 }
@@ -385,7 +387,10 @@ task_rules_brief_case() {  # <bin-dir>: 0 when each brief carries the task rules
 test_task_rules_reach_the_briefs() {
   local out
   out=$(task_rules_brief_case "$ROOT/bin" 2>&1) || fail "task rules: $out"
-  pass 'fm-brief.sh: ship and scout briefs name the Solution, a user-visible ship its approval, and a PR ship its one pull request'
+  # the pointer names the skill under the firstmate root; the skill is there and holds the words the brief leaves to it
+  assert_grep '## How it is used' "$ROOT/custom-skills/kanban-v2/SKILL.md" 'the Kanban v2 skill names no Solution headings'
+  assert_grep 'One task has one pull request; a second pull request is its own subtask, which firstmate files.' "$ROOT/custom-skills/kanban-v2/SKILL.md" 'the Kanban v2 skill holds no one-pull-request rule'
+  pass 'fm-brief.sh: ship and scout briefs point to the Kanban v2 skill, name the Solution, and a user-visible ship its approval'
 }
 
 test_issue_names_the_parser_command() {
@@ -425,8 +430,7 @@ the briefs carry the task rules|task_rules_brief_case|s/^\$TASK_RULES\n//mg
 a scout keeps its Solution in the worktree|task_rules_brief_case|s/  SOLUTION_FILE=solution.md\n//
 only a user-visible ship waits for the approval|task_rules_brief_case|s/if \[ "\$SURFACE" = user-visible \]; then\n  TASK_RULES/if true; then\n  TASK_RULES/
 a user-visible ship waits for the approval|task_rules_brief_case|s/if \[ "\$SURFACE" = user-visible \]; then\n  TASK_RULES/if false; then\n  TASK_RULES/
-only a ship that opens a pull request names it|task_rules_brief_case|s/if \[ "\$KIND" = ship \] && \[ "\$MODE" != local-only \]; then/if true; then/
-a ship that opens a pull request names it|task_rules_brief_case|s/if \[ "\$KIND" = ship \] && \[ "\$MODE" != local-only \]; then/if false; then/
+the briefs point to the Kanban v2 skill|task_rules_brief_case|s/TASK_RULES="Task page: [^\n]*\n/TASK_RULES="/
 MUTATIONS
   pass 'fm-brief.sh: the --issue, --check and task-rule guards each have a red mutation proof'
 }

@@ -49,6 +49,7 @@ Expand `~` to the current user's home for installed capabilities; the cfw-module
 | A diagnosis task is opened | `../matt/engineering/diagnosing-bugs/SKILL.md` |
 | A worker must change or judge existing behaviour it has not traced, or a placement or ownership question is open | `~/.agents/skills/how/SKILL.md` |
 | A worker or firstmate is about to change, remove or overrule something whose reason is not in front of it (a regression stays with the diagnosis row) | `~/.agents/skills/why/SKILL.md` |
+| A worker or firstmate writes to a task the owner follows on the Kanban v2 board, or a part of its task page shows the wrong thing | `../kanban-v2/SKILL.md` |
 
 The vendored bytes under `custom-skills/matt/` are immutable.
 Adapted skills (`how`, `why`, `arena`, `swarm`) are not vendored: each carries a `PROVENANCE.md` naming its upstream commit and what changed.
