@@ -2439,6 +2439,27 @@ case_describe_issue() {
   [ "$(db fm_task | jq -r --arg t $t '.[] | select(.taskId == $t) | .issueUrl')" = $t ] || { echo "a task with no issue does not hold its own id: $(db fm_task)"; return 1; }
 }
 
+# A first Description seeds only a task whose issue is its own: a board link or task:<id> naming another task stays the
+# source of its rows and the task's issueUrl, while a board link naming the task itself is seeded like no issue.
+case_describe_source() {
+  BIN=$1; reset_db
+  local t n=0 doc="$TMP_ROOT/describe-source.md" issue
+  issue_body v1 > "$doc"
+  for issue in "$BASE/#firstmate.board?view=board&task=tk-ds-other" task:tk-ds-other; do
+    t=tk-ds-$((++n))
+    ft create $t --title t --kind ship --issue "$issue"; must "create $t" 0 || return 1
+    ft describe $t --document "$doc"
+    must "describe $t" 0 || return 1
+    [ "$(grep -c '^rows not seeded: ' <<<"$OUT")" = 1 ] && [[ "$OUT" == *"$issue"* && "$OUT" != *'rows added='* ]] || { echo "another task's issue [$issue] was seeded from the Description: $OUT"; return 1; }
+    [ "$(db fm_task | jq -r --arg t $t '.[] | select(.taskId == $t) | .issueUrl')" = "$issue" ] || { echo "the task lost its issue [$issue]: $(db fm_task)"; return 1; }
+  done
+  t=tk-ds-own
+  ft create $t --title t --kind ship --issue "$BASE/#firstmate.board?view=board&task=$t"; must "create $t" 0 || return 1
+  ft describe $t --document "$doc"
+  must 'describe a task whose board link names it' 0 || return 1
+  [[ "$OUT" == *'rows added=4 reset=0 retired=0 updated=0 unchanged=0 total=4' ]] || { echo "a board link naming the task was not seeded: $OUT"; return 1; }
+}
+
 case_owner_writer() {
   BIN=$1; reset_db
   export FM_HOME="$TMP_ROOT/owner-writer-home"
@@ -3590,7 +3611,7 @@ case_setup_rules() {
   return 0
 }
 
-CASES=${FM_TASK_CASES:-"plan_task description_thread describe_rows describe_issue terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed long_notes status_view verify_view owner_writer workflow gate_internal gate_no_surface stage latest_wait latest_no_note wait carry slice_c model_rules checklist question_round setup_rules backlog_home owner_hold owner_request gate_before_approval handoff_gate delete owner_nav"}
+CASES=${FM_TASK_CASES:-"plan_task description_thread describe_rows describe_issue describe_source terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed long_notes status_view verify_view owner_writer workflow gate_internal gate_no_surface stage latest_wait latest_no_note wait carry slice_c model_rules checklist question_round setup_rules backlog_home owner_hold owner_request gate_before_approval handoff_gate delete owner_nav"}
 
 # ---- real command -------------------------------------------------------------------
 
@@ -3634,7 +3655,8 @@ mutate 'a first Description seeds the check rows' describe_rows "await cmdRows({
 mutate 'a re-describe leaves the rows it finds' describe_rows "if ((await checkRows(taskId)).some((row) => !isChecklist(row))) return;" ";"
 mutate 'checklist rows do not stop the first seeding' describe_rows "if ((await checkRows(taskId)).some((row) => !isChecklist(row))) return;" "if ((await checkRows(taskId)).length) return;"
 mutate 'a Description the sync refuses still stands' describe_rows "if (!(error instanceof Fail) || error.code !== 5) throw error;" "throw error;"
-mutate 'a Description seeds no row for an external issue' describe_issue "if (/^https?:\\/\\//.test(issue) && !boardLink(issue)) {" "if (false) {"
+mutate 'a Description seeds no row for an external issue' describe_issue "boardTask(issue) !== taskId) {" "boardTask(issue) !== taskId && false) {"
+mutate 'a board link seeds only the task it names' describe_source "boardTask(issue) !== taskId) {" "!boardLink(issue)) {"
 mutate 'the event and its child travel in one request' terminal 'Object.assign(body, spec.children || {});' ';'
 mutate 'an empty value is refused' terminal "if (value === '') throw usage" 'if (false) throw usage'
 mutate 'the option count is checked' terminal 'if (options.length < 2 || options.length > 6)' 'if (false)'

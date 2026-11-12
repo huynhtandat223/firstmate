@@ -77,10 +77,11 @@
 //            the same home again is a no-op, another home is refused: a task belongs to one board
 //   describe <task> --document FILE.md [--document-title T]              any state; default title Description
 //            A task that holds no scenario check row yet gets them from this Description, as `rows <task>` writes them;
-//            a task that holds one keeps its rows (`rows` is the re-sync). A task with an external http(s) issue keeps that
-//            issue as the source of its rows: describe seeds none, and `rows <task> <issue>` seeds them. There, and for a
-//            Description that sync refuses (no scenarios, a parser refusal), the Description is stored all the same, and
-//            describe prints `rows not seeded: <why>` and exits 0.
+//            a task that holds one keeps its rows (`rows` is the re-sync). Only a task whose issue is none, its own id,
+//            task:<its id> or a board link naming it is seeded; any other issue (an external http(s) issue, another task's
+//            task:<id> or board link) stays the source of its rows: describe seeds none, and `rows <task> <issue>` seeds
+//            them. There, and for a Description that sync refuses (no scenarios, a parser refusal), the Description is
+//            stored all the same, and describe prints `rows not seeded: <why>` and exits 0.
 //   thread   <task> [--since SEQ]                                       full comments, oldest first
 //   comment  <task> [--note T] [--image PATH --image-label L]... [--video PATH --video-label L]...
 //            [--ask why|how|wait-what] [--reply-to SEQ]                 any state; reply-to must name a comment of this task
@@ -1611,12 +1612,12 @@ async function cmdDescribe(args) {
   });
   // A task with no scenario row yet takes its rows from this Description, through the sync `rows <task>` runs. A task
   // that holds one keeps its rows, so a re-describe resets no result; a Description the sync refuses still stands.
-  // A task with an external issue keeps it as the source of its rows, which deploy verify and the gate read: the
-  // Description seeds nothing there, and `rows` seeds it.
+  // A task whose issue is another source (an external issue, another task) keeps it as the source of its rows, which
+  // deploy verify and the gate read: the Description seeds nothing there, and `rows` seeds it.
   if ((await checkRows(taskId)).some((row) => !isChecklist(row))) return;
   const issue = task?.issueUrl ?? '';
-  if (/^https?:\/\//.test(issue) && !boardLink(issue)) {
-    out(`rows not seeded: ${taskId} has the external issue ${issue}, the source of its rows; seed them with rows ${taskId} ${issue}`);
+  if (!['', taskId, `task:${taskId}`].includes(issue) && boardTask(issue) !== taskId) {
+    out(`rows not seeded: ${taskId} has the issue ${issue}, the source of its rows; seed them with rows ${taskId} ${issue}`);
     return;
   }
   try {
@@ -2086,7 +2087,8 @@ async function wantedRows(issue) {
 }
 
 // A board link names a task, so its rows come from that task's Description, as from task:<id>.
-const boardLink = (issue) => /^https?:\/\/[^\s]+[?&]task=/.test(issue);
+const boardTask = (issue) => /^https?:\/\/[^\s]+[?&]task=([^&#\s]*)/.exec(issue)?.[1];
+const boardLink = (issue) => boardTask(issue) !== undefined;
 
 async function cmdRows(args) {
   const taskId = taskIdOf(args);
