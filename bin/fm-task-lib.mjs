@@ -390,12 +390,13 @@ function bodyOf(event) {
 // no note leaves it as it was. A machine record is not a note either, so it leaves lastNote as it was: an import's source
 // stamp (`{"source","sha256"}` under a `backfill:<task>:` key, fm-task-backfill-lib.mjs) and a reconcile divergence
 // (`{"field","oldSource","record"}` under a `reconcile:<task>:` key, fm-task-reconcile-lib.mjs). The same JSON in a real
-// comment is a note. Nor is the wait a command writes after its own event (waitOn: that event's key plus `:wait`, its
-// note the PR or the question), so the caller's --note stays. Only done --pr-url, ask --next-actor owner and the
-// no-model stop write one, after their done or needs-decision event; a wait the caller writes itself is a note, under
-// any key, `<an earlier event's key>:wait` included.
-const WAIT_WRITERS = ['done', 'needs-decision'];
-const isFollowUpWait = (event, kinds) => event.kind === 'wait' && /:wait$/.test(event.idempotencyKey ?? '') && WAIT_WRITERS.includes(kinds.get(event.idempotencyKey.slice(0, -5)));
+// comment is a note. Nor is the wait a command writes after its own event (waitOn, which done --pr-url,
+// ask --next-actor owner and the no-model stop call: its note the PR or the question), so the caller's --note stays.
+// waitOn marks that wait `followUp: true` in its body. A wait written before the mark is one when its key is an earlier
+// event's key plus `:wait` and that event wrote one: a done holding a prUrl, or a needs-decision to the owner. A wait
+// the caller writes itself is a note, under any key.
+const wroteWait = (event) => (event?.kind === 'done' && Boolean(bodyOf(event).set?.prUrl)) || (event?.kind === 'needs-decision' && bodyOf(event).set?.nextActor === 'owner');
+const isFollowUpWait = (event, byKey) => event.kind === 'wait' && (bodyOf(event).followUp === true || (/:wait$/.test(event.idempotencyKey ?? '') && wroteWait(byKey.get(event.idempotencyKey.slice(0, -5)))));
 const MACHINE_RECORDS = { backfill: 'sha256,source', reconcile: 'field,oldSource,record' };
 const isMachineRecord = (event, note) => {
   const [prefix, taskId] = String(event.idempotencyKey ?? '').split(':');
@@ -411,7 +412,7 @@ function fold(events) {
   let task = null;
   let deployed = false;
   let pullRequest = false;
-  const kinds = new Map();
+  const byKey = new Map();
   for (const event of [...events].sort((a, b) => a.seq - b.seq)) {
     const set = { ...(bodyOf(event).set || {}), ...(event.rowText || {}) };
     if (event.kind === 'created' && !task) task = { taskId: event.taskId };
@@ -428,9 +429,9 @@ function fold(events) {
     if (event.kind !== 'row' && event.kind !== 'checklist') {
       const note = String(bodyOf(event).note ?? '');
       task.lastEventAt = event.createdAt ?? null;
-      if (note && !isMachineRecord(event, note) && !isFollowUpWait(event, kinds)) task.lastNote = note.slice(0, 300);
+      if (note && !isMachineRecord(event, note) && !isFollowUpWait(event, byKey)) task.lastNote = note.slice(0, 300);
     }
-    kinds.set(event.idempotencyKey, event.kind);
+    byKey.set(event.idempotencyKey, event);
     if (REVIEWER_KINDS.includes(event.kind)) task.reviewer = event.actor ?? null;
   }
   if (!task) return null;
@@ -916,12 +917,12 @@ async function waitView(taskId, known) {
   }
 }
 
-// Append a wait for a task, keyed on the call that asks for it, and write its paused line.
+// Append a wait for a task, keyed on the call that asks for it and marked followUp, and write its paused line.
 async function waitOn(taskId, who, { actor, clearsOn, note, rows = [], question }) {
   const result = await append(taskId, { ...who, key: `${who.key}:wait` }, async ({ task }) => {
     if (!task) throw rule('no such task');
     if (CLOSED.includes(task.state)) throw rule(`wait is refused: ${taskId} is ${task.state}`);
-    return { kind: 'wait', note, extra: { wait: { actor, clearsOn, rows, ...(question ? { question } : {}) } } };
+    return { kind: 'wait', note, extra: { followUp: true, wait: { actor, clearsOn, rows, ...(question ? { question } : {}) } } };
   });
   await statusView(result.event);
   return result;

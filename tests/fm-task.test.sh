@@ -3003,8 +3003,9 @@ latest_is() {
     || { echo "$1: want lastNote [$3] at the $4 event: $(task_row "$2")"; return 1; }
 }
 
-# The wait done --pr-url or ask --next-actor owner writes after its own event leaves the worker's status on Latest; a
-# wait the worker writes itself, under any key, and any later note, still replace it. The command projects before it writes that wait,
+# The wait done --pr-url or ask --next-actor owner writes after its own event, marked followUp, leaves the worker's
+# status on Latest, and so does such a wait written before the mark; a wait the worker writes itself, under any key, and
+# any later note, still replace it. The command projects before it writes that wait,
 # so the next projection (a reproject, as a backlog view row event runs) is the one that reads it.
 case_latest_wait() {
   BIN=$1; reset_db
@@ -3028,6 +3029,36 @@ case_latest_wait() {
   ft event tk-lw2 wait --next-actor owner --clears-on answer --note 'waiting on the thread' --key lw2-own:wait
   must "the worker's own wait keyed on its comment" 0 || return 1
   latest_is "the worker's own wait keyed on its comment" tk-lw2 'waiting on the thread' wait || return 1
+  # the follow-up waits carry the mark in the record; the worker's own waits do not
+  marked() { db fm_task_event | jq -r --arg t "$1" '[.[] | select(.taskId == $t and .kind == "wait")] | sort_by(.seq) | map(.body | fromjson | .followUp == true | tostring) | join(" ")'; }
+  [ "$(marked tk-lw1)" = true ] && [ "$(marked tk-lw2)" = 'true false false' ] || { echo "the follow-up marks: tk-lw1 [$(marked tk-lw1)] tk-lw2 [$(marked tk-lw2)]"; return 1; }
+  # a done with no --pr-url writes no wait, so the worker's own wait keyed on the done's key plus :wait is a note
+  mk_running tk-lw3 >/dev/null || { echo "setup: $ERR"; return 1; }
+  ft "done" tk-lw3 "${DONE_FLAGS[@]}" --note "$status" --key lw3-done
+  must 'done with no --pr-url' 0 || return 1
+  ft event tk-lw3 wait --next-actor owner --clears-on answer --note 'waiting on the review' --key lw3-done:wait
+  must "the worker's own wait keyed on its done" 0 || return 1
+  latest_is "the worker's own wait keyed on its done" tk-lw3 'waiting on the review' wait || return 1
+  # a follow-up wait written before the mark still leaves Latest: after a done holding a PR, or a question to the owner
+  unmark_wait() {  # <key>: the wait under the key, as written before waitOn marked it
+    local ev
+    ev=$(db fm_task_event | jq -c --arg k "$1" '.[] | select(.idempotencyKey == $k)')
+    api -X DELETE "$BASE/api/fm_task_event/$(jq -r .id <<<"$ev")" >/dev/null
+    api -X POST "$BASE/api/fm_task_event" -d "$(jq -c '{seq, taskId, kind, actorRole, actor, idempotencyKey, body: (.body | fromjson | del(.followUp) | tojson)}' <<<"$ev")" >/dev/null
+    db fm_task_event | jq -e --arg k "$1" '[.[] | select(.idempotencyKey == $k)] | length == 1 and (.[0].body | fromjson | has("followUp") | not)' >/dev/null
+  }
+  mk_running tk-lw4 >/dev/null || { echo "setup: $ERR"; return 1; }
+  ft "done" tk-lw4 "${DONE_FLAGS[@]}" --pr-url https://github.com/example/repo/pull/11 --head h4 --note "$status" --key lw4-done
+  must 'done --pr-url before the mark' 0 || return 1
+  unmark_wait lw4-done:wait || { echo "the old wait of tk-lw4 was not written"; return 1; }
+  ft reproject tk-lw4; must 'reproject an old wait after done --pr-url' 0 || return 1
+  latest_is 'an old wait after done --pr-url' tk-lw4 "$status" wait || return 1
+  mk_running tk-lw5 >/dev/null || { echo "setup: $ERR"; return 1; }
+  ft ask tk-lw5 "${ASK_FLAGS[@]}" --next-actor owner --note "$asked" --key lw5-ask
+  must 'ask --next-actor owner before the mark' 0 || return 1
+  unmark_wait lw5-ask:wait || { echo "the old wait of tk-lw5 was not written"; return 1; }
+  ft reproject tk-lw5; must 'reproject an old wait after ask --next-actor owner' 0 || return 1
+  latest_is 'an old wait after ask --next-actor owner' tk-lw5 "$asked" wait || return 1
   ft comment tk-lw1 --note 'merge after the release'
   must 'a later comment' 0 || return 1
   latest_is 'a later comment' tk-lw1 'merge after the release' comment || return 1
@@ -3738,9 +3769,12 @@ mutate 'a machine record is one only under its own key' stage "if (!Object.hasOw
 mutate 'a reconcile divergence is a machine record' stage "{ backfill: 'sha256,source', reconcile: 'field,oldSource,record' }" "{ backfill: 'sha256,source' }"
 mutate 'lastNote is cut to 300' stage "task.lastNote = note.slice(0, 300);" "task.lastNote = note;"
 mutate 'an event with no note leaves lastNote' latest_no_note "if (note && !isMachineRecord(event, note)" "if (!isMachineRecord(event, note)"
-mutate "the wait a command writes after its own event leaves lastNote" latest_wait " && !isFollowUpWait(event, kinds)) task.lastNote" ") task.lastNote"
-mutate "a wait the caller writes itself is a note" latest_wait "event.kind === 'wait' && /:wait\$/.test(event.idempotencyKey ?? '') && WAIT_WRITERS.includes(kinds.get(event.idempotencyKey.slice(0, -5)))" "event.kind === 'wait'"
-mutate "a wait keyed on an event that writes none is a note" latest_wait "WAIT_WRITERS.includes(kinds.get(event.idempotencyKey.slice(0, -5)))" "kinds.has(event.idempotencyKey.slice(0, -5))"
+mutate "the wait a command writes after its own event leaves lastNote" latest_wait " && !isFollowUpWait(event, byKey)) task.lastNote" ") task.lastNote"
+mutate "a wait the caller writes itself is a note" latest_wait "(bodyOf(event).followUp === true || (/:wait\$/.test(event.idempotencyKey ?? '') && wroteWait(byKey.get(event.idempotencyKey.slice(0, -5)))))" "true"
+mutate "a wait keyed on an event that writes none is a note" latest_wait "wroteWait(byKey.get(" "Boolean(byKey.get("
+mutate "waitOn marks its wait a follow-up" latest_wait "extra: { followUp: true, wait:" "extra: { wait:"
+mutate "an old wait after a done holding a PR is a follow-up" latest_wait "event?.kind === 'done' && Boolean(bodyOf(event).set?.prUrl)" "false"
+mutate "an old wait after a question to the owner is a follow-up" latest_wait "event?.kind === 'needs-decision' && bodyOf(event).set?.nextActor === 'owner'" "false"
 mutate '--merged goes only on a pr event' stage "if (merged && kind !== 'pr') throw usage" "if (false) throw usage"
 mutate 'a merged pr event says so in its body' stage "merged ? { extra: { merged: true } } : {}" "{}"
 mutate 'reproject --all repairs every row' stage "      const result = await project(taskId);
