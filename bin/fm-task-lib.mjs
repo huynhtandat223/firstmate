@@ -77,8 +77,10 @@
 //            the same home again is a no-op, another home is refused: a task belongs to one board
 //   describe <task> --document FILE.md [--document-title T]              any state; default title Description
 //            A task that holds no scenario check row yet gets them from this Description, as `rows <task>` writes them;
-//            a task that holds one keeps its rows (`rows` is the re-sync). A Description that sync refuses (no scenarios,
-//            a parser refusal) is stored all the same, and describe prints `rows not seeded: <why>` and exits 0.
+//            a task that holds one keeps its rows (`rows` is the re-sync). A task with an external http(s) issue keeps that
+//            issue as the source of its rows: describe seeds none, and `rows <task> <issue>` seeds them. There, and for a
+//            Description that sync refuses (no scenarios, a parser refusal), the Description is stored all the same, and
+//            describe prints `rows not seeded: <why>` and exits 0.
 //   thread   <task> [--since SEQ]                                       full comments, oldest first
 //   comment  <task> [--note T] [--image PATH --image-label L]... [--video PATH --video-label L]...
 //            [--ask why|how|wait-what] [--reply-to SEQ]                 any state; reply-to must name a comment of this task
@@ -1595,17 +1597,22 @@ async function cmdDescribe(args) {
   const document = documentOf({ ...f, 'document-title': f['document-title'] ?? 'Description' });
   const taskId = taskIdOf(args);
   const who = identity(args, 'firstmate');
-  await write(taskId, who, async ({ task }) => {
+  const { task } = await write(taskId, who, async ({ task }) => {
     if (!task) throw rule('no such task');
     return { kind: 'description', children: { documents: [document] } };
   });
   // A task with no scenario row yet takes its rows from this Description, through the sync `rows <task>` runs. A task
   // that holds one keeps its rows, so a re-describe resets no result; a Description the sync refuses still stands.
-  // The seeding writes the rows and the acceptance digest only: an external issue the task was created with stays its
-  // issueUrl.
+  // A task with an external issue keeps it as the source of its rows, which deploy verify and the gate read: the
+  // Description seeds nothing there, and `rows` seeds it.
   if ((await checkRows(taskId)).some((row) => !isChecklist(row))) return;
+  const issue = task?.issueUrl ?? '';
+  if (/^https?:\/\//.test(issue) && !boardLink(issue)) {
+    out(`rows not seeded: ${taskId} has the external issue ${issue}, the source of its rows; seed them with rows ${taskId} ${issue}`);
+    return;
+  }
   try {
-    await cmdRows({ pos: { task: taskId }, flags: { actor: who.actor, role: who.role }, keepIssueUrl: true });
+    await cmdRows({ pos: { task: taskId }, flags: { actor: who.actor, role: who.role } });
   } catch (error) {
     if (!(error instanceof Fail) || error.code !== 5) throw error;
     out(`rows not seeded: ${error.message}`);
@@ -2070,6 +2077,9 @@ async function wantedRows(issue) {
   return wanted;
 }
 
+// A board link names a task, so its rows come from that task's Description, as from task:<id>.
+const boardLink = (issue) => /^https?:\/\/[^\s]+[?&]task=/.test(issue);
+
 async function cmdRows(args) {
   const taskId = taskIdOf(args);
   const issue = args.pos.issue || taskId;
@@ -2124,9 +2134,9 @@ async function cmdRows(args) {
   const summary = `rows added=${counts.added} reset=${counts.reset} retired=${counts.retired} updated=${counts.updated} unchanged=${counts.unchanged} total=${wanted.size}`;
   const parser = process.env.FM_TASK_ACCEPTANCE || path.join(HERE, 'fm-acceptance.mjs');
   const digestRun = spawnSync('node', [parser, 'digest', issue, '--strict'], { encoding: 'utf8', timeout: 60000 });
-  const taskNative = !args.pos.issue || issue.startsWith('task:') || /^https?:\/\/[^\s]+[?&]task=/.test(issue);
+  const taskNative = !args.pos.issue || issue.startsWith('task:') || boardLink(issue);
   if (taskNative && (digestRun.status !== 0 || !/^[a-f0-9]{64}\s*$/.test(digestRun.stdout))) throw rule('acceptance digest could not be read');
-  const sets = { ...(taskNative && task.acceptanceDigest !== digestRun.stdout.trim() ? { acceptanceDigest: digestRun.stdout.trim() } : {}), ...(taskNative ? (task.issueUrl !== issue && !(args.keepIssueUrl && /^https?:\/\//.test(task.issueUrl ?? '')) ? { issueUrl: issue } : {}) : (args.pos.issue && !/^https?:\/\//.test(task.issueUrl ?? '') ? { issueUrl: issue } : {})) };
+  const sets = { ...(taskNative && task.acceptanceDigest !== digestRun.stdout.trim() ? { acceptanceDigest: digestRun.stdout.trim() } : {}), ...(taskNative ? (task.issueUrl !== issue ? { issueUrl: issue } : {}) : (args.pos.issue && !/^https?:\/\//.test(task.issueUrl ?? '') ? { issueUrl: issue } : {})) };
   if (counts.added + counts.reset + counts.retired + counts.updated === 0 && !Object.keys(sets).length) {
     out(summary);
     return;
