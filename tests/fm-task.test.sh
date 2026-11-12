@@ -2771,6 +2771,42 @@ case_workflow() {
   [ "$(task_row tk-close | jq -r .workflowState)" = implement ] || { echo "reopen did not return to the last state that ran: $(task_row tk-close)"; return 1; }
   db fm_task_step | jq -e '[.[] | select(.taskId == "tk-close")] | map({(.state): .status}) | add | .verify == "pending" and .merge == "pending"' >/dev/null \
     || { echo "reopen left the approved skips: $(db fm_task_step | jq -c '.[] | select(.taskId == "tk-close")')"; return 1; }
+  # the Solution gate: a user-visible ship task moves to implement only while its current plan is approved
+  local pseq
+  printf '## How it is used\nu\n\n## How it is built\nb\n\n## How it is tested\nt\n' > "$TMP_ROOT/solution.md"
+  ft create tk-gate --title 'Gate' --kind ship --surface user-visible --repo example/repo >/dev/null || return 1
+  ft setup tk-gate --file "$TMP_ROOT/setup-test.json"; must 'gate setup' 0 || return 1
+  ft move tk-gate --to implement; must 'implement with no Solution' 5 || return 1
+  [[ "$ERR" == *'has no Solution'* && "$ERR" == *'fm-task.sh plan tk-gate --document solution.md'* && "$ERR" == *'Solution tab'* ]] || { echo "the refusal does not say what to do next: $ERR"; return 1; }
+  [ "$(task_row tk-gate | jq -r .workflowState)" = queued ] || { echo "a refused move moved the task: $(task_row tk-gate)"; return 1; }
+  # the worker brief (bin/fm-brief.sh) reads the Solution's state from these two lines of show
+  ft show tk-gate; grep -qx 'planSeq=-' <<<"$OUT" || { echo "show names a plan on a task with none: $OUT"; return 1; }
+  ft plan tk-gate --document "$TMP_ROOT/solution.md" --document-title Solution; must 'gate plan' 0 || return 1
+  pseq=$(seq_of)
+  ft move tk-gate --to implement; must 'implement on an undecided Solution' 5 || return 1
+  ft plan-decision tk-gate --decision changes --plan-seq "$pseq" >/dev/null || return 1
+  ft move tk-gate --to implement; must 'implement after the owner asked for changes' 5 || return 1
+  ft plan tk-gate --document "$TMP_ROOT/solution.md" --document-title Solution >/dev/null || return 1
+  ft plan-decision tk-gate --decision approve --plan-seq "$(seq_of)" >/dev/null || return 1
+  ft show tk-gate; grep -qx 'planDecision=approve' <<<"$OUT" || { echo "show does not name the approval: $OUT"; return 1; }
+  ft move tk-gate --to implement; must 'implement on an approved Solution' 0 || return 1
+  [ "$(task_row tk-gate | jq -r .workflowState)" = implement ] || { echo "an approved Solution did not open implement: $(task_row tk-gate)"; return 1; }
+  # the retry on a failed row passes the same gate: it runs on the approved plan, and waits again once the plan is replaced
+  ft move tk-gate --to testing; must 'gate testing' 0 || return 1
+  api -X POST "$BASE/api/fm_task_check" -d '{"taskId":"tk-gate","scenarioId":"T1","width":"1440","status":"fail","nextActor":"worker","surface":"user-visible","page":"p","line":"l","controls":"-","data":"-","proof":"-","acceptanceDigest":"d"}' >/dev/null
+  ft move tk-gate --to implement; must 'retry on an approved Solution' 0 || return 1
+  ft move tk-gate --to testing; must 'gate testing again' 0 || return 1
+  ft plan tk-gate --document "$TMP_ROOT/solution.md" --document-title Solution >/dev/null || return 1
+  pseq=$(seq_of)
+  ft move tk-gate --to implement; must 'retry after the Solution was replaced' 5 || return 1
+  [ "$(task_row tk-gate | jq -r .workflowState)" = testing ] || { echo "a refused retry moved the task: $(task_row tk-gate)"; return 1; }
+  ft plan-decision tk-gate --decision approve --plan-seq "$pseq" >/dev/null || return 1
+  ft move tk-gate --to implement; must 'retry once the new Solution is approved' 0 || return 1
+  # a task of another surface or kind moves with no plan
+  ft create tk-gate-int --title 'Internal ship' --kind ship --surface internal --repo example/repo >/dev/null || return 1
+  ft setup tk-gate-int --file "$TMP_ROOT/setup-test.json" >/dev/null && ft move tk-gate-int --to implement; must 'an internal ship moves with no plan' 0 || return 1
+  ft create tk-gate-plan --title 'Plan task' --kind plan --surface user-visible --repo example/repo >/dev/null || return 1
+  ft setup tk-gate-plan --file "$TMP_ROOT/setup-test.json" >/dev/null && ft move tk-gate-plan --to implement; must 'a user-visible task of another kind moves with no plan' 0 || return 1
   export FM_HOME="$TMP_ROOT/home"
 }
 
@@ -3537,6 +3573,11 @@ mutate 'a setup edit of the current pending state shows on the card' workflow "s
 mutate 'reopen returns to the state that ran last in event order' workflow "const last = steps.find(s => s.state === lastRan);" "const last = steps.filter(s => ['done', 'failed', 'running'].includes(s.status)).at(-1);"
 mutate 'approve skips the states that never started' workflow ": s.status === 'pending' ? [{ state: s.state, status: 'skipped', endReason: 'approved' }] : []);" ": []);"
 mutate 'a move ends the running attempt of the state left behind' workflow "const stepWrites = left ? [{ state: left.state, status: 'done'" "const stepWrites = false ? [{ state: left.state, status: 'done'"
+mutate 'an unapproved Solution holds a user-visible ship before implement' workflow "task.surface === 'user-visible' && task.planDecision !== 'approve') {" "task.surface === 'user-visible' && false) {"
+mutate 'the Solution gate needs the approval, not just a plan' workflow "task.surface === 'user-visible' && task.planDecision !== 'approve') {" "task.surface === 'user-visible' && !task.planSeq) {"
+mutate 'a retry passes the Solution gate too' workflow "if (to === 'implement' && task.kind === 'ship'" "if (to === 'implement' && !retry && task.kind === 'ship'"
+mutate 'the Solution gate leaves another surface alone' workflow "task.kind === 'ship' && task.surface === 'user-visible' && task.planDecision" "task.kind === 'ship' && task.planDecision"
+mutate 'the Solution gate leaves another kind alone' workflow "if (to === 'implement' && task.kind === 'ship' && task.surface" "if (to === 'implement' && task.surface"
 mutate 'the reviewer is the actor of the newest review event' stage "if (REVIEWER_KINDS.includes(event.kind)) task.reviewer = event.actor ?? null;" ";"
 mutate 'a row event does not move lastNote or lastEventAt' stage "if (event.kind !== 'row' && event.kind !== 'checklist') {" "if (event.kind !== 'checklist') {"
 mutate 'a machine record does not become lastNote' stage "if (!isMachineRecord(event, note)) task.lastNote" "task.lastNote"
