@@ -1796,7 +1796,7 @@ case_delete() {
   before=$(count fm_task_event)
   OUT=$("$BIN/fm-task-owner.sh" --action delete --task del-run --owner u-1 2>"$TMP_ROOT/err"); RC=$?
   must 'owner running refused' 5 || return 1
-  jq -e '.ok == false and (.error | contains("refused del-run: running"))' <<<"$OUT" >/dev/null || { echo "running is not refused: $OUT"; return 1; }
+  jq -e '.ok == false and .error == "This task is running, so it was not removed."' <<<"$OUT" >/dev/null || { echo "running is not refused: $OUT"; return 1; }
   [ "$(task_state del-run)" = running ] || { echo 'the running task moved'; return 1; }
   [ "$(count fm_task_event)" = "$before" ] || { echo 'the refused delete wrote an event'; return 1; }
   # a live worker is refused
@@ -1806,7 +1806,7 @@ case_delete() {
   export FM_TASK_AGENT_STATE="$TMP_ROOT/alive"
   OUT=$("$BIN/fm-task-owner.sh" --action delete --task del-live --owner u-1 2>"$TMP_ROOT/err"); RC=$?
   must 'owner live worker refused' 5 || return 1
-  jq -e '.ok == false and (.error | contains("refused del-live: a live worker"))' <<<"$OUT" >/dev/null || { echo "a live worker is not refused: $OUT"; return 1; }
+  jq -e '.ok == false and .error == "A worker is still active on this task, so it was not removed."' <<<"$OUT" >/dev/null || { echo "a live worker is not refused: $OUT"; return 1; }
   [ -n "$(task_row del-live)" ] || { echo 'the live task was deleted'; return 1; }
   # Record-only cleanup is limited to assistance rows with matching metadata.
   ft delete del-live --reason stale --assistance-record-only
@@ -1834,7 +1834,7 @@ case_delete() {
   export FAKE_GH_PR_STATE=OPEN
   OUT=$("$BIN/fm-task-owner.sh" --action delete --task del-pr --owner u-1 2>"$TMP_ROOT/err"); RC=$?
   must 'owner open PR refused' 5 || return 1
-  jq -e '.ok == false and (.error | contains("refused del-pr: open PR"))' <<<"$OUT" >/dev/null || { echo "an open PR is not refused: $OUT"; return 1; }
+  jq -e '.ok == false and .error == "This task has an open pull request, so it was not removed."' <<<"$OUT" >/dev/null || { echo "an open PR is not refused: $OUT"; return 1; }
   [ -n "$(task_row del-pr)" ] || { echo 'the open-PR task was deleted'; return 1; }
   export FAKE_GH_PR_STATE=MERGED
   ft delete del-pr --reason stale
