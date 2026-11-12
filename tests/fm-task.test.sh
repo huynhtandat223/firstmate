@@ -1737,9 +1737,11 @@ case_delete() {
   seed fm_event_video "{\"fmTaskEventId\":\"$oeid\",\"content\":\"aGk=\",\"label\":\"keep\",\"mediaType\":\"video/mp4\"}"
   [ "$(db fm_event_image | jq length)" = 2 ] || { echo 'the image rows are not seeded'; return 1; }
   [ "$(db fm_event_video | jq length)" = 2 ] || { echo 'the video rows are not seeded'; return 1; }
-  ft delete $t --reason stale
-  must 'delete' 0 || return 1
-  case $OUT in *"deleted $t ("*) ;; *) echo "delete does not report the deleted rows: $OUT"; return 1 ;; esac
+  OUT=$("$BIN/fm-task-owner.sh" --action delete --task "$t" --owner u-1 2>"$TMP_ROOT/err"); RC=$?
+  must 'owner delete' 0 || return 1
+  [ "$(jq -r .ok <<<"$OUT")" = true ] || { echo "owner delete failed: $OUT"; return 1; }
+  jq -e '.writes | any(.[]; contains("Removed by owner:u-1 on the board"))' <<<"$OUT" >/dev/null || { echo 'delete reason lost the owner'; return 1; }
+  jq -e --arg prefix "deleted $t (" '.writes | any(.[]; startswith($prefix))' <<<"$OUT" >/dev/null || { echo "delete does not report the deleted rows: $OUT"; return 1; }
   [ -z "$(task_row $t)" ] || { echo 'the task row survived the delete'; return 1; }
   [ "$(db fm_task_event | jq --arg t $t '[.[] | select(.taskId == $t)] | length')" = 0 ] || { echo 'an event survived'; return 1; }
   local table
@@ -1792,9 +1794,9 @@ case_delete() {
   # running is refused before anything is written
   mk_running del-run >/dev/null || return 1
   before=$(count fm_task_event)
-  ft delete del-run --reason stale
-  must 'running refused' 0 || return 1
-  case $OUT in *"refused del-run: running"*) ;; *) echo "running is not refused: $OUT"; return 1 ;; esac
+  OUT=$("$BIN/fm-task-owner.sh" --action delete --task del-run --owner u-1 2>"$TMP_ROOT/err"); RC=$?
+  must 'owner running refused' 5 || return 1
+  jq -e '.ok == false and (.error | contains("refused del-run: running"))' <<<"$OUT" >/dev/null || { echo "running is not refused: $OUT"; return 1; }
   [ "$(task_state del-run)" = running ] || { echo 'the running task moved'; return 1; }
   [ "$(count fm_task_event)" = "$before" ] || { echo 'the refused delete wrote an event'; return 1; }
   # a live worker is refused
@@ -1802,9 +1804,9 @@ case_delete() {
   printf 'x\n' > "$FM_HOME/state/del-live.meta"
   printf '#!/bin/sh\necho alive\n' > "$TMP_ROOT/alive"; chmod +x "$TMP_ROOT/alive"
   export FM_TASK_AGENT_STATE="$TMP_ROOT/alive"
-  ft delete del-live --reason stale
-  must 'live worker refused' 0 || return 1
-  case $OUT in *"refused del-live: a live worker"*) ;; *) echo "a live worker is not refused: $OUT"; return 1 ;; esac
+  OUT=$("$BIN/fm-task-owner.sh" --action delete --task del-live --owner u-1 2>"$TMP_ROOT/err"); RC=$?
+  must 'owner live worker refused' 5 || return 1
+  jq -e '.ok == false and (.error | contains("refused del-live: a live worker"))' <<<"$OUT" >/dev/null || { echo "a live worker is not refused: $OUT"; return 1; }
   [ -n "$(task_row del-live)" ] || { echo 'the live task was deleted'; return 1; }
   printf '#!/bin/sh\necho unknown\n' > "$TMP_ROOT/unknown"; chmod +x "$TMP_ROOT/unknown"
   export FM_TASK_AGENT_STATE="$TMP_ROOT/unknown"
@@ -1816,9 +1818,9 @@ case_delete() {
   # an open PR is refused; a merged one is not
   ft import del-pr --title pr --kind ship --state blocked --assignee w --next-actor owner --pr-url https://github.com/example/repo/pull/7 >/dev/null || return 1
   export FAKE_GH_PR_STATE=OPEN
-  ft delete del-pr --reason stale
-  must 'open PR refused' 0 || return 1
-  case $OUT in *"refused del-pr: open PR"*) ;; *) echo "an open PR is not refused: $OUT"; return 1 ;; esac
+  OUT=$("$BIN/fm-task-owner.sh" --action delete --task del-pr --owner u-1 2>"$TMP_ROOT/err"); RC=$?
+  must 'owner open PR refused' 5 || return 1
+  jq -e '.ok == false and (.error | contains("refused del-pr: open PR"))' <<<"$OUT" >/dev/null || { echo "an open PR is not refused: $OUT"; return 1; }
   [ -n "$(task_row del-pr)" ] || { echo 'the open-PR task was deleted'; return 1; }
   export FAKE_GH_PR_STATE=MERGED
   ft delete del-pr --reason stale

@@ -7,6 +7,7 @@
 # owner); the writer keeps seq, the transitions and the projection, and this file adds no rule of its own.
 #
 # Usage: fm-task-owner.sh --action ACTION --task TASK [--option O] [--row ID@W] [--item I --on|--off] [--decision approve|changes] [--plan-seq N] [--note N] [--to RECIPIENT] [--reply-to SEQ] [--anchor-quote Q [--anchor-prefix P] [--anchor-suffix S]] [--accept yes] [--ask why|how|wait-what] [--rule ID --state S ...] [--setup JSON] --owner ID
+#   delete   a task: delete TASK --reason "Removed by owner:<id> on the board"; writer refusals return ok=false
 #   inbox-task|inbox-link|inbox-delete resolve a notification (--task is its id; link needs --option task-id)
 #   subtask  a subtask:      create PARENT-<slug of the title> --title <note> --after TASK, with the parent's kind and
 #            repo; it starts in triage on the parent's board                                   needs a nonblank --note
@@ -152,6 +153,20 @@ worker_live() {
 
 RC=0
 case "$ACTION" in
+  delete)
+    run delete "$TASK" --reason "Removed by owner:$OWNER on the board${NOTE:+: $NOTE}" || RC=$?
+    # The bulk CLI reports individual refusals on stdout with exit 0; this single-task API must not call them success.
+    if [ "$RC" -eq 0 ]; then
+      refusal=$(jq -r '.[] | select(startswith("refused ") or startswith("failed "))' <<<"$WRITES")
+      if [ -n "$refusal" ]; then
+        RC=5
+        ERROR=$refusal
+      elif ! jq -e --arg prefix "deleted $TASK (" 'any(.[]; startswith($prefix))' <<<"$WRITES" >/dev/null; then
+        RC=3
+        ERROR='Task deletion was not confirmed.'
+      fi
+    fi
+    ;;
   setup)
     [ -n "$SETUP" ] || usage 'setup needs --setup JSON'
     setup_file=$(mktemp "${TMPDIR:-/tmp}/fm-owner-setup.XXXXXX") || usage 'no temporary file'
@@ -375,6 +390,6 @@ case "$ACTION" in
       *) usage '--relation must be parent, relates or blocks' ;;
     esac
     ;;
-  *) usage "--action must be setup, comment, answer, unblock, pass, fail, plan, checklist, hold, release, close, start, rule-add, rule-set, rule-delete, inbox-task, inbox-link, inbox-delete, subtask or link" ;;
+  *) usage "--action must be delete, setup, comment, answer, unblock, pass, fail, plan, checklist, hold, release, close, start, rule-add, rule-set, rule-delete, inbox-task, inbox-link, inbox-delete, subtask or link" ;;
 esac
 if [ "$RC" -eq 0 ]; then reply true; else reply false "$ERROR"; fi
