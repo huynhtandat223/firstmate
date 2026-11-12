@@ -2983,7 +2983,7 @@ latest_is() {
 }
 
 # The wait done --pr-url or ask --next-actor owner writes after its own event leaves the worker's status on Latest; a
-# wait the worker writes itself, and any later note, still replace it. The command projects before it writes that wait,
+# wait the worker writes itself, under any key, and any later note, still replace it. The command projects before it writes that wait,
 # so the next projection (a reproject, as a backlog view row event runs) is the one that reads it.
 case_latest_wait() {
   BIN=$1; reset_db
@@ -3001,6 +3001,12 @@ case_latest_wait() {
   ft event tk-lw2 wait --next-actor owner --clears-on answer --note 'waiting on the owner'
   must "the worker's own wait" 0 || return 1
   latest_is "the worker's own wait" tk-lw2 'waiting on the owner' wait || return 1
+  # a wait the worker keys on its own comment's key plus :wait is a note too: a comment writes no follow-up wait
+  ft comment tk-lw2 --note 'asked in the thread' --key lw2-own
+  must 'a keyed comment' 0 || return 1
+  ft event tk-lw2 wait --next-actor owner --clears-on answer --note 'waiting on the thread' --key lw2-own:wait
+  must "the worker's own wait keyed on its comment" 0 || return 1
+  latest_is "the worker's own wait keyed on its comment" tk-lw2 'waiting on the thread' wait || return 1
   ft comment tk-lw1 --note 'merge after the release'
   must 'a later comment' 0 || return 1
   latest_is 'a later comment' tk-lw1 'merge after the release' comment || return 1
@@ -3710,8 +3716,9 @@ mutate 'a machine record is one only under its own key' stage "if (!Object.hasOw
 mutate 'a reconcile divergence is a machine record' stage "{ backfill: 'sha256,source', reconcile: 'field,oldSource,record' }" "{ backfill: 'sha256,source' }"
 mutate 'lastNote is cut to 300' stage "task.lastNote = note.slice(0, 300);" "task.lastNote = note;"
 mutate 'an event with no note leaves lastNote' latest_no_note "if (note && !isMachineRecord(event, note)" "if (!isMachineRecord(event, note)"
-mutate "the wait a command writes after its own event leaves lastNote" latest_wait " && !isFollowUpWait(event, keys)) task.lastNote" ") task.lastNote"
-mutate "a wait the caller writes itself is a note" latest_wait "event.kind === 'wait' && /:wait\$/.test(event.idempotencyKey ?? '') && keys.has(event.idempotencyKey.slice(0, -5))" "event.kind === 'wait'"
+mutate "the wait a command writes after its own event leaves lastNote" latest_wait " && !isFollowUpWait(event, kinds)) task.lastNote" ") task.lastNote"
+mutate "a wait the caller writes itself is a note" latest_wait "event.kind === 'wait' && /:wait\$/.test(event.idempotencyKey ?? '') && WAIT_WRITERS.includes(kinds.get(event.idempotencyKey.slice(0, -5)))" "event.kind === 'wait'"
+mutate "a wait keyed on an event that writes none is a note" latest_wait "WAIT_WRITERS.includes(kinds.get(event.idempotencyKey.slice(0, -5)))" "kinds.has(event.idempotencyKey.slice(0, -5))"
 mutate '--merged goes only on a pr event' stage "if (merged && kind !== 'pr') throw usage" "if (false) throw usage"
 mutate 'a merged pr event says so in its body' stage "merged ? { extra: { merged: true } } : {}" "{}"
 mutate 'reproject --all repairs every row' stage "      const result = await project(taskId);
