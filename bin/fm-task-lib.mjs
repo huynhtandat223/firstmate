@@ -1600,9 +1600,11 @@ async function cmdDescribe(args) {
   });
   // A task with no scenario row yet takes its rows from this Description, through the sync `rows <task>` runs. A task
   // that holds one keeps its rows, so a re-describe resets no result; a Description the sync refuses still stands.
+  // The seeding writes the rows and the acceptance digest only: an external issue the task was created with stays its
+  // issueUrl.
   if ((await checkRows(taskId)).some((row) => !isChecklist(row))) return;
   try {
-    await cmdRows({ pos: { task: taskId }, flags: { actor: who.actor, role: who.role } });
+    await cmdRows({ pos: { task: taskId }, flags: { actor: who.actor, role: who.role }, keepIssueUrl: true });
   } catch (error) {
     if (!(error instanceof Fail) || error.code !== 5) throw error;
     out(`rows not seeded: ${error.message}`);
@@ -2123,7 +2125,7 @@ async function cmdRows(args) {
   const digestRun = spawnSync('node', [parser, 'digest', issue, '--strict'], { encoding: 'utf8', timeout: 60000 });
   const taskNative = !args.pos.issue || issue.startsWith('task:') || /^https?:\/\/[^\s]+[?&]task=/.test(issue);
   if (taskNative && (digestRun.status !== 0 || !/^[a-f0-9]{64}\s*$/.test(digestRun.stdout))) throw rule('acceptance digest could not be read');
-  const sets = { ...(taskNative && task.acceptanceDigest !== digestRun.stdout.trim() ? { acceptanceDigest: digestRun.stdout.trim() } : {}), ...(taskNative ? (task.issueUrl !== issue ? { issueUrl: issue } : {}) : (args.pos.issue && !/^https?:\/\//.test(task.issueUrl ?? '') ? { issueUrl: issue } : {})) };
+  const sets = { ...(taskNative && task.acceptanceDigest !== digestRun.stdout.trim() ? { acceptanceDigest: digestRun.stdout.trim() } : {}), ...(taskNative ? (task.issueUrl !== issue && !(args.keepIssueUrl && /^https?:\/\//.test(task.issueUrl ?? '')) ? { issueUrl: issue } : {}) : (args.pos.issue && !/^https?:\/\//.test(task.issueUrl ?? '') ? { issueUrl: issue } : {})) };
   if (counts.added + counts.reset + counts.retired + counts.updated === 0 && !Object.keys(sets).length) {
     out(summary);
     return;

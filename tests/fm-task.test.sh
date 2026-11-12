@@ -2390,6 +2390,36 @@ case_describe_rows() {
   [ "$(scenario_rows $t | jq length)" = 4 ] || { echo "a valid Description after a refused one seeded: $(scenario_rows $t)"; return 1; }
 }
 
+# The seeding a first Description runs writes the rows and the acceptance digest only: a task created with an external
+# issue keeps that URL as its issueUrl in the record, show and resume. A task with no external issue is unchanged: its
+# issueUrl goes from none to its own id, as `rows <task>` sets it.
+case_describe_issue() {
+  BIN=$1; reset_db
+  local t=tk-di1 url=https://github.com/acme/widgets/issues/7 doc="$TMP_ROOT/describe-issue.md" row
+  ft create $t --title t --kind ship --issue "$url" >/dev/null || return 1
+  issue_body v1 > "$doc"
+  ft describe $t --document "$doc"
+  must 'describe a task with an external issue' 0 || return 1
+  [[ "$OUT" == *'rows added=4 reset=0 retired=0 updated=0 unchanged=0 total=4' ]] || { echo "the rows were not seeded: $OUT"; return 1; }
+  row=$(db fm_task | jq -c --arg t $t '.[] | select(.taskId == $t)')
+  jq -e --arg u "$url" '.issueUrl == $u' <<<"$row" >/dev/null || { echo "the record lost its issue: $row"; return 1; }
+  # the seeding event sets the acceptance digest and leaves issueUrl alone
+  row=$(db fm_task_event | jq -c --arg t $t '[.[] | select(.taskId == $t and .kind == "check") | .body | fromjson | .set]')
+  jq -e 'length == 1 and (.[0].acceptanceDigest | test("^[a-f0-9]{64}$")) and (.[0] | has("issueUrl") | not)' <<<"$row" >/dev/null || { echo "the seeding set: $row"; return 1; }
+  [ "$(db fm_task_check | jq --arg t $t '[.[] | select(.taskId == $t and (.scenarioId | startswith("cl:") | not))] | length')" = 4 ] || { echo "the check rows were not seeded"; return 1; }
+  ft show $t; must 'show' 0 || return 1
+  grep -qxF "issueUrl=$url" <<<"$OUT" || { echo "show lost the issue: $OUT"; return 1; }
+  ft resume $t; must 'resume' 0 || return 1
+  grep -qF "issue: $url " <<<"$OUT" || { echo "resume lost the issue: $OUT"; return 1; }
+  # a task with no external issue: none before, its own id after, as before
+  t=tk-di2
+  ft create $t --title t --kind ship >/dev/null || return 1
+  [ "$(db fm_task | jq -r --arg t $t '.[] | select(.taskId == $t) | .issueUrl')" = null ] || { echo "a new task holds an issue"; return 1; }
+  ft describe $t --document "$doc"
+  must 'describe a task with no issue' 0 || return 1
+  [ "$(db fm_task | jq -r --arg t $t '.[] | select(.taskId == $t) | .issueUrl')" = $t ] || { echo "a task with no issue does not hold its own id: $(db fm_task)"; return 1; }
+}
+
 case_owner_writer() {
   BIN=$1; reset_db
   export FM_HOME="$TMP_ROOT/owner-writer-home"
@@ -3461,7 +3491,7 @@ case_setup_rules() {
   return 0
 }
 
-CASES=${FM_TASK_CASES:-"plan_task description_thread describe_rows terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed long_notes status_view verify_view owner_writer workflow stage wait carry slice_c model_rules checklist question_round setup_rules backlog_home owner_hold owner_request gate_before_approval handoff_gate delete owner_nav"}
+CASES=${FM_TASK_CASES:-"plan_task description_thread describe_rows describe_issue terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed long_notes status_view verify_view owner_writer workflow stage wait carry slice_c model_rules checklist question_round setup_rules backlog_home owner_hold owner_request gate_before_approval handoff_gate delete owner_nav"}
 
 # ---- real command -------------------------------------------------------------------
 
@@ -3501,10 +3531,11 @@ mutate() {  # <label> <case> <exact source text> <replacement>
 }
 
 mutate 'thread prints full comments' description_thread "bodyOf(event).note ?? ''}" "''}"
-mutate 'a first Description seeds the check rows' describe_rows "await cmdRows({ pos: { task: taskId }, flags: { actor: who.actor, role: who.role } });" ";"
+mutate 'a first Description seeds the check rows' describe_rows "await cmdRows({ pos: { task: taskId }, flags: { actor: who.actor, role: who.role }, keepIssueUrl: true });" ";"
 mutate 'a re-describe leaves the rows it finds' describe_rows "if ((await checkRows(taskId)).some((row) => !isChecklist(row))) return;" ";"
 mutate 'checklist rows do not stop the first seeding' describe_rows "if ((await checkRows(taskId)).some((row) => !isChecklist(row))) return;" "if ((await checkRows(taskId)).length) return;"
 mutate 'a Description the sync refuses still stands' describe_rows "if (!(error instanceof Fail) || error.code !== 5) throw error;" "throw error;"
+mutate 'the seeding keeps an external issue' describe_issue "flags: { actor: who.actor, role: who.role }, keepIssueUrl: true });" "flags: { actor: who.actor, role: who.role } });"
 mutate 'the event and its child travel in one request' terminal 'Object.assign(body, spec.children || {});' ';'
 mutate 'an empty value is refused' terminal "if (value === '') throw usage" 'if (false) throw usage'
 mutate 'the option count is checked' terminal 'if (options.length < 2 || options.length > 6)' 'if (false)'
