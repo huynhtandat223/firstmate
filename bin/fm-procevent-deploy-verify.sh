@@ -18,16 +18,18 @@
 #              Run it once per home; reconcile keeps the poll alive.
 # wait         The blocking child. It polls the project's main CI runs at most once
 #              per FM_DEPLOY_VERIFY_POLL_SECONDS (default 60), in run order, past the
-#              cursor in data/deploy-verify/state.json. A run whose "Deploy Development
-#              host (5001)" job is green deploys its commits since the last green
-#              deploy. The merged PRs of those commits map to tasks through state/*.meta
+#              cursor in data/deploy-verify/state.json. A completed run whose "Deploy
+#              Development environment" step in job "Deploy Development host (5001)"
+#              succeeded deploys its commits since the last deploy, regardless of the
+#              job conclusion. The deploy time is the step's completed_at.
+#              The merged PRs of those commits map to tasks through state/*.meta
 #              `pr=` and the backlog line's PR URL, and to an issue through the PR's
 #              closing reference or the backlog line's `<repo> #n`. Open task PRs are
 #              also checked for a new head whose issue has `(draft)` acceptance lines.
 #              It prints one fm-deploy-verify-result.v1 JSON when there is an ask, a
 #              skip to record, a first GitHub failure, or a recovery to clear.
-#              A skipped, cancelled or failed deploy asks nothing; the next green
-#              deploy carries its commits.
+#              A skipped or failed deploy step asks nothing; the next successful
+#              deploy step carries its commits.
 #              The first poll only sets the cursor to the newest finished run; it never
 #              asks about history.
 # autohandle   Deliver each ask to a Tester: a live Tester for the same task (its
@@ -143,6 +145,7 @@ LAST_POLL="$DATA/last-poll"
 
 REPO="${FM_DEPLOY_VERIFY_REPO:-huynhtandat223/cfw-modules}"
 JOB="${FM_DEPLOY_VERIFY_JOB:-Deploy Development host (5001)}"
+DEPLOY_STEP="${FM_DEPLOY_VERIFY_DEPLOY_STEP:-Deploy Development environment}"
 WORKFLOW="${FM_DEPLOY_VERIFY_WORKFLOW:-CI}"
 GH="${FM_DEPLOY_VERIFY_GH:-gh}"
 POLL_SECONDS="${FM_DEPLOY_VERIFY_POLL_SECONDS:-60}"
@@ -602,9 +605,9 @@ poll_once() {
     sha=$(jq -r .head_sha <<<"$run")
     run_url=$(jq -r .html_url <<<"$run")
     jobs=$(gh_read "repos/$REPO/actions/runs/$run_id/jobs?per_page=100") || { rm -rf "$w"; return 2; }
-    conclusion=$(jq -r --arg j "$JOB" '[.jobs[] | select(.name == $j)] | first | .conclusion // ""' <<<"$jobs")
+    conclusion=$(jq -r --arg j "$JOB" --arg s "$DEPLOY_STEP" '[.jobs[] | select(.name == $j)] | first | [.steps[]? | select(.name == $s)] | first | .conclusion // ""' <<<"$jobs")
     if [ "$conclusion" = success ]; then
-      completed=$(jq -r --arg j "$JOB" '[.jobs[] | select(.name == $j)] | first | .completed_at' <<<"$jobs")
+      completed=$(jq -r --arg j "$JOB" --arg s "$DEPLOY_STEP" '[.jobs[] | select(.name == $j)] | first | [.steps[]? | select(.name == $s)] | first | .completed_at' <<<"$jobs")
       plan_deploy "$base" "$sha" "$run_url" "$completed" "$w" || { rm -rf "$w"; return 2; }
       CURSOR_RUN=$run_id
       CURSOR_SHA=$sha
