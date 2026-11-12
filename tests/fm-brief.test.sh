@@ -351,8 +351,8 @@ check_brief_case() {  # <bin-dir>: 0 when --check refuses every range form and p
 }
 
 # The owner's task rules sit where a worker reads its task-record commands, before rule 1: every ship brief names the
-# Solution document and the plan call that attaches it, only a user-visible ship waits for the owner's approval of it,
-# and only a ship whose mode opens a pull request says one task has one. A scout brief holds none of them: a Tester
+# Solution document, the plan call that attaches it and the owner's approval of it, whatever its surface, and only a
+# ship whose mode opens a pull request says one task has one. A scout brief holds none of them: a Tester
 # verify run and every probe is a scout, and a Solution there would only ask the owner to approve it.
 task_rules_brief_case() {  # <bin-dir>: 0 when each brief carries the task rules that apply to it
   local bin=$1 home id preamble needle
@@ -375,10 +375,7 @@ task_rules_brief_case() {  # <bin-dir>: 0 when each brief carries the task rules
     grep -qF "bin/fm-task.sh plan $id --document $home/data/$id/solution.md --document-title Solution [--image PATH --image-label L]..." <<<"$preamble" || { echo "$id: the rules name no plan call"; return 1; }
     # shellcheck disable=SC2016 # the backticks are literal text of the brief
     grep -qF 'A new `plan` replaces the Solution and its approval.' <<<"$preamble" || { echo "$id: the rules do not say a new plan replaces the Solution"; return 1; }
-    case "$id" in
-      rules-visible) grep -qF "the owner approves the Solution on the task's Solution tab before implementation starts" <<<"$preamble" || { echo "$id: no approval before implementation"; return 1; } ;;
-      *) ! grep -qF 'Solution tab' <<<"$preamble" || { echo "$id: a task that is not user-visible waits for an approval"; return 1; } ;;
-    esac
+    grep -qF "The owner approves the Solution on the task's Solution tab before implementation starts, so implement only once \`show\` prints \`planDecision=approve\`." <<<"$preamble" || { echo "$id: no approval before implementation"; return 1; }
     case "$id" in
       rules-pr|rules-visible) grep -qF 'One task has one pull request; a second pull request is its own subtask' <<<"$preamble" || { echo "$id: no one-pull-request rule"; return 1; } ;;
       *) ! grep -qF 'pull request' <<<"$preamble" || { echo "$id: a brief that opens no pull request names one"; return 1; } ;;
@@ -390,7 +387,7 @@ task_rules_brief_case() {  # <bin-dir>: 0 when each brief carries the task rules
 test_task_rules_reach_the_briefs() {
   local out
   out=$(task_rules_brief_case "$ROOT/bin" 2>&1) || fail "task rules: $out"
-  pass 'fm-brief.sh: ship briefs name the Solution and a scout brief none, a user-visible ship its approval, and a PR ship its one pull request'
+  pass 'fm-brief.sh: ship briefs name the Solution and its approval and a scout brief none, and a PR ship its one pull request'
 }
 
 test_issue_names_the_parser_command() {
@@ -428,8 +425,8 @@ test_issue_and_check_guards_are_needed() {
 --check reads the to form|check_brief_case|s/\|\[\[:space:\]\]to\[\[:space:\]\]\)/)/
 the briefs carry the task rules|task_rules_brief_case|s/^\$TASK_RULES\n//mg
 a scout brief holds no Solution lines|task_rules_brief_case|s/^(Use \\`heartbeat \$ID --note)/\$TASK_RULES\n$1/m
-only a user-visible ship waits for the approval|task_rules_brief_case|s/if \[ "\$SURFACE" = user-visible \]; then\n  TASK_RULES/if true; then\n  TASK_RULES/
-a user-visible ship waits for the approval|task_rules_brief_case|s/if \[ "\$SURFACE" = user-visible \]; then\n  TASK_RULES/if false; then\n  TASK_RULES/
+every ship brief waits for the approval|task_rules_brief_case|s/\nThe owner approves the Solution[^"]*//
+a ship brief that is not user-visible waits for the approval|task_rules_brief_case|s/\n(The owner approves the Solution[^"]*)"/"\n[ "\$SURFACE" != user-visible ] || TASK_RULES="\$TASK_RULES\n$1"/
 only a ship that opens a pull request names it|task_rules_brief_case|s/if \[ "\$KIND" = ship \] && \[ "\$MODE" != local-only \]; then/if true; then/
 a ship that opens a pull request names it|task_rules_brief_case|s/if \[ "\$KIND" = ship \] && \[ "\$MODE" != local-only \]; then/if false; then/
 MUTATIONS

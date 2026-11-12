@@ -86,7 +86,7 @@ Every task also gets a Solution document, separate from its Description, with ex
 ```
 
 Attach it with `bin/fm-task.sh plan <task> --document solution.md --document-title Solution [--image PATH --image-label L]...`.
-On a user-visible task, write it and have the owner approve it on the task's Solution tab before implementation starts.
+On a ship task, whatever its surface, write it and have the owner approve it on the task's Solution tab before implementation starts.
 
 ## Verification record rows
 

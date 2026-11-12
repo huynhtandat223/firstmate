@@ -410,6 +410,11 @@ ASK_FLAGS=(--question 'Which one?' --option 'Option A' --option 'Option B' --rec
 
 mk_ready() { ft create "$1" --title "Task $1" --kind ship --repo example/repo && ft assign "$1" --to worker-1; }
 mk_running() { mk_ready "$1" && ft start "$1"; }
+approve_solution() {  # <task>: the owner approves a Solution of the task, which opens implement on a ship task
+  printf '## How it is used\nu\n\n## How it is built\nb\n\n## How it is tested\nt\n' > "$TMP_ROOT/solution.md"
+  ft plan "$1" --document "$TMP_ROOT/solution.md" --document-title Solution; must "plan $1" 0 || return 1
+  ft plan-decision "$1" --decision approve --plan-seq "$(seq_of)"; must "approve the Solution of $1" 0
+}
 cl_off() {  # <task> <item>...: turn checklist items off, so a case about other rows can approve
   local t=$1 item; shift
   for item in "$@"; do ft checklist "$t" off "$item" --reason 'not this case' >/dev/null || return 1; done
@@ -2730,6 +2735,7 @@ case_workflow() {
   step_of merge | jq -e '.status == "skipped"' >/dev/null || { echo "a removed pending state is not skipped: $(step_of merge)"; return 1; }
   ft setup tk-flow --file "$TMP_ROOT/setup.json"; must 'restore setup selection' 0 || return 1
   ft move tk-flow --to testing; must 'a state outside the setup' 5 || return 1
+  approve_solution tk-flow || return 1
   ft move tk-flow --to implement; must move 0 || return 1
   printf '%s' '{"steps":[{"state":"implement","harness":"claude","model":"edited","effort":"low"},{"state":"merge"}]}' > "$TMP_ROOT/setup-edit.json"
   ft setup tk-flow --file "$TMP_ROOT/setup-edit.json"; must 'edit the current pending state' 0 || return 1
@@ -2766,6 +2772,7 @@ case_workflow() {
   # the owner's Approve & start: setup by owner, then the task moves to its first state
   export FM_HOME="$TMP_ROOT/workflow-home"; rm -rf "$FM_HOME"; mkdir -p "$FM_HOME/state"
   mk_running tk-own >/dev/null || return 1
+  approve_solution tk-own || return 1
   OUT=$("$BIN/fm-task-owner.sh" --action setup --task tk-own --setup "$(cat "$TMP_ROOT/setup.json")" --owner u-1 2>"$TMP_ROOT/err"); RC=$?; ERR=$(cat "$TMP_ROOT/err")
   must 'owner setup' 0 || return 1
   jq -e '.ok == true and (.writes | length) == 2' <<<"$OUT" >/dev/null || { echo "owner setup reply: $OUT"; return 1; }
@@ -2784,7 +2791,7 @@ case_workflow() {
   [ "$(task_row tk-own | jq -r .workflowState)" = merge ] || { echo "a re-approval changed the state: $(task_row tk-own)"; return 1; }
   # approve closes the flow from any state: a state that never started is skipped
   printf '%s' '{"steps":[{"state":"implement","harness":"pi","model":"example","effort":"high"},{"state":"merge"},{"state":"verify","harness":"pi","model":"example"}]}' > "$TMP_ROOT/setup-verify.json"
-  mk_running tk-close >/dev/null || return 1
+  mk_running tk-close >/dev/null && approve_solution tk-close || return 1
   ft setup tk-close --file "$TMP_ROOT/setup-verify.json"; must 'close setup' 0 || return 1
   ft move tk-close --to implement; must 'close move' 0 || return 1
   ft step tk-close start --harness pi --generation c1; must 'start on the harness default model' 0 || return 1
@@ -2797,7 +2804,7 @@ case_workflow() {
     || { echo "approve left steps open: $(db fm_task_step | jq -c '.[] | select(.taskId == "tk-close")')"; return 1; }
   # testing fails back to implement: implement ran last although testing sits later in the setup
   printf '%s' '{"steps":[{"state":"implement","harness":"pi","model":"example"},{"state":"testing","harness":"pi","model":"example"},{"state":"merge"}]}' > "$TMP_ROOT/setup-test.json"
-  mk_running tk-back >/dev/null || return 1
+  mk_running tk-back >/dev/null && approve_solution tk-back || return 1
   ft setup tk-back --file "$TMP_ROOT/setup-test.json"; must 'back setup' 0 || return 1
   ft move tk-back --to implement; must 'back implement' 0 || return 1
   ft step tk-back start --harness pi --generation b1; must 'back start implement' 0 || return 1
@@ -2815,7 +2822,7 @@ case_workflow() {
   [ "$(task_row tk-close | jq -r .workflowState)" = implement ] || { echo "reopen did not return to the last state that ran: $(task_row tk-close)"; return 1; }
   db fm_task_step | jq -e '[.[] | select(.taskId == "tk-close")] | map({(.state): .status}) | add | .verify == "pending" and .merge == "pending"' >/dev/null \
     || { echo "reopen left the approved skips: $(db fm_task_step | jq -c '.[] | select(.taskId == "tk-close")')"; return 1; }
-  # the Solution gate: a user-visible ship task moves to implement only while its current plan is approved
+  # the Solution gate: a ship task moves to implement only while its current plan is approved
   local pseq
   printf '## How it is used\nu\n\n## How it is built\nb\n\n## How it is tested\nt\n' > "$TMP_ROOT/solution.md"
   ft create tk-gate --title 'Gate' --kind ship --surface user-visible --repo example/repo >/dev/null || return 1
@@ -2846,12 +2853,30 @@ case_workflow() {
   [ "$(task_row tk-gate | jq -r .workflowState)" = testing ] || { echo "a refused retry moved the task: $(task_row tk-gate)"; return 1; }
   ft plan-decision tk-gate --decision approve --plan-seq "$pseq" >/dev/null || return 1
   ft move tk-gate --to implement; must 'retry once the new Solution is approved' 0 || return 1
-  # a task of another surface or kind moves with no plan
-  ft create tk-gate-int --title 'Internal ship' --kind ship --surface internal --repo example/repo >/dev/null || return 1
-  ft setup tk-gate-int --file "$TMP_ROOT/setup-test.json" >/dev/null && ft move tk-gate-int --to implement; must 'an internal ship moves with no plan' 0 || return 1
+  # a task of another kind moves with no plan
   ft create tk-gate-plan --title 'Plan task' --kind plan --surface user-visible --repo example/repo >/dev/null || return 1
   ft setup tk-gate-plan --file "$TMP_ROOT/setup-test.json" >/dev/null && ft move tk-gate-plan --to implement; must 'a user-visible task of another kind moves with no plan' 0 || return 1
   export FM_HOME="$TMP_ROOT/home"
+}
+
+# The Solution gate holds every ship task, whatever its surface: a ship task with surface internal, or with none, moves
+# to implement only once the owner approved its current plan.
+solution_gate_holds() {  # <task> [create flags...]
+  local t=$1; shift
+  printf '%s' '{"steps":[{"state":"implement","harness":"pi","model":"example"},{"state":"merge"}]}' > "$TMP_ROOT/setup-gate.json"
+  ft create "$t" --title 'Gate' --kind ship --repo example/repo "$@"; must "create $t" 0 || return 1
+  ft setup "$t" --file "$TMP_ROOT/setup-gate.json"; must "setup $t" 0 || return 1
+  ft move "$t" --to implement; must "$t with no Solution" 5 || return 1
+  [[ "$ERR" == *"$t is a ship task and has no Solution"* ]] || { echo "the refusal does not name the missing Solution: $ERR"; return 1; }
+  [ "$(task_row "$t" | jq -r .workflowState)" = queued ] || { echo "a refused move moved the task: $(task_row "$t")"; return 1; }
+  approve_solution "$t" || return 1
+  ft move "$t" --to implement; must "$t on an approved Solution" 0 || return 1
+}
+case_gate_internal() { BIN=$1; reset_db; solution_gate_holds tk-gate-int --surface internal; }
+case_gate_no_surface() {
+  BIN=$1; reset_db
+  solution_gate_holds tk-gate-none || return 1
+  [ "$(task_row tk-gate-none | jq -r .surface)" = null ] || { echo "the task holds a surface: $(task_row tk-gate-none)"; return 1; }
 }
 
 # SG1 (#176 Step 5): every write folds the board card's step onto the row: stage by the step rule, stageSince only
@@ -3303,7 +3328,7 @@ STUB
 
   # ACT4: Approve & start with an edited setup, then the spawn on the step's runtime; a refused spawn is the result
   t=tk-or4; : > "$calls"
-  ft create $t --title "Task $t" --kind ship --repo example/repo >/dev/null || return 1
+  ft create $t --title "Task $t" --kind ship --repo example/repo >/dev/null && approve_solution $t || return 1
   ow --action start --task $t --setup '{"steps":[{"state":"implement","harness":"claude","model":"claude-opus-5-5","effort":"high"},{"state":"merge"}]}' --owner u-1
   must 'start with a setup' 0 || rc=1
   db fm_task_step | jq -e --arg t $t '.[] | select(.taskId == $t and .state == "implement") | .source == "owner" and .model == "claude-opus-5-5"' >/dev/null || { echo "owner setup: $(db fm_task_step)"; rc=1; }
@@ -3505,7 +3530,7 @@ case_setup_rules() {
   return 0
 }
 
-CASES=${FM_TASK_CASES:-"plan_task description_thread describe_rows describe_issue terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed long_notes status_view verify_view owner_writer workflow stage wait carry slice_c model_rules checklist question_round setup_rules backlog_home owner_hold owner_request gate_before_approval handoff_gate delete owner_nav"}
+CASES=${FM_TASK_CASES:-"plan_task description_thread describe_rows describe_issue terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed long_notes status_view verify_view owner_writer workflow gate_internal gate_no_surface stage wait carry slice_c model_rules checklist question_round setup_rules backlog_home owner_hold owner_request gate_before_approval handoff_gate delete owner_nav"}
 
 # ---- real command -------------------------------------------------------------------
 
@@ -3618,11 +3643,12 @@ mutate 'a setup edit of the current pending state shows on the card' workflow "s
 mutate 'reopen returns to the state that ran last in event order' workflow "const last = steps.find(s => s.state === lastRan);" "const last = steps.filter(s => ['done', 'failed', 'running'].includes(s.status)).at(-1);"
 mutate 'approve skips the states that never started' workflow ": s.status === 'pending' ? [{ state: s.state, status: 'skipped', endReason: 'approved' }] : []);" ": []);"
 mutate 'a move ends the running attempt of the state left behind' workflow "const stepWrites = left ? [{ state: left.state, status: 'done'" "const stepWrites = false ? [{ state: left.state, status: 'done'"
-mutate 'an unapproved Solution holds a user-visible ship before implement' workflow "task.surface === 'user-visible' && task.planDecision !== 'approve') {" "task.surface === 'user-visible' && false) {"
-mutate 'the Solution gate needs the approval, not just a plan' workflow "task.surface === 'user-visible' && task.planDecision !== 'approve') {" "task.surface === 'user-visible' && !task.planSeq) {"
+mutate 'an unapproved Solution holds a ship before implement' workflow "task.kind === 'ship' && task.planDecision !== 'approve') {" "task.kind === 'ship' && false) {"
+mutate 'the Solution gate needs the approval, not just a plan' workflow "task.kind === 'ship' && task.planDecision !== 'approve') {" "task.kind === 'ship' && !task.planSeq) {"
 mutate 'a retry passes the Solution gate too' workflow "if (to === 'implement' && task.kind === 'ship'" "if (to === 'implement' && !retry && task.kind === 'ship'"
-mutate 'the Solution gate leaves another surface alone' workflow "task.kind === 'ship' && task.surface === 'user-visible' && task.planDecision" "task.kind === 'ship' && task.planDecision"
-mutate 'the Solution gate leaves another kind alone' workflow "if (to === 'implement' && task.kind === 'ship' && task.surface" "if (to === 'implement' && task.surface"
+mutate 'the Solution gate holds an internal ship' gate_internal "task.kind === 'ship' && task.planDecision" "task.kind === 'ship' && task.surface === 'user-visible' && task.planDecision"
+mutate 'the Solution gate holds a ship with no surface' gate_no_surface "task.kind === 'ship' && task.planDecision" "task.kind === 'ship' && task.surface === 'user-visible' && task.planDecision"
+mutate 'the Solution gate leaves another kind alone' workflow "if (to === 'implement' && task.kind === 'ship' && task.planDecision" "if (to === 'implement' && task.planDecision"
 mutate 'the reviewer is the actor of the newest review event' stage "if (REVIEWER_KINDS.includes(event.kind)) task.reviewer = event.actor ?? null;" ";"
 mutate 'a row event does not move lastNote or lastEventAt' stage "if (event.kind !== 'row' && event.kind !== 'checklist') {" "if (event.kind !== 'checklist') {"
 mutate 'a machine record does not become lastNote' stage "if (!isMachineRecord(event, note)) task.lastNote" "task.lastNote"

@@ -27,7 +27,7 @@
 //            on a failed check row; a state outside the setup is refused (exit 5). The running attempt of the state
 //            left behind ends with the move. Done comes only through approve, which ends a running step and skips a
 //            state that never started; reopen returns to the last state that ran and lets the skipped states wait again.
-//            A ship task with surface user-visible moves to implement, a retry too, only while its current plan (its
+//            A ship task, whatever its surface, moves to implement, a retry too, only while its current plan (its
 //            Solution) is approved; with no plan or another decision it is refused (exit 5): write the Solution with
 //            `plan`, and the owner approves it on the task's Solution tab.
 //   step     <task> start --harness H [--model M] [--effort E] [--account A] [--generation G]   the current state runs;
@@ -1043,11 +1043,11 @@ async function cmdMove(args) {
     const next = task.workflowState === 'queued' ? steps[0] : steps[index + 1];
     const retry = ['testing', 'verify'].includes(task.workflowState) && to === 'implement' && (await checkRows(taskId)).some(r => r.status === 'fail');
     if (!target || (next?.state !== to && !retry)) throw rule('move must follow setup; Done requires approve');
-    // The Solution gate: the owner's approval of the current plan opens Implement on a user-visible ship task. A retry
-    // passes the same gate, so a plan replaced after its approval waits for the owner again.
-    if (to === 'implement' && task.kind === 'ship' && task.surface === 'user-visible' && task.planDecision !== 'approve') {
+    // The Solution gate: the owner's approval of the current plan opens Implement on a ship task, whatever its surface. A
+    // retry passes the same gate, so a plan replaced after its approval waits for the owner again.
+    if (to === 'implement' && task.kind === 'ship' && task.planDecision !== 'approve') {
       const solution = !task.planSeq ? 'has no Solution' : task.planDecision === 'changes' ? 'has a Solution the owner asked to change' : 'has a Solution the owner has not approved yet';
-      throw rule(`move to implement is refused: ${taskId} is a user-visible ship task and ${solution}. Write the Solution with fm-task.sh plan ${taskId} --document solution.md; the owner approves it on the task's Solution tab.`);
+      throw rule(`move to implement is refused: ${taskId} is a ship task and ${solution}. Write the Solution with fm-task.sh plan ${taskId} --document solution.md; the owner approves it on the task's Solution tab.`);
     }
     // the state left behind stops running: its attempt ends with the move
     const now = new Date().toISOString();

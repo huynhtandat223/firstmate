@@ -118,9 +118,9 @@
 # --surface <user-visible|internal> is an optional ship-only input; absent means
 # internal and leaves the brief unchanged. user-visible adds the done-gate wording
 # that bin/fm-dod-lib.sh owns (record: bin/fm-verify-gate-lib.sh).
-# Ship briefs name the task's Solution document and the `bin/fm-task.sh plan` call that
-# attaches it; a scout brief names none. --surface user-visible adds that the owner approves
-# it before implementation starts, and a ship brief whose mode opens a pull request says one
+# Ship briefs name the task's Solution document, the `bin/fm-task.sh plan` call that
+# attaches it, and that the owner approves it before implementation starts, whatever the
+# surface; a scout brief names none. A ship brief whose mode opens a pull request says one
 # task has one.
 # --issue <source> is an optional ship-only acceptance input: task:<id> or
 # https://<host>/<owner>/<repo>/issues/<n>. It adds an `# Acceptance` section that
@@ -873,18 +873,15 @@ else
 fi
 
 # The owner's task rules for a ship task, where the worker reads its task-record commands: it carries a Solution document
-# (custom-skills/ticket-template/SKILL.md owns its form), a user-visible ship waits for the owner's approval of it, and a
-# ship that opens a pull request opens one. A scout brief holds none of them: a scout's deliverable is its report, and a
+# (custom-skills/ticket-template/SKILL.md owns its form), every ship waits for the owner's approval of it, and a ship
+# that opens a pull request opens one. A scout brief holds none of them: a scout's deliverable is its report, and a
 # Tester verify run (bin/fm-procevent-deploy-verify.sh) and every probe is a scout, whose Solution would only ask the
 # owner to approve it. A Planner's plan already reaches the record through `plan`.
 SOLUTION_FILE="$DATA/$ID/solution.md"
 TASK_RULES="Solution: every task has one document with exactly the headings \`## How it is used\`, \`## How it is built\`, \`## How it is tested\`.
 While \`$FM_ROOT/bin/fm-task.sh show $ID\` prints \`planSeq=-\` the task has none: write it to \`$SOLUTION_FILE\` before you implement, and attach it with \`$FM_ROOT/bin/fm-task.sh plan $ID --document $SOLUTION_FILE --document-title Solution [--image PATH --image-label L]...\`.
-A new \`plan\` replaces the Solution and its approval."
-if [ "$SURFACE" = user-visible ]; then
-  TASK_RULES="$TASK_RULES
-This task is user-visible: the owner approves the Solution on the task's Solution tab before implementation starts, so implement only once \`show\` prints \`planDecision=approve\`."
-fi
+A new \`plan\` replaces the Solution and its approval.
+The owner approves the Solution on the task's Solution tab before implementation starts, so implement only once \`show\` prints \`planDecision=approve\`."
 if [ "$KIND" = ship ] && [ "$MODE" != local-only ]; then
   TASK_RULES="$TASK_RULES
 One task has one pull request; a second pull request is its own subtask, which firstmate files."
