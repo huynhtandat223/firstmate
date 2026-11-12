@@ -38,8 +38,9 @@
 //            (required when task kind is scout or plan; refused exit 5 otherwise).
 //            Document: UTF-8 .md/.markdown or .html/.htm, 1 byte to 2 MiB; one-line title 1..200
 //            characters (default file name). Invalid files/options exit 2 before any API write.
-//   plan     <task> --document FILE [--document-title T] [--note N]        attaches a plan document and sets
-//            planSeq = seq, planDecision = null, planDecidedAt = null (default role planner)
+//   plan     <task> --document FILE [--document-title T] [--note N] [--image PATH --image-label L]...
+//            attaches a plan document and sets planSeq = seq, planDecision = null, planDecidedAt = null (default role
+//            planner); each --image is stored as an image child of the plan event, with the limits of comment's images
 //   plan-decision <task> --decision approve|changes --plan-seq N [--note WHY]
 //            sets planDecision and planDecidedAt (refused exit 5 when N !== task.planSeq or task has no plan)
 //   ask      <task> --question Q --option O (2 to 6 times) --recommendation R --why W
@@ -487,7 +488,7 @@ const SPECS = {
   delete: { pos: [], rest: 'tasks', flags: { reason: 's', 'assistance-record-only': 'b' } },
   home: { pos: ['task'], flags: { home: 's' } },
   describe: { pos: ['task'], flags: { document: 's', 'document-title': 's' } },
-  plan: { pos: ['task'], flags: { document: 's', 'document-title': 's' } },
+  plan: { pos: ['task'], flags: { document: 's', 'document-title': 's', image: 'm', 'image-label': 'm' } },
   'plan-decision': { pos: ['task'], flags: { decision: 's', 'plan-seq': 's' } },
   thread: { pos: ['task'], flags: { since: 's' } },
   comment: { pos: ['task'], flags: { image: 'm', 'image-label': 'm', video: 'm', 'video-label': 'm', ask: 's', 'reply-to': 's', 'anchor-quote': 's', 'anchor-prefix': 's', 'anchor-suffix': 's', outcome: 's', accept: 'b' } },
@@ -1603,6 +1604,7 @@ async function cmdPlan(args) {
   const f = args.flags;
   if (!f.document) throw usage('plan needs --document FILE');
   const document = documentOf(f);
+  const images = imagesOf(args);
   const taskId = taskIdOf(args);
   return write(taskId, identity(args, 'planner'), async ({ task, seq }) => {
     if (!task) throw rule('no such task');
@@ -1611,7 +1613,7 @@ async function cmdPlan(args) {
       kind: 'plan',
       note: noteOf(args) || document.title,
       set: { planSeq: seq, planDecision: null, planDecidedAt: null },
-      children: { documents: [document] },
+      children: withImages({ documents: [document] }, images),
     };
   });
 }

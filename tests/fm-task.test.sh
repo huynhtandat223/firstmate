@@ -2906,6 +2906,20 @@ case_slice_c() {
   pseq2=$(seq_of)
   task_row "$t" | jq -e --argjson s "$pseq2" '.planSeq == $s and .planDecision == null and .planDecidedAt == null' >/dev/null || { echo "plan v2 reset failed: $(task_row "$t")"; return 1; }
 
+  # A plan carries pictures as image children of its event, with the refusals of a comment's images
+  ft plan "$t" --document "$plan_file" --image "$img_file"
+  must 'plan image without a label' 2 || return 1
+  ft plan "$t" --document "$plan_file" --image "$plan_file" --image-label 'not an image'
+  must 'plan image with a bad extension' 5 || return 1
+  [ "$(task_row "$t" | jq -r .planSeq)" = "$pseq2" ] || { echo "a refused plan image stored a plan: $(task_row "$t")"; return 1; }
+  ft plan "$t" --document "$plan_file" --document-title 'Plan v2' --image "$img_file" --image-label 'How it is used' --image "$img_file" --image-label 'How it is built'
+  must 'plan with images' 0 || return 1
+  pseq2=$(seq_of)
+  db fm_event_image | jq -e --arg id "$(db fm_task_event | jq -r --argjson s "$pseq2" '.[] | select(.seq == $s and .kind == "plan") | .id')" \
+    '[.[] | select(.fmTaskEventId == $id)] | sort_by(.position) | all(.[]; .content | length > 0) and map([.position, .label, .mediaType]) == [[1, "How it is used", "image/png"], [2, "How it is built", "image/png"]]' >/dev/null \
+    || { echo "plan image children wrong: $(db fm_event_image | jq -c 'map(del(.content))')"; return 1; }
+  db fm_event_document | jq -e --arg id "$(db fm_task_event | jq -r --argjson s "$pseq2" '.[] | select(.seq == $s) | .id')" 'any(.[]; .fmTaskEventId == $id and .title == "Plan v2")' >/dev/null || { echo "a plan with images lost its document"; return 1; }
+
   # fm-task-owner.sh --action plan delivers inbox note and steers planner when registered
   local steer_log="$TMP_ROOT/planner-steer.log" fake_assist="$TMP_ROOT/fake-assistance.sh"
   printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> %q\n' "$steer_log" > "$fake_assist"
@@ -3592,6 +3606,8 @@ mutate 'approve replaces video evidence with Tester screenshot' slice_c 'if (!re
 mutate 'check --evidence-image records event:<seq>#image:1' slice_c 'evidence = `event:${imgRes.event.seq}#image:1`;' 'evidence = null;'
 mutate 'gate checks event:<seq>#image:<n> references' slice_c 'if (!(await eventEvidenceExists(events, ev))) problems.push' 'if (false) problems.push'
 mutate 'link event requires http or https --url' slice_c "if (kind === 'link' && (!url || !/^https?:\\/\\/\\S+\$/.test(url) || url.length > 2048)) throw rule" 'if (false) throw rule'
+mutate 'a plan stores its images' slice_c "children: withImages({ documents: [document] }, images)," "children: { documents: [document] },"
+mutate 'a plan image takes the refusals of a comment image' slice_c $'const document = documentOf(f);\n  const images = imagesOf(args);' $'const document = documentOf(f);\n  const images = [];'
 mutate 'create writes the checklist template' checklist 'await applyChecklist(taskId);
     },' '},'
 mutate 'rows leaves cl: rows alone' checklist '.filter((row) => !isChecklist(row)).map((row) => [rowKey(row), row]));' '.map((row) => [rowKey(row), row]));'
