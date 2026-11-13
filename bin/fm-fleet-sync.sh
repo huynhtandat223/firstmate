@@ -452,6 +452,7 @@ if [ $# -eq 1 ]; then
   exit 0
 fi
 
+"$SCRIPT_DIR/fm-project.sh" refresh >/dev/null || true
 [ -d "$PROJECTS" ] || exit 0
 for proj in "$PROJECTS"/*; do
   [ -e "$proj" ] || continue

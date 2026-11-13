@@ -127,6 +127,8 @@ case "${1:-}" in
 esac
 NAME=${1:?usage: fm-project-mode.sh [--raw|--branch-prefix|--forge] <project-name>}
 
+"$SCRIPT_DIR/fm-project.sh" refresh >/dev/null || true
+
 if [ ! -f "$REG" ]; then
   echo "warn: no registry at $REG; defaulting $NAME to no-mistakes off" >&2
   if [ "$BRANCH_PREFIX_QUERY" -eq 1 ]; then
