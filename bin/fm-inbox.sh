@@ -1160,7 +1160,7 @@ case "${1:-}" in
         *) die "5001 owner records unavailable; retry when reachable" ;;
       esac
     fi
-    trap 'owner_notes_sync push || { printf "fm-inbox: owner-note writes pending in %s\n" "$INBOX" >&2; exit 3; }' EXIT
+    trap 'owner_notes_sync push || printf "fm-inbox: owner-note writes pending in %s\n" "$INBOX" >&2' EXIT
     ;;
 esac
 

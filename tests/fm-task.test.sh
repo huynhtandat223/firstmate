@@ -484,6 +484,14 @@ use_issue() { issue_body "$1" > "$TMP_ROOT/issue.body"; }
 # a missing template field prints the API's field and stores nothing.
 case_owner_records() {
   BIN=$1; reset_db
+  local legacy="$TMP_ROOT/legacy-note-home"
+  mkdir -p "$legacy/state/inbox/.requests"
+  printf 'id=old-random-id\nat=2026-01-01T00:00:00Z\nsource=text\nrequest_id=old-request\nannounce_marker=1\n--\nlegacy captured body\n' > "$legacy/state/inbox/old-random-id.note"
+  printf 'old-random-id\n' > "$legacy/state/inbox/.requests/old-request"
+  FM_HOME="$legacy" FM_BACKLOG_HOME=legacy-seed python3 "$BIN/fm-owner-seed.py" "$legacy" "$TMP_ROOT/legacy-backup" >/dev/null || return 1
+  FM_HOME="$legacy" FM_BACKLOG_HOME=legacy-seed "$BIN/fm-inbox.sh" receipts --all-pending > "$TMP_ROOT/legacy-receipts.json" || return 1
+  grep -F 'legacy captured body' "$TMP_ROOT/legacy-receipts.json" >/dev/null || return 1
+  [ -f "$TMP_ROOT/legacy-backup/inbox/old-random-id.note" ] || return 1
   local configured="$TMP_ROOT/configured-owner-home"
   mkdir -p "$configured/config/tasks-axi"
   printf 'backend = "cfw5001"\n[cfw5001]\nhome = "secondmate-probe"\n' > "$configured/config/tasks-axi/.tasks.toml"
@@ -504,7 +512,7 @@ case_owner_records() {
   ft owner-record note get --identity probe-note --home probe
   must 'read original note' 0 || return 1
   [ "$(printf '%s' "$OUT" | jq -r '.text + "|" + .state + "|" + .reply')" = 'exact owner words|handled|exact reply' ] || return 1
-  [ "$(db fm_owner_note | jq length)" = 1 ] || return 1
+  [ "$(db fm_owner_note | jq '[.[]|select(.home=="probe")]|length')" = 1 ] || return 1
   local home="$TMP_ROOT/central-inbox-home" note_id
   mkdir -p "$home/state"
   FM_HOME="$home" "$BIN/fm-inbox.sh" note --json 'note through public CLI' > "$TMP_ROOT/note-result.json" || return 1
