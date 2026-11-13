@@ -11,9 +11,11 @@
 # scaffold (bin/fm-brief.sh) tells the worker how to read and acknowledge;
 # none of them restates the format.
 #
-# Design (captain-adopted, data/fm-send-reliability-reframe-s1/report.md): the
-# payload moves to the filesystem, which is reliable; the terminal carries only
-# a short constant doorbell line. While the endpoint remains available, that
+# With task-shadow configured, 5001 steer events own message text and
+# fm_task_delivery read:<task> receipts own acknowledgement. The filesystem
+# caches messages and spools unavailable writes under the same event key.
+# Without task-shadow, the filesystem remains the durable delivery store.
+# The terminal carries only a short constant doorbell line. While the endpoint remains available, that
 # line does not need to be reliable because ringing it again is free. A
 # duplicated doorbell is a no-op by construction (the worker finds the inbox
 # empty or already handled), and a swallowed doorbell is detected by the
@@ -24,7 +26,9 @@
 #
 # Layout under <state-dir>:
 #   <task>.inbox/NNN.msg       one durable steer, numeric sequence, atomic rename
-#   <task>.inbox/handled/      the worker's `mv` here IS the acknowledgement
+#   <task>.inbox/handled/      fallback acknowledgements, uploaded as read marks
+#   <task>.inbox/*.published  publication receipts; messages without one replay
+#   <task>.inbox/.attempt-*   ring/escalation event spool with .sent receipts
 #   <task>.inbox/.seq.lock     serializes sequence allocation across writers
 #                              (the session and the away daemon)
 #   <task>.inbox/.ring-state   watcher re-ring ladder: "<msg>\t<count>\t<epoch>"
@@ -180,6 +184,14 @@ fm_task_inbox_next_seq() {  # <inbox-dir>
       [ "$n" -le "$max" ] || max=$n
     done
   done
+  # A removed cache must not reuse a key that is still stored on 5001.
+  # Microsecond epoch slots also preserve numeric ordering across cache rebuilds.
+  if fm_task_inbox_api_enabled; then
+    local clock
+    clock=$(node -e 'console.log(Date.now() * 1000)') || return 1
+    case "$clock" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$clock" -le "$max" ] || max=$((clock - 1))
+  fi
   printf '%03d' "$((max + 1))"
 }
 
@@ -203,7 +215,7 @@ fm_task_inbox_lock_acquire() {  # <lock-path>
 # rename. Prints the record path. Caller must hold .seq.lock.
 _fm_task_inbox_write_record_locked() {  # <inbox-dir> <text> [delivery-mode]
   local dir=$1 text=$2 delivery_mode=${3:-} seq tmp rec status=0
-  seq=$(fm_task_inbox_next_seq "$dir")
+  seq=$(fm_task_inbox_next_seq "$dir") || return 1
   rec="$dir/$seq.msg"
   tmp=$(mktemp "$dir/.staging.XXXXXX") || return 1
   {
