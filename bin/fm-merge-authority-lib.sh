@@ -158,11 +158,18 @@ fm_merge_authority_read() {  # <state> <task-id> <provider> <host> <path> <numbe
   [ -d "$state" ] && [ ! -L "$state" ] || return 1
   local home=${FM_HOME:-$(dirname "$state")} result expected_url
   if [ ! -e "${FM_CONFIG_OVERRIDE:-$home/config}/task-shadow" ]; then
-    local legacy_record="$state/$id.merge-authority" device
+    local legacy_record="$state/$id.merge-authority" device legacy_lock legacy_status=0
     device=$(fm_pr_file_device "$state") || return 1
-    fm_merge_authority_record_matches "$legacy_record" "$device" "$provider" "$host" "$path" "$number" || return 1
-    FM_MERGE_AUTHORITY_RECORD_IDENTITY=$(fm_pr_file_identity "$legacy_record") || return 1
-    return 0
+    legacy_lock="$legacy_record.lock"
+    fm_lock_acquire_wait "$legacy_lock" || return 1
+    if fm_merge_authority_record_matches "$legacy_record" "$device" "$provider" "$host" "$path" "$number"; then
+      FM_MERGE_AUTHORITY_RECORD_IDENTITY=$(fm_pr_file_identity "$legacy_record") || legacy_status=1
+    else
+      FM_MERGE_AUTHORITY=external
+      legacy_status=1
+    fi
+    fm_lock_release "$legacy_lock" || legacy_status=1
+    return "$legacy_status"
   fi
   case "$provider" in
     github) expected_url="https://$host/$path/pull/$number" ;;

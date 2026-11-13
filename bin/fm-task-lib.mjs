@@ -516,7 +516,7 @@ const SPECS = {
   'plan-decision': { pos: ['task'], flags: { decision: 's', 'plan-seq': 's' } },
   thread: { pos: ['task'], flags: { since: 's' } },
   comment: { pos: ['task'], flags: { image: 'm', 'image-label': 'm', video: 'm', 'video-label': 'm', ask: 's', 'reply-to': 's', 'anchor-quote': 's', 'anchor-prefix': 's', 'anchor-suffix': 's', outcome: 's', accept: 'b' } },
-  'merge-authority': { pos: ['task'], flags: { 'pr-url': 's', head: 's', 'merge-authority': 's', receipt: 's', phase: 's' } },
+  'merge-authority': { pos: ['task'], flags: { 'pr-url': 's', head: 's', 'merge-authority': 's', receipt: 's', phase: 's', merged: 'b' } },
   'pr-record': { pos: ['task'], flags: {} },
   'pr-round': { pos: ['action'], flags: { file: 's' } },
   event: { pos: ['task', 'kind'], flags: { 'pr-url': 's', head: 's', touched: 's', 'next-actor': 's', 'clears-on': 's', rows: 's', url: 's', merged: 'b', 'merge-authority': 's', receipt: 's' } },
@@ -1887,7 +1887,7 @@ async function cmdPrRound(args) {
         } finally { fs.rmSync(file, { force: true }); }
       }
     }
-    for (const row of await listAll('fm_pr_round', { orderby: 'id' })) {
+    for (const row of (await listAll('fm_pr_round', { orderby: 'id' })).sort((a, b) => Date.parse(a.at ?? 0) - Date.parse(b.at ?? 0))) {
       if (row.kind !== 'cursor') console.log(row.payload);
     }
     return;

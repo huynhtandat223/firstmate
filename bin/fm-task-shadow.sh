@@ -285,10 +285,13 @@ case "$EVENT" in
     # Authority is carried only through the dedicated receipt-checked operation.
     if [ -n "$PR_AUTHORITY" ] && [ -n "$PR_HEAD" ] && [ -f "$STATE/$TASK.merge-receipt" ]; then
       "$SCRIPT_DIR/fm-task.sh" merge-authority "$TASK" --pr-url "${2:-}" --head "$PR_HEAD" \
-        --merge-authority "$PR_AUTHORITY" --phase accepted --receipt "$STATE/$TASK.merge-receipt" >/dev/null || exit 1
+        --merge-authority "$PR_AUTHORITY" --phase accepted --merged --receipt "$STATE/$TASK.merge-receipt" \
+        --key "shadow:$TASK:merged-authority-$(short "${2:-}|$PR_HEAD")" >/dev/null || exit 1
     fi
     [ -z "$PR_HEAD" ] || PR_ARGS+=(--head "$PR_HEAD")
-    w "merged-$(short "${2:-}")" "${PR_ARGS[@]}" || exit 1
+    if [ -z "$PR_AUTHORITY" ] || [ ! -f "$STATE/$TASK.merge-receipt" ]; then
+      w "merged-$(short "${2:-}")" "${PR_ARGS[@]}" || exit 1
+    fi
     # The pending receipt is a local safety check, not the authority record.
     [ ! -f "$STATE/$TASK.merge-receipt" ] || rm -f "$STATE/$TASK.merge-receipt"
     ;;

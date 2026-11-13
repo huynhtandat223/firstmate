@@ -1445,11 +1445,19 @@ require_current_away_authority() {
   # The initial authority check precedes PR metadata publication. Later checks
   # run immediately before the irreversible forge request with validated metadata.
   if [ "${FM_PR_METADATA_RECORDED:-0}" = 1 ]; then
+    local receipt_device receipt_tmp
+    receipt_device=$(fm_pr_file_device "$STATE") || return 1
+    fm_pr_regular_destination_on_device_or_absent "$STATE/$ID.merge-receipt" "$receipt_device" || return 1
+    receipt_tmp=$(mktemp "$STATE/.merge-receipt.XXXXXX") || return 1
     ( umask 077
       jq -cn --arg task "$ID" --arg url "$URL" --arg head "$FM_PR_MERGE_HEAD" --arg authority "$FM_PR_MERGE_AUTHORITY" \
-        '{task:$task,prUrl:$url,head:$head,authority:$authority}' > "$STATE/$ID.merge-receipt"
-    ) || return 1
-    chmod 0600 "$STATE/$ID.merge-receipt" || return 1
+        '{task:$task,prUrl:$url,head:$head,authority:$authority}' > "$receipt_tmp"
+    ) || { rm -f "$receipt_tmp"; return 1; }
+    # shellcheck disable=SC2015 # Any failed validation or publication uses the same cleanup.
+    chmod 0600 "$receipt_tmp" \
+      && fm_pr_private_file_valid "$receipt_tmp" 600 "$receipt_device" \
+      && fm_pr_regular_destination_on_device_or_absent "$STATE/$ID.merge-receipt" "$receipt_device" \
+      && mv -f -- "$receipt_tmp" "$STATE/$ID.merge-receipt" || { rm -f "$receipt_tmp"; return 1; }
     FM_PR_AUTHORITY_PHASE=pending fm_merge_authority_persist "$STATE" "$ID" "$META" \
       "$PROVIDER" "$PR_HOST" "$PR_PATH" "$PR_NUMBER" "$FM_PR_MERGE_AUTHORITY" || return 1
   fi

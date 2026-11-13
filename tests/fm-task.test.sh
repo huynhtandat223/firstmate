@@ -3739,10 +3739,10 @@ case_pr_record() {
   must 'other PR receipt refused' 2 || return 1
   ft merge-authority tk-pr-record --pr-url https://github.com/example/repo/pull/1 --head bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb --merge-authority attended --phase accepted --receipt "$receipt"
   must 'other head receipt refused' 2 || return 1
-  ft merge-authority tk-pr-record --pr-url https://github.com/example/repo/pull/1 --head "$head" --merge-authority attended --phase accepted --receipt "$receipt"
+  ft merge-authority tk-pr-record --pr-url https://github.com/example/repo/pull/1 --head "$head" --merge-authority attended --phase accepted --merged --receipt "$receipt"
   must 'gate authority event' 0 || return 1
   ft pr-record tk-pr-record; must 'PR readback' 0 || return 1
-  jq -e --arg h "$head" '.prHead == $h and .mergeAuthority == "attended" and .authorityPhase == "accepted"' <<<"$OUT" >/dev/null || return 1
+  jq -e --arg h "$head" '.prHead == $h and .mergeAuthority == "attended" and .authorityPhase == "accepted" and .merged == true' <<<"$OUT" >/dev/null || return 1
   db fm_task_event | jq -e --arg h "$head" 'any(.[]; .taskId == "tk-pr-record" and .prHead == $h and .mergeAuthority == "attended")' >/dev/null || return 1
   ft event tk-pr-record ci --merge-authority attended; must 'authority only on PR' 2 || return 1
   printf '{"type":"round","task":"tk-pr-record","head":"%s","round":1,"at":100,"delivered":true,"reader":{"answer":"full answer"},"retained":["pre-existing"]}\n' "$head" > "$TMP_ROOT/pr-round.json"
