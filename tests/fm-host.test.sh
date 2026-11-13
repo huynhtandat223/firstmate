@@ -32,7 +32,8 @@ server.listen(0,'127.0.0.1',()=>fs.writeFileSync(process.argv[2],String(server.a
 JS
 node "$TMP/server.mjs" "$TMP/port" & SERVER=$!
 for ((i=0;i<100;i++)); do [ ! -f "$TMP/port" ] || break; sleep .02; done
-export FM_TASK_BASE_URL="http://127.0.0.1:$(< "$TMP/port")" FM_TASK_TOKEN_FILE="$TMP/token" FM_HOME="$TMP/home" FM_HOME_NAME=probe FM_HOST_ID=probe-a
+FM_TASK_BASE_URL="http://127.0.0.1:$(< "$TMP/port")"
+export FM_TASK_BASE_URL FM_TASK_TOKEN_FILE="$TMP/token" FM_HOME="$TMP/home" FM_HOME_NAME=probe FM_HOST_ID=probe-a
 run() { bash "$ROOT/bin/fm-host.sh" "$@"; }
 run register >/dev/null
 run lease take --json > "$TMP/first"
