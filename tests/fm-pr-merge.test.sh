@@ -2555,9 +2555,8 @@ test_forgejo_transient_confirm_read_failure_still_persists_authority() {
   [ -e "$case_dir/tea-merged" ] || fail "forgejo-confirm-retry: the mock did not record the merge"
   [ "$(cat "$case_dir/tea-post-merge-view-failures")" = 0 ] \
     || fail "forgejo-confirm-retry: the confirmation read was not retried"
-  [ "$(jq -r .mergeAuthority "$case_dir/state/task-x1.authority-test.json" 2>/dev/null || true)" = attended ] \
-    && [ ! -e "$case_dir/state/task-x1.merge-authority" ] \
-    || fail "forgejo-confirm-retry: the merge authority was not persisted on the PR record"
+  [ "$(sed -n 6p "$case_dir/state/task-x1.merge-authority" 2>/dev/null || true)" = attended ] \
+    || fail "forgejo-confirm-retry: non-shadow authority was not preserved"
   if grep -q "did not confirm" "$case_dir/stderr"; then
     fail "forgejo-confirm-retry: a landed merge was reported as unconfirmed"
   fi
@@ -3575,9 +3574,8 @@ test_quiet_record_keeps_merges_attended() {
   assert_no_grep 'attended-only' "$case_dir/stderr" \
     "quiet-allow-red: quiet mode was treated as away"
   assert_logged_gh_merge "$case_dir" 84 example/repo --squash
-  [ "$(jq -r .mergeAuthority "$case_dir/state/task-x1.authority-test.json" 2>/dev/null || true)" = attended ] \
-    && [ ! -e "$case_dir/state/task-x1.merge-authority" ] \
-    || fail "quiet-allow-red: the PR record authority is not attended"
+  [ "$(sed -n 6p "$case_dir/state/task-x1.merge-authority" 2>/dev/null || true)" = attended ] \
+    || fail "quiet-allow-red: non-shadow authority is not attended"
   pass "fm-pr-merge keeps a quiet-mode home's merges attended, the named red-check waiver included"
 }
 
@@ -3631,9 +3629,8 @@ test_away_record_permits_any_green_merge_under_away_authority() {
     "away-green: the durable outcome did not tag away"
   assert_no_grep 'away-grant' "$case_dir/state/.wake-queue" \
     "away-green: the retired away-grant tag reappeared"
-  [ "$(jq -r .mergeAuthority "$case_dir/state/task-x1.authority-test.json" 2>/dev/null || true)" = away ] \
-    && [ ! -e "$case_dir/state/task-x1.merge-authority" ] \
-    || fail "away-green: the PR record authority is not away"
+  [ "$(sed -n 6p "$case_dir/state/task-x1.merge-authority" 2>/dev/null || true)" = away ] \
+    || fail "away-green: non-shadow authority is not away"
 
   # A yolo=on task merges under the same away authority: the posture, not the
   # task's standing autonomy, is what the ledger records while away.

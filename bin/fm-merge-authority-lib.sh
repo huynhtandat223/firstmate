@@ -93,9 +93,41 @@ fm_merge_authority_record_matches() {  # <record> <device> <provider> <host> <pa
   FM_MERGE_AUTHORITY=$authority
 }
 
+fm_merge_authority_legacy_persist() {
+  local state=$1 id=$2 meta=$3 provider=$4 host=$5 path=$6 number=$7 authority=$8
+  local record tmp state_device lock status=0
+  fm_pr_task_id_valid "$id" || return 1
+  case "$authority" in away|attended) ;; *) return 1 ;; esac
+  [ -d "$state" ] && [ ! -L "$state" ] || return 1
+  state_device=$(fm_pr_file_device "$state") || return 1
+  fm_pr_metadata_identity_parse "$meta" || return 1
+  [ "$FM_PR_META_PROVIDER" = "$provider" ] && [ "$FM_PR_META_HOST" = "$host" ] \
+    && [ "$FM_PR_META_PATH" = "$path" ] && [ "$FM_PR_META_NUMBER" = "$number" ] || return 1
+  record="$state/$id.merge-authority"
+  lock="$record.lock"
+  fm_lock_acquire_wait "$lock" || return 1
+  fm_pr_regular_destination_on_device_or_absent "$record" "$state_device" || status=1
+  tmp=$(mktemp "$state/.fm-merge-authority.XXXXXX") || status=1
+  if [ "$status" -eq 0 ]; then
+    printf '%s\n%s\n%s\n%s\n%s\n%s\n' fm-merge-authority-v1 "$provider" "$host" "$path" "$number" "$authority" > "$tmp" \
+      && chmod 0600 "$tmp" \
+      && fm_merge_authority_record_matches "$tmp" "$state_device" "$provider" "$host" "$path" "$number" \
+      && fm_pr_regular_destination_on_device_or_absent "$record" "$state_device" \
+      && mv -f -- "$tmp" "$record" || status=1
+  fi
+  [ "$status" -eq 0 ] || rm -f -- "$tmp"
+  fm_lock_release "$lock" || status=1
+  return "$status"
+}
+
 fm_merge_authority_persist() {  # <state> <task-id> <meta> <provider> <host> <path> <number> <authority>
   local state=$1 id=$2 meta=$3 provider=$4 host=$5 path=$6 number=$7 authority=$8
   local state_device
+  if [ ! -e "${FM_CONFIG_OVERRIDE:-${FM_HOME:-$(dirname "$state")}/config}/task-shadow" ]; then
+    [ "${FM_PR_AUTHORITY_PHASE:-accepted}" = accepted ] || return 0
+    fm_merge_authority_legacy_persist "$@"
+    return $?
+  fi
   fm_pr_task_id_valid "$id" || return 1
   case "$authority" in away|attended) ;; *) return 1 ;; esac
   [ -d "$state" ] && [ ! -L "$state" ] || return 1
@@ -107,9 +139,12 @@ fm_merge_authority_persist() {  # <state> <task-id> <meta> <provider> <host> <pa
     && [ "$FM_PR_META_NUMBER" = "$number" ] || return 1
   # The task event binds authority to the canonical PR identity, never to a local sidecar.
   local home=${FM_HOME:-$(dirname "$state")} head
-  head=$(grep '^pr_head=' "$meta" | tail -1 | cut -d= -f2- || true)
-  local -a args=(event "$id" pr --pr-url "$FM_PR_META_URL" --merge-authority "$authority"
-    --key "merge-authority:$id:$provider:$host:$path:$number:${head:-unknown}:$authority")
+  head=${FM_PR_MERGE_HEAD:-}
+  [ -n "$head" ] || head=$(grep '^pr_head=' "$meta" | tail -1 | cut -d= -f2- || true)
+  local phase=${FM_PR_AUTHORITY_PHASE:-accepted} key
+  key=$(printf '%s\n' "$id" "$provider" "$host" "$path" "$number" "$head" "$authority" "$phase" | shasum -a 256 | cut -d' ' -f1)
+  local -a args=(merge-authority "$id" --pr-url "$FM_PR_META_URL" --merge-authority "$authority"
+    --phase "$phase" --receipt "$state/$id.merge-receipt" --key "merge-authority:$key")
   [ -z "$head" ] || args+=(--head "$head")
   FM_HOME="$home" "${FM_MERGE_AUTHORITY_TASK:-${FM_TASK_SHADOW_WRITER:-$_FM_MERGE_AUTHORITY_LIB_DIR/fm-task.sh}}" "${args[@]}" >/dev/null
   return $?
@@ -122,6 +157,13 @@ fm_merge_authority_read() {  # <state> <task-id> <provider> <host> <path> <numbe
   fm_pr_task_id_valid "$id" || return 1
   [ -d "$state" ] && [ ! -L "$state" ] || return 1
   local home=${FM_HOME:-$(dirname "$state")} result expected_url
+  if [ ! -e "${FM_CONFIG_OVERRIDE:-$home/config}/task-shadow" ]; then
+    local legacy_record="$state/$id.merge-authority" device
+    device=$(fm_pr_file_device "$state") || return 1
+    fm_merge_authority_record_matches "$legacy_record" "$device" "$provider" "$host" "$path" "$number" || return 1
+    FM_MERGE_AUTHORITY_RECORD_IDENTITY=$(fm_pr_file_identity "$legacy_record") || return 1
+    return 0
+  fi
   case "$provider" in
     github) expected_url="https://$host/$path/pull/$number" ;;
     forgejo) expected_url="https://$host/$path/pulls/$number" ;;
@@ -131,6 +173,17 @@ fm_merge_authority_read() {  # <state> <task-id> <provider> <host> <path> <numbe
   result=$(FM_HOME="$home" "${FM_MERGE_AUTHORITY_TASK:-${FM_TASK_SHADOW_WRITER:-$_FM_MERGE_AUTHORITY_LIB_DIR/fm-task.sh}}" pr-record "$id") || return 1
   [ "$(jq -r '.prUrl // empty' <<<"$result")" = "$expected_url" ] || return 1
   FM_MERGE_AUTHORITY=$(jq -r '.mergeAuthority // "external"' <<<"$result")
+  local observed_head recorded_head
+  recorded_head=$(jq -r '.prHead // empty' <<<"$result")
+  fm_pr_head_valid "$recorded_head" || { FM_MERGE_AUTHORITY=external; return 1; }
+  case "$provider" in
+    github) observed_head=$(gh pr view "$expected_url" --json headRefOid --jq .headRefOid 2>/dev/null) || return 1 ;;
+    gitlab) observed_head=$(glab api "projects/$(printf '%s' "$path" | jq -sRr @uri)/merge_requests/$number" --hostname "$host" 2>/dev/null | jq -r '.sha // .diff_refs.head_sha // empty') || return 1 ;;
+    forgejo) fm_pr_forgejo_read_record "$host" "$path" "$number" || return 1; observed_head=$FM_PR_RECORD_HEAD ;;
+    *) return 1 ;;
+  esac
+  [ "$recorded_head" = "$observed_head" ] || { FM_MERGE_AUTHORITY=external; return 1; }
+  [ "$(jq -r '.authorityPhase // empty' <<<"$result")" = accepted ] || { FM_MERGE_AUTHORITY=external; return 1; }
   case "$FM_MERGE_AUTHORITY" in away|attended) return 0 ;; *) return 1 ;; esac
 }
 

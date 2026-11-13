@@ -1445,7 +1445,12 @@ require_current_away_authority() {
   # The initial authority check precedes PR metadata publication. Later checks
   # run immediately before the irreversible forge request with validated metadata.
   if [ "${FM_PR_METADATA_RECORDED:-0}" = 1 ]; then
-    fm_merge_authority_persist "$STATE" "$ID" "$META" \
+    ( umask 077
+      jq -cn --arg task "$ID" --arg url "$URL" --arg head "$FM_PR_MERGE_HEAD" --arg authority "$FM_PR_MERGE_AUTHORITY" \
+        '{task:$task,prUrl:$url,head:$head,authority:$authority}' > "$STATE/$ID.merge-receipt"
+    ) || return 1
+    chmod 0600 "$STATE/$ID.merge-receipt" || return 1
+    FM_PR_AUTHORITY_PHASE=pending fm_merge_authority_persist "$STATE" "$ID" "$META" \
       "$PROVIDER" "$PR_HOST" "$PR_PATH" "$PR_NUMBER" "$FM_PR_MERGE_AUTHORITY" || return 1
   fi
 }
@@ -1454,7 +1459,7 @@ persist_accepted_merge_authority() {
   local status=0
   MERGE_META_LOCK=$(fm_meta_lock_path "$META") || return 1
   fm_lock_acquire_wait "$MERGE_META_LOCK" || return 1
-  fm_merge_authority_persist "$STATE" "$ID" "$META" \
+  FM_PR_AUTHORITY_PHASE=accepted fm_merge_authority_persist "$STATE" "$ID" "$META" \
     "$PROVIDER" "$PR_HOST" "$PR_PATH" "$PR_NUMBER" "$FM_PR_MERGE_AUTHORITY" \
     || status=1
   fm_lock_release "$MERGE_META_LOCK" || status=1

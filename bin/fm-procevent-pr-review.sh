@@ -861,6 +861,7 @@ rearm_source() {
 }
 
 cmd_wait() {
+  mkdir -p "$DATA" "$OPEN" || return 1
   # Read the authoritative store before starting any review side effects.
   "$TASK_WRITER" pr-round cursor >/dev/null || return 1
   "$TASK_WRITER" pr-round list >/dev/null || return 1

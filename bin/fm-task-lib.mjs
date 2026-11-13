@@ -516,9 +516,10 @@ const SPECS = {
   'plan-decision': { pos: ['task'], flags: { decision: 's', 'plan-seq': 's' } },
   thread: { pos: ['task'], flags: { since: 's' } },
   comment: { pos: ['task'], flags: { image: 'm', 'image-label': 'm', video: 'm', 'video-label': 'm', ask: 's', 'reply-to': 's', 'anchor-quote': 's', 'anchor-prefix': 's', 'anchor-suffix': 's', outcome: 's', accept: 'b' } },
+  'merge-authority': { pos: ['task'], flags: { 'pr-url': 's', head: 's', 'merge-authority': 's', receipt: 's', phase: 's' } },
   'pr-record': { pos: ['task'], flags: {} },
   'pr-round': { pos: ['action'], flags: { file: 's' } },
-  event: { pos: ['task', 'kind'], flags: { 'pr-url': 's', head: 's', touched: 's', 'next-actor': 's', 'clears-on': 's', rows: 's', url: 's', merged: 'b', 'merge-authority': 's' } },
+  event: { pos: ['task', 'kind'], flags: { 'pr-url': 's', head: 's', touched: 's', 'next-actor': 's', 'clears-on': 's', rows: 's', url: 's', merged: 'b', 'merge-authority': 's', receipt: 's' } },
   checks: { pos: ['task'], flags: { 'as-deployed': 's', touched: 's' } },
   link: { pos: ['parent', 'child'], flags: {} },
   rows: { pos: ['task', 'issue'], flags: { surface: 's' } },
@@ -1853,6 +1854,12 @@ function openRequests(events) {
 }
 
 // The PR event is authoritative; callers may use their local cache only after a network failure.
+async function cmdMergeAuthority(args) {
+  const phase = oneOf(['pending', 'accepted'], args.flags.phase, 'merge authority phase');
+  return cmdEvent({ ...args, mergeGate: true, pos: { ...args.pos, kind: 'pr' },
+    flags: { ...args.flags, note: `merge authority ${phase}` } });
+}
+
 async function cmdPrRecord(args) {
   const taskId = taskIdOf(args);
   const events = await taskEvents(taskId);
@@ -1861,12 +1868,25 @@ async function cmdPrRecord(args) {
   const event = events.filter((e) => e.kind === 'pr').at(-1);
   const body = event ? bodyOf(event) : {};
   console.log(JSON.stringify({ prUrl: task.prUrl ?? null, prHead: event?.prHead ?? body.prHead ?? null,
-    mergeAuthority: event?.mergeAuthority ?? body.mergeAuthority ?? null, merged: body.merged === true }));
+    mergeAuthority: event?.mergeAuthority ?? body.mergeAuthority ?? null, authorityPhase: body.authorityPhase ?? null, merged: body.merged === true }));
 }
 
 async function cmdPrRound(args) {
   const action = oneOf(['list', 'put', 'cursor', 'set-cursor', 'seed'], args.pos.action, 'pr-round action');
   if (action === 'list') {
+    const home = process.env.FM_HOME;
+    const legacy = home && path.join(home, 'data', 'pr-review', 'ledger.jsonl');
+    if (legacy && fs.existsSync(legacy)) {
+      // Keep legacy history visible until cutover is explicitly complete; no deletion occurs here.
+      const lines = fs.readFileSync(legacy, 'utf8').split('\n').filter((line) => line.trim());
+      for (const line of lines) {
+        const file = path.join(os.tmpdir(), `fm-pr-legacy-${process.pid}.json`);
+        try {
+          fs.writeFileSync(file, line, { mode: 0o600 });
+          await cmdPrRound({ pos: { action: 'put' }, flags: { file } });
+        } finally { fs.rmSync(file, { force: true }); }
+      }
+    }
     for (const row of await listAll('fm_pr_round', { orderby: 'id' })) {
       if (row.kind !== 'cursor') console.log(row.payload);
     }
@@ -1890,6 +1910,14 @@ async function cmdPrRound(args) {
   const cursorKey = 'firstmate-pr-review-cursor-v1';
   if (action === 'cursor') {
     const row = await firstRow('fm_pr_round', `recordKey eq ${lit(cursorKey)}`);
+    if (!row) {
+      const legacy = process.env.FM_HOME && path.join(process.env.FM_HOME, 'data', 'pr-review', 'state.json');
+      if (legacy && fs.existsSync(legacy)) {
+        await cmdPrRound({ pos: { action: 'set-cursor' }, flags: { file: legacy } });
+        console.log(JSON.stringify(JSON.parse(fs.readFileSync(legacy, 'utf8'))));
+        return;
+      }
+    }
     console.log(row?.payload ?? '{}');
     return;
   }
@@ -1930,9 +1958,22 @@ async function cmdEvent(args) {
   const headKind = kind === 'deploy' || kind === 'ci' || kind === 'pr';
   if (head !== undefined && !headKind) throw usage('--head goes only on a deploy, ci or pr event');
   const mergeAuthority = args.flags['merge-authority'];
+  if (mergeAuthority !== undefined && !args.mergeGate) throw usage('authority is written only by merge-authority with a gate receipt');
   if (mergeAuthority !== undefined) {
     if (kind !== 'pr') throw usage('--merge-authority goes only on a pr event');
     oneOf(['away', 'attended'], mergeAuthority, 'merge authority');
+    if (!['merge authority pending', 'merge authority accepted'].includes(noteOf(args))) throw usage('merge authority requires the merge-gate phase');
+    const receipt = args.flags.receipt;
+    if (!receipt) throw usage('merge authority requires --receipt from the merge gate');
+    let stat, proof;
+    try {
+      stat = fs.lstatSync(receipt);
+      proof = JSON.parse(fs.readFileSync(receipt, 'utf8'));
+    } catch { throw usage('merge authority receipt is missing or unreadable'); }
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || (stat.mode & 0o777) !== 0o600 || stat.uid !== process.getuid()
+      || proof.task !== taskId || proof.prUrl !== prUrl || proof.head !== head || proof.authority !== mergeAuthority) {
+      throw usage('merge authority receipt does not match task, PR, head and authority');
+    }
   }
   if (kind === 'pr' && head !== undefined && !/^[a-f0-9]{40,64}$/.test(head)) throw usage('--head on pr must be a full commit SHA');
   if (args.flags.touched !== undefined && !(kind === 'deploy' && head)) throw usage('--touched names the scenarios a deploy touched: give it only on a deploy event with --head');
@@ -1969,7 +2010,7 @@ async function cmdEvent(args) {
       if (kind === 'closed' && task.state !== 'done') throw rule(`closed is refused: ${taskId} is ${task.state}, not approved`);
       return { kind, note: noteOf(args), set: kind === 'closed' ? {} : { nextActor: 'owner' } };
     }
-    return { kind, note: noteOf(args) || (kind === 'link' ? url : ''), set: kind === 'pr' && prUrl ? { prUrl } : {}, ...((head || merged || mergeAuthority || kind === 'link') ? { extra: { ...(head ? { head, ...(kind === 'pr' ? { prHead: head } : {}), ...(touched ? { touched } : {}) } : {}), ...(merged ? { merged: true } : {}), ...(mergeAuthority ? { mergeAuthority } : {}), ...(kind === 'link' ? { url } : {}) } } : {}) };
+    return { kind, note: noteOf(args) || (kind === 'link' ? url : ''), set: kind === 'pr' && prUrl ? { prUrl } : {}, ...((head || merged || mergeAuthority || kind === 'link') ? { extra: { ...(head ? { head, ...(kind === 'pr' ? { prHead: head } : {}), ...(touched ? { touched } : {}) } : {}), ...(merged ? { merged: true } : {}), ...(mergeAuthority ? { mergeAuthority, authorityPhase: noteOf(args).endsWith(' accepted') ? 'accepted' : 'pending' } : {}), ...(kind === 'link' ? { url } : {}) } } : {}) };
   }, kind === 'deploy' && head ? () => routeReview(taskId, who) : undefined);
 }
 
@@ -3100,7 +3141,7 @@ const COMMANDS = {
   rules: cmdRules, rule: cmdRule, answer: cmdAnswer,
   'turn-end': cmdTurnEnd, deliver: cmdDeliver, requests: cmdRequests, 'read-mark': cmdReadMark, inbox: cmdInbox, describe: cmdDescribe, plan: cmdPlan, 'plan-decision': cmdPlanDecision, thread: cmdThread,
   create: cmdCreate, import: cmdImport, assign: cmdAssign, start: cmdStart, heartbeat: cmdHeartbeat, done: cmdDone, ask: cmdAsk, block: cmdBlock,
-  'pr-record': cmdPrRecord, 'pr-round': cmdPrRound,
+  'merge-authority': cmdMergeAuthority, 'pr-record': cmdPrRecord, 'pr-round': cmdPrRound,
   unblock: cmdUnblock, approve: cmdApprove, changes: cmdChanges, reopen: cmdReopen, reassign: cmdReassign, archive: cmdArchive, delete: cmdDelete, home: cmdHome, comment: cmdComment, event: cmdEvent,
   'plan-spec': cmdPlanSpec, 'plan-approve': cmdPlanApprove, 'plan-check': cmdPlanCheck, document: cmdDocument, link: cmdLink, rows: cmdRows, check: cmdCheck, 'owner-check': cmdOwnerCheck, gate: cmdGate, show: cmdShow, list: cmdList, resume: cmdResume, reproject: cmdReproject,
   checks: cmdChecks, checklist: cmdChecklist,

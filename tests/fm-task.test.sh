@@ -3728,10 +3728,21 @@ case_pr_record() {
   BIN=$1
   ft create tk-pr-record --title 'PR record' --kind ship >/dev/null || return 1
   local head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-  ft event tk-pr-record pr --pr-url https://github.com/example/repo/pull/1 --head "$head" --merge-authority attended --merged || return 1
-  must 'PR event' 0 || return 1
+  ft event tk-pr-record pr --pr-url https://github.com/example/repo/pull/1 --head "$head" --merge-authority attended
+  must 'ordinary event cannot grant authority' 2 || return 1
+  local receipt="$TMP_ROOT/merge-receipt.json"
+  jq -cn --arg h "$head" '{task:"tk-pr-record",prUrl:"https://github.com/example/repo/pull/1",head:$h,authority:"attended"}' > "$receipt"
+  chmod 600 "$receipt"
+  ft merge-authority tk-pr-record --pr-url https://github.com/example/repo/pull/1 --head "$head" --merge-authority attended --phase accepted
+  must 'receipt required' 2 || return 1
+  ft merge-authority tk-pr-record --pr-url https://github.com/example/repo/pull/2 --head "$head" --merge-authority attended --phase accepted --receipt "$receipt"
+  must 'other PR receipt refused' 2 || return 1
+  ft merge-authority tk-pr-record --pr-url https://github.com/example/repo/pull/1 --head bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb --merge-authority attended --phase accepted --receipt "$receipt"
+  must 'other head receipt refused' 2 || return 1
+  ft merge-authority tk-pr-record --pr-url https://github.com/example/repo/pull/1 --head "$head" --merge-authority attended --phase accepted --receipt "$receipt"
+  must 'gate authority event' 0 || return 1
   ft pr-record tk-pr-record; must 'PR readback' 0 || return 1
-  jq -e --arg h "$head" '.prHead == $h and .mergeAuthority == "attended" and .merged == true' <<<"$OUT" >/dev/null || return 1
+  jq -e --arg h "$head" '.prHead == $h and .mergeAuthority == "attended" and .authorityPhase == "accepted"' <<<"$OUT" >/dev/null || return 1
   db fm_task_event | jq -e --arg h "$head" 'any(.[]; .taskId == "tk-pr-record" and .prHead == $h and .mergeAuthority == "attended")' >/dev/null || return 1
   ft event tk-pr-record ci --merge-authority attended; must 'authority only on PR' 2 || return 1
   printf '{"type":"round","task":"tk-pr-record","head":"%s","round":1,"at":100,"delivered":true,"reader":{"answer":"full answer"},"retained":["pre-existing"]}\n' "$head" > "$TMP_ROOT/pr-round.json"
