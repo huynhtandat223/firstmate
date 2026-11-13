@@ -69,6 +69,12 @@ def push():
             row['announcedAt'] = announced.read_text().strip()
         reply = cache / '.replies' / identity
         if reply.exists():
+            # Replay is a reply write too: a former holder must not upload a
+            # queued answer through receipts before the CLI's reply guard.
+            guard = pathlib.Path(writer).with_name('fm-home-lease-lib.sh')
+            checked = subprocess.run(['bash', '-c', '. "$1"; fm_home_lease_require', 'lease-replay', str(guard)], capture_output=True, text=True)
+            if checked.returncode:
+                raise RuntimeError('queued reply requires the active home lease; retained locally')
             reply_fields, body = read(reply)
             row.update(reply=body, replyAt=reply_fields['at'], replySeq=int(reply_fields['seq']))
         if row['state'] == 'handled':
