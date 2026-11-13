@@ -1074,11 +1074,29 @@ case_reads_and_images() {
   id=$(db fm_task_event | jq -r --argjson s "$(seq_of)" '.[] | select(.seq == $s) | .id')
   db fm_event_image | jq -e --arg id "$id" '.[] | select(.fmTaskEventId == $id) | .label == "a pixel" and .mediaType == "image/png" and .position == 1 and (.content | length > 0)' >/dev/null || { echo "image child wrong"; return 1; }
   [ "$(posts POST fm_event_image)" = 0 ] || { echo "the image was posted on its own"; return 1; }
+  ft event tk-r1 link --url https://example.com/review --note Review
+  must 'publish link' 0 || return 1
+  ft materials tk-r1
+  must 'read durable materials' 0 || return 1
+  jq -e --arg bytes "$(base64 < "$png" | tr -d '\n')" '.links == [{url:"https://example.com/review",label:"Review"}] and .images[0].content == $bytes and .images[0].label == "a pixel"' <<<"$OUT" >/dev/null || { echo "materials differ from published bytes"; return 1; }
   ft comment tk-r1 --note x --image "$png"
   [ "$RC" -ne 0 ] || { echo "an image with no label was accepted"; return 1; }
   head -c 2200000 /dev/zero > "$TMP_ROOT/big.png"
   ft comment tk-r1 --note x --image "$TMP_ROOT/big.png" --image-label big
   [ "$RC" -ne 0 ] || { echo "an image over 2 MiB was accepted"; return 1; }
+  FM_HOME="$TMP_ROOT/material-home" "$ROOT/bin/fm-task-links.sh" tk-r1 add-image "$png" Pixel >/dev/null || return 1
+  FM_HOME="$TMP_ROOT/material-home" "$ROOT/bin/fm-task-links.sh" tk-r1 add-image "$png" Pixel >/dev/null || return 1
+  [ "$(db fm_event_image | jq '[.[] | select(.label == "Pixel")] | length')" = 1 ] || { echo 'publisher retry duplicated image'; return 1; }
+  local materials
+  materials=$(FM_HOME="$TMP_ROOT/another-home" "$ROOT/bin/fm-task-links.sh" tk-r1 show --json) || return 1
+  cmp "$png" "$(jq -r '.images[-1].path' <<<"$materials")" || return 1
+  materials=$(FM_TASK_BASE_URL=http://127.0.0.1:1 FM_HOME="$TMP_ROOT/another-home" "$ROOT/bin/fm-task-links.sh" tk-r1 show --json) || return 1
+  cmp "$png" "$(jq -r '.images[-1].path' <<<"$materials")" || return 1
+  FM_TASK_BASE_URL=http://127.0.0.1:1 FM_HOME="$TMP_ROOT/material-home" "$ROOT/bin/fm-task-links.sh" tk-r1 add-url https://example.com/retry Retry >/dev/null 2>&1 && { echo 'offline publication claimed success'; return 1; }
+  FM_HOME="$TMP_ROOT/material-home" "$ROOT/bin/fm-task-links.sh" tk-r1 add-url https://example.com/retry Retry >/dev/null || return 1
+  ft materials tk-r1
+  jq -e '[.links[] | select(.url == "https://example.com/retry")] | length == 1' <<<"$OUT" >/dev/null || return 1
+  FM_HOME="$TMP_ROOT/material-home" "$ROOT/bin/fm-task-links.sh" tk-r1 add-image "$TMP_ROOT/missing.png" Missing >/dev/null 2>&1 && { echo 'publisher accepted missing image'; return 1; }
   ft heartbeat tk-r1
   must 'heartbeat from ready' 5 || return 1
   FM_TASK_ID=tk-r1 ft comment --note 'task from the environment'

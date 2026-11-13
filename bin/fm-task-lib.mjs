@@ -85,6 +85,7 @@
 //            task:<id> or board link) stays the source of its rows: describe seeds none, and `rows <task> <issue>` seeds
 //            them. There, and for a Description that sync refuses (no scenarios, a parser refusal), the Description is
 //            stored all the same, and describe prints `rows not seeded: <why>` and exits 0.
+//   materials <task>                     read latest 12 links and 6 images (base64 bytes) from 5001
 //   thread   <task> [--since SEQ]                                       full comments, oldest first
 //   comment  <task> [--note T] [--image PATH --image-label L]... [--video PATH --video-label L]...
 //            [--ask why|how|wait-what] [--reply-to SEQ]                 any state; reply-to must name a comment of this task
@@ -511,6 +512,7 @@ const SPECS = {
   describe: { pos: ['task'], flags: { document: 's', 'document-title': 's' } },
   plan: { pos: ['task'], flags: { document: 's', 'document-title': 's', image: 'm', 'image-label': 'm' } },
   'plan-decision': { pos: ['task'], flags: { decision: 's', 'plan-seq': 's' } },
+  materials: { pos: ['task'], flags: {} },
   thread: { pos: ['task'], flags: { since: 's' } },
   comment: { pos: ['task'], flags: { image: 'm', 'image-label': 'm', video: 'm', 'video-label': 'm', ask: 's', 'reply-to': 's', 'anchor-quote': 's', 'anchor-prefix': 's', 'anchor-suffix': 's', outcome: 's', accept: 'b' } },
   event: { pos: ['task', 'kind'], flags: { 'pr-url': 's', head: 's', touched: 's', 'next-actor': 's', 'clears-on': 's', rows: 's', url: 's', merged: 'b' } },
@@ -1759,6 +1761,28 @@ async function cmdDocument(args) {
   const doc = await firstRow('fm_event_document', `fmTaskEventId eq ${event.id}`);
   if (!doc || !doc.content) throw rule('task Description document is missing');
   out(doc.content);
+}
+
+async function cmdMaterials(args) {
+  const taskId = taskIdOf(args);
+  const events = await taskEvents(taskId);
+  if (!fold(events)) throw rule(`no such task ${taskId}`);
+  const links = [];
+  const images = [];
+  for (const e of [...events].reverse()) {
+    const b = bodyOf(e);
+    if (e.kind === 'link' && links.length < 12 && b.url && !links.some((r) => r.url === b.url)) {
+      links.unshift({ url: b.url, label: b.note || b.url });
+    }
+    if (images.length < 6 && ['comment', 'plan', 'done', 'needs-decision', 'blocked'].includes(e.kind)) {
+      const rows = await listAll('fm_event_image', { filter: `fmTaskEventId eq ${e.id}`, orderby: 'position' });
+      for (const r of rows.slice().reverse()) {
+        if (images.length >= 6) break;
+        images.unshift({ label: r.label, mediaType: r.mediaType, content: r.content, seq: e.seq, position: r.position });
+      }
+    }
+  }
+  out(JSON.stringify({ links, images }));
 }
 
 async function cmdThread(args) {
@@ -3020,7 +3044,7 @@ const COMMANDS = {
   'turn-end': cmdTurnEnd, deliver: cmdDeliver, requests: cmdRequests, 'read-mark': cmdReadMark, inbox: cmdInbox, describe: cmdDescribe, plan: cmdPlan, 'plan-decision': cmdPlanDecision, thread: cmdThread,
   create: cmdCreate, import: cmdImport, assign: cmdAssign, start: cmdStart, heartbeat: cmdHeartbeat, done: cmdDone, ask: cmdAsk, block: cmdBlock,
   unblock: cmdUnblock, approve: cmdApprove, changes: cmdChanges, reopen: cmdReopen, reassign: cmdReassign, archive: cmdArchive, delete: cmdDelete, home: cmdHome, comment: cmdComment, event: cmdEvent,
-  'plan-spec': cmdPlanSpec, 'plan-approve': cmdPlanApprove, 'plan-check': cmdPlanCheck, document: cmdDocument, link: cmdLink, rows: cmdRows, check: cmdCheck, 'owner-check': cmdOwnerCheck, gate: cmdGate, show: cmdShow, list: cmdList, resume: cmdResume, reproject: cmdReproject,
+  materials: cmdMaterials, 'plan-spec': cmdPlanSpec, 'plan-approve': cmdPlanApprove, 'plan-check': cmdPlanCheck, document: cmdDocument, link: cmdLink, rows: cmdRows, check: cmdCheck, 'owner-check': cmdOwnerCheck, gate: cmdGate, show: cmdShow, list: cmdList, resume: cmdResume, reproject: cmdReproject,
   checks: cmdChecks, checklist: cmdChecklist,
 };
 
