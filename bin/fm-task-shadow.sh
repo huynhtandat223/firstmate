@@ -278,7 +278,13 @@ case "$EVENT" in
     ;;
   merged)
     # the note says merged too, so a wait that clears on the merge clears on this event
-    w "merged-$(short "${2:-}")" event "$TASK" pr --merged --pr-url "${2:-}" --note "merged ${2:-}"
+    PR_RECORD=$("$SCRIPT_DIR/fm-task.sh" pr-record "$TASK") || exit 1
+    PR_AUTHORITY=$(jq -r '.mergeAuthority // empty' <<<"$PR_RECORD")
+    PR_HEAD=$(jq -r '.prHead // empty' <<<"$PR_RECORD")
+    PR_ARGS=(event "$TASK" pr --merged --pr-url "${2:-}" --note "merged ${2:-}")
+    [ -z "$PR_AUTHORITY" ] || PR_ARGS+=(--merge-authority "$PR_AUTHORITY")
+    [ -z "$PR_HEAD" ] || PR_ARGS+=(--head "$PR_HEAD")
+    w "merged-$(short "${2:-}")" "${PR_ARGS[@]}"
     ;;
   step-start)
     # a spawn on the harness default model names none: the writer keeps the setup's model for the state

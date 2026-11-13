@@ -2,15 +2,8 @@
 # Durable ownership of the authority under which a task's merge was accepted.
 #
 # The away-posture record (state/.afk-contract) is resolved only at the merge
-# gate. After a forge accepts the merge, bin/fm-pr-merge.sh persists that answer
-# as:
-#   state/<task-id>.merge-authority
-#   fm-merge-authority-v1
-#   <provider>
-#   <host>
-#   <path>
-#   <number>
-#   <authority>                 away | attended
+# gate. Before a forge request, bin/fm-pr-merge.sh persists that answer on a
+# PR event in 5001, bound to its URL and head. The merged event retains it.
 # While an away record exists every merge runs under away authority (the
 # record's presence is the whole mechanical fact; which merge the captain's
 # away words meant is the supervision session's reading); without one, or while
@@ -20,14 +13,12 @@
 # the words model landed is still consumed, but they are never written again.
 # The identity comes from the merge run's immutable canonical URL parse;
 # persistence revalidates the task's current pr= metadata under its metadata
-# and lifecycle locks and refuses a mismatch. The file is atomically published,
-# mode 0600, single-link, and on the state filesystem. A poll consumes it only
-# when all identity fields match its own validated snapshot. Missing, malformed,
-# or mismatched state means external; it is never resolved again from a later
-# away-posture record.
+# and lifecycle locks and refuses a mismatch. A poll reads the recorded authority
+# only for its canonical PR URL. Missing or mismatched records mean external;
+# authority is never resolved again from a later away-posture record.
 #
 # Resolution authorizes nothing by itself. bin/fm-pr-merge.sh owns the merge
-# gate and persists only after a forge command succeeds, before releasing the
+# gate and persists before a forge command, before releasing the
 # task lifecycle lock. After observing a landed merge, bin/fm-watch.sh acquires
 # that same lock, revalidates the poll, publishes its durable outcome, and
 # retires only the exact authority record it read. Teardown uses the same lock,
@@ -104,7 +95,7 @@ fm_merge_authority_record_matches() {  # <record> <device> <provider> <host> <pa
 
 fm_merge_authority_persist() {  # <state> <task-id> <meta> <provider> <host> <path> <number> <authority>
   local state=$1 id=$2 meta=$3 provider=$4 host=$5 path=$6 number=$7 authority=$8
-  local record tmp='' state_device lock status=0
+  local state_device
   fm_pr_task_id_valid "$id" || return 1
   case "$authority" in away|attended) ;; *) return 1 ;; esac
   [ -d "$state" ] && [ ! -L "$state" ] || return 1
@@ -114,55 +105,33 @@ fm_merge_authority_persist() {  # <state> <task-id> <meta> <provider> <host> <pa
     && [ "$FM_PR_META_HOST" = "$host" ] \
     && [ "$FM_PR_META_PATH" = "$path" ] \
     && [ "$FM_PR_META_NUMBER" = "$number" ] || return 1
-  record="$state/$id.merge-authority"
-  lock="$record.lock"
-  fm_lock_acquire_wait "$lock" || return 1
-  fm_pr_regular_destination_on_device_or_absent "$record" "$state_device" || status=1
-  if [ "$status" -eq 0 ]; then
-    umask 077
-    tmp=$(mktemp "$state/.fm-merge-authority.XXXXXX") || status=1
-  fi
-  if [ "$status" -eq 0 ]; then
-    printf '%s\n%s\n%s\n%s\n%s\n%s\n' \
-      fm-merge-authority-v1 "$provider" "$host" "$path" "$number" "$authority" > "$tmp" \
-      || status=1
-  fi
-  if [ "$status" -eq 0 ]; then
-    chmod 0600 "$tmp" \
-      && fm_merge_authority_record_matches "$tmp" "$state_device" \
-        "$provider" "$host" "$path" "$number" \
-      && fm_pr_regular_destination_on_device_or_absent "$record" "$state_device" \
-      && mv -f -- "$tmp" "$record" \
-      && fm_merge_authority_record_matches "$record" "$state_device" \
-        "$provider" "$host" "$path" "$number" \
-      || status=1
-  fi
-  [ "$status" -eq 0 ] || rm -f -- "$tmp"
-  fm_lock_release "$lock" || status=1
-  return "$status"
+  # The task event binds authority to the canonical PR identity, never to a local sidecar.
+  local home=${FM_HOME:-$(dirname "$state")} head
+  head=$(grep '^pr_head=' "$meta" | tail -1 | cut -d= -f2- || true)
+  local -a args=(event "$id" pr --pr-url "$FM_PR_META_URL" --merge-authority "$authority"
+    --key "merge-authority:$id:$provider:$host:$path:$number:${head:-unknown}:$authority")
+  [ -z "$head" ] || args+=(--head "$head")
+  FM_HOME="$home" "${FM_MERGE_AUTHORITY_TASK:-${FM_TASK_SHADOW_WRITER:-$_FM_MERGE_AUTHORITY_LIB_DIR/fm-task.sh}}" "${args[@]}" >/dev/null
+  return $?
 }
 
 fm_merge_authority_read() {  # <state> <task-id> <provider> <host> <path> <number>
   local state=$1 id=$2 provider=$3 host=$4 path=$5 number=$6
-  local record state_device lock status=0
   FM_MERGE_AUTHORITY='external'
   FM_MERGE_AUTHORITY_RECORD_IDENTITY=
   fm_pr_task_id_valid "$id" || return 1
   [ -d "$state" ] && [ ! -L "$state" ] || return 1
-  state_device=$(fm_pr_file_device "$state") || return 1
-  record="$state/$id.merge-authority"
-  lock="$record.lock"
-  fm_lock_acquire_wait "$lock" || return 1
-  if fm_merge_authority_record_matches "$record" "$state_device" \
-      "$provider" "$host" "$path" "$number"; then
-    # shellcheck disable=SC2034 # Public results consumed by sourcing callers.
-    FM_MERGE_AUTHORITY_RECORD_IDENTITY=$(fm_pr_file_identity "$record") || status=1
-  else
-    FM_MERGE_AUTHORITY='external'
-    status=1
-  fi
-  fm_lock_release "$lock" || status=1
-  return "$status"
+  local home=${FM_HOME:-$(dirname "$state")} result expected_url
+  case "$provider" in
+    github) expected_url="https://$host/$path/pull/$number" ;;
+    forgejo) expected_url="https://$host/$path/pulls/$number" ;;
+    gitlab) expected_url="https://$host/$path/-/merge_requests/$number" ;;
+    *) return 1 ;;
+  esac
+  result=$(FM_HOME="$home" "${FM_MERGE_AUTHORITY_TASK:-${FM_TASK_SHADOW_WRITER:-$_FM_MERGE_AUTHORITY_LIB_DIR/fm-task.sh}}" pr-record "$id") || return 1
+  [ "$(jq -r '.prUrl // empty' <<<"$result")" = "$expected_url" ] || return 1
+  FM_MERGE_AUTHORITY=$(jq -r '.mergeAuthority // "external"' <<<"$result")
+  case "$FM_MERGE_AUTHORITY" in away|attended) return 0 ;; *) return 1 ;; esac
 }
 
 fm_merge_authority_remove_if_matches() {  # <state> <task-id> <provider> <host> <path> <number> <authority> <file-identity>

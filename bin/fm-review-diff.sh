@@ -148,6 +148,14 @@ resolve_pr_head() {
 
 PR_URL=$(grep '^pr=' "$META" | tail -1 | cut -d= -f2- || true)
 PR_HEAD_RECORDED=$(grep '^pr_head=' "$META" | tail -1 | cut -d= -f2- || true)
+if [ -e "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}/task-shadow" ]; then
+  if PR_RECORD=$(FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task.sh" pr-record "$ID"); then
+    PR_URL=$(jq -r '.prUrl // ""' <<<"$PR_RECORD")
+    PR_HEAD_RECORDED=$(jq -r '.prHead // ""' <<<"$PR_RECORD")
+  else
+    echo 'warning: PR record unavailable; using local PR cache' >&2
+  fi
+fi
 COMPARE_REF=$BRANCH
 if [ -n "$PR_URL" ]; then
   if PR_HEAD=$(resolve_pr_head "$PR_URL" "$PR_HEAD_RECORDED"); then

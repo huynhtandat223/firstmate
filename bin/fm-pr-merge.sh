@@ -1442,6 +1442,12 @@ require_current_away_authority() {
     echo "error: --allow-no-pipeline is attended-only; while the away-posture record exists a GitLab merge requires a successful head pipeline" >&2
     return 2
   fi
+  # The initial authority check precedes PR metadata publication. Later checks
+  # run immediately before the irreversible forge request with validated metadata.
+  if [ "${FM_PR_METADATA_RECORDED:-0}" = 1 ]; then
+    fm_merge_authority_persist "$STATE" "$ID" "$META" \
+      "$PROVIDER" "$PR_HOST" "$PR_PATH" "$PR_NUMBER" "$FM_PR_MERGE_AUTHORITY" || return 1
+  fi
 }
 
 persist_accepted_merge_authority() {
@@ -1655,6 +1661,7 @@ require_current_away_authority || away_status=$?
 [ "$away_status" -eq 0 ] || exit "$away_status"
 require_recorded_pr_identity || exit 1
 record_pr_metadata || exit 1
+FM_PR_METADATA_RECORDED=1
 require_released_captain_hold || exit 1
 
 # Accepted confused-agent-grade limitation, as in bin/fm-lease-lib.sh, not an

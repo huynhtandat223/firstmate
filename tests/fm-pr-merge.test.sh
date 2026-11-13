@@ -39,6 +39,27 @@ FJ_STALE_HEAD=dddddddddddddddddddddddddddddddddddddddd
 
 JQ_BIN=$(command -v jq) || fail "these tests read glab's JSON with the real jq, which was not found"
 REAL_MV=$(command -v mv) || fail "these tests need mv to simulate a failed poll publish"
+# Controlled task-CLI boundary; real 5001 integration is proved separately.
+export FM_MERGE_AUTHORITY_TASK="$TMP_ROOT/authority-task"
+cat > "$FM_MERGE_AUTHORITY_TASK" <<'SH'
+#!/usr/bin/env bash
+set -eu
+[ "${FM_AUTHORITY_REFUSE:-0}" != 1 ] || exit 3
+if [ "$1" = pr-record ]; then cat "$FM_STATE_OVERRIDE/$2.authority-test.json"; exit; fi
+shift
+id=$1; shift 2
+url='' head='' authority=''
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --pr-url) url=$2 ;;
+    --head) head=$2 ;;
+    --merge-authority) authority=$2 ;;
+  esac
+  shift 2
+done
+jq -cn --arg u "$url" --arg h "$head" --arg a "$authority" '{prUrl:$u,prHead:$h,mergeAuthority:$a}' > "$FM_STATE_OVERRIDE/$id.authority-test.json"
+SH
+chmod +x "$FM_MERGE_AUTHORITY_TASK"
 
 # Build a fresh sandbox for one test case: a state dir with task metadata and a
 # directory for its forge-command mocks. Echoes the case directory.
@@ -2534,8 +2555,9 @@ test_forgejo_transient_confirm_read_failure_still_persists_authority() {
   [ -e "$case_dir/tea-merged" ] || fail "forgejo-confirm-retry: the mock did not record the merge"
   [ "$(cat "$case_dir/tea-post-merge-view-failures")" = 0 ] \
     || fail "forgejo-confirm-retry: the confirmation read was not retried"
-  [ "$(sed -n 6p "$case_dir/state/task-x1.merge-authority" 2>/dev/null || true)" = attended ] \
-    || fail "forgejo-confirm-retry: the merge authority was not persisted: $(cat "$case_dir/state/task-x1.merge-authority" 2>/dev/null || true)"
+  [ "$(jq -r .mergeAuthority "$case_dir/state/task-x1.authority-test.json" 2>/dev/null || true)" = attended ] \
+    && [ ! -e "$case_dir/state/task-x1.merge-authority" ] \
+    || fail "forgejo-confirm-retry: the merge authority was not persisted on the PR record"
   if grep -q "did not confirm" "$case_dir/stderr"; then
     fail "forgejo-confirm-retry: a landed merge was reported as unconfirmed"
   fi
@@ -3553,8 +3575,9 @@ test_quiet_record_keeps_merges_attended() {
   assert_no_grep 'attended-only' "$case_dir/stderr" \
     "quiet-allow-red: quiet mode was treated as away"
   assert_logged_gh_merge "$case_dir" 84 example/repo --squash
-  [ "$(sed -n 6p "$case_dir/state/task-x1.merge-authority" 2>/dev/null || true)" = attended ] \
-    || fail "quiet-allow-red: the persisted merge authority is not attended: $(cat "$case_dir/state/task-x1.merge-authority" 2>/dev/null || true)"
+  [ "$(jq -r .mergeAuthority "$case_dir/state/task-x1.authority-test.json" 2>/dev/null || true)" = attended ] \
+    && [ ! -e "$case_dir/state/task-x1.merge-authority" ] \
+    || fail "quiet-allow-red: the PR record authority is not attended"
   pass "fm-pr-merge keeps a quiet-mode home's merges attended, the named red-check waiver included"
 }
 
@@ -3608,8 +3631,9 @@ test_away_record_permits_any_green_merge_under_away_authority() {
     "away-green: the durable outcome did not tag away"
   assert_no_grep 'away-grant' "$case_dir/state/.wake-queue" \
     "away-green: the retired away-grant tag reappeared"
-  [ "$(sed -n 6p "$case_dir/state/task-x1.merge-authority" 2>/dev/null || true)" = away ] \
-    || fail "away-green: the persisted merge authority is not away: $(cat "$case_dir/state/task-x1.merge-authority" 2>/dev/null || true)"
+  [ "$(jq -r .mergeAuthority "$case_dir/state/task-x1.authority-test.json" 2>/dev/null || true)" = away ] \
+    && [ ! -e "$case_dir/state/task-x1.merge-authority" ] \
+    || fail "away-green: the PR record authority is not away"
 
   # A yolo=on task merges under the same away authority: the posture, not the
   # task's standing autonomy, is what the ledger records while away.
