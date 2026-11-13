@@ -884,7 +884,9 @@ A new \`plan\` replaces the Solution and its approval.
 The owner approves the Solution on the task's Solution tab before implementation starts, so implement only once \`show\` prints \`planDecision=approve\`."
 if [ "$KIND" = ship ] && [ "$MODE" != local-only ]; then
   TASK_RULES="$TASK_RULES
-One task has one pull request; a second pull request is its own subtask, which firstmate files."
+A pull request follows the slice: every change of this task in one repository goes into one pull request, its fixes and documents too.
+Open another only when one cannot hold the change (another repository, or a fix after the first one merged); it stays in this task.
+A subtask is work with its own Solution, which firstmate files."
 fi
 
 if [ "$KIND" = scout ]; then

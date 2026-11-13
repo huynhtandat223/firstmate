@@ -72,9 +72,10 @@ For `surface: user-visible`, supply a page and widths other than `-`.
 For a scenario with no widths, use `widths: -`.
 Name the visible controls by role and label, or use `controls: -` where none apply.
 
-## One pull request and the Solution
+## The pull request and the Solution
 
-Scope each task to one pull request; a second pull request is its own subtask.
+Scope each task to one slice: its changes go into one pull request per repository, and a further pull request that one cannot hold (another repository, a fix after a merge) stays in the task.
+File a subtask only for work with its own Solution and acceptance rows.
 Every task also gets a Solution document, separate from its Description, with exactly these three `## ` headings.
 
 ```markdown

@@ -377,7 +377,10 @@ task_rules_brief_case() {  # <bin-dir>: 0 when each brief carries the task rules
     grep -qF 'A new `plan` replaces the Solution and its approval.' <<<"$preamble" || { echo "$id: the rules do not say a new plan replaces the Solution"; return 1; }
     grep -qF "The owner approves the Solution on the task's Solution tab before implementation starts, so implement only once \`show\` prints \`planDecision=approve\`." <<<"$preamble" || { echo "$id: no approval before implementation"; return 1; }
     case "$id" in
-      rules-pr|rules-visible) grep -qF 'One task has one pull request; a second pull request is its own subtask' <<<"$preamble" || { echo "$id: no one-pull-request rule"; return 1; } ;;
+      rules-pr|rules-visible)
+        grep -qF 'A pull request follows the slice: every change of this task in one repository goes into one pull request' <<<"$preamble" || { echo "$id: no pull-request-follows-the-slice rule"; return 1; }
+        # a further pull request the repository forces is no subtask
+        grep -qF 'it stays in this task' <<<"$preamble" || { echo "$id: a forced further pull request is not kept in its task"; return 1; } ;;
       *) ! grep -qF 'pull request' <<<"$preamble" || { echo "$id: a brief that opens no pull request names one"; return 1; } ;;
     esac
   done
