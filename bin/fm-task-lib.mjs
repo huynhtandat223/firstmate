@@ -158,6 +158,7 @@
 //            [--scope REPO,...] [--enabled true|false] [--warning W] [--note WHY]   |   rule set <id> [the same flags]
 //            |   rule delete <id>     writes fm_model_rule, then a `rules` event on task fm-model-rules (created
 //            on first use in backlog home system); a re-sent --key writes nothing again
+//   steers   <task> [--peek]                  print unread steers, then mark each read; --peek reads only
 //   read-mark <task> --key steer:<task>:<record>  mark one handled steer in fm_task_delivery (consumer read:<task>)
 //   deliver  <task> --consumer NAME           claim each event in fm_task_delivery, then append a wake
 //            FM_HOME is required; delivery is scoped to this task, never a whole foreign fleet. The first call only
@@ -526,6 +527,7 @@ const SPECS = {
   'turn-end': { pos: ['task'], flags: { turn: 's' } },
   deliver: { pos: ['task'], flags: { consumer: 's' } },
   requests: { pos: ['task'], flags: {} },
+  steers: { pos: ['task'], flags: { peek: 'b' } },
   'read-mark': { pos: ['task'], flags: {} },
   inbox: { pos: ['task'], flags: { action: 's', target: 's', home: 's' } },
   document: { pos: ['task'], flags: {} },
@@ -2790,6 +2792,31 @@ async function cmdInbox(args) {
   out(`inbox=${id} task=${target} resolution=${action}`);
 }
 
+async function cmdSteers(args) {
+  const taskId = taskIdOf(args);
+  const consumer = `read:${taskId}`;
+  if (consumer.length > 64) throw usage('read consumer exceeds 64 characters');
+  const marks = await listAll('fm_task_delivery', { filter: `consumer eq ${lit(consumer)}` });
+  const read = new Set(marks.map((m) => Number(m.seq)));
+  const events = (await taskEvents(taskId)).filter((e) => e.kind === 'steer' && !read.has(Number(e.seq)));
+  for (const event of events) {
+    // Wait for the output callback before claiming consumption, including pipe errors.
+    await new Promise((resolve, reject) => {
+      process.stdout.write(`${JSON.stringify({ seq: event.seq, key: event.idempotencyKey, note: bodyOf(event).note })}\n`, (error) => error ? reject(error) : resolve());
+    });
+    if (!args.flags.peek) await markSteerRead(taskId, event);
+  }
+}
+
+async function markSteerRead(taskId, event) {
+  const consumer = `read:${taskId}`;
+  const prior = await listAll('fm_task_delivery', { filter: `consumer eq ${lit(consumer)} and seq eq ${event.seq}` });
+  if (!prior.length) {
+    const res = await http('POST', '/api/fm_task_delivery', { consumer, seq: event.seq });
+    if (res.status !== 409) ok(res, 'mark steer read');
+  }
+}
+
 async function cmdReadMark(args) {
   const taskId = taskIdOf(args);
   const key = args.flags.key;
@@ -2798,11 +2825,7 @@ async function cmdReadMark(args) {
   if (consumer.length > 64) throw usage('read consumer exceeds 64 characters');
   const event = (await taskEvents(taskId)).find((e) => e.kind === 'steer' && e.idempotencyKey === key);
   if (!event) throw new Fail(5, 'steer event not stored yet');
-  const prior = await listAll('fm_task_delivery', { filter: `consumer eq ${lit(consumer)} and seq eq ${event.seq}` });
-  if (!prior.length) {
-    const res = await http('POST', '/api/fm_task_delivery', { consumer, seq: event.seq });
-    if (res.status !== 409) ok(res, 'mark steer read');
-  }
+  await markSteerRead(taskId, event);
   out(`read ${consumer} seq=${event.seq}`);
 }
 
@@ -3017,7 +3040,7 @@ async function cmdRule(args) {
 const COMMANDS = {
   setup: cmdSetup, move: cmdMove, step: cmdStep,
   rules: cmdRules, rule: cmdRule, answer: cmdAnswer,
-  'turn-end': cmdTurnEnd, deliver: cmdDeliver, requests: cmdRequests, 'read-mark': cmdReadMark, inbox: cmdInbox, describe: cmdDescribe, plan: cmdPlan, 'plan-decision': cmdPlanDecision, thread: cmdThread,
+  'turn-end': cmdTurnEnd, deliver: cmdDeliver, requests: cmdRequests, steers: cmdSteers, 'read-mark': cmdReadMark, inbox: cmdInbox, describe: cmdDescribe, plan: cmdPlan, 'plan-decision': cmdPlanDecision, thread: cmdThread,
   create: cmdCreate, import: cmdImport, assign: cmdAssign, start: cmdStart, heartbeat: cmdHeartbeat, done: cmdDone, ask: cmdAsk, block: cmdBlock,
   unblock: cmdUnblock, approve: cmdApprove, changes: cmdChanges, reopen: cmdReopen, reassign: cmdReassign, archive: cmdArchive, delete: cmdDelete, home: cmdHome, comment: cmdComment, event: cmdEvent,
   'plan-spec': cmdPlanSpec, 'plan-approve': cmdPlanApprove, 'plan-check': cmdPlanCheck, document: cmdDocument, link: cmdLink, rows: cmdRows, check: cmdCheck, 'owner-check': cmdOwnerCheck, gate: cmdGate, show: cmdShow, list: cmdList, resume: cmdResume, reproject: cmdReproject,

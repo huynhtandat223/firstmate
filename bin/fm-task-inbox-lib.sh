@@ -212,9 +212,83 @@ _fm_task_inbox_write_record_locked() {  # <inbox-dir> <text> [delivery-mode]
     [ "$delivery_mode" != fire-and-forget ] || printf 'delivery=fire-and-forget\n'
     printf -- '--\n'
     printf '%s' "$text"
-  } > "$tmp" && mv "$tmp" "$rec" || status=1
+  } > "$tmp" || status=1
+  if [ "$status" -eq 0 ]; then
+    # Reserve the sequence under the lock, publish first, then expose the cache.
+    if fm_task_inbox_api_enabled; then
+      if fm_task_inbox_publish "${dir##*/}" "$rec" "$text"; then
+        : > "$rec.published"
+      else
+        echo 'warning: steer cached for same-key publication retry; 5001 unavailable' >&2
+      fi
+    fi
+    mv "$tmp" "$rec" || status=1
+  fi
   [ "$status" -eq 0 ] || { rm -f "$tmp"; return 1; }
   printf '%s' "$rec"
+}
+
+fm_task_inbox_api_enabled() {
+  [ -f "${FM_CONFIG_OVERRIDE:-${FM_HOME:-}/config}/task-shadow" ]
+}
+
+# API settings belong to the existing task-shadow configuration owner.
+fm_task_inbox_api() (
+  # shellcheck source=bin/fm-task-shadow-config-lib.sh
+  . "$_FM_TASK_INBOX_LIB_DIR/fm-task-shadow-config-lib.sh"
+  fm_task_shadow_config "${FM_CONFIG_OVERRIDE:-${FM_HOME:-}/config}/task-shadow" || exit
+  "$_FM_TASK_INBOX_LIB_DIR/fm-task.sh" "$@"
+)
+
+fm_task_inbox_publish() { # <task.inbox> <record> <text>
+  fm_task_inbox_api event "${1%.inbox}" steer --note "$3" \
+    --key "steer:${1%.inbox}:${2##*/}" --actor firstmate --role firstmate >/dev/null
+}
+
+# Refresh only this task's cache. Remote receipts suppress local re-rings;
+# failed writes keep their original key and are retried on the next pass.
+fm_task_inbox_sync() { # <state-dir> <task-id>
+  local dir rec body unread key
+  fm_task_inbox_api_enabled || return 0
+  dir=$(fm_task_inbox_dir "$1" "$2")
+  local attempt
+  for attempt in "$dir"/.attempt-*; do
+    [ -f "$attempt" ] || continue
+    [ ! -f "$attempt.sent" ] || continue
+    case "$attempt" in *.sent) continue ;; esac
+    if fm_task_inbox_api event "$2" comment --note "$(cat "$attempt")" \
+      --key "steer-attempt:$2:${attempt##*/}" --actor firstmate --role firstmate >/dev/null; then
+      : > "$attempt.sent"
+    fi
+  done
+  for rec in "$dir"/*.msg "$dir/handled"/*.msg; do
+    [ -f "$rec" ] || continue
+    [ ! -f "$dir/${rec##*/}.published" ] || continue
+    body=$(fm_task_inbox_body "$rec"; printf x) || continue
+    body=${body%x}
+    if fm_task_inbox_publish "$2.inbox" "$rec" "$body"; then
+      : > "$dir/${rec##*/}.published"
+    fi
+  done
+  unread=$(fm_task_inbox_api steers "$2" --peek) || return 0
+  for rec in "$dir"/*.msg; do
+    [ -f "$rec" ] || continue
+    [ -f "$rec.published" ] || continue
+    key="steer:$2:${rec##*/}"
+    if ! printf '%s\n' "$unread" | jq -e --arg key "$key" 'select(.key == $key)' >/dev/null; then
+      mv "$rec" "$dir/handled/" || return 1
+    fi
+  done
+}
+
+# Store attempt evidence before publishing; a failed request retries unchanged.
+fm_task_inbox_attempt() { # <state-dir> <task-id> <record-path> <kind> <count>
+  local dir file
+  fm_task_inbox_api_enabled || return 0
+  dir=$(fm_task_inbox_dir "$1" "$2")
+  file="$dir/.attempt-${3##*/}-$4-$5"
+  [ -f "$file" ] || printf 'Steer %s: %s attempt %s\n' "${3##*/}" "$4" "$5" > "$file" || return 1
+  fm_task_inbox_sync "$1" "$2"
 }
 
 # Durably enqueue one steer: temp-write, then atomic rename into the next
@@ -435,8 +509,8 @@ fm_task_inbox_doorbell_line() {  # <record-path>
     ''|*[![:print:]]*) return 1 ;;
   esac
   quoted=$(printf '%s' "$name" | sed "s/'/'\\\\''/g")
-  printf ": Firstmate instruction waiting: list \"\$FM_TASK_INBOX\"/*.msg in your '%s' steering inbox, read and act on each in numeric order, then mv each into its handled/." \
-    "$quoted"
+  printf ": Firstmate instruction waiting: run bin/fm-task.sh steers '%s'. If 5001 is down, list \"\$FM_TASK_INBOX\"/*.msg in numeric order, then mv to handled/." \
+    "${quoted%.inbox}"
 }
 
 # Ring the doorbell, best-effort: one endpoint-liveness pre-check, one advisory
@@ -559,6 +633,7 @@ fm_task_inbox_clear_retry() {  # <state-dir> <task-id> <record-path>
 fm_task_inbox_due_action() {  # <state-dir> <task-id>
   local dir oldest base now grace max ladder rec_base count last
   dir=$(fm_task_inbox_dir "$1" "$2")
+  fm_task_inbox_sync "$1" "$2" || return 1
   # Handled messages remain local runtime receipts; their read marks live in
   # the task record. Only scan this task, and retry failed API writes next time.
   if [ -f "${FM_CONFIG_OVERRIDE:-${FM_HOME:-}/config}/task-shadow" ]; then
@@ -649,6 +724,7 @@ EOF
     [ -d "$dir" ] || return 0
     return 1
   fi
+  fm_task_inbox_attempt "$1" "$2" "$3" ring "$((count + 1))"
 }
 
 # Mark the current oldest as escalated after its stale wake is durably queued,
@@ -663,4 +739,5 @@ fm_task_inbox_record_escalated() {  # <state-dir> <task-id> <record-path>
     [ -d "$dir" ] || return 0
     return 1
   fi
+  fm_task_inbox_attempt "$1" "$2" "$3" escalate 1
 }

@@ -427,7 +427,13 @@ test_steer_read_mark() {
   ft event steer-probe steer --note 'read this' --key steer:steer-probe:001.msg || return 1
   local seq
   seq=$(seq_of)
-  ft read-mark steer-probe --key steer:steer-probe:001.msg || return 1
+  ft steers steer-probe --peek || return 1
+  [ "$(printf '%s' "$OUT" | jq -r .note)" = 'read this' ] || return 1
+  [ "$(count fm_task_delivery)" = 0 ] || return 1
+  ft steers steer-probe || return 1
+  [ "$(printf '%s' "$OUT" | jq -r .note)" = 'read this' ] || return 1
+  ft steers steer-probe || return 1
+  [ -z "$OUT" ] || return 1
   ft read-mark steer-probe --key steer:steer-probe:001.msg || return 1
   [ "$(db fm_task_delivery | jq --argjson seq "$seq" '[.[] | select(.consumer == "read:steer-probe" and .seq == $seq)] | length')" = 1 ] || return 1
   ft read-mark other-task --key steer:steer-probe:001.msg && return 1
