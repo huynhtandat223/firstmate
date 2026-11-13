@@ -440,6 +440,44 @@ test_steer_read_mark() {
   [ "$RC" = 2 ]
 }
 
+# Replay uses the real inbox writer and watcher reconciliation against the suite
+# HTTP boundary. A closed port induces the otherwise unsafe dependency outage.
+test_steer_cache_replay() {
+  reset_db
+  mk_running replay-probe || return 1
+  local home="$TMP_ROOT/replay-home" rec before
+  mkdir -p "$home/config" "$home/state"
+  printf 'FM_TASK_BASE_URL=http://127.0.0.1:1\n' > "$home/config/task-shadow"
+  rec=$(FM_HOME="$home" FM_CONFIG_OVERRIDE="$home/config" bash -c '
+    source "$1/bin/fm-task-inbox-lib.sh"
+    fm_task_inbox_write "$2/state" replay-probe "outage message"
+  ' _ "$ROOT" "$home") || return 1
+  [ -f "$rec" ] || return 1
+  [ "$(db fm_task_event | jq '[.[] | select(.kind == "steer")] | length')" = 0 ] || return 1
+  printf 'FM_TASK_BASE_URL=%s\n' "$BASE" > "$home/config/task-shadow"
+  for before in 1 2; do
+    FM_HOME="$home" FM_CONFIG_OVERRIDE="$home/config" bash -c '
+      source "$1/bin/fm-task-inbox-lib.sh"
+      fm_task_inbox_sync "$2/state" replay-probe
+    ' _ "$ROOT" "$home" || return 1
+  done
+  [ "$(db fm_task_event | jq '[.[] | select(.kind == "steer")] | length')" = 1 ] || return 1
+  [ -f "$rec" ] || return 1
+  ft steers replay-probe || return 1
+  [ "$(printf '%s' "$OUT" | jq -r .note)" = 'outage message' ] || return 1
+  before=$(FM_HOME="$home" FM_CONFIG_OVERRIDE="$home/config" bash -c '
+    source "$1/bin/fm-task-inbox-lib.sh"
+    fm_task_inbox_due_action "$2/state" replay-probe
+  ' _ "$ROOT" "$home") || return 1
+  [ "$before" = quiet ] || return 1
+  [ ! -f "$rec" ] && [ -f "${rec%/*}/handled/${rec##*/}" ] || return 1
+  ft steers replay-probe || return 1
+  [ -z "$OUT" ]
+}
+
+test_steer_cache_replay || fail 'steer cache replays once and central receipt suppresses retry'
+pass 'steer cache replays once and central receipt suppresses retry'
+
 test_inbox_validation() {
   reset_db
   ft inbox not-a-uuid --action task
