@@ -484,6 +484,10 @@ use_issue() { issue_body "$1" > "$TMP_ROOT/issue.body"; }
 # a missing template field prints the API's field and stores nothing.
 case_owner_records() {
   BIN=$1; reset_db
+  local configured="$TMP_ROOT/configured-owner-home"
+  mkdir -p "$configured/config/tasks-axi"
+  printf 'backend = "cfw5001"\n[cfw5001]\nhome = "secondmate-probe"\n' > "$configured/config/tasks-axi/.tasks.toml"
+  [ "$(FM_HOME="$configured" "$BIN/fm-task.sh" owner-home)" = secondmate-probe ] || return 1
   local file="$TMP_ROOT/note-record.json"
   printf '%s\n' '{"home":"probe","noteId":"probe-note","text":"exact owner words","source":"cli","state":"waiting","at":"2026-01-01T00:00:00Z"}' > "$file"
   ft owner-record note put --identity probe-note --home probe --file "$file"
