@@ -40,7 +40,13 @@ def pull():
         if not re.fullmatch(r'[A-Za-z0-9_-][A-Za-z0-9._-]*', identity or '') or '..' in identity:
             raise ValueError('unsafe owner note identity')
         target = cache / ('handled' if row['state'] == 'handled' else '') / (identity + '.note')
-        fields = {'id': identity, 'at': row['at'], 'source': row['source'], 'announce_marker': '1'}
+        fields = {'id': identity, 'at': row['at'], 'source': row['source']}
+        if target.exists():
+            previous, _ = read(target)
+            if previous.get('announce_marker') == '1':
+                fields['announce_marker'] = '1'
+        elif row.get('announcedAt') or row.get('requestId'):
+            fields['announce_marker'] = '1'
         if row.get('requestId'):
             request = row['requestId']
             if not re.fullmatch(r'[A-Za-z0-9_:-][A-Za-z0-9._:-]*', request):
@@ -59,7 +65,11 @@ def pull():
 
 def push():
     for path in sorted(list(cache.glob('*.note')) + list((cache / 'handled').glob('*.note'))):
-        fields, text = read(path)
+        try:
+            fields, text = read(path)
+        except UnicodeDecodeError:
+            # Receipts owns malformed input disclosure; leave it local.
+            continue
         identity = fields['id']
         row = dict(home=home, noteId=identity, text=text, source=fields['source'],
                    state='handled' if path.parent.name == 'handled' else 'waiting', at=fields['at'],
@@ -76,6 +86,9 @@ def push():
             if checked.returncode:
                 raise RuntimeError('queued reply requires the active home lease; retained locally')
             reply_fields, body = read(reply)
+            if not reply_fields.get('seq', '').isdigit():
+                # Keep malformed local replies for receipts omission disclosure.
+                continue
             row.update(reply=body, replyAt=reply_fields['at'], replySeq=int(reply_fields['seq']))
         if row['state'] == 'handled':
             row['handledAt'] = datetime.datetime.now(datetime.timezone.utc).isoformat()
