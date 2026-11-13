@@ -28,6 +28,8 @@
 # transient lock that self-clears is retried without a force-remove; and any
 # non-packed-refs.lock fetch failure keeps today's behavior with no retry.
 set -u
+# Keep this git-safety suite on its test-owned registry during remote outages.
+export FM_TASK_BASE_URL=http://127.0.0.1:1
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
