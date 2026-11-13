@@ -321,6 +321,113 @@ scenario_draft() {
   [ "$(spawn_count)" = 1 ] || { echo 'a closed PR was asked'; return 1; }
 }
 
+# Every successful deploy step is one `deployed` ledger line (its sha, its CI run and the step's completion time),
+# also when every PR of the deploy is skipped and when the deploy has no PR at all, so the verify gate learns the head
+# deployed. A skipped deploy step is no deploy. The same result handled twice (a retried delivery) leaves one line per
+# sha, a deploy-only result carries the cursor and is silent once recorded, and one not recorded is not silent.
+scenario_deployed_lines() {
+  new_lab "$1"
+  live_task inner 21 internal
+  fx_pr 21 closed h0 800
+  fx_runs "1:completed:success:s0" "2:completed:success:s1" "3:completed:success:s2" "4:completed:success:s3"
+  fx_jobs 2 success; fx_jobs 3 success skipped; fx_jobs 4 success
+  fx_compare s0 s1 c1; fx_commit_prs c1 21:800
+  fx_compare s1 s3
+  set_cursor 1 s0
+  cycle
+  [ "$CYCLE_AUTO" = 0 ] || { echo "autohandle=$CYCLE_AUTO"; return 1; }
+  [ "$(ledger_count '.type == "skip" and .reason == "internal"')" = 1 ] || { echo 'the internal PR is not skipped'; return 1; }
+  [ "$(ledger_count ".type == \"deployed\" and .sha == \"$(sha s1)\" and .run == \"https://example.test/runs/2\" and .completed == \"2026-10-20T14:29:00Z\" and (.at | type) == \"number\"")" = 1 ] \
+    || { echo "a deploy whose PRs were all skipped is not one deployed line: $(ledger)"; return 1; }
+  # The same result handled again records nothing twice.
+  "$BIN/fm-procevent-deploy-verify.sh" autohandle deploy-verify 1 "$H/state/procevent-inbox/deploy-verify.1.result" >/dev/null 2>&1
+  [ "$(ledger_count '.type == "deployed"')" = 1 ] || { echo "a repeated result recorded a deploy twice: $(ledger_count '.type == "deployed"')"; return 1; }
+  # A deploy with no PR at all is a result of its own; the skipped step of run 3 is no deploy.
+  cycle
+  [ "$CYCLE_AUTO" = 0 ] || { echo "a deploy-only result was not handled: $CYCLE_AUTO"; return 1; }
+  [ "$(jq -r .cursor_run "$H/data/deploy-verify/state.json")" = 4 ] || { echo 'a deploy-only result did not advance the cursor'; return 1; }
+  [ "$(ledger_count ".type == \"deployed\" and .sha == \"$(sha s3)\"")" = 1 ] || { echo "a deploy with no PR is not recorded: $(ledger)"; return 1; }
+  [ "$(ledger_count ".type == \"deployed\" and .sha == \"$(sha s2)\"")" = 0 ] || { echo 'a skipped deploy step was recorded as a deploy'; return 1; }
+  [ "$(ledger_count '.type == "deployed"')" = 2 ] || { echo "deployed lines: $(ledger_count '.type == "deployed"')"; return 1; }
+  "$BIN/fm-procevent-deploy-verify.sh" silent "$H/state/procevent-inbox/deploy-verify.$SEQ.result" || { echo 'a recorded deploy-only result is not silent'; return 1; }
+  jq -cn --arg s "$(sha s9)" '{schema: "fm-deploy-verify-result.v1", asks: [], skips: [], deploys: [{sha: $s, run: "r", completed: "c"}], recovered: false, error: null, cursor: null}' \
+    > "$H/state/procevent-inbox/unrecorded.result"
+  ! "$BIN/fm-procevent-deploy-verify.sh" silent "$H/state/procevent-inbox/unrecorded.result" || { echo 'a deploy not in the ledger is silent'; return 1; }
+}
+
+# `backfill-deploy <sha>` records the deployed line of a past deploy only after GitHub shows a completed run of that sha
+# on main whose deploy step succeeded: a run still in progress, a failed or skipped step, another workflow, a run of
+# another sha, no run, an unreadable GitHub and a short sha each refuse and write nothing; a later successful run of
+# the sha is recorded; a sha already in the ledger is reported and written once.
+fx_sha_runs() {  # <seed> <id:status:workflow[:head-seed]>...
+  local seed=$1 spec json='[]' id status name other
+  shift
+  for spec in "$@"; do
+    IFS=: read -r id status name other <<<"$spec"
+    json=$(jq -c --argjson id "$id" --arg st "$status" --arg n "$name" --arg h "$(sha "${other:-$seed}")" \
+      '. + [{id: $id, name: $n, status: $st, head_sha: $h, html_url: ("https://example.test/runs/" + ($id | tostring))}]' <<<"$json")
+  done
+  gh_put "repos/$REPO/actions/runs?head_sha=$(sha "$seed")&branch=main&event=push&per_page=30" "$(jq -c '{workflow_runs: .}' <<<"$json")"
+}
+backfill() {  # <sha-seed or sha>: runs the verb, leaves BF_OUT and BF_RC
+  BF_OUT=$("$BIN/fm-procevent-deploy-verify.sh" backfill-deploy "$1" 2>&1)
+  BF_RC=$?
+}
+scenario_backfill_deploy() {
+  new_lab "$1"
+  local seed
+  fx_sha_runs b1 "7:completed:CI"; fx_jobs 7 success
+  backfill "$(sha b1)"
+  [ "$BF_RC" = 0 ] && [[ "$BF_OUT" == "recorded: $(sha b1)"* ]] || { echo "a completed run with a successful step is not recorded: rc=$BF_RC $BF_OUT"; return 1; }
+  [ "$(ledger_count ".type == \"deployed\" and .sha == \"$(sha b1)\" and .run == \"https://example.test/runs/7\" and .completed == \"2026-10-20T14:29:00Z\" and (.at | type) == \"number\"")" = 1 ] \
+    || { echo "the backfilled line is wrong: $(ledger)"; return 1; }
+  backfill "$(sha b1)"
+  [ "$BF_RC" = 0 ] && [[ "$BF_OUT" == "already recorded: $(sha b1)"* ]] || { echo "a recorded sha is not reported: rc=$BF_RC $BF_OUT"; return 1; }
+  [ "$(ledger_count '.type == "deployed"')" = 1 ] || { echo 'a second backfill wrote a duplicate'; return 1; }
+  # Each of these shas has the run the verb needs except one thing.
+  fx_sha_runs b2 "8:in_progress:CI"; fx_jobs 8 success
+  fx_sha_runs b3 "9:completed:CI"; fx_jobs 9 success failure
+  fx_sha_runs b4 "10:completed:CI"; fx_jobs 10 success skipped
+  fx_sha_runs b5 "11:completed:Other"; fx_jobs 11 success
+  fx_sha_runs b6 "12:completed:CI:other"; fx_jobs 12 success
+  fx_sha_runs b7
+  for seed in b2 b3 b4 b5 b6 b7 b8; do
+    backfill "$(sha $seed)"   # b8 has no recorded answer: GitHub cannot be read
+    [ "$BF_RC" = 1 ] && [[ "$BF_OUT" == refused:* ]] || { echo "$seed is not refused: rc=$BF_RC $BF_OUT"; return 1; }
+  done
+  backfill abc123
+  [ "$BF_RC" = 2 ] || { echo "a short sha is not a usage error: rc=$BF_RC $BF_OUT"; return 1; }
+  [ "$(ledger_count '.type == "deployed"')" = 1 ] || { echo "a refusal wrote a line: $(ledger)"; return 1; }
+  # A failed run and a later successful run of the same sha: the successful one is recorded.
+  fx_sha_runs b9 "13:completed:CI" "14:completed:CI"; fx_jobs 13 success failure; fx_jobs 14 success
+  backfill "$(sha b9)"
+  [ "$BF_RC" = 0 ] && [ "$(ledger_count ".type == \"deployed\" and .sha == \"$(sha b9)\" and .run == \"https://example.test/runs/14\"")" = 1 ] \
+    || { echo "a later successful run is not recorded: rc=$BF_RC $BF_OUT $(ledger)"; return 1; }
+}
+
+# A deployed line that cannot be written is a failure, never a success: autohandle leaves the deploy-only result
+# unacknowledged and the cursor where it was, so the next poll plans the deploy again and records it once the ledger
+# is writable; backfill-deploy refuses and does not say recorded. (The ledger path is a directory: no append can land.)
+scenario_deployed_unwritable() {
+  new_lab "$1"
+  fx_runs "1:completed:success:s0" "2:completed:success:s1"
+  fx_jobs 2 success
+  fx_compare s0 s1
+  set_cursor 1 s0
+  mkdir -p "$H/data/deploy-verify/ledger.jsonl"
+  cycle
+  [ "$CYCLE_AUTO" != 0 ] || { echo 'a deploy that could not be recorded was acknowledged'; return 1; }
+  [ "$(jq -r .cursor_run "$H/data/deploy-verify/state.json")" = 1 ] || { echo 'the cursor moved past a deploy that was not recorded'; return 1; }
+  fx_sha_runs b1 "7:completed:CI"; fx_jobs 7 success
+  backfill "$(sha b1)"
+  [ "$BF_RC" = 1 ] && [[ "$BF_OUT" == *"refused: the deployed line"* && "$BF_OUT" != *"recorded: "* ]] || { echo "backfill reported success with no line written: rc=$BF_RC $BF_OUT"; return 1; }
+  rmdir "$H/data/deploy-verify/ledger.jsonl"
+  cycle
+  [ "$CYCLE_AUTO" = 0 ] || { echo "the retry was not handled: $CYCLE_AUTO"; return 1; }
+  [ "$(jq -r .cursor_run "$H/data/deploy-verify/state.json")" = 2 ] || { echo 'the retry did not advance the cursor'; return 1; }
+  [ "$(ledger_count ".type == \"deployed\" and .sha == \"$(sha s1)\"")" = 1 ] || { echo "the retry did not record the deploy: $(ledger)"; return 1; }
+}
+
 # A new Tester is spawned as a scout `verify-<task>-<sha7>`: the backlog item is
 # filed, the role pin names the harness, the ask is written into the brief, and the
 # brief may write the evidence directory and, before T5, the task's Tester record.
@@ -1216,7 +1323,7 @@ scenario_task_native() {
 
 run_scenarios() {  # <bin-dir>
   local s rc=0
-  for s in ledger skips not_deployed draft spawn_brief retry_brief failures runner live_tester cap skip_catchup rows refused replay replay_refused shadow rows_record carry rows_ask rows_lease rows_lease_two rows_lease_failed_send; do
+  for s in ledger skips not_deployed deployed_lines backfill_deploy deployed_unwritable draft spawn_brief retry_brief failures runner live_tester cap skip_catchup rows refused replay replay_refused shadow rows_record carry rows_ask rows_lease rows_lease_two rows_lease_failed_send; do
     out=$(scenario_"$s" "$1" 2>&1) || { printf 'scenario %s: %s\n' "$s" "$out"; rc=1; }
   done
   return $rc
@@ -1224,7 +1331,7 @@ run_scenarios() {  # <bin-dir>
 
 # ---- real adapter -----------------------------------------------------------
 
-for s in read_retry task_native ledger skips not_deployed draft spawn_brief retry_brief failures runner live_tester cap skip_catchup rows refused replay replay_refused shadow rows_record carry rows_ask rows_ask_task rows_lease rows_lease_two rows_lease_failed_send; do
+for s in read_retry task_native ledger skips not_deployed deployed_lines backfill_deploy deployed_unwritable draft spawn_brief retry_brief failures runner live_tester cap skip_catchup rows refused replay replay_refused shadow rows_record carry rows_ask rows_ask_task rows_lease rows_lease_two rows_lease_failed_send; do
   out=$(scenario_"$s" "$ROOT/bin" 2>&1) || fail "scenario $s failed on the real adapter: $out"
   pass "deploy-verify $s"
 done
@@ -1304,9 +1411,39 @@ mutate 'internal tasks are skipped' skips \
 mutate 'issues with no user-visible line are skipped' skips \
   's/if \[ -z "\$lines" \]; then\n      while/if false; then\n      while/'
 mutate 'the job conclusion cannot replace the deploy step conclusion' not_deployed \
-  's/\[\.steps\[\]\? \| select\(\.name == \$s\)\] \| first \| \.conclusion/.conclusion/'
+  's/\[\.steps\[\]\? \| select\(\.name == \$s\)\] \| first \| \.\[\$f\]/.[\$f]/'
 mutate 'only a successful deploy step asks' not_deployed \
   's/if \[ "\$conclusion" = success \]; then/if true; then/'
+mutate 'a successful deploy step is recorded' deployed_lines \
+  's/if ! record_deploy "\$deploy_json"; then/if false; then/'
+mutate 'a deploy with no PR is a result of its own' deployed_lines \
+  's/ \|\| \[ "\$DEPLOYS" != .\[\]. \]\n\}/\n}/'
+mutate 'a skipped deploy step is no deploy' deployed_lines \
+  's/if \[ "\$conclusion" = success \]; then/if true; then/'
+mutate 'a sha in the ledger is not recorded again' deployed_lines \
+  's/  ledger_test .\.type == "deployed" and \.sha == \$s. --arg s "\$\(jq -r \.sha <<<"\$1"\)" && return 0\n//'
+mutate 'a deploy-only result carries the cursor' deployed_lines \
+  's/ \+ \(\$deploys \| length\) == 0/ == 0/'
+mutate 'a result is silent only when its deploys are recorded' deployed_lines \
+  's/    ledger_test .\.type == "deployed" and \.sha == \$s. --arg s "\$deploy_sha" \|\| return 1\n//'
+mutate 'backfill needs a completed run' backfill_deploy \
+  's/ and \.status == "completed"\)\]/)]/'
+mutate 'backfill needs a successful deploy step' backfill_deploy \
+  's/\[ "\$\(deploy_step_field "\$jobs" conclusion\)" = success \] \|\| continue/:/'
+mutate 'backfill reads the runs of the sha itself' backfill_deploy \
+  's/ and \.head_sha == \$s and / and /'
+mutate 'backfill reads the CI workflow' backfill_deploy \
+  's/select\(\.name == \$wf and /select(/'
+mutate 'backfill goes on to a later run of the sha' backfill_deploy \
+  's/\[ "\$\(deploy_step_field "\$jobs" conclusion\)" = success \] \|\| continue/[ "\$(deploy_step_field "\$jobs" conclusion)" = success ] || break/'
+mutate 'backfill reports a recorded sha' backfill_deploy \
+  's/  if ledger_test .\.type == "deployed" and \.sha == \$s. --arg s "\$sha"; then/  if false; then/'
+mutate 'backfill needs a full sha' backfill_deploy \
+  's/\[\[ "\$sha" =~ \^\[0-9a-f\]\{40\}\$ \]\]/true/'
+mutate 'an unwritable ledger fails the autohandled deploy' deployed_unwritable \
+  's/if ! record_deploy "\$deploy_json"; then/if ! { record_deploy "\$deploy_json" || true; }; then/'
+mutate 'an unwritable ledger refuses the backfill' deployed_unwritable \
+  's/if ! record_deploy "\$\(jq -cn ([^\n]*)\)"; then/if ! { record_deploy "\$(jq -cn $1)" || true; }; then/'
 mutate 'a run in progress holds the cursor' not_deployed \
   's/\[ "\$status" = completed \] \|\| break/:/'
 mutate 'draft asks once per head' draft \

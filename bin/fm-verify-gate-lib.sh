@@ -42,7 +42,8 @@
 #     is verified again,
 #   - the Tester's head= equals the task's deployed head in <data-dir>/deploy-verify/ledger.jsonl (the
 #     newest by GitHub ancestry of the deployed heads of its deploy-round and rows-round asks:
-#     fm_verify_gate_ledger_shas; no ask on a deployed head refuses), or, for a task whose PR is
+#     fm_verify_gate_ledger_shas; a head is deployed when a deploy-round ask or a `deployed` line names
+#     it, and no ask on a deployed head refuses), or, for a task whose PR is
 #     not in the repo deploy-verify watches, the 'deployed: <sha>' line of firstmate's record, and
 #   - 'approved: firstmate' is newer than the Tester's verified epoch.
 # <base-dir> is the firstmate home: <base-dir>/state is the state directory
@@ -52,14 +53,16 @@ FM_VERIFY_GATE_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 # The deployed heads the deploy-verify ledger holds for a task, one per line in the order the task first asked on
 # them: the shas of the task's own deploy-round and rows-round asks that a deploy-round ask of any task names (a
-# deploy round or a replay, both round=deploy; deploy-verify writes one only for a green deploy), so a draft or
-# rows ask alone never proves a deploy. Prints nothing when no ask of the task names a deployed head.
+# deploy round or a replay, both round=deploy) or that a `deployed` line names (deploy-verify writes one per
+# successful deploy step, also when every PR of the deploy was skipped, and `backfill-deploy` writes one for a past
+# deploy; both only for a green deploy step), so a draft or rows ask alone never proves a deploy. Prints nothing when
+# no ask of the task names a deployed head.
 fm_verify_gate_ledger_shas() {  # <ledger> <task-id>
   [ -f "$1" ] || return 0
   # shellcheck disable=SC2016 # jq variables, not shell
   jq -Rnr --arg t "$2" '
     [inputs | fromjson?] as $l
-    | [$l[] | select(.type == "ask" and .round == "deploy") | .sha] as $deployed
+    | [$l[] | select((.type == "ask" and .round == "deploy") or .type == "deployed") | .sha] as $deployed
     | [$l[] | select(.type == "ask" and (.round == "deploy" or .round == "rows") and .task == $t) | .sha | select(IN($deployed[]))]
     | reduce .[] as $s ([]; if index([$s]) then . else . + [$s] end) | .[]' "$1"
 }
