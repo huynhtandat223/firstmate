@@ -179,7 +179,8 @@ fm_merge_authority_read() {  # <state> <task-id> <provider> <host> <path> <numbe
   esac
   result=$(FM_HOME="$home" "${FM_MERGE_AUTHORITY_TASK:-${FM_TASK_SHADOW_WRITER:-$_FM_MERGE_AUTHORITY_LIB_DIR/fm-task.sh}}" pr-record "$id") || return 1
   [ "$(jq -r '.prUrl // empty' <<<"$result")" = "$expected_url" ] || return 1
-  FM_MERGE_AUTHORITY=$(jq -r '.mergeAuthority // "external"' <<<"$result")
+  local candidate_authority
+  candidate_authority=$(jq -r '.mergeAuthority // "external"' <<<"$result")
   local observed_head recorded_head
   recorded_head=$(jq -r '.prHead // empty' <<<"$result")
   fm_pr_head_valid "$recorded_head" || { FM_MERGE_AUTHORITY=external; return 1; }
@@ -191,7 +192,10 @@ fm_merge_authority_read() {  # <state> <task-id> <provider> <host> <path> <numbe
   esac
   [ "$recorded_head" = "$observed_head" ] || { FM_MERGE_AUTHORITY=external; return 1; }
   [ "$(jq -r '.authorityPhase // empty' <<<"$result")" = accepted ] || { FM_MERGE_AUTHORITY=external; return 1; }
-  case "$FM_MERGE_AUTHORITY" in away|attended) return 0 ;; *) return 1 ;; esac
+  case "$candidate_authority" in
+    away|attended) FM_MERGE_AUTHORITY=$candidate_authority; return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 fm_merge_authority_remove_if_matches() {  # <state> <task-id> <provider> <host> <path> <number> <authority> <file-identity>

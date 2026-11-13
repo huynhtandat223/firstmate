@@ -279,7 +279,7 @@ case "$EVENT" in
   merged)
     # the note says merged too, so a wait that clears on the merge clears on this event
     PR_RECORD=$("$SCRIPT_DIR/fm-task.sh" pr-record "$TASK") || exit 1
-    PR_AUTHORITY=$(jq -r '.mergeAuthority // empty' <<<"$PR_RECORD")
+    PR_AUTHORITY=$(jq -r 'if .authorityPhase == "accepted" then (.mergeAuthority // empty) else empty end' <<<"$PR_RECORD")
     PR_HEAD=$(jq -r '.prHead // empty' <<<"$PR_RECORD")
     PR_ARGS=(event "$TASK" pr --merged --pr-url "${2:-}" --note "merged ${2:-}")
     # Authority is carried only through the dedicated receipt-checked operation.
