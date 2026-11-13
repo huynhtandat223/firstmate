@@ -78,6 +78,9 @@
 //            flag removes them once the session ended, and is refused while its worker is alive or unreadable.
 //   home     <task> --home H                 sets the backlog home of a task that has none (any state but archived);
 //            the same home again is a no-op, another home is refused: a task belongs to one board
+//   owner-record home|note|hold list|get|put [--home H] [--kind binding|reconcile]
+//            [--identity ID] [--file JSON] reads or writes portable owner records; JSON output for shell bridges
+//   document <task> [--kind description|done] prints the latest matching event document (default description)
 //   describe <task> --document FILE.md [--document-title T]              any state; default title Description
 //            A task that holds no scenario check row yet gets them from this Description, as `rows <task>` writes them;
 //            a task that holds one keeps its rows (`rows` is the re-sync). Only a task whose issue is none, its own id,
@@ -528,7 +531,8 @@ const SPECS = {
   requests: { pos: ['task'], flags: {} },
   'read-mark': { pos: ['task'], flags: {} },
   inbox: { pos: ['task'], flags: { action: 's', target: 's', home: 's' } },
-  document: { pos: ['task'], flags: {} },
+  document: { pos: ['task'], flags: { kind: 's' } },
+  'owner-record': { pos: ['table', 'action'], flags: { file: 's', home: 's', identity: 's', kind: 's' } },
   'plan-approve': { pos: ['task'], flags: {} },
   'plan-check': { pos: ['task'], flags: {} },
   'plan-spec': { pos: ['task'], flags: {} },
@@ -1754,10 +1758,12 @@ async function cmdPlanCheck(args) {
 
 async function cmdDocument(args) {
   const events = await taskEvents(taskIdOf(args));
-  const event = events.filter((e) => e.kind === 'description').at(-1);
-  if (!event) throw rule('task has no Description event');
+  const kind = args.flags.kind || 'description';
+  if (!['description', 'done'].includes(kind)) throw usage('--kind must be description or done');
+  const event = events.filter((e) => e.kind === kind).at(-1);
+  if (!event) throw rule(`task has no ${kind} event`);
   const doc = await firstRow('fm_event_document', `fmTaskEventId eq ${event.id}`);
-  if (!doc || !doc.content) throw rule('task Description document is missing');
+  if (!doc || !doc.content) throw rule(`task ${kind} document is missing`);
   out(doc.content);
 }
 
@@ -3014,7 +3020,85 @@ async function cmdRule(args) {
   out(`rule=${ruleId} action=${action}`);
 }
 
+// Owner records share the task writer's transport, authentication and paging.
+// Input files keep private note bodies out of process arguments.
+const OWNER_TABLES = {
+  home: { table: 'fm_home', key: 'home', fields: ['home', 'posture', 'postureWords', 'postureSince'] },
+  note: { table: 'fm_owner_note', key: 'noteId', fields: ['home', 'noteId', 'text', 'source', 'state', 'reply', 'at', 'requestId', 'announcedAt', 'handledAt', 'replyAt', 'replySeq'] },
+  hold: { table: 'fm_hold_record', key: 'sourceId', fields: ['kind', 'sourceId', 'taskId', 'payload', 'state', 'at'] },
+};
+async function cmdOwnerRecord(args) {
+  const spec = OWNER_TABLES[args.pos.table];
+  if (!spec) throw usage('owner-record table must be home, note or hold');
+  const action = args.pos.action;
+  if (!['list', 'get', 'put'].includes(action)) throw usage('owner-record action must be list, get or put');
+  const f = args.flags;
+  if (args.pos.table === 'hold' && !['binding', 'reconcile'].includes(f.kind)) throw usage('hold requires --kind binding or reconcile');
+  const filters = [];
+  if (f.home) {
+    if (args.pos.table === 'hold') throw usage('hold does not accept --home');
+    filters.push(`home eq ${lit(f.home)}`);
+  }
+  if (f.kind) {
+    if (args.pos.table !== 'hold') throw usage('--kind belongs to hold records');
+    filters.push(`kind eq ${lit(f.kind)}`);
+  }
+  if (action !== 'list' && !f.identity) throw usage('get and put require --identity');
+  if (f.identity) filters.push(`${spec.key} eq ${lit(f.identity)}`);
+  let body;
+  if (action === 'put') {
+    if (!f.file) throw usage('put requires --file with a JSON object');
+    try { body = JSON.parse(fs.readFileSync(f.file, 'utf8')); } catch { throw usage('--file must hold a readable JSON object'); }
+    if (!body || typeof body !== 'object' || Array.isArray(body)) throw usage('--file must hold a JSON object');
+    for (const key of Object.keys(body)) if (!spec.fields.includes(key)) throw usage(`unknown ${args.pos.table} field ${key}`);
+    if (body[spec.key] !== f.identity) throw usage('record identity does not match --identity');
+    if (f.kind && body.kind !== f.kind) throw usage('record kind does not match --kind');
+    if (f.home && body.home !== f.home) throw usage('record home does not match --home');
+  } else if (f.file) throw usage('--file belongs to put');
+  const filter = filters.join(' and ');
+  if (action === 'list') { out(JSON.stringify(await listAll(spec.table, { filter }))); return; }
+  const before = await firstRow(spec.table, filter);
+  if (action === 'get') { out(JSON.stringify(before)); return; }
+  // One unique identity owns a note's body and first reply, even after retries.
+  if (before && args.pos.table === 'note') {
+    for (const key of ['home', 'text', 'source', 'requestId']) {
+      if (body[key] !== undefined && body[key] !== before[key]) throw rule(`note ${key} conflicts with the saved record`);
+    }
+    if (before.reply && body.reply !== undefined && body.reply !== before.reply) throw rule('note already has a different reply');
+    if (before.state === 'handled' && body.state === 'waiting') body.state = 'handled';
+    if (before.handledAt) body.handledAt = before.handledAt;
+  }
+  if (!before) {
+    const created = await http('POST', `/api/${spec.table}`, body);
+    if (created.status === 409) {
+      // An insert race must be reconciled by the caller against the winner.
+      throw rule('owner record was created concurrently; read it before retrying');
+    }
+    ok(created, 'create owner record');
+  } else {
+    const endpoint = `/api/${spec.table}/${encodeURIComponent(before.id)}`;
+    if (args.pos.table === 'note' && body.reply !== undefined && !before.reply) {
+      // A unique reply_seq insert/update arbitrates competing machines. Never
+      // derive a portable receipts cursor from a machine-local counter.
+      for (let attempt = 0; attempt < 10; attempt++) {
+        const latest = await firstRow(spec.table, 'replySeq gt 0', 'replySeq desc');
+        body.replySeq = Number(latest?.replySeq || 0) + 1;
+        const result = await http('PATCH', endpoint, body);
+        if (result.status === 409) continue;
+        ok(result, 'record reply');
+        out(JSON.stringify(await firstRow(spec.table, filter)));
+        return;
+      }
+      throw rule('reply cursor kept moving; retry the saved reply');
+    }
+    if (before.replySeq) body.replySeq = before.replySeq;
+    ok(await http('PATCH', endpoint, body), 'update owner record');
+  }
+  out(JSON.stringify(await firstRow(spec.table, filter)));
+}
+
 const COMMANDS = {
+  'owner-record': cmdOwnerRecord,
   setup: cmdSetup, move: cmdMove, step: cmdStep,
   rules: cmdRules, rule: cmdRule, answer: cmdAnswer,
   'turn-end': cmdTurnEnd, deliver: cmdDeliver, requests: cmdRequests, 'read-mark': cmdReadMark, inbox: cmdInbox, describe: cmdDescribe, plan: cmdPlan, 'plan-decision': cmdPlanDecision, thread: cmdThread,

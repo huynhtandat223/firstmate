@@ -49,6 +49,9 @@ JSON
 node - "$TMP_ROOT/schema.json" <<'JS'
 const fs = require('fs');
 const file = process.argv[2]; const s = JSON.parse(fs.readFileSync(file));
+s.fm_owner_note = {ops:['list','get','create','patch'],u:[['noteId']],f:Object.fromEntries(['home','noteId','text','source','state','reply','at','requestId','announcedAt','handledAt','replyAt','replySeq'].map(k=>[k,{t:k==='replySeq'?'i':'s',n:1}]))};
+s.fm_hold_record = {ops:['list','get','create','patch'],u:[['kind','sourceId']],f:Object.fromEntries(['kind','sourceId','taskId','payload','state','at'].map(k=>[k,{t:'s',n:1}]))};
+s.fm_home = {ops:['list','get','create','patch'],u:[['home']],f:Object.fromEntries(['home','posture','postureWords','postureSince'].map(k=>[k,{t:'s',n:1}]))};
 s.fm_event_document = {ops:['list','get','create','delete'],f:{title:{t:'s',m:200},mediaType:{t:'s',m:100},content:{t:'s'}},u:[['fmTaskEventId']],parent:['fmTaskEvent','documents']};
 s.fm_event_video = {ops:['list','get','create','delete'],f:{label:{t:'s',m:200},mediaType:{t:'s',m:32},size:{t:'i'},content:{t:'s'}},u:[],parent:['fmTaskEvent','videos']};
 s.fm_model_rule = {ops:['list','get','create','patch','delete'],f:{state:{t:'s',n:1,m:16},harness:{t:'s',n:1,m:32},model:{t:'s',n:1,m:128},effort:{t:'s',n:1,m:16},rank:{t:'i',n:1},account:{t:'s',n:1,m:64},hours:{t:'s',n:1,m:64},scope:{t:'s',n:1,m:200},enabled:{t:'b',n:1},warning:{t:'s',n:1,m:200},note:{t:'s',n:1,m:300}},u:[]};
@@ -479,6 +482,56 @@ use_issue() { issue_body "$1" > "$TMP_ROOT/issue.body"; }
 
 # TR10: a terminal call stores its event and child in one request and prints the seq;
 # a missing template field prints the API's field and stores nothing.
+case_owner_records() {
+  BIN=$1; reset_db
+  local file="$TMP_ROOT/note-record.json"
+  printf '%s\n' '{"home":"probe","noteId":"probe-note","text":"exact owner words","source":"cli","state":"waiting","at":"2026-01-01T00:00:00Z"}' > "$file"
+  ft owner-record note put --identity probe-note --home probe --file "$file"
+  must 'store owner note' 0 || return 1
+  ft owner-record note list --home probe
+  must 'read owner notes' 0 || return 1
+  [ "$(printf '%s' "$OUT" | jq -r '.[0].text')" = 'exact owner words' ] || return 1
+  jq '.state="handled" | .reply="exact reply"' "$file" > "$file.next"; mv "$file.next" "$file"
+  ft owner-record note put --identity probe-note --home probe --file "$file"
+  must 'handle and reply' 0 || return 1
+  jq '.text="different words"' "$file" > "$file.next"; mv "$file.next" "$file"
+  ft owner-record note put --identity probe-note --home probe --file "$file"
+  must 'refuse conflicting note body' 5 || return 1
+  ft owner-record note get --identity probe-note --home probe
+  must 'read original note' 0 || return 1
+  [ "$(printf '%s' "$OUT" | jq -r '.text + "|" + .state + "|" + .reply')" = 'exact owner words|handled|exact reply' ] || return 1
+  [ "$(db fm_owner_note | jq length)" = 1 ] || return 1
+  local home="$TMP_ROOT/central-inbox-home" note_id
+  mkdir -p "$home/state"
+  FM_HOME="$home" "$BIN/fm-inbox.sh" note --json 'note through public CLI' > "$TMP_ROOT/note-result.json" || return 1
+  note_id=$(jq -r .id "$TMP_ROOT/note-result.json")
+  FM_HOME="$home" "$BIN/fm-inbox.sh" reply "$note_id" 'public reply' >/dev/null || return 1
+  FM_HOME="$home" "$BIN/fm-inbox.sh" drain --ack "$note_id" >/dev/null || return 1
+  FM_HOME="$home" "$BIN/fm-inbox.sh" receipts --all-handled --all-replies > "$TMP_ROOT/receipts.json" || return 1
+  db fm_owner_note | jq -e --arg id "$note_id" '.[] | select(.noteId==$id) | .state=="handled" and .reply=="public reply\n"' >/dev/null || return 1
+  local second="$TMP_ROOT/central-inbox-second"
+  mkdir -p "$second/state"
+  FM_HOME="$second" "$BIN/fm-inbox.sh" receipts --all-handled --all-replies > "$TMP_ROOT/second-receipts.json" || return 1
+  grep -F 'public reply' "$TMP_ROOT/second-receipts.json" >/dev/null || return 1
+  FM_HOME="$home" "$BIN/fm-inbox.sh" note --request-id portable-request --json 'same request' > "$TMP_ROOT/first-request.json" || return 1
+  FM_HOME="$second" "$BIN/fm-inbox.sh" note --request-id portable-request --json 'same request' > "$TMP_ROOT/second-request.json" || return 1
+  [ "$(jq -r .id "$TMP_ROOT/first-request.json")" = "$(jq -r .id "$TMP_ROOT/second-request.json")" ] || return 1
+  printf 'schema=fm-decision-binding.v1\norigin=probe-origin\n' > "$TMP_ROOT/binding.payload"
+  "$BIN/fm-owner-record.sh" hold-write binding probe-source "$TMP_ROOT/binding.payload" || return 1
+  [ "$("$BIN/fm-owner-record.sh" hold-read binding probe-source)" = "$(< "$TMP_ROOT/binding.payload")" ] || return 1
+  "$BIN/fm-owner-record.sh" hold-write binding probe-source /dev/null inactive || return 1
+  [ -z "$("$BIN/fm-owner-record.sh" hold-read binding probe-source)" ] || return 1
+  printf 'keep these exact words\n' > "$TMP_ROOT/posture-words"
+  FM_HOME="$home" bash "$BIN/fm-afk-contract.sh" enter --words-file "$TMP_ROOT/posture-words" >/dev/null || return 1
+  ft owner-record home get --identity main
+  must 'read away posture' 0 || return 1
+  [ "$(printf '%s' "$OUT" | jq -r '.posture + "|" + (.postureWords|rtrimstr("\\n"))')" = 'away|keep these exact words' ] || return 1
+  FM_HOME="$home" bash "$BIN/fm-afk-contract.sh" archive >/dev/null || return 1
+  ft owner-record home get --identity main
+  must 'read attended posture' 0 || return 1
+  [ "$(printf '%s' "$OUT" | jq -r .posture)" = attended ] || return 1
+}
+
 case_terminal() {
   BIN=$1; reset_db
   local badfile docs_before doc_id
@@ -492,6 +545,11 @@ case_terminal() {
     doc_id=$(db fm_task_event | jq -r --argjson seq "$(seq_of)" '.[] | select(.seq == $seq) | .id')
     db fm_event_document | jq -e --arg id "$doc_id" --rawfile content "$badfile" --arg title "$(basename "$badfile")" '.[] | select(.fmTaskEventId == $id) | .content == $content and .title == $title and (.mediaType == "text/markdown" or .mediaType == "text/html")' >/dev/null || { echo 'document differs from input bytes'; return 1; }
     [ "$(posts POST fm_task_event)" = 1 ] && [ "$(posts POST fm_event_document)" = 0 ] || return 1
+    ft document doc-valid --kind 'done'
+    must 'read the attached done report' 0 || return 1
+    [ "$OUT" = "$(< "$badfile")" ] || { echo 'done report readback differs'; return 1; }
+    ft document doc-valid --kind invalid
+    must 'reject an invalid document selector' 2 || return 1
     reset_db
   done
   printf '\377' > "$TMP_ROOT/latin.md"
@@ -3722,7 +3780,7 @@ case_setup_rules() {
   return 0
 }
 
-CASES=${FM_TASK_CASES:-"plan_task description_thread describe_rows describe_issue describe_source terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed long_notes status_view verify_view owner_writer workflow gate_internal gate_no_surface stage latest_wait latest_no_note wait carry slice_c model_rules checklist question_round setup_rules backlog_home owner_hold owner_request gate_before_approval handoff_gate delete owner_nav"}
+CASES=${FM_TASK_CASES:-"owner_records plan_task description_thread describe_rows describe_issue describe_source terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed long_notes status_view verify_view owner_writer workflow gate_internal gate_no_surface stage latest_wait latest_no_note wait carry slice_c model_rules checklist question_round setup_rules backlog_home owner_hold owner_request gate_before_approval handoff_gate delete owner_nav"}
 
 # ---- real command -------------------------------------------------------------------
 

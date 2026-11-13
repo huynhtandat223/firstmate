@@ -548,6 +548,29 @@ fm_afk_contract_archive_target() {  # <record> [superseded-stamp]
 # later confirmation step. Inputs were parsed before the lock (WORDS,
 # EXPECTED_RETURN, SPEND, FM_AFK_CONTRACT_SCALARS_GIVEN). The written mode
 # follows the header's AWAY OR QUIET rules.
+# The local contract controls the running session. A retained JSON write retries
+# its portable display record when the service becomes reachable again.
+fm_afk_contract_sync_posture() {  # <posture> <record-or-empty>
+  local mode=$1 record=${2:-} pending home
+  home=${FM_BACKLOG_HOME:-main}
+  pending="${FM_STATE_OVERRIDE:-$FM_HOME/state}/.owner-posture-pending.json"
+  mkdir -p "$(dirname "$pending")" || return 1
+  python3 - "$home" "$mode" "$record" > "$pending" <<'PY'
+import datetime,json,sys
+home,mode,record=sys.argv[1:]
+print(json.dumps(dict(home=home,posture=mode,postureWords='',postureSince=datetime.datetime.now(datetime.timezone.utc).isoformat())))
+PY
+  if [ -n "$record" ]; then
+    fm_afk_contract_read_words "$record" | python3 -c 'import json,pathlib,sys; p=pathlib.Path(sys.argv[1]); r=json.loads(p.read_text()); r["postureWords"]=sys.stdin.read(); p.write_text(json.dumps(r))' "$pending"
+  fi
+  chmod 0600 "$pending"
+  if "$FM_ROOT/bin/fm-task.sh" owner-record home put --identity "$home" --file "$pending" >/dev/null; then
+    rm -f "$pending"
+  else
+    fm_afk_contract_log "posture display update pending in $pending"
+  fi
+}
+
 fm_afk_contract_cmd_enter() {
   local record legacy now now_epoch session_entered session_entered_epoch staged archived archived_tmp standing=''
   record=$(fm_afk_contract_path)
@@ -569,6 +592,7 @@ fm_afk_contract_cmd_enter() {
       fm_afk_contract_log "the expected return and spend cap given with this refresh were not applied; enter new words to replace the mandate"
     fi
     rm -f "$legacy"
+    fm_afk_contract_sync_posture "$standing" "$record"
     fm_afk_contract_render_announcement "$record" || return 1
     fm_afk_contract_render_readback "$record"
     return
@@ -611,6 +635,7 @@ fm_afk_contract_cmd_enter() {
     fi
   fi
   rm -f "$legacy"
+  fm_afk_contract_sync_posture "$FM_AFK_CONTRACT_ENTRY_MODE" "$record"
   fm_afk_contract_render_announcement "$record" || return 1
   fm_afk_contract_render_readback "$record"
 }
@@ -625,6 +650,7 @@ fm_afk_contract_cmd_archive() {
   fi
   target=$(fm_afk_contract_archive_target "$record") || return 1
   mv "$record" "$target" || return 1
+  fm_afk_contract_sync_posture attended ''
   printf '%s\n' "$target"
 }
 

@@ -122,7 +122,7 @@ FM_ROOT="$(cd "$SELF_DIR/.." && pwd)"
 FM_HOME="${FM_HOME:-$FM_ROOT}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
-INBOX="$STATE/inbox"
+INBOX="$STATE/owner-note-spool"
 
 CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 
@@ -365,6 +365,8 @@ announce_note() {  # <id> <summary>
 finish_note_result() {  # <outcome> <id> <request-id> <json> <strict-exit> <summary>
   local outcome=$1 id=$2 request_id=$3 json=$4 strict=$5 summary=$6
   local announced=0 acknowledged=0 path="$INBOX/$id.note" rc=0
+  # Persist before the wake so another machine can read the announced identity.
+  owner_notes_sync push || printf 'fm-inbox: capture pending upload in %s\n' "$INBOX" >&2
   announce_note "$id" "$summary" || rc=$?
   case "$rc" in
     0) announced=1 ;;
@@ -419,6 +421,7 @@ publish_from_reservation() {  # <request-id> <source> <body> <extra>
     write_note_file "$tmp" "$id" "$source" "$body" "$extra" "$request_id"
     mv "$tmp" "$INBOX/$id.note"
   fi
+  [ "$(read_note_body "$(note_path "$id")")" = "${body%$'\n'}" ] || die "request id $request_id already has different text"
   printf '%s\n' "$id"
 }
 
@@ -444,7 +447,7 @@ queue_note() {
     fi
     tmp=$(mktemp "$INBOX/.staging-XXXXXX")
     staging_name=$(basename "$tmp")
-    id="$(date +%s)-${staging_name#.staging-}"
+    id=$(printf '%s\n%s' "${FM_BACKLOG_HOME:-main}" "$request_id" | sha256sum | cut -c1-48)
     write_note_file "$tmp" "$id" "$source" "$body" "$extra" "$request_id"
     if ! claim_request_id "$request_id" "$id"; then
       rm -f "$tmp"
@@ -495,7 +498,7 @@ cmd_note() {
   else
     body="$*"
   fi
-  queue_note text "$body" "" "$request_id" "$json"
+  queue_note cli "$body" "" "$request_id" "$json"
 }
 
 cmd_announce() {
@@ -1129,6 +1132,23 @@ cmd_drain() {
   cmd_list
   printf '\nAck with: fm-inbox.sh drain --ack <id>...\n'
 }
+
+# Refresh portable records before invoking the existing CLI contract. Pending
+# local writes replay before refresh so an outage cannot discard captured text.
+owner_notes_sync() {
+  python3 "$SELF_DIR/fm-owner-notes.py" "$1" "$INBOX" "${FM_BACKLOG_HOME:-main}" "$SELF_DIR/fm-task.sh"
+}
+case "${1:-}" in
+  note|say|announce|reply|receipts|list|drain)
+    if ! owner_notes_sync push || ! owner_notes_sync pull; then
+      case "${1:-}" in
+        note|say) printf 'fm-inbox: 5001 unavailable; capture stays in the local spool until retry\n' >&2 ;;
+        *) die "5001 owner records unavailable; retry when reachable" ;;
+      esac
+    fi
+    trap 'owner_notes_sync push || { printf "fm-inbox: owner-note writes pending in %s\n" "$INBOX" >&2; exit 3; }' EXIT
+    ;;
+esac
 
 # ---------------------------------------------------------------- dispatch
 
