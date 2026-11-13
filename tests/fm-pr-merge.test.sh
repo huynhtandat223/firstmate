@@ -809,6 +809,39 @@ test_merge_failure_propagates_after_recording() {
   pass "fm-pr-merge propagates a real merge failure without silently succeeding"
 }
 
+test_legacy_authority_read_lock() {
+  local case_dir rc
+  case_dir=$(make_case legacy-read-lock)
+  printf '%s\n' fm-merge-authority-v1 github github.com example/repo 51 attended > "$case_dir/state/task-x1.merge-authority"
+  chmod 600 "$case_dir/state/task-x1.merge-authority"
+  ln -s "$case_dir/missing" "$case_dir/state/task-x1.merge-authority.lock"
+  set +e
+  FM_HOME="$case_dir/home" FM_LOCK_TIMEOUT=0 FM_ROOT_OVERRIDE="$ROOT" bash -c '
+    . "$1/bin/fm-merge-authority-lib.sh"
+    fm_merge_authority_read "$2/state" task-x1 github github.com example/repo 51
+  ' _ "$ROOT" "$case_dir" > "$case_dir/read.out" 2>&1
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail 'legacy authority read bypassed its held lock'
+  pass 'legacy authority read refuses when its lock cannot be acquired'
+}
+
+test_receipt_symlink_refuses() {
+  local case_dir rc
+  case_dir=$(make_case receipt-symlink)
+  add_gh_mocks "$case_dir" 1010101010101010101010101010101010101010
+  printf 'untouched\n' > "$case_dir/target"
+  ln -s "$case_dir/target" "$case_dir/state/task-x1.merge-receipt"
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/51 > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" 'receipt symlink must refuse before merge'
+  [ "$(cat "$case_dir/target")" = untouched ] || fail 'receipt symlink target changed'
+  ! grep -Eq ' pr merge ' "$case_dir/gh.log" || fail 'receipt symlink reached forge merge'
+  pass 'merge receipt symlink refuses without touching its target or merging'
+}
+
 test_github_merged_outcome_is_verified() {
   local case_dir rc
   case_dir=$(make_case github-verified-merged)
@@ -2972,6 +3005,8 @@ test_secondmate_without_parent_binding_is_loud() {
   pass "a secondmate home that cannot report upward says so instead of merging in silence"
 }
 
+test_legacy_authority_read_lock
+test_receipt_symlink_refuses
 test_github_zero_exit_queue_required_refuses_with_exact_retry
 test_github_closed_unqueued_outcome_omits_retry_flags
 test_github_agreeing_queue_rules_keep_retry_guidance
