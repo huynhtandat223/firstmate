@@ -375,12 +375,16 @@ scenario_read_retry() {
   for status in 1 0; do
     for failures in 1 2; do
       new_lab "$1"
-      fx_runs "1:completed:success:s0"
+      fx_runs "1:completed:success:s0" "2:completed:success:s2"
+      fx_jobs 2 success
+      fx_compare s0 s2
       set_cursor 1 s0
       echo "$failures" > "$GHD/retries"
       export FAKE_GH_FAILURE_STATUS=$status
       cycle
       if [ "$failures" = 1 ]; then
+        [ "$(jq -r .cursor_run "$H/data/deploy-verify/state.json")" = 2 ] || { echo 'retry payload did not advance the cursor'; return 1; }
+        grep -Fxq "repos/$REPO/actions/runs?branch=main&event=push&per_page=30" "$GHD/calls.log" || { echo 'stub did not serve the retry'; return 1; }
         [ ! -s "$H/data/deploy-verify/last-error" ] || { echo 'retry left an error'; return 1; }
         [ "$CYCLE_AUTO" != 1 ] || { echo 'recovered read published an error'; return 1; }
       else

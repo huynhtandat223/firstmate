@@ -367,11 +367,13 @@ scenario_read_retry() {
   for status in 1 0; do
     for failures in 1 2; do
       new_lab "$1"
-      fx_pulls
+      fx_pulls 7:fm/alpha:h1
       echo "$failures" > "$GHD/retries"
       export FAKE_GH_FAILURE_STATUS=$status
       cycle
       if [ "$failures" = 1 ]; then
+        [ "$(ledger_count '.type == "baseline" and .pr == 7')" = 1 ] || { echo 'retry payload did not record the PR'; return 1; }
+        grep -Fxq "repos/$REPO/pulls?state=open&per_page=100" "$GHD/calls.log" || { echo 'stub did not serve the retry'; return 1; }
         [ ! -s "$H/data/pr-review/last-error" ] || { echo 'retry left an error'; return 1; }
         [ "$CYCLE_AUTO" != 1 ] || { echo 'recovered read published an error'; return 1; }
       else
