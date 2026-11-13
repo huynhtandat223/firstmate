@@ -1137,6 +1137,12 @@ cmd_drain() {
 # Refresh portable records before invoking the existing CLI contract. Pending
 # local writes replay before refresh so an outage cannot discard captured text.
 owner_notes_sync() {
+  local pending="$STATE/.owner-posture-pending.json"
+  if [ -f "$pending" ]; then
+    if "$SELF_DIR/fm-task.sh" owner-record home put --identity "${FM_BACKLOG_HOME:-main}" --file "$pending" >/dev/null; then
+      rm -f "$pending"
+    fi
+  fi
   python3 "$SELF_DIR/fm-owner-notes.py" "$1" "$INBOX" "${FM_BACKLOG_HOME:-main}" "$SELF_DIR/fm-task.sh"
 }
 case "${1:-}" in

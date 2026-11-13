@@ -76,7 +76,16 @@ def push():
         with tempfile.NamedTemporaryFile(mode='w', dir=cache) as staged:
             json.dump(row, staged)
             staged.flush()
-            call('put', '--home', home, '--identity', identity, '--file', staged.name)
+            saved = call('put', '--home', home, '--identity', identity, '--file', staged.name)
+        if saved['noteId'] != identity:
+            # The unique request binding won on another machine or predates
+            # deterministic ids. Retire only the local duplicate spool entry.
+            if row.get('requestId'):
+                atomic(cache / '.requests' / row['requestId'], saved['noteId'] + '\n')
+            path.unlink()
+        elif saved.get('replySeq') and reply.exists():
+            reply_fields, body = read(reply)
+            atomic(reply, f'id={identity}\nat={saved["replyAt"]}\nseq={saved["replySeq"]}\n--\n{body}')
 
 
 if __name__ == '__main__':

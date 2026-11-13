@@ -3069,6 +3069,14 @@ async function cmdOwnerRecord(args) {
     if (before.handledAt) body.handledAt = before.handledAt;
   }
   if (!before) {
+    if (args.pos.table === 'note' && body.requestId) {
+      const prior = await firstRow(spec.table, `home eq ${lit(body.home)} and requestId eq ${lit(body.requestId)}`);
+      if (prior) {
+        if (prior.text !== body.text || prior.source !== body.source) throw rule('request id already has different note content');
+        out(JSON.stringify(prior));
+        return;
+      }
+    }
     const created = await http('POST', `/api/${spec.table}`, body);
     if (created.status === 409) {
       // An insert race must be reconciled by the caller against the winner.
