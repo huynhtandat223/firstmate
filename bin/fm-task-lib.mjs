@@ -253,7 +253,9 @@ const PROJECTED = ['acceptanceDigest', 'title', 'repo', 'kind', 'state', 'assign
   'workflowState', 'workflowSince', 'stepHarness', 'stepModel', 'stepEffort', 'stepAlive', 'setupBy', 'setupAt',
   // the backlog columns the cfw5001 tasks-axi backend writes in each row event's set (tasks-axi src/backends/cfw5001-transport.ts BACKLOG_COLUMNS)
   'backlogHome', 'backlogKind', 'backlogHoldReason', 'backlogHoldKind', 'backlogHoldUntil', 'backlogPriority', 'backlogDeps', 'backlogSince',
-  'backlogClosed', 'backlogSeq', 'backlogPublicFollowup'];
+  'backlogClosed', 'backlogSeq', 'backlogPublicFollowup',
+  // the board card's Your-turn count of comment threads (cfw-modules feedback threads T3); needs fm_task.threadsYourTurn published
+  'threadsYourTurn'];
 // The board card's step (cfw-modules#1678 change 199): the writer owns the rule and the page only reads it. The live
 // page still reads it; plan v2 D1 retires it once the board reads workflowState.
 const STEP_OF_STATE = { triage: 'queued', todo: 'queued', ready: 'queued', done: 'passed' };
@@ -1787,6 +1789,20 @@ function anchorOf(args) {
   return { quote, ...(prefix ? { prefix } : {}), ...(suffix ? { suffix } : {}) };
 }
 
+// The task's threads waiting on the owner: a thread is a comment that opened one at a passage (`anchor`) and the comments that
+// answer it (`thread`); it waits on the owner when its last comment is not the owner's. Only the owner accepts an outcome, so a
+// resolved thread ends with the owner's comment and is not counted until someone writes in it again. `next` is the comment being
+// written, its seq not yet known. A task with no thread gets no count, so its comments never write the field.
+function threadsYourTurn(events, next) {
+  const last = new Map();
+  for (const e of [...events.filter((event) => event.kind === 'comment').sort((a, b) => a.seq - b.seq), next]) {
+    const body = e === next ? next.body : bodyOf(e);
+    const key = body.thread ?? (body.anchor ? (e === next ? 'next' : e.seq) : undefined);
+    if (key !== undefined) last.set(key, e === next ? next.role : e.actorRole);
+  }
+  return last.size ? [...last.values()].filter((role) => role !== 'owner').length : undefined;
+}
+
 async function cmdComment(args) {
   const taskId = taskIdOf(args);
   const who = identity(args, 'worker');
@@ -1816,7 +1832,8 @@ async function cmdComment(args) {
     const proposed = accept ? bodyOf(parent).outcome : undefined;
     if (accept && !proposed) throw rule('--accept must answer a comment that proposes an --outcome');
     const settled = outcome !== undefined ? { outcome } : accept ? { outcome: proposed, accepted: parent.seq } : {};
-    const spec = { kind: 'comment', note: noteOf(args) || (accept ? `Accepted: ${proposed}` : ''), extra: { ...(ask ? { ask } : {}), ...(reply !== undefined ? { replyTo: Number(reply) } : {}), ...(thread ? { thread } : {}), ...(anchor ? { anchor } : {}), ...settled }, children: withVideos(withImages({}, images), videos) };
+    const extra = { ...(ask ? { ask } : {}), ...(reply !== undefined ? { replyTo: Number(reply) } : {}), ...(thread ? { thread } : {}), ...(anchor ? { anchor } : {}), ...settled };
+    const spec = { kind: 'comment', note: noteOf(args) || (accept ? `Accepted: ${proposed}` : ''), extra, set: Object.fromEntries([['threadsYourTurn', threadsYourTurn(events, { body: extra, role: who.role })]].filter(([, count]) => count !== undefined)), children: withVideos(withImages({}, images), videos) };
     return spec;
   });
 }

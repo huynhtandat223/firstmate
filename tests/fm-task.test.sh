@@ -59,6 +59,7 @@ Object.assign(s.fm_task.f, {backlogHome:{t:'s',n:1,m:64},row:{t:'s',n:1},notes:{
   planSeq:{t:'i',n:1},planDecision:{t:'s',n:1,m:16},planDecidedAt:{t:'d',n:1}});
 Object.assign(s.fm_task.f, Object.fromEntries(['workflowState','stepHarness','stepModel','stepEffort','stepAlive','setupBy'].map(k => [k,{t:'s',n:1}])));
 Object.assign(s.fm_task.f, {workflowSince:{t:'d',n:1},setupAt:{t:'d',n:1}});
+Object.assign(s.fm_task.f, {threadsYourTurn:{t:'i',n:1}});
 s.fm_task_step = {ops:['list','get','create','patch','delete'],u:[['taskId','state']],f:{taskId:{t:'s'},state:{t:'s'},position:{t:'i'},attempt:{t:'i'},status:{t:'s'},...Object.fromEntries(['harness','model','effort','fallbacks','source','ruleIds','account','alive','endReason'].map(k=>[k,{t:'s',n:1}])),...Object.fromEntries(['startedAt','lastHeartbeatAt','endedAt'].map(k=>[k,{t:'d',n:1}]))}};
 fs.writeFileSync(file, JSON.stringify(s));
 JS
@@ -2570,18 +2571,22 @@ case_owner_writer() {
   ft comment $t --reply-to 1 --note 'not a comment'; must 'noncomment target' 5 || return 1
   ft comment $t --reply-to 999999 --note 'missing'; must 'missing target' 5 || return 1
   ft comment $t --reply-to 1.5 --note 'fraction'; must 'invalid sequence' 2 || return 1
+  [ "$(task_row $t | jq -r .threadsYourTurn)" = null ] || { echo 'a task with no thread wrote a count'; return 1; }
   # A thread opened at a highlighted passage keeps its anchor; a reply joins it, and so does a reply to that reply.
   local root answer again
   ow --action comment --task $t --note 'Is a blocked task listed?' --anchor-quote 'the lane lists each task' --anchor-prefix 'Observed: ' --anchor-suffix ' whose pane' --owner u-1 --to firstmate
   must 'owner thread at an anchor' 0 || return 1
   root=$(db fm_task_event | jq -r '[.[] | select(.kind == "comment")] | max_by(.seq).seq')
+  [ "$(task_row $t | jq -r .threadsYourTurn)" = 0 ] || { echo "the owner opened the thread: threadsYourTurn $(task_row $t | jq -r .threadsYourTurn), want 0"; return 1; }
   db fm_task_event | jq -e --argjson s "$root" '.[] | select(.seq == $s) | (.body | fromjson) | .anchor == {quote: "the lane lists each task", prefix: "Observed: ", suffix: " whose pane"} and (has("thread") | not)' >/dev/null || { echo 'anchor not stored'; return 1; }
   grep -R -F "Owner thread on $t (seq $root) at \"the lane lists each task\": Is a blocked task listed?" "$FM_HOME/state/inbox" >/dev/null || { echo 'missing thread delivery'; return 1; }
   grep -R -F "Reply with: bin/fm-task.sh comment $t --reply-to $root --actor firstmate --role firstmate --note <output>" "$FM_HOME/state/inbox" >/dev/null || { echo 'thread reply command does not answer as firstmate'; return 1; }
   ft comment $t --reply-to "$root" --role firstmate --note 'Yes, in any state'; must 'thread answer' 0 || return 1
   answer=$(seq_of)
+  [ "$(task_row $t | jq -r .threadsYourTurn)" = 1 ] || { echo "the agent answered: threadsYourTurn $(task_row $t | jq -r .threadsYourTurn), want 1"; return 1; }
   ow --action comment --task $t --reply-to "$answer" --note 'Thanks' --owner u-1 --to firstmate; must 'thread follow-up' 0 || return 1
   again=$(db fm_task_event | jq -r '[.[] | select(.kind == "comment")] | max_by(.seq).seq')
+  [ "$(task_row $t | jq -r .threadsYourTurn)" = 0 ] || { echo "the owner answered back: threadsYourTurn $(task_row $t | jq -r .threadsYourTurn), want 0"; return 1; }
   db fm_task_event | jq -e --argjson a "$answer" --argjson g "$again" --argjson r "$root" '[.[] | select(.seq == $a or .seq == $g)] | sort_by(.seq) | map(.body | fromjson | .thread) == [$r, $r]' >/dev/null || { echo 'reply not in the thread'; return 1; }
   before=$(count fm_task_event)
   ow --action comment --task $t --reply-to "$root" --anchor-quote 'here' --note bad --owner u-1 --to firstmate; must 'anchor with reply-to' 2 || return 1
@@ -2592,8 +2597,10 @@ case_owner_writer() {
   local proposal accepted
   ft comment $t --reply-to "$again" --role firstmate --outcome 'Listed in any state' --note 'Proposed outcome'; must 'outcome proposal' 0 || return 1
   proposal=$(seq_of)
+  [ "$(task_row $t | jq -r .threadsYourTurn)" = 1 ] || { echo "the agent proposed an outcome: threadsYourTurn $(task_row $t | jq -r .threadsYourTurn), want 1"; return 1; }
   ow --action comment --task $t --reply-to "$proposal" --accept yes --owner u-1 --to firstmate; must 'owner accepts the outcome' 0 || return 1
   accepted=$(db fm_task_event | jq -r '[.[] | select(.kind == "comment")] | max_by(.seq).seq')
+  [ "$(task_row $t | jq -r .threadsYourTurn)" = 0 ] || { echo "the owner accepted it: threadsYourTurn $(task_row $t | jq -r .threadsYourTurn), want 0"; return 1; }
   db fm_task_event | jq -e --argjson p "$proposal" --argjson a "$accepted" --argjson r "$root" '[.[] | select(.seq == $p or .seq == $a)] | sort_by(.seq) | map(.body | fromjson | {thread, outcome, accepted, note}) == [{thread: $r, outcome: "Listed in any state", accepted: null, note: "Proposed outcome"}, {thread: $r, outcome: "Listed in any state", accepted: $p, note: "Accepted: Listed in any state"}]' >/dev/null || { echo "outcome not resolved: $(db fm_task_event | jq -c --argjson a "$accepted" '.[] | select(.seq == $a) | .body')"; return 1; }
   grep -R -F "Owner accepted the outcome proposed in comment $proposal on $t (seq $accepted); the thread is resolved." "$FM_HOME/state/inbox" >/dev/null || { echo 'missing accept delivery'; return 1; }
   before=$(count fm_task_event)
@@ -4026,6 +4033,7 @@ mutate_owner_request 'a triage task is assigned before started' 'triage|todo) "$
 mutate_owner_request 'a cleanup refusal leaves the task open' 'try "$TEARDOWN" "$TASK" || refuse "$(refusal_text "$ERR")"' 'try "$TEARDOWN" "$TASK" || true'
 mutate_owner_request "the owner's setup names the spawn's runtime" 'runtime=(--harness "$harness")' 'runtime=()'
 mutate 'a reply joins the thread of the comment it answers' owner_writer 'bodyOf(parent).thread ?? ' ''
+mutate 'a task with no thread writes no count' owner_writer 'return last.size ? ' 'return true ? '
 mutate 'only the owner resolves a thread' owner_writer "if (accept && who.role !== 'owner') throw rule" 'if (false) throw rule'
 pass 'every guarded behavior has a red mutation proof'
 live_home_untouched
