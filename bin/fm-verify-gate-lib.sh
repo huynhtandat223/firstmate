@@ -57,15 +57,19 @@ FM_VERIFY_GATE_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # successful deploy step, also when every PR of the deploy was skipped, and `backfill-deploy` writes one for a past
 # deploy; both only for a green deploy step), so a draft or rows ask alone never proves a deploy. Prints nothing when
 # no ask of the task names a deployed head.
-fm_verify_gate_ledger_shas() {  # <ledger> <task-id>
-  [ -f "$1" ] || return 0
+fm_verify_gate_ledger_shas() (  # <legacy-ledger-path> <task-id>; path retained for caller compatibility
+  local snapshot
+  . "$FM_VERIFY_GATE_DIR/fm-deploy-ledger-lib.sh"
+  snapshot=$(mktemp) || return 1
+  trap 'rm -f "$snapshot"' EXIT
+  fm_deploy_ledger_snapshot "$snapshot" || return 1
   # shellcheck disable=SC2016 # jq variables, not shell
   jq -Rnr --arg t "$2" '
     [inputs | fromjson?] as $l
     | [$l[] | select((.type == "ask" and .round == "deploy") or .type == "deployed") | .sha] as $deployed
     | [$l[] | select(.type == "ask" and (.round == "deploy" or .round == "rows") and .task == $t) | .sha | select(IN($deployed[]))]
-    | reduce .[] as $s ([]; if index([$s]) then . else . + [$s] end) | .[]' "$1"
-}
+    | reduce .[] as $s ([]; if index([$s]) then . else . + [$s] end) | .[]' "$snapshot"
+)
 
 # A record's value for `<key>: ` (the last such line).
 fm_verify_gate_field() {  # <file> <key>
@@ -128,7 +132,10 @@ fm_verify_gate_deployed_head() {
   local repo heads head status
   repo=${FM_DEPLOY_VERIFY_REPO:-huynhtandat223/cfw-modules}
   if fm_verify_gate_task_in_repo "$state" "$data" "$id" "$repo"; then
-    heads=$(fm_verify_gate_ledger_shas "$ledger" "$id")
+    if ! heads=$(FM_HOME="$base" FM_CONFIG_OVERRIDE="${FM_CONFIG_OVERRIDE:-$base/config}" fm_verify_gate_ledger_shas "$ledger" "$id"); then
+      fm_verify_gate_say "cannot read deployed heads for $id from Dev 5001"
+      return 0
+    fi
     want_sha=$(printf '%s\n' "$heads" | sed -n 1p)
     [ -n "$want_sha" ] || { fm_verify_gate_say "no deploy ask for $id in $ledger; its PR is in $repo, which deploy-verify watches, so a deployed: line does not stand in for it"; return 0; }
     # Two or more deployed heads: the newest is the one the others are ancestors of on GitHub, since each deploy of

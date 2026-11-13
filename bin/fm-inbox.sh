@@ -591,6 +591,11 @@ next_reply_seq() {
 }
 
 cmd_reply() {
+  # The active home serializes reply writers; the assertion is opt-in until
+  # home-lease is enabled. Readback conflict detection remains in the writer.
+  # shellcheck source=bin/fm-home-lease-lib.sh
+  . "$SELF_DIR/fm-home-lease-lib.sh"
+  fm_home_lease_require || die "reply requires this machine to hold the home lease"
   local json=0 id body path staging seq
   if [ "${1:-}" = "--json" ]; then
     json=1
