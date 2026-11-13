@@ -3097,10 +3097,14 @@ async function cmdOwnerRecord(args) {
       for (let attempt = 0; attempt < 10; attempt++) {
         const latest = await firstRow(spec.table, `home eq ${lit(body.home || before.home)} and replySeq gt 0`, 'replySeq desc');
         body.replySeq = Number(latest?.replySeq || 0) + 1;
+        const current = await firstRow(spec.table, filter);
+        if (current?.reply !== null && current?.reply !== undefined) throw rule('reply already recorded; refusing to overwrite it');
         const result = await http('PATCH', endpoint, body);
         if (result.status === 409) continue;
         ok(result, 'record reply');
-        out(JSON.stringify(await firstRow(spec.table, filter)));
+        const saved = await firstRow(spec.table, filter);
+        if (saved?.reply !== body.reply) throw rule('reply conflict after write; inspect the saved reply instead of retrying');
+        out(JSON.stringify(saved));
         return;
       }
       throw rule('reply cursor kept moving; retry the saved reply');
