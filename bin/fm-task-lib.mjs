@@ -2837,6 +2837,8 @@ async function cmdDeliver(args) {
   const consumer = args.flags.consumer;
   if (!consumer || consumer.length > 64) throw usage('deliver needs --consumer (up to 64 characters)');
   if (!process.env.FM_HOME) throw usage('deliver requires FM_HOME');
+  const lease = spawnSync('bash', ['-c', 'source "$1/fm-home-lease-lib.sh"; fm_home_lease_require', 'home-lease', HERE], { encoding: 'utf8', env: process.env });
+  if (lease.status !== 0) throw new Fail(5, `event delivery requires home ownership: ${lease.stdout}${lease.stderr}`);
   const taskStream = await taskEvents(taskIdOf(args));
   await waitView(taskIdOf(args), taskStream);
   const firstSeq = taskStream[0]?.seq ?? 0;

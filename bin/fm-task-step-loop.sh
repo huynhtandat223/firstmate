@@ -43,6 +43,8 @@ CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 . "$SCRIPT_DIR/fm-session-lock-lib.sh"
 # shellcheck source=bin/fm-task-shadow-config-lib.sh
 . "$SCRIPT_DIR/fm-task-shadow-config-lib.sh"
+# shellcheck source=bin/fm-home-lease-lib.sh
+. "$SCRIPT_DIR/fm-home-lease-lib.sh"
 
 LOCK="$STATE/.task-step-loop.lock"
 TASK_RECORD_WRITER=${FM_TASK_SHADOW_WRITER:-$SCRIPT_DIR/fm-task.sh}
@@ -52,7 +54,7 @@ STOP=0
 
 # 0 while this home should run a loop: the flag is on and the session lock names a live pid.
 loop_wanted() {
-  [ -d "$STATE" ] && [ -e "$CONFIG/task-shadow" ] || return 1
+  [ -d "$STATE" ] && { [ -e "$CONFIG/task-shadow" ] || [ -e "$CONFIG/home-lease" ]; } || return 1
   fm_session_lock_inspect "$STATE"
   case "$FM_LOCK_INSPECT_STATE" in free|stale) return 1 ;; esac
   return 0
@@ -103,15 +105,34 @@ task_step_pass() {
   printf '%s' "$next" > "$TASK_STEP_WRITTEN.tmp.$$" && mv -f "$TASK_STEP_WRITTEN.tmp.$$" "$TASK_STEP_WRITTEN"
 }
 
+host_heartbeat_pass() {
+  local meta live count=0 queue=0 epoch
+  [ -f "$CONFIG/home-lease" ] || return 0
+  epoch=$(date +%s)
+  [ $((epoch - HOST_HEARTBEAT_AT)) -ge 30 ] || return 0
+  HOST_HEARTBEAT_AT=$epoch
+  fm_home_lease_config || return 1
+  for meta in "$STATE"/*.meta; do
+    [ -f "$meta" ] || continue
+    live=$(fm_backend_agent_alive "$(fm_backend_of_meta "$meta")" "$(fm_backend_target_of_meta "$meta")" 2>/dev/null) || live=unknown
+    # Unknown is counted as live: no hand-over on incomplete reconciliation.
+    [ "$live" = dead ] || count=$((count + 1))
+  done
+  [ ! -f "$STATE/.wake-queue" ] || queue=$(wc -l < "$STATE/.wake-queue" | tr -d ' ')
+  FM_HOST_LIVE_WORKERS=$count FM_HOST_WAKE_QUEUE_LENGTH=$queue "$SCRIPT_DIR/fm-host.sh" heartbeat >/dev/null 2>&1
+}
+
 run_loop() {
   local fd
+  HOST_HEARTBEAT_AT=0
   # keep no descriptor of the caller open (a harness waits on its pipes)
   for fd in 3 4 5 6 7 8 9; do eval "exec $fd>&-" 2>/dev/null || true; done
   fm_lock_try_acquire "$LOCK" || exit 0
   trap 'STOP=1' TERM INT HUP
   trap 'fm_lock_release "$LOCK"' EXIT
   while [ "$STOP" -eq 0 ] && loop_wanted; do
-    task_step_pass
+    host_heartbeat_pass || true
+    [ ! -e "$CONFIG/task-shadow" ] || task_step_pass
     [ "$STOP" -eq 0 ] || break
     # an interruptible wait: a stop ends the sleep at once
     sleep "$TASK_STEP_EVERY" &
