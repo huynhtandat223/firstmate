@@ -27,6 +27,13 @@ cat > "$TMP_ROOT/fakebin/gh" <<'SH'
 # Serves the recorded answer for `gh api <path>`; a missing file is a failed read.
 [ "${1:-}" = api ] || exit 2
 [ -z "${FAKE_GH_FAIL:-}" ] || exit 1
+if [ -f "$FAKE_GH_DIR/retries" ]; then
+  n=$(<"$FAKE_GH_DIR/retries")
+  if [ "$n" -gt 0 ]; then
+    echo "$((n - 1))" > "$FAKE_GH_DIR/retries"
+    exit "${FAKE_GH_FAILURE_STATUS:-1}"
+  fi
+fi
 f="$FAKE_GH_DIR/$(printf '%s' "$2" | tr '/?&=:' '_____')"
 printf '%s\n' "$2" >> "$FAKE_GH_DIR/calls.log"
 [ -f "$f" ] || exit 1
@@ -34,6 +41,7 @@ cat "$f"
 SH
 chmod +x "$TMP_ROOT/fakebin/herdr" "$TMP_ROOT/fakebin/gh"
 export PATH="$TMP_ROOT/fakebin:$PATH"
+export FM_PROCEVENT_GH_RETRY_SECONDS=0 FM_DEPLOY_VERIFY_GH="$TMP_ROOT/fakebin/gh"
 
 # ---- lab ------------------------------------------------------------------
 
@@ -359,6 +367,33 @@ scenario_spawn_brief() {
   id=$(ledger | jq -r 'select(.type == "ask" and .task == "alpha") | .tester')
   grep -q -- "$TH/data/verify/alpha.md" "$H/data/$id/brief.md" \
     || { echo "the pre-T5 record is not writable: $(cat "$H/data/$id/brief.md")"; return 1; }
+}
+
+# Controlled GitHub failures cannot be induced safely on the real service.
+scenario_read_retry() {
+  local failures status
+  for status in 1 0; do
+    for failures in 1 2; do
+      new_lab "$1"
+      fx_runs "1:completed:success:s0" "2:completed:success:s2"
+      fx_jobs 2 success
+      fx_compare s0 s2
+      set_cursor 1 s0
+      echo "$failures" > "$GHD/retries"
+      export FAKE_GH_FAILURE_STATUS=$status
+      cycle
+      if [ "$failures" = 1 ]; then
+        [ "$(jq -r .cursor_run "$H/data/deploy-verify/state.json")" = 2 ] || { echo 'retry payload did not advance the cursor'; return 1; }
+        grep -Fxq "repos/$REPO/actions/runs?branch=main&event=push&per_page=30" "$GHD/calls.log" || { echo 'stub did not serve the retry'; return 1; }
+        [ ! -s "$H/data/deploy-verify/last-error" ] || { echo 'retry left an error'; return 1; }
+        [ "$CYCLE_AUTO" != 1 ] || { echo 'recovered read published an error'; return 1; }
+      else
+        grep -Fxq "GitHub could not be read: repos/$REPO/actions/runs" "$H/data/deploy-verify/last-error" || return 1
+        jq -e '.error != null' "$H/state/procevent-inbox/deploy-verify.$SEQ.result" >/dev/null || return 1
+      fi
+    done
+  done
+  unset FAKE_GH_FAILURE_STATUS
 }
 
 # An undeliverable ask and an unreadable GitHub each leave one result for the
@@ -1189,7 +1224,7 @@ run_scenarios() {  # <bin-dir>
 
 # ---- real adapter -----------------------------------------------------------
 
-for s in task_native ledger skips not_deployed draft spawn_brief retry_brief failures runner live_tester cap skip_catchup rows refused replay replay_refused shadow rows_record carry rows_ask rows_ask_task rows_lease rows_lease_two rows_lease_failed_send; do
+for s in read_retry task_native ledger skips not_deployed draft spawn_brief retry_brief failures runner live_tester cap skip_catchup rows refused replay replay_refused shadow rows_record carry rows_ask rows_ask_task rows_lease rows_lease_two rows_lease_failed_send; do
   out=$(scenario_"$s" "$ROOT/bin" 2>&1) || fail "scenario $s failed on the real adapter: $out"
   pass "deploy-verify $s"
 done
