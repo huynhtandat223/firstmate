@@ -205,9 +205,17 @@ ledger_pr_final() {  # <pr-url> <task>: asked or carried in a deploy round, or s
 }
 PLAN_IGNORE_LEDGER=0
 
+# shellcheck source=bin/fm-deploy-ledger-lib.sh
+. "$SCRIPT_DIR/fm-deploy-ledger-lib.sh"
+ledger_append() {
+  fm_deploy_ledger_write append "$1" || return 1
+  printf '%s\n' "$1" >> "$LEDGER"
+}
 state_put() {  # <cursor-run> <last-green-sha>
-  jq -cn --argjson r "$1" --arg s "$2" '{cursor_run: $r, last_green_sha: $s}' > "$CURSOR.tmp" \
-    && mv -f "$CURSOR.tmp" "$CURSOR"
+  local value
+  value=$(jq -cn --argjson r "$1" --arg s "$2" '{cursor_run: $r, last_green_sha: $s}') || return 1
+  fm_deploy_ledger_write put-cursor "$value" || return 1
+  printf '%s\n' "$value" > "$CURSOR"
 }
 
 # A field (conclusion, completed_at) of the deploy step of job $JOB in a run's jobs answer; empty when there is none.
@@ -623,7 +631,11 @@ poll_once() {
   if [ ! -s "$CURSOR" ]; then
     # First poll: start after the newest finished run, never backfill history.
     baseline=$(jq -c '[.[] | select(.status == "completed")] | last // empty' <<<"$runs")
-    [ -z "$baseline" ] || state_put "$(jq -r .id <<<"$baseline")" "$(jq -r .head_sha <<<"$baseline")"
+    if [ -n "$baseline" ] && ! state_put "$(jq -r .id <<<"$baseline")" "$(jq -r .head_sha <<<"$baseline")"; then
+      printf 'cannot commit deployment cursor to Dev 5001\n' > "$READ_ERROR_FILE"
+      rm -rf "$w"
+      return 2
+    fi
     rm -rf "$w"
     return 1
   fi
@@ -655,7 +667,11 @@ poll_once() {
   done < <(jq -c --argjson c "$cursor_run" '.[] | select(.id > $c)' <<<"$runs")
   if [ "$ASKS" = '[]' ] && [ "$SKIPS" = '[]' ] && [ "$DEPLOYS" = '[]' ]; then
     [ "$CURSOR_RUN" = "$cursor_run" ] && [ "$CURSOR_SHA" = "$(jq -r '.last_green_sha // ""' "$CURSOR")" ] \
-      || state_put "$CURSOR_RUN" "$CURSOR_SHA"
+      || state_put "$CURSOR_RUN" "$CURSOR_SHA" || {
+        printf 'cannot commit deployment cursor to Dev 5001\n' > "$READ_ERROR_FILE"
+        rm -rf "$w"
+        return 2
+      }
   fi
   plan_drafts "$w" || { rm -rf "$w"; return 2; }
   release_landed_leases
@@ -738,6 +754,8 @@ cmd_wait() {
   while :; do
     throttle
     date +%s > "$LAST_POLL"
+    fm_deploy_ledger_snapshot "$LEDGER" || return 1
+    fm_deploy_ledger_call cursor > "$CURSOR" || return 1
     poll_once
     rc=$?
     previous=
@@ -980,7 +998,7 @@ record_rows() {  # <ask-json>
   local -a head=()
   task=$(jq -r .task <<<"$ask")
   key="deploy-verify:$(jq -r .key <<<"$ask")"
-  note="deploy $(jq -r .round <<<"$ask") at $(jq -r .sha <<<"$ask"): verify ask sent ($(jq -r .issue <<<"$ask"))"
+  note="deploy $(jq -r .round <<<"$ask") head $(jq -r .sha <<<"$ask") run $(jq -r '.run // "none"' <<<"$ask"): verify ask sent ($(jq -r .issue <<<"$ask"))"
   [ "$(jq -r .round <<<"$ask")" != deploy ] || head=(--head "$(jq -r .sha <<<"$ask")")
   [ "${#head[@]}" -eq 0 ] || ! jq -e 'has("touched")' <<<"$ask" >/dev/null || head+=(--touched "$(jq -r .touched <<<"$ask")")
   if ! err=$(
@@ -1260,7 +1278,7 @@ cmd_autohandle() {  # <source-id> <sequence> <result-file>
   fi
   # A held ask is planned again next poll, so the cursor waits for it.
   if [ "$held" -eq 0 ] && jq -e '.cursor != null' "$result" >/dev/null 2>&1; then
-    state_put "$(jq -r .cursor.cursor_run "$result")" "$(jq -r .cursor.last_green_sha "$result")"
+    state_put "$(jq -r .cursor.cursor_run "$result")" "$(jq -r .cursor.last_green_sha "$result")" || return 1
   fi
   rm -f "$LAST_ERROR"
   attention_skip "$result" && return 1
@@ -1394,6 +1412,18 @@ cmd_backfill_deploy() {  # <sha>
 cmd_arm() {
   "$SCRIPT_DIR/fm-procevent.sh" register deploy-verify "$SOURCE_ID" -- "$SCRIPT_DIR/fm-procevent-deploy-verify.sh" wait
 }
+
+# Each invocation reads shared authority anew; jq operates only on this disposable snapshot.
+case "${1:-}" in
+  replay-skips|deploy|ask-rows|backfill-deploy|wait|autohandle)
+    DEPLOY_SNAPSHOT=$(mktemp -d) || exit 1
+    trap 'rm -rf "$DEPLOY_SNAPSHOT"' EXIT
+    LEDGER="$DEPLOY_SNAPSHOT/ledger.jsonl"
+    CURSOR="$DEPLOY_SNAPSHOT/state.json"
+    fm_deploy_ledger_snapshot "$LEDGER" || exit 1
+    fm_deploy_ledger_call cursor > "$CURSOR" || exit 1
+    ;;
+esac
 
 case "${1:-}" in
   replay-skips) shift; cmd_replay_skips "$@" ;;

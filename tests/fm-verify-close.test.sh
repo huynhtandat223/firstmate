@@ -12,6 +12,8 @@ unset TASKS_AXI_BACKEND || :
 
 CLOSE="$ROOT/bin/fm-verify-close.sh"
 TMP_ROOT=$(fm_test_tmproot fm-verify-close)
+FM_DEPLOY_LEDGER_TASK="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/deploy-ledger-fixture.sh"
+export FM_DEPLOY_LEDGER_TASK
 vg_install_gh "$TMP_ROOT/gh"
 # The closed task has no endpoint record; deploy-verify finds its PR on its backlog line.
 export FM_DEPLOY_VERIFY_REPO=example/repo
