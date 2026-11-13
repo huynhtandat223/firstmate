@@ -49,6 +49,8 @@ JSON
 node - "$TMP_ROOT/schema.json" <<'JS'
 const fs = require('fs');
 const file = process.argv[2]; const s = JSON.parse(fs.readFileSync(file));
+Object.assign(s.fm_task_event.f, {prHead:{t:'s',n:1,m:64},mergeAuthority:{t:'s',n:1,m:32}});
+s.fm_pr_round = {ops:['list','get','create','patch','delete'],f:{recordKey:{t:'s',n:1,m:200},task:{t:'s',n:1,m:128},prUrl:{t:'s',n:1,m:2048},head:{t:'s',n:1,m:64},round:{t:'i',n:1},kind:{t:'s',n:1,m:32},reviewers:{t:'s',n:1},delivered:{t:'b',n:1},retained:{t:'s',n:1},at:{t:'d',n:1},payload:{t:'s',n:1}},u:[['recordKey']]};
 s.fm_event_document = {ops:['list','get','create','delete'],f:{title:{t:'s',m:200},mediaType:{t:'s',m:100},content:{t:'s'}},u:[['fmTaskEventId']],parent:['fmTaskEvent','documents']};
 s.fm_event_video = {ops:['list','get','create','delete'],f:{label:{t:'s',m:200},mediaType:{t:'s',m:32},size:{t:'i'},content:{t:'s'}},u:[],parent:['fmTaskEvent','videos']};
 s.fm_model_rule = {ops:['list','get','create','patch','delete'],f:{state:{t:'s',n:1,m:16},harness:{t:'s',n:1,m:32},model:{t:'s',n:1,m:128},effort:{t:'s',n:1,m:16},rank:{t:'i',n:1},account:{t:'s',n:1,m:64},hours:{t:'s',n:1,m:64},scope:{t:'s',n:1,m:200},enabled:{t:'b',n:1},warning:{t:'s',n:1,m:200},note:{t:'s',n:1,m:300}},u:[]};
@@ -3722,7 +3724,45 @@ case_setup_rules() {
   return 0
 }
 
-CASES=${FM_TASK_CASES:-"plan_task description_thread describe_rows describe_issue describe_source terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed long_notes status_view verify_view owner_writer workflow gate_internal gate_no_surface stage latest_wait latest_no_note wait carry slice_c model_rules checklist question_round setup_rules backlog_home owner_hold owner_request gate_before_approval handoff_gate delete owner_nav"}
+case_pr_record() {
+  BIN=$1
+  ft create tk-pr-record --title 'PR record' --kind ship >/dev/null || return 1
+  local head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  ft event tk-pr-record pr --pr-url https://github.com/example/repo/pull/1 --head "$head" --merge-authority attended
+  must 'ordinary event cannot grant authority' 2 || return 1
+  local receipt="$TMP_ROOT/merge-receipt.json"
+  jq -cn --arg h "$head" '{task:"tk-pr-record",prUrl:"https://github.com/example/repo/pull/1",head:$h,authority:"attended"}' > "$receipt"
+  chmod 600 "$receipt"
+  ft merge-authority tk-pr-record --pr-url https://github.com/example/repo/pull/1 --head "$head" --merge-authority attended --phase accepted
+  must 'receipt required' 2 || return 1
+  ft merge-authority tk-pr-record --pr-url https://github.com/example/repo/pull/2 --head "$head" --merge-authority attended --phase accepted --receipt "$receipt"
+  must 'other PR receipt refused' 2 || return 1
+  ft merge-authority tk-pr-record --pr-url https://github.com/example/repo/pull/1 --head bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb --merge-authority attended --phase accepted --receipt "$receipt"
+  must 'other head receipt refused' 2 || return 1
+  ft merge-authority tk-pr-record --pr-url https://github.com/example/repo/pull/1 --head "$head" --merge-authority attended --phase accepted --merged --receipt "$receipt"
+  must 'gate authority event' 0 || return 1
+  ft pr-record tk-pr-record; must 'PR readback' 0 || return 1
+  jq -e --arg h "$head" '.prHead == $h and .mergeAuthority == "attended" and .authorityPhase == "accepted" and .merged == true' <<<"$OUT" >/dev/null || return 1
+  db fm_task_event | jq -e --arg h "$head" 'any(.[]; .taskId == "tk-pr-record" and .prHead == $h and .mergeAuthority == "attended")' >/dev/null || return 1
+  ft event tk-pr-record ci --merge-authority attended; must 'authority only on PR' 2 || return 1
+  printf '{"type":"round","task":"tk-pr-record","head":"%s","round":1,"at":100,"delivered":true,"reader":{"answer":"full answer"},"retained":["pre-existing"]}\n' "$head" > "$TMP_ROOT/pr-round.json"
+  ft pr-round put --file "$TMP_ROOT/pr-round.json"; must 'store round' 0 || return 1
+  ft pr-round put --file "$TMP_ROOT/pr-round.json"; must 'retry round' 0 || return 1
+  cp "$TMP_ROOT/pr-round.json" "$TMP_ROOT/pr-seed.jsonl"
+  ft pr-round seed --file "$TMP_ROOT/pr-seed.jsonl"; must 'seed retry' 0 || return 1
+  ft pr-round list; must 'read history' 0 || return 1
+  jq -se 'length == 1 and .[0].reader.answer == "full answer" and .[0].retained == ["pre-existing"]' <<<"$OUT" >/dev/null || return 1
+  printf '{"ci":{"repo#1":{"head":"%s"}}}\n' "$head" > "$TMP_ROOT/pr-cursor.json"
+  ft pr-round set-cursor --file "$TMP_ROOT/pr-cursor.json"; must 'store cursor' 0 || return 1
+  ft pr-round cursor; must 'read cursor' 0 || return 1
+  jq -e --arg h "$head" '.ci["repo#1"].head == $h' <<<"$OUT" >/dev/null || return 1
+  printf '{"type":"round","task":"tk-pr-record","head":"older","round":0,"at":50}\n' > "$TMP_ROOT/older-round.json"
+  ft pr-round put --file "$TMP_ROOT/older-round.json"; must 'backfill earlier round' 0 || return 1
+  ft pr-round list; must 'chronological history' 0 || return 1
+  jq -se 'map(.at) == [50,100]' <<<"$OUT" >/dev/null
+}
+
+CASES=${FM_TASK_CASES:-"pr_record plan_task description_thread describe_rows describe_issue describe_source terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed long_notes status_view verify_view owner_writer workflow gate_internal gate_no_surface stage latest_wait latest_no_note wait carry slice_c model_rules checklist question_round setup_rules backlog_home owner_hold owner_request gate_before_approval handoff_gate delete owner_nav"}
 
 # ---- real command -------------------------------------------------------------------
 

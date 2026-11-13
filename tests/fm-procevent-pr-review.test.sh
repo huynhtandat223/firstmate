@@ -74,6 +74,17 @@ SH
   cat > "$LAB/writer.sh" <<SH
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "$LAB/writer.calls"
+if [ "\${1:-}" = pr-round ]; then
+  mkdir -p "$H/data/pr-review"
+  case "\$2" in
+    list) [ ! -s "$H/data/pr-review/ledger.jsonl" ] || cat "$H/data/pr-review/ledger.jsonl" ;;
+    cursor) if [ -s "$H/data/pr-review/state.json" ]; then cat "$H/data/pr-review/state.json"; else echo '{}'; fi ;;
+    put) value=\$(cat "\$4"); grep -Fxq "\$value" "$H/data/pr-review/ledger.jsonl" 2>/dev/null || printf '%s\\n' "\$value" >> "$H/data/pr-review/ledger.jsonl" ;;
+    set-cursor) cp "\$4" "$H/data/pr-review/state.json" ;;
+    *) exit 2 ;;
+  esac
+  exit 0
+fi
 printf 'seq=1 task=\$3 event=ci state=running next=worker\n'
 exit 0
 SH
@@ -865,7 +876,7 @@ mutate 'a deleted file has no head side' eof \
 mutate 'finding fields keep empty parts' scope \
   's/IFS=\$.\\037. read -r kind/IFS=\$\x27\\t\x27 read -r kind/'
 mutate 'off forgets the first-poll marks' reenable \
-  's/state_edit .del\(\.started\) \| del\(\.heads\). *$/:/m'
+  's/state_edit .del\(\.started\) \| del\(\.heads\).[^\n]*$/:/m'
 mutate 'a recovery closes only error results' recovery \
   's/mark_errors_handled "\$seq"/mark_handled "\$seq"/'
 mutate 'a round that ends a failure episode closes its error results' recovery \
