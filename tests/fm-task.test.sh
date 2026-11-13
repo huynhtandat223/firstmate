@@ -1742,6 +1742,13 @@ case_delete() {
   seed fm_event_video "{\"fmTaskEventId\":\"$oeid\",\"content\":\"aGk=\",\"label\":\"keep\",\"mediaType\":\"video/mp4\"}"
   [ "$(db fm_event_image | jq length)" = 2 ] || { echo 'the image rows are not seeded'; return 1; }
   [ "$(db fm_event_video | jq length)" = 2 ] || { echo 'the video rows are not seeded'; return 1; }
+  # Each task holds one picture the owner sent from the board, kept as a file for its worker.
+  local png='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==' shot
+  for shot in $t $other; do
+    OUT=$("$BIN/fm-task-owner.sh" --action comment --task "$shot" --note 'Marked area' --image-data "$png" --image-label area --image-type image/png --owner u-1 --to firstmate 2>"$TMP_ROOT/err"); RC=$?
+    must "owner picture on $shot" 0 || return 1
+    [ -n "$(ls "$FM_HOME/data/$shot/owner-images" 2>/dev/null)" ] || { echo "no picture file kept for $shot"; return 1; }
+  done
   OUT=$("$BIN/fm-task-owner.sh" --action delete --task "$t" --owner u-1 2>"$TMP_ROOT/err"); RC=$?
   must 'owner delete' 0 || return 1
   [ "$(jq -r .ok <<<"$OUT")" = true ] || { echo "owner delete failed: $OUT"; return 1; }
@@ -1762,6 +1769,8 @@ case_delete() {
   [ "$(task_row $other | jq -r .state)" = triage ] || { echo 'another task was changed'; return 1; }
   [ "$(db fm_event_image | jq --arg e "$oeid" '[.[] | select(.fmTaskEventId == $e)] | length')" = 1 ] || { echo "another task's image was deleted"; return 1; }
   [ "$(db fm_event_video | jq --arg e "$oeid" '[.[] | select(.fmTaskEventId == $e)] | length')" = 1 ] || { echo "another task's video was deleted"; return 1; }
+  [ ! -e "$FM_HOME/data/$t/owner-images" ] || { echo "the deleted task's picture files survived"; return 1; }
+  [ -n "$(ls "$FM_HOME/data/$other/owner-images" 2>/dev/null)" ] || { echo "another task's picture files were removed"; return 1; }
   [ "$(db notification | jq -r --arg t $other '.[] | select(.taskId == $t) | .state')" = open ] || { echo "another task's notification was dismissed"; return 1; }
   # Induce an unsafe-to-reproduce real API failure at its HTTP boundary: child deletion must leave cards open.
   # This proves failure ordering, not the real service's availability.
@@ -1796,6 +1805,12 @@ case_delete() {
   ft delete del-notice-fail --reason retry
   must 'notification cleanup retry' 0 || return 1
   [ "$(db notification | jq -r '.[] | select(.taskId == "del-notice-fail") | .state')" = dismissed ] || { echo 'notification retry left its card open'; return 1; }
+  # Picture files left behind after the rows were deleted are removed by a retry the same way.
+  mkdir -p "$FM_HOME/data/del-picture-left/owner-images"; : > "$FM_HOME/data/del-picture-left/owner-images/seq-1.png"
+  ft delete del-picture-left --reason retry
+  must 'picture cleanup retry' 0 || return 1
+  case $OUT in *'deleted del-picture-left (0 rows)'*) ;; *) echo "picture cleanup retry was not reported: $OUT"; return 1 ;; esac
+  [ ! -e "$FM_HOME/data/del-picture-left/owner-images" ] || { echo 'picture cleanup retry kept the files'; return 1; }
   # running is refused before anything is written
   mk_running del-run >/dev/null || return 1
   before=$(count fm_task_event)
@@ -1823,10 +1838,32 @@ case_delete() {
   must 'metadata mismatch refuses cleanup' 0 || return 1
   [ -n "$(task_row del-assist)" ] || { echo 'cleanup ignored the metadata kind'; return 1; }
   printf 'kind=assistance\nwindow=live-pane\n' > "$FM_HOME/state/del-assist.meta"
+  # The live session may not have read a picture the owner sent yet: record-only cleanup keeps the files.
+  local kept="$FM_HOME/data/del-assist/owner-images/seq-1.png"
+  mkdir -p "${kept%/*}"; : > "$kept"
   ft delete del-assist --reason stale --assistance-record-only
   must 'running assistance record deleted' 0 || return 1
   [ -z "$(task_row del-assist)" ] || { echo 'assistance record survived'; return 1; }
   grep -qx 'window=live-pane' "$FM_HOME/state/del-assist.meta" || { echo 'cleanup changed session metadata'; return 1; }
+  [ -e "$kept" ] || { echo 'record-only cleanup removed a picture of the live session'; return 1; }
+  # The row is gone and the session still runs: a delete without the flag is refused and keeps them.
+  ft delete del-assist --reason early
+  case $OUT in *'refused del-assist: a live worker'*) ;; *) echo "a delete took the pictures of a live session: $OUT"; return 1 ;; esac
+  [ -e "$kept" ] || { echo 'a delete removed a picture of the live session'; return 1; }
+  printf '#!/bin/sh\nexit 1\n' > "$TMP_ROOT/unread"; chmod +x "$TMP_ROOT/unread"
+  export FM_TASK_AGENT_STATE="$TMP_ROOT/unread"
+  ft delete del-assist --reason early
+  case $OUT in *'refused del-assist: its worker state could not be read'*) ;; *) echo "a delete took the pictures of an unreadable session: $OUT"; return 1 ;; esac
+  [ -e "$kept" ] || { echo 'a delete removed a picture of an unreadable session'; return 1; }
+  # The session ended. A repeated record-only run still keeps them; the delete without the flag removes them.
+  printf '#!/bin/sh\necho dead\n' > "$TMP_ROOT/dead"; chmod +x "$TMP_ROOT/dead"
+  export FM_TASK_AGENT_STATE="$TMP_ROOT/dead"
+  ft delete del-assist --reason stale --assistance-record-only
+  [ -e "$kept" ] || { echo 'a repeated record-only cleanup removed the pictures'; return 1; }
+  ft delete del-assist --reason 'session ended'
+  must 'pictures removed after the session' 0 || return 1
+  case $OUT in *'deleted del-assist (0 rows)'*) ;; *) echo "the picture removal after the session was not reported: $OUT"; return 1 ;; esac
+  [ ! -e "${kept%/*}" ] || { echo 'the delete after the session kept the picture files'; return 1; }
   printf '#!/bin/sh\necho unknown\n' > "$TMP_ROOT/unknown"; chmod +x "$TMP_ROOT/unknown"
   export FM_TASK_AGENT_STATE="$TMP_ROOT/unknown"
   ft delete del-live --reason stale
@@ -2575,6 +2612,42 @@ case_owner_writer() {
   ow --action comment --task $t --reply-to "$question" --note bad --owner u-1 --to firstmate
   must 'owner foreign target' 5 || return 1
   before=$((before + 2))
+  # A marked area: one owner comment carries its picture, the worker gets the picture's file and the fix-proof command.
+  local png='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==' mark
+  ow --action comment --task $t --note 'Marked area: badge overlaps' --image-data "$png" --image-label 'marked area' --image-type image/png --owner u-1 --to firstmate
+  must 'owner image comment' 0 || return 1
+  mark=$(db fm_task_event | jq -r '[.[] | select(.kind == "comment")] | max_by(.seq).seq')
+  db fm_event_image | jq -e --arg png "$png" '[.[] | select(.label == "marked area" and .mediaType == "image/png" and .content == $png)] | length == 1' >/dev/null || { echo 'image not stored with its label and bytes'; return 1; }
+  cmp -s <(printf '%s' "$png" | base64 -d) "$FM_HOME/data/$t/owner-images/seq-$mark.png" || { echo 'picture file not kept for the worker'; return 1; }
+  grep -R -F "Add the fix proof to this thread with: bin/fm-task.sh comment $t --reply-to $mark --actor firstmate --role firstmate --image <proof.png> --image-label 'fix proof'" "$FM_HOME/state/inbox" >/dev/null || { echo 'missing fix-proof delivery'; return 1; }
+  ow --action comment --task $t --note 'Marked area: badge overlaps' --image-data "$png" --image-label 'marked area' --image-type image/png --owner u-1 --to firstmate
+  must 'owner image replay' 0 || return 1
+  [ "$(count fm_event_image)" = 1 ] || { echo 'replayed image stored twice'; return 1; }
+  before=$((before + 1))
+  # The same bytes, label and words sent as another type are another comment, never a replay that keeps the first type.
+  ow --action comment --task $t --note 'Marked area: badge overlaps' --image-data "$png" --image-label 'marked area' --image-type image/jpeg --owner u-1 --to firstmate
+  must 'owner image with a corrected type' 0 || return 1
+  db fm_event_image | jq -e '(length == 2) and ([.[] | select(.label == "marked area" and .mediaType == "image/jpeg")] | length == 1)' >/dev/null || { echo 'the corrected type was taken as a replay'; return 1; }
+  before=$((before + 1))
+  # The worker's copy follows the data directory of this home.
+  FM_DATA_OVERRIDE="$TMP_ROOT/owner-writer-data" ow --action comment --task $t --note 'Marked area: title cut' --image-data "$png" --image-label 'marked area' --image-type image/png --owner u-1 --to firstmate
+  must 'owner image with a data override' 0 || return 1
+  mark=$(db fm_task_event | jq -r '[.[] | select(.kind == "comment")] | max_by(.seq).seq')
+  cmp -s <(printf '%s' "$png" | base64 -d) "$TMP_ROOT/owner-writer-data/$t/owner-images/seq-$mark.png" || { echo 'picture file not kept under the data override'; return 1; }
+  [ ! -e "$FM_HOME/data/$t/owner-images/seq-$mark.png" ] || { echo 'picture file kept outside the data override'; return 1; }
+  grep -R -F "It carries one image, \"marked area\": $TMP_ROOT/owner-writer-data/$t/owner-images/seq-$mark.png." "$FM_HOME/state/inbox" >/dev/null || { echo 'the delivery does not name the kept file'; return 1; }
+  before=$((before + 1))
+  ow --action comment --task $t --note x --image-data 'not base64!' --image-label 'marked area' --owner u-1
+  must 'owner image not base64' 2 || return 1
+  ow --action comment --task $t --note x --image-data "$png" --owner u-1
+  must 'owner image without label' 2 || return 1
+  ow --action comment --task $t --note x --image-data "$png" --image-label l --image-type image/svg+xml --owner u-1
+  must 'owner image wrong type' 2 || return 1
+  ow --action comment --task $t --note x --image-data "$(head -c 96004 /dev/zero | tr '\0' A)" --image-label l --owner u-1
+  must 'owner image too long' 2 || return 1
+  ow --action answer --task $t --option 'Option A' --image-data "$png" --image-label l --owner u-1
+  must 'owner image on answer' 2 || return 1
+  [ "$(count fm_task_event)" = "$before" ] && [ "$(count fm_event_image)" = 3 ] || { echo 'a refused image comment stored rows'; return 1; }
   ow --action comment --task $t --note bad --ask unknown --owner u-1
   must 'unknown skill' 2 || return 1
   ow --action answer --task $t --option 'Option A' --ask why --owner u-1
@@ -3879,6 +3952,11 @@ mutate 'home refuses an archived task' backlog_home "if (task.state === 'archive
 mutate 'a running task is refused' delete "if (state === 'running' && !assistanceRecordOnly) return { refuse: 'running' };" "if (false) return { refuse: 'running' };"
 mutate 'a live worker is refused' delete "if (worker === 'alive') return { refuse: 'a live worker' };" "if (false) return { refuse: 'a live worker' };"
 mutate 'an unreadable worker is refused' delete "if (worker === 'unknown') return { refuse: 'its worker state could not be read' };" "if (false) return { refuse: 'its worker state could not be read' };"
+mutate 'a deleted task takes its owner picture files' delete '  if (!assistanceRecordOnly) removeOwnerImages(taskId);' '  ;'
+mutate 'a record-only delete keeps the owner picture files' delete '  if (!assistanceRecordOnly) removeOwnerImages(taskId);' '  removeOwnerImages(taskId);'
+mutate 'a repeated record-only delete keeps the owner picture files' delete 'const pictures = !assistanceRecordOnly && Boolean(ownerImagesDir(taskId));' 'const pictures = Boolean(ownerImagesDir(taskId));'
+mutate 'pictures left without a row stay while their worker is alive' delete "if (holder === 'alive') return { refuse: 'a live worker' };" "if (false) return { refuse: 'a live worker' };"
+mutate 'pictures left without a row stay while their worker cannot be read' delete "if (holder === 'unknown') return { refuse: 'its worker state could not be read' };" "if (false) return { refuse: 'its worker state could not be read' };"
 mutate 'an open PR is refused' delete 'if (pr === '"'"'open'"'"') return { refuse: `open PR ${prUrl}` };' 'if (false) return { refuse: `open PR ${prUrl}` };'
 mutate 'an unreadable PR is refused' delete "if (pr === 'unknown') return { refuse: 'its PR state could not be read' };" "if (false) return { refuse: 'its PR state could not be read' };"
 mutate 'event children are deleted' delete 'for (const table of EVENT_CHILD_TABLES) rows += await deleteRows(table, await listByFilters(table, eventIds));' ''
@@ -3901,6 +3979,10 @@ mutate_owner() {  # <label> <exact wrapper text> <replacement>: the owner_writer
 }
 mutate_owner 'the writer operation needs the owner the row appends' "case \"\$OWNER\" in ''|" "case \"\$OWNER\" in x|"
 mutate_owner 'the writer runs as the owner' 'FM_TASK_ROLE=owner' 'FM_TASK_ROLE=worker'
+mutate_owner 'an owner comment carries its image to the writer' '"${accept_args[@]}" "${image_args[@]}" --key' '"${accept_args[@]}" --key'
+mutate_owner 'an owner image fits one command argument' '[ "${#IMAGE_DATA}" -le 96000 ]' 'true'
+mutate_owner 'the image type is part of an owner comment replay key' 'image "$IMAGE_LABEL" "$IMAGE_TYPE" "$IMAGE_DATA"' 'image "$IMAGE_LABEL" "$IMAGE_DATA"'
+mutate_owner 'the owner image copy follows the data override' '${FM_DATA_OVERRIDE:-$FM_HOME/data}/$TASK/owner-images' '$FM_HOME/data/$TASK/owner-images'
 mutate_owner_hold() {  # <label> <exact source text> <replacement>
   cp "$TMP_ROOT/fm-task-owner.sh.orig" "$MBIN/fm-task-owner.sh"
   S="$2" R="$3" perl -0pi -e 's/\Q$ENV{S}\E/$ENV{R}/' "$MBIN/fm-task-owner.sh"
