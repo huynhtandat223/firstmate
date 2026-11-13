@@ -1676,7 +1676,7 @@ command_reconcile() {
 reconcile_list() {
   local id rows ids count=0
   [ "$#" -eq 0 ] || { usage >&2; exit 2; }
-  rows=$("$FM_ROOT/bin/fm-task.sh" owner-record hold list --home "${FM_BACKLOG_HOME:-main}" --kind reconcile) || fail "cannot list reconciliation records"
+  rows=$("$FM_ROOT/bin/fm-task.sh" owner-record hold list --home "$("$FM_ROOT/bin/fm-task.sh" owner-home)" --kind reconcile) || fail "cannot list reconciliation records"
   ids=$(printf '%s' "$rows" | python3 -c 'import json,sys; print("\n".join(r["sourceId"] for r in json.load(sys.stdin) if r.get("state")=="active"))') || return 1
   while IFS= read -r id; do
     [ -n "$id" ] || continue

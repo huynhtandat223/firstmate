@@ -552,7 +552,7 @@ fm_afk_contract_archive_target() {  # <record> [superseded-stamp]
 # its portable display record when the service becomes reachable again.
 fm_afk_contract_sync_posture() {  # <posture> <record-or-empty>
   local mode=$1 record=${2:-} pending home
-  home=${FM_BACKLOG_HOME:-main}
+  home=$("$FM_ROOT/bin/fm-task.sh" owner-home) || return 1
   pending="${FM_STATE_OVERRIDE:-$FM_HOME/state}/.owner-posture-pending.json"
   mkdir -p "$(dirname "$pending")" || return 1
   python3 - "$home" "$mode" "$record" > "$pending" <<'PY'

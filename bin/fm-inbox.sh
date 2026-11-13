@@ -123,6 +123,8 @@ FM_HOME="${FM_HOME:-$FM_ROOT}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 INBOX="$STATE/owner-note-spool"
+FM_BACKLOG_HOME=$("$SELF_DIR/fm-task.sh" owner-home)
+export FM_BACKLOG_HOME
 
 CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 

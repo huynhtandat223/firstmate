@@ -5,6 +5,8 @@
 # Payloads are retained verbatim; inactive records read as absent.
 set -euo pipefail
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+FM_BACKLOG_HOME=$("$SELF_DIR/fm-task.sh" owner-home)
+export FM_BACKLOG_HOME
 cmd=${1:-}
 case "$cmd" in
   hold-read)

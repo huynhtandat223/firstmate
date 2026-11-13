@@ -495,6 +495,7 @@ async function project(taskId) {
 // ---- arguments --------------------------------------------------------------------------------------------
 const COMMON = { actor: 's', role: 's', key: 's', note: 's', task: 's', json: 'b' };
 const SPECS = {
+  'owner-home': { pos: [], flags: {} },
   'deploy-ledger': { pos: ['action'], flags: { file: 's', repo: 's' } },
   setup: { pos: ['task'], flags: { file: 's', by: 's', 'from-rules': 'b', states: 's', repo: 's', account: 's', at: 's' } },
   move: { pos: ['task'], flags: { to: 's' } },
@@ -3184,6 +3185,7 @@ async function cmdDeployLedger(args) {
 }
 
 const COMMANDS = {
+  'owner-home': async () => out(process.env.FM_BACKLOG_HOME || backlogHomeOf() || 'main'),
   'deploy-ledger': cmdDeployLedger,
   'owner-record': cmdOwnerRecord,
   setup: cmdSetup, move: cmdMove, step: cmdStep,
