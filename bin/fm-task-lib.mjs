@@ -165,6 +165,9 @@
 //            reads `owner request <seq>: <task> <kind> - run bin/fm-owner-request.sh <task> --seq <seq>`.
 //            A crash between claim and queue append requires operator reconciliation (no duplicate claim).
 //            a row that has an item needs all five template fields again; a re-sent --key never writes the item twice)
+//   deploy-ledger list|cursor|append|put-cursor|seed [--file FILE] [--repo OWNER/REPO]
+//            append-only deploy history on 5001; list emits ordered JSONL, cursor emits the latest cursor JSON.
+//            append accepts one complete record; seed accepts JSONL and verifies readback; put-cursor accepts cursor JSON.
 //   show     <task> [--json]   list [--state S] [--actor A] [--json]   resume <task>   reproject <task> | --all
 //            reproject --all folds every task row again (the board card's step fields too) and prints each repair.
 // Every write takes --key K (the idempotency key; a re-send returns the first event), --actor NAME
@@ -489,6 +492,7 @@ async function project(taskId) {
 // ---- arguments --------------------------------------------------------------------------------------------
 const COMMON = { actor: 's', role: 's', key: 's', note: 's', task: 's', json: 'b' };
 const SPECS = {
+  'deploy-ledger': { pos: ['action'], flags: { file: 's', repo: 's' } },
   setup: { pos: ['task'], flags: { file: 's', by: 's', 'from-rules': 'b', states: 's', repo: 's', account: 's', at: 's' } },
   move: { pos: ['task'], flags: { to: 's' } },
   step: { pos: ['task', 'action'], flags: { harness: 's', model: 's', effort: 's', account: 's', reason: 's', generation: 's' } },
@@ -3014,7 +3018,70 @@ async function cmdRule(args) {
   out(`rule=${ruleId} action=${action}`);
 }
 
+// Deploy history is append-only; payload retains all adapter fields without narrowing its schema.
+function deployCanonical(value) {
+  if (Array.isArray(value)) return value.map(deployCanonical);
+  if (value && typeof value === 'object') return Object.fromEntries(Object.keys(value).sort().map((k) => [k, deployCanonical(value[k])]));
+  return value;
+}
+async function cmdDeployLedger(args) {
+  const repo = args.flags.repo || process.env.FM_DEPLOY_VERIFY_REPO || 'huynhtandat223/cfw-modules';
+  const records = () => listAll('fm_deploy_ask', { filter: `repo eq ${lit(repo)}`, orderby: 'position' });
+  const append = async (payload) => {
+    if (!payload || Array.isArray(payload) || typeof payload !== 'object' || !['ask', 'deployed', 'cursor', 'carry', 'hold', 'release', 'skip', 'draft-skip'].includes(payload.type)) throw usage('deploy ledger record needs a supported type');
+    const text = JSON.stringify(deployCanonical(payload));
+    const recordKey = crypto.createHash('sha256').update(`${repo}\n${text}`).digest('hex');
+    const previous = await firstRow('fm_deploy_ask', `recordKey eq ${lit(recordKey)}`);
+    if (previous) {
+      if (previous.payload !== text) throw rule('deploy ledger key has a different payload');
+      return;
+    }
+    for (let attempt = 0; attempt < 20; attempt++) {
+    const last = await firstRow('fm_deploy_ask', `repo eq ${lit(repo)}`, 'position desc');
+    const body = { recordKey, repo, position: (last?.position ?? 0) + 1, kind: payload.type,
+      task: payload.task ?? null, sha: payload.sha ?? null, prs: JSON.stringify(payload.prs ?? []),
+      runId: String(payload.run ?? ''), round: payload.round ?? null, tester: payload.tester ?? null,
+      at: payload.at ? new Date(payload.at * 1000).toISOString() : null, payload: text };
+    const res = await http('POST', '/api/fm_deploy_ask', body);
+    if (res.status === 409) {
+      const existing = await firstRow('fm_deploy_ask', `recordKey eq ${lit(recordKey)}`);
+      if (existing?.payload === text) return;
+      if (!existing) continue; // Another writer took repo,position; allocate again.
+    }
+    ok(res, 'append deploy ledger');
+    return;
+    }
+    throw rule('deploy ledger allocation kept moving; retry the same record');
+  };
+  const readFile = () => {
+    if (!args.flags.file) throw usage('deploy-ledger needs --file');
+    return fs.readFileSync(args.flags.file, 'utf8');
+  };
+  switch (args.pos.action) {
+    case 'list':
+      for (const row of await records()) if (row.kind !== 'cursor') out(row.payload);
+      break;
+    case 'cursor': {
+      const row = await firstRow('fm_deploy_ask', `repo eq ${lit(repo)} and kind eq 'cursor'`, 'position desc');
+      if (row) { const value = JSON.parse(row.payload); delete value.type; out(JSON.stringify(value)); }
+      break;
+    }
+    case 'append': await append(JSON.parse(readFile())); break;
+    case 'put-cursor': await append({ ...JSON.parse(readFile()), type: 'cursor' }); break;
+    case 'seed': {
+      const values = readFile().split('\n').filter((s) => s.trim()).map((s) => JSON.parse(s));
+      for (const value of values) await append(value);
+      const stored = new Set((await records()).map((r) => r.payload));
+      if (values.some((v) => !stored.has(JSON.stringify(deployCanonical(v))))) throw rule('deploy seed readback differs');
+      out(JSON.stringify({ imported: values.length, distinct: new Set(values.map((v) => JSON.stringify(deployCanonical(v)))).size }));
+      break;
+    }
+    default: throw usage('deploy-ledger list|cursor|append|put-cursor|seed [--file FILE] [--repo OWNER/REPO]');
+  }
+}
+
 const COMMANDS = {
+  'deploy-ledger': cmdDeployLedger,
   setup: cmdSetup, move: cmdMove, step: cmdStep,
   rules: cmdRules, rule: cmdRule, answer: cmdAnswer,
   'turn-end': cmdTurnEnd, deliver: cmdDeliver, requests: cmdRequests, 'read-mark': cmdReadMark, inbox: cmdInbox, describe: cmdDescribe, plan: cmdPlan, 'plan-decision': cmdPlanDecision, thread: cmdThread,

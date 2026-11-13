@@ -86,7 +86,11 @@ fm_verify_close_rows() {
   . "$SCRIPT_DIR/fm-task-shadow-config-lib.sh"
   fm_task_shadow_config "$CONFIG/task-shadow"
   task_writer=${FM_VERIFY_GATE_TASK:-${FM_TASK_SHADOW_WRITER:-$SCRIPT_DIR/fm-task.sh}}
-  ledger="$DATA/deploy-verify/ledger.jsonl"
+  . "$SCRIPT_DIR/fm-deploy-ledger-lib.sh"
+  ledger=$(mktemp) || refuse 'cannot create deploy history snapshot'
+  # shellcheck disable=SC2064 # ledger is function-local; capture the generated path before returning.
+  trap "rm -f '$ledger'" EXIT
+  fm_deploy_ledger_snapshot "$ledger" || refuse 'cannot read deploy history from Dev 5001'
   repo=${FM_DEPLOY_VERIFY_REPO:-huynhtandat223/cfw-modules}
 
   task_json=$(FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_DATA_OVERRIDE=$DATA "$task_writer" show "$ID" --json 2>&1) \
@@ -136,7 +140,7 @@ fm_verify_close_rows() {
   fi
 
   if [ "$has_pr_in_repo" -eq 1 ]; then
-    ledger_heads=$(fm_verify_gate_ledger_shas "$ledger" "$ID")
+    ledger_heads=$(fm_verify_gate_ledger_shas "$ledger" "$ID") || refuse 'cannot read deployed heads from Dev 5001'
   elif [ "$has_other_pr" -eq 1 ]; then
     # A PR outside the repo deploy-verify watches keeps the deployed: line firstmate recorded.
     deployed_line=$(fm_verify_gate_field "$VERIFY_FILE" deployed)
