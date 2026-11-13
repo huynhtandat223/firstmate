@@ -73,6 +73,7 @@ task_step_pass() {
   for meta in "$STATE"/*.meta; do
     [ "$STOP" -eq 0 ] || break
     [ -f "$meta" ] || continue
+    [ "$(fm_meta_get "$meta" kind)" != assistance ] || continue
     id=${meta##*/}; id=${id%.meta}
     generation=$(fm_meta_get "$meta" spawn_gen)
     live=$(fm_backend_agent_alive "$(fm_backend_of_meta "$meta")" "$(fm_backend_target_of_meta "$meta")" 2>/dev/null) || live=unknown

@@ -20,6 +20,7 @@
 #   fm-task-shadow.sh held <task> <hold-kind> <reason>               block (captain: transient)     (bin/fm-captain-hold.sh hold)
 #   fm-task-shadow.sh answered <task> <released|closed>              unblock or approve            (bin/fm-captain-hold.sh answer)
 #   fm-task-shadow.sh deploy-verify <task> <sha> <round> <issue>     a deploy event                (bin/fm-procevent-deploy-verify.sh)
+#   fm-task-shadow.sh merged <task> <pr-url>                         a pr event with --merged      (bin/fm-merge-outcome-lib.sh)
 #   fm-task-shadow.sh step-start <task> <generation> <harness> [<model> [<effort> [<account>]]]   (an empty model keeps the setup's)
 #                                                                    step start: the current workflow state runs (bin/fm-spawn.sh,
 #                                                                    a relaunch too); queued, merge and done have no worker and
@@ -75,6 +76,10 @@ TIMEOUT=${FM_TASK_SHADOW_TIMEOUT:-30}
 LOG="$STATE/task-shadow.log"
 TASK=${1:-}
 case "$TASK" in ''|.*|*[!A-Za-z0-9._-]*) exit 0 ;; esac
+
+# Assistances are sessions, not tasks. All producers (including relaunch and cleanup)
+# cross this boundary while the task meta still exists; never mirror their events.
+if grep -qx 'kind=assistance' "$STATE/$TASK.meta" 2>/dev/null; then exit 0; fi
 
 short() { printf '%s' "$1" | cksum | awk '{ printf "%x", $1 }'; }  # a short stable digest for a key
 oneline() { printf '%s' "$1" | tr '\n\r\t' '   ' | sed 's/  */ /g; s/^ //; s/ $//'; }
@@ -270,6 +275,10 @@ case "$EVENT" in
     ;;
   deploy-verify)
     w "deploy-$(short "${2:-}|${3:-}")" event "$TASK" deploy --note "deploy ${3:-} at ${2:-}: verify ask sent (${4:-})"
+    ;;
+  merged)
+    # the note says merged too, so a wait that clears on the merge clears on this event
+    w "merged-$(short "${2:-}")" event "$TASK" pr --merged --pr-url "${2:-}" --note "merged ${2:-}"
     ;;
   step-start)
     # a spawn on the harness default model names none: the writer keeps the setup's model for the state

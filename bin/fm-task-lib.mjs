@@ -27,6 +27,9 @@
 //            on a failed check row; a state outside the setup is refused (exit 5). The running attempt of the state
 //            left behind ends with the move. Done comes only through approve, which ends a running step and skips a
 //            state that never started; reopen returns to the last state that ran and lets the skipped states wait again.
+//            A ship task, whatever its surface, moves to implement, a retry too, only while its current plan (its
+//            Solution) is approved; with no plan or another decision it is refused (exit 5): write the Solution with
+//            `plan`, and the owner approves it on the task's Solution tab.
 //   step     <task> start --harness H [--model M] [--effort E] [--account A] [--generation G]   the current state runs;
 //            without --model (a harness default) the setup's model and effort for the state stand
 //   step     <task> alive|dead [--generation G]   on a change only     step <task> end --reason R [--generation G]
@@ -38,8 +41,9 @@
 //            (required when task kind is scout or plan; refused exit 5 otherwise).
 //            Document: UTF-8 .md/.markdown or .html/.htm, 1 byte to 2 MiB; one-line title 1..200
 //            characters (default file name). Invalid files/options exit 2 before any API write.
-//   plan     <task> --document FILE [--document-title T] [--note N]        attaches a plan document and sets
-//            planSeq = seq, planDecision = null, planDecidedAt = null (default role planner)
+//   plan     <task> --document FILE [--document-title T] [--note N] [--image PATH --image-label L]...
+//            attaches a plan document and sets planSeq = seq, planDecision = null, planDecidedAt = null (default role
+//            planner); each --image is stored as an image child of the plan event, with the limits of comment's images
 //   plan-decision <task> --decision approve|changes --plan-seq N [--note WHY]
 //            sets planDecision and planDecidedAt (refused exit 5 when N !== task.planSeq or task has no plan)
 //   ask      <task> --question Q --option O (2 to 6 times) --recommendation R --why W
@@ -65,11 +69,22 @@
 //   archive  <task>                          triage|todo|ready|blocked|review|done -> archived
 //   delete   <task>... --reason WHY          any state but running, with no live worker and a PR that is not open or
 //            unreadable; deletes the task row, its events and their children, its steps, checks, owner items, deliveries,
-//            links on either side, then dismisses its undismissed notifications after deleting the task row. There is no backup, and one
+//            links on either side, then dismisses its undismissed notifications after deleting the task row and removes
+//            the owner's picture files of the task (data/<task>/owner-images). There is no backup, and one
 //            refusal or failure does not stop the other ids. A new event written after the checks refuse the id.
+//            --assistance-record-only removes an obsolete assistance row even while its pane runs; requires both
+//            the row and state/<id>.meta to have kind assistance. It never changes or stops the session, and it
+//            keeps the owner's picture files, which the live session may not have read yet: a delete without the
+//            flag removes them once the session ended, and is refused while its worker is alive or unreadable.
 //   home     <task> --home H                 sets the backlog home of a task that has none (any state but archived);
 //            the same home again is a no-op, another home is refused: a task belongs to one board
 //   describe <task> --document FILE.md [--document-title T]              any state; default title Description
+//            A task that holds no scenario check row yet gets them from this Description, as `rows <task>` writes them;
+//            a task that holds one keeps its rows (`rows` is the re-sync). Only a task whose issue is none, its own id,
+//            task:<its id> or a board link naming it is seeded; any other issue (an external http(s) issue, another task's
+//            task:<id> or board link) stays the source of its rows: describe seeds none, and `rows <task> <issue>` seeds
+//            them. There, and for a Description that sync refuses (no scenarios, a parser refusal), the Description is
+//            stored all the same, and describe prints `rows not seeded: <why>` and exits 0.
 //   thread   <task> [--since SEQ]                                       full comments, oldest first
 //   comment  <task> [--note T] [--image PATH --image-label L]... [--video PATH --video-label L]...
 //            [--ask why|how|wait-what] [--reply-to SEQ]                 any state; reply-to must name a comment of this task
@@ -78,9 +93,10 @@
 //            [--outcome LINE]   with --reply-to inside a thread: proposes the line the thread resolved with
 //            [--accept]         with --reply-to naming a proposal, role owner: resolves the thread with its outcome
 //                               (note optional); any later comment in the thread reopens it
-//   event    <task> <kind> [--note N] [--pr-url U] [--head H] [--url U] kinds: steer comment pr deploy ci
+//   event    <task> <kind> [--note N] [--pr-url U] [--head H] [--url U] [--merged] kinds: steer comment pr deploy ci
 //            protocol_violation divergence link; --head on deploy (the deployed head, which user-visible passes count on
-//            from then) or on ci (the head the CI result read); --url on link; no other kind takes them
+//            from then) or on ci (the head the CI result read); --url on link; --merged on pr (the pull request merged:
+//            the event body holds merged: true); no other kind takes them
 //   event    <task> close-request|start-request [--note N]   the owner's Done or Start on the board (next actor
 //            firstmate; refused on a done or archived task, start-request also on a running one, and while a request of
 //            the same kind is still open). Each stays open until
@@ -93,10 +109,11 @@
 //   event    <task> wait --next-actor tester|owner|merge|ci --clears-on rows|answer|merge|ci --note WHY [--rows ID@W,...]
 //            a declared wait (G1); `ask --next-actor owner` (answer) and `done --pr-url` (rows on the Tester, else merge)
 //            write one too. Its status line is `paused [at=E] [key=wait-<seq>]: waiting on <actor>: WHY (clears on X)`; the
-//            clearing event (the asked rows each with a newer result that is not pending, an unblocked event, a pr event whose
-//            note says merged, a ci event, or an approved or archived event) adds `resolved` with that key, in the home
-//            holding the line. `wait --next-actor ci --clears-on ci` is how a worker waits for its PR's checks: the
-//            pr-review source writes the ci event for the current head, green or failed, and delivers a failure to the inbox.
+//            clearing event (the asked rows each with a newer result that is not pending, an unblocked event, a pr event given
+//            --merged or whose note says merged, a ci event, or an approved or archived event) adds `resolved` with that
+//            key, in the home holding the line. `wait --next-actor ci --clears-on ci` is how a worker waits for its PR's
+//            checks: the pr-review source writes the ci event for the current head, green or failed, and delivers a failure
+//            to the inbox.
 //            deploy --touched none|all|ID,...: the scenarios the deployed PRs name (`Scenarios touched:`); a user-visible pass
 //            on an earlier deployed head carries to later deployed heads while no later deploy names its id (all, or no
 //            flag, names every id). approve, routing and gate accept a carried pass; gate prints each with its head.
@@ -373,11 +390,18 @@ function bodyOf(event) {
 // workflowSince and the card's step fields (stepHarness, stepModel, stepEffort, stepAlive) in their own `set`.
 // The step follows the state: done is passed; review is dev once a deploy follows the newest done, else pr; running is
 // pr once a pr event follows the newest started or changes, else working; triage, todo and ready are queued; blocked
-// (and archived) keep the step they had. stageSince is the time of the event that set the step. lastEventAt and
-// lastNote come from the newest real event: a backlog view `row` event is not one. A machine record is not a note
-// either, so it leaves lastNote as it was: an import's source stamp (`{"source","sha256"}` under a `backfill:<task>:`
-// key, fm-task-backfill-lib.mjs) and a reconcile divergence (`{"field","oldSource","record"}` under a `reconcile:<task>:`
-// key, fm-task-reconcile-lib.mjs). The same JSON in a real comment is a note.
+// (and archived) keep the step they had. stageSince is the time of the event that set the step. lastEventAt comes from
+// the newest real event: a backlog view `row` event is not one. lastNote is the newest real event's note; an event with
+// no note leaves it as it was. A machine record is not a note either, so it leaves lastNote as it was: an import's source
+// stamp (`{"source","sha256"}` under a `backfill:<task>:` key, fm-task-backfill-lib.mjs) and a reconcile divergence
+// (`{"field","oldSource","record"}` under a `reconcile:<task>:` key, fm-task-reconcile-lib.mjs). The same JSON in a real
+// comment is a note. Nor is the wait a command writes after its own event (waitOn, which done --pr-url,
+// ask --next-actor owner and the no-model stop call: its note the PR or the question), so the caller's --note stays.
+// waitOn marks that wait `followUp: true` in its body. A wait written before the mark is one when its key is an earlier
+// event's key plus `:wait` and that event wrote one: a done holding a prUrl, or a needs-decision to the owner. A wait
+// the caller writes itself is a note, under any key.
+const wroteWait = (event) => (event?.kind === 'done' && Boolean(bodyOf(event).set?.prUrl)) || (event?.kind === 'needs-decision' && bodyOf(event).set?.nextActor === 'owner');
+const isFollowUpWait = (event, byKey) => event.kind === 'wait' && (bodyOf(event).followUp === true || (/:wait$/.test(event.idempotencyKey ?? '') && wroteWait(byKey.get(event.idempotencyKey.slice(0, -5)))));
 const MACHINE_RECORDS = { backfill: 'sha256,source', reconcile: 'field,oldSource,record' };
 const isMachineRecord = (event, note) => {
   const [prefix, taskId] = String(event.idempotencyKey ?? '').split(':');
@@ -393,6 +417,7 @@ function fold(events) {
   let task = null;
   let deployed = false;
   let pullRequest = false;
+  const byKey = new Map();
   for (const event of [...events].sort((a, b) => a.seq - b.seq)) {
     const set = { ...(bodyOf(event).set || {}), ...(event.rowText || {}) };
     if (event.kind === 'created' && !task) task = { taskId: event.taskId };
@@ -409,8 +434,9 @@ function fold(events) {
     if (event.kind !== 'row' && event.kind !== 'checklist') {
       const note = String(bodyOf(event).note ?? '');
       task.lastEventAt = event.createdAt ?? null;
-      if (!isMachineRecord(event, note)) task.lastNote = note.slice(0, 300) || null;
+      if (note && !isMachineRecord(event, note) && !isFollowUpWait(event, byKey)) task.lastNote = note.slice(0, 300);
     }
+    byKey.set(event.idempotencyKey, event);
     if (REVIEWER_KINDS.includes(event.kind)) task.reviewer = event.actor ?? null;
   }
   if (!task) return null;
@@ -480,14 +506,14 @@ const SPECS = {
   reopen: { pos: ['task'], flags: { reason: 's' } },
   reassign: { pos: ['task'], flags: { to: 's', reason: 's' } },
   archive: { pos: ['task'], flags: {} },
-  delete: { pos: [], rest: 'tasks', flags: { reason: 's' } },
+  delete: { pos: [], rest: 'tasks', flags: { reason: 's', 'assistance-record-only': 'b' } },
   home: { pos: ['task'], flags: { home: 's' } },
   describe: { pos: ['task'], flags: { document: 's', 'document-title': 's' } },
-  plan: { pos: ['task'], flags: { document: 's', 'document-title': 's' } },
+  plan: { pos: ['task'], flags: { document: 's', 'document-title': 's', image: 'm', 'image-label': 'm' } },
   'plan-decision': { pos: ['task'], flags: { decision: 's', 'plan-seq': 's' } },
   thread: { pos: ['task'], flags: { since: 's' } },
   comment: { pos: ['task'], flags: { image: 'm', 'image-label': 'm', video: 'm', 'video-label': 'm', ask: 's', 'reply-to': 's', 'anchor-quote': 's', 'anchor-prefix': 's', 'anchor-suffix': 's', outcome: 's', accept: 'b' } },
-  event: { pos: ['task', 'kind'], flags: { 'pr-url': 's', head: 's', touched: 's', 'next-actor': 's', 'clears-on': 's', rows: 's', url: 's' } },
+  event: { pos: ['task', 'kind'], flags: { 'pr-url': 's', head: 's', touched: 's', 'next-actor': 's', 'clears-on': 's', rows: 's', url: 's', merged: 'b' } },
   checks: { pos: ['task'], flags: { 'as-deployed': 's', touched: 's' } },
   link: { pos: ['parent', 'child'], flags: {} },
   rows: { pos: ['task', 'issue'], flags: { surface: 's' } },
@@ -834,8 +860,8 @@ const statusFile = (taskId) => path.join(process.env.FM_STATE_OVERRIDE || path.j
 
 // A declared wait (G1): `event <task> wait`, which the Tester ask builder, `ask --next-actor owner` and `done --pr-url`
 // also write. The status view writes it as a paused line keyed wait-<seq>; the record event that clears it is the asked
-// rows each holding a newer result that is not pending (rows), an unblocked event (answer), a `pr` event whose note says
-// merged (merge), or for any of them an approved or archived event.
+// rows each holding a newer result that is not pending (rows), an unblocked event (answer), a `pr` event given --merged
+// or whose note says merged (merge), or for any of them an approved or archived event.
 function clearingEvent(wait, events) {
   const { clearsOn, rows = [] } = bodyOf(wait).wait || {};
   const later = events.filter((e) => e.seq > wait.seq);
@@ -844,7 +870,7 @@ function clearingEvent(wait, events) {
     const { question } = bodyOf(wait).wait || {};
     return later.find((e) => e.kind === 'unblocked' || (e.kind === 'answered' && (question ? bodyOf(e).answer?.question === question : bodyOf(e).set?.state !== undefined))) ?? closing;
   }
-  if (clearsOn === 'merge') return later.find((e) => e.kind === 'pr' && /\bmerged\b/i.test(bodyOf(e).note ?? '')) ?? closing;
+  if (clearsOn === 'merge') return later.find((e) => e.kind === 'pr' && (bodyOf(e).merged === true || /\bmerged\b/i.test(bodyOf(e).note ?? ''))) ?? closing;
   // The pr-review source writes one ci event for the PR's current head once its checks finish, green or failed,
   // so the delivered CI result is that event whatever head the worker was waiting on.
   if (clearsOn === 'ci') {
@@ -896,12 +922,12 @@ async function waitView(taskId, known) {
   }
 }
 
-// Append a wait for a task, keyed on the call that asks for it, and write its paused line.
+// Append a wait for a task, keyed on the call that asks for it and marked followUp, and write its paused line.
 async function waitOn(taskId, who, { actor, clearsOn, note, rows = [], question }) {
   const result = await append(taskId, { ...who, key: `${who.key}:wait` }, async ({ task }) => {
     if (!task) throw rule('no such task');
     if (CLOSED.includes(task.state)) throw rule(`wait is refused: ${taskId} is ${task.state}`);
-    return { kind: 'wait', note, extra: { wait: { actor, clearsOn, rows, ...(question ? { question } : {}) } } };
+    return { kind: 'wait', note, extra: { followUp: true, wait: { actor, clearsOn, rows, ...(question ? { question } : {}) } } };
   });
   await statusView(result.event);
   return result;
@@ -1032,6 +1058,12 @@ async function cmdMove(args) {
     const next = task.workflowState === 'queued' ? steps[0] : steps[index + 1];
     const retry = ['testing', 'verify'].includes(task.workflowState) && to === 'implement' && (await checkRows(taskId)).some(r => r.status === 'fail');
     if (!target || (next?.state !== to && !retry)) throw rule('move must follow setup; Done requires approve');
+    // The Solution gate: the owner's approval of the current plan opens Implement on a ship task, whatever its surface. A
+    // retry passes the same gate, so a plan replaced after its approval waits for the owner again.
+    if (to === 'implement' && task.kind === 'ship' && task.planDecision !== 'approve') {
+      const solution = !task.planSeq ? 'has no Solution' : task.planDecision === 'changes' ? 'has a Solution the owner asked to change' : 'has a Solution the owner has not approved yet';
+      throw rule(`move to implement is refused: ${taskId} is a ship task and ${solution}. Write the Solution with fm-task.sh plan ${taskId} --document solution.md; the owner approves it on the task's Solution tab.`);
+    }
     // the state left behind stops running: its attempt ends with the move
     const now = new Date().toISOString();
     const left = steps.find(s => s.state === task.workflowState && s.status === 'running');
@@ -1336,6 +1368,19 @@ async function dismissTaskNotices(taskId) {
   }
   return notices.length;
 }
+// The owner's pictures kept as files for the worker (bin/fm-task-owner.sh, comment --image-data) go with their task,
+// except on a record-only delete, whose session still runs (deleteOutcome decides).
+function ownerImagesDir(taskId) {
+  const data = process.env.FM_DATA_OVERRIDE || (process.env.FM_HOME && path.join(process.env.FM_HOME, 'data'));
+  const dir = data && path.join(data, taskId, 'owner-images');
+  return dir && fs.existsSync(dir) ? dir : null;
+}
+function removeOwnerImages(taskId) {
+  const dir = ownerImagesDir(taskId);
+  if (!dir) return false;
+  fs.rmSync(dir, { recursive: true });
+  return true;
+}
 async function deleteTaskRows(taskId, events) {
   const eventIds = events.map((e) => `fmTaskEventId eq ${e.id}`);
   const seqs = events.map((e) => `seq eq ${e.seq}`);
@@ -1358,20 +1403,40 @@ async function deleteTaskRows(taskId, events) {
 // delete <task>...: hard delete, no backup. A refusal is checked before any row of that task is written, and one
 // refused id does not stop the others.
 // Decide and perform one delete: every refusal happens before the first write, so a refused id is left untouched.
-async function deleteOutcome(taskId) {
+async function deleteOutcome(taskId, assistanceRecordOnly = false) {
   // A partial earlier run leaves the task row without its events; that row is still deleted.
   const events = await rawTaskEvents(taskId);
   const task = fold(events);
   const stored = task ? null : await firstRow('fm_task', `taskId eq ${lit(taskId)}`);
   if (!task && !stored && !events.length) {
-    // A failed notification PATCH can outlive the task row. Retry its cleanup without recreating the task.
+    // A failed notification PATCH or picture removal can outlive the task row. Retry the cleanup without recreating the task.
+    // Pictures a record-only delete kept belong to a session that may still run: they go only once its worker is gone,
+    // and that refusal comes before a notice is dismissed.
+    const pictures = !assistanceRecordOnly && Boolean(ownerImagesDir(taskId));
+    if (pictures) {
+      const holder = workerState(taskId);
+      if (holder === 'alive') return { refuse: 'a live worker' };
+      if (holder === 'unknown') return { refuse: 'its worker state could not be read' };
+    }
     const dismissed = await dismissTaskNotices(taskId);
-    return dismissed ? { rows: 0 } : { refuse: 'no such task' };
+    if (pictures) removeOwnerImages(taskId);
+    return dismissed || pictures ? { rows: 0 } : { refuse: 'no such task' };
   }
   const state = task ? task.state : stored?.state;
   const prUrl = task ? task.prUrl : stored?.prUrl;
-  if (state === 'running') return { refuse: 'running' };
-  const worker = workerState(taskId);
+  if (assistanceRecordOnly) {
+    // Retire an obsolete task projection, not the live assistance session.
+    const kind = task ? task.kind : stored?.kind;
+    const home = process.env.FM_HOME;
+    const meta = path.join(process.env.FM_STATE_OVERRIDE || path.join(home, 'state'), `${taskId}.meta`);
+    let metadata;
+    try { metadata = fs.readFileSync(meta, 'utf8'); } catch { return { refuse: 'assistance metadata could not be read' }; }
+    if (kind !== 'assistance' || !metadata.split('\n').includes('kind=assistance')) {
+      return { refuse: 'record-only deletion requires an assistance row and assistance metadata' };
+    }
+  }
+  if (state === 'running' && !assistanceRecordOnly) return { refuse: 'running' };
+  const worker = assistanceRecordOnly ? 'dead' : workerState(taskId);
   if (worker === 'alive') return { refuse: 'a live worker' };
   if (worker === 'unknown') return { refuse: 'its worker state could not be read' };
   if (prUrl) {
@@ -1385,7 +1450,10 @@ async function deleteOutcome(taskId) {
   if (fresh.length !== events.length || fresh.some((e, i) => e.id !== events[i].id)) {
     return { refuse: 'its events changed while it was checked' };
   }
-  return { rows: await deleteTaskRows(taskId, events) };
+  const rows = await deleteTaskRows(taskId, events);
+  // The session of a record-only delete still runs and may not have read a picture yet: its files stay.
+  if (!assistanceRecordOnly) removeOwnerImages(taskId);
+  return { rows };
 }
 
 async function cmdDelete(args) {
@@ -1402,7 +1470,7 @@ async function cmdDelete(args) {
       continue;
     }
     try {
-      const outcome = await deleteOutcome(taskId);
+      const outcome = await deleteOutcome(taskId, args.flags['assistance-record-only']);
       if (outcome.refuse) refused.push(`${taskId}: ${outcome.refuse}`);
       else deleted.push(`${taskId} (${outcome.rows} rows)`);
     } catch (error) {
@@ -1567,16 +1635,35 @@ async function cmdDescribe(args) {
   const f = args.flags;
   if (!f.document || !['.md', '.markdown'].includes(path.extname(f.document).toLowerCase())) throw usage('describe needs --document FILE.md');
   const document = documentOf({ ...f, 'document-title': f['document-title'] ?? 'Description' });
-  return write(taskIdOf(args), identity(args, 'firstmate'), async ({ task }) => {
+  const taskId = taskIdOf(args);
+  const who = identity(args, 'firstmate');
+  const { task } = await write(taskId, who, async ({ task }) => {
     if (!task) throw rule('no such task');
     return { kind: 'description', children: { documents: [document] } };
   });
+  // A task with no scenario row yet takes its rows from this Description, through the sync `rows <task>` runs. A task
+  // that holds one keeps its rows, so a re-describe resets no result; a Description the sync refuses still stands.
+  // A task whose issue is another source (an external issue, another task) keeps it as the source of its rows, which
+  // deploy verify and the gate read: the Description seeds nothing there, and `rows` seeds it.
+  if ((await checkRows(taskId)).some((row) => !isChecklist(row))) return;
+  const issue = task?.issueUrl ?? '';
+  if (!['', taskId, `task:${taskId}`].includes(issue) && boardTask(issue) !== taskId) {
+    out(`rows not seeded: ${taskId} has the issue ${issue}, the source of its rows; seed them with rows ${taskId} ${issue}`);
+    return;
+  }
+  try {
+    await cmdRows({ pos: { task: taskId }, flags: { actor: who.actor, role: who.role } });
+  } catch (error) {
+    if (!(error instanceof Fail) || error.code !== 5) throw error;
+    out(`rows not seeded: ${error.message}`);
+  }
 }
 
 async function cmdPlan(args) {
   const f = args.flags;
   if (!f.document) throw usage('plan needs --document FILE');
   const document = documentOf(f);
+  const images = imagesOf(args);
   const taskId = taskIdOf(args);
   return write(taskId, identity(args, 'planner'), async ({ task, seq }) => {
     if (!task) throw rule('no such task');
@@ -1585,7 +1672,7 @@ async function cmdPlan(args) {
       kind: 'plan',
       note: noteOf(args) || document.title,
       set: { planSeq: seq, planDecision: null, planDecidedAt: null },
-      children: { documents: [document] },
+      children: withImages({ documents: [document] }, images),
     };
   });
 }
@@ -1769,6 +1856,8 @@ async function cmdEvent(args) {
   if (head !== undefined && !headKind) throw usage('--head names a head a deploy or a ci event reports: give it only on one of those');
   if (args.flags.touched !== undefined && !(kind === 'deploy' && head)) throw usage('--touched names the scenarios a deploy touched: give it only on a deploy event with --head');
   if (url !== undefined && kind !== 'link') throw usage('--url goes only on a link event');
+  const merged = args.flags.merged === true;
+  if (merged && kind !== 'pr') throw usage('--merged says a pull request merged: give it only on a pr event');
   if (kind === 'link' && (!url || !/^https?:\/\/\S+$/.test(url) || url.length > 2048)) throw rule('a link event needs --url with an http or https URL up to 2048 characters');
   const touched = touchedOf(args.flags.touched);
   if (kind === 'wait') {
@@ -1799,7 +1888,7 @@ async function cmdEvent(args) {
       if (kind === 'closed' && task.state !== 'done') throw rule(`closed is refused: ${taskId} is ${task.state}, not approved`);
       return { kind, note: noteOf(args), set: kind === 'closed' ? {} : { nextActor: 'owner' } };
     }
-    return { kind, note: noteOf(args) || (kind === 'link' ? url : ''), set: kind === 'pr' && prUrl ? { prUrl } : {}, ...(head ? { extra: { head, ...(touched ? { touched } : {}) } } : kind === 'link' ? { extra: { url } } : {}) };
+    return { kind, note: noteOf(args) || (kind === 'link' ? url : ''), set: kind === 'pr' && prUrl ? { prUrl } : {}, ...(head ? { extra: { head, ...(touched ? { touched } : {}) } } : kind === 'link' ? { extra: { url } } : merged ? { extra: { merged: true } } : {}) };
   }, kind === 'deploy' && head ? () => routeReview(taskId, who) : undefined);
 }
 
@@ -2043,6 +2132,10 @@ async function wantedRows(issue) {
   return wanted;
 }
 
+// A board link names a task, so its rows come from that task's Description, as from task:<id>.
+const boardTask = (issue) => /^https?:\/\/[^\s]+[?&]task=([^&#\s]*)/.exec(issue)?.[1];
+const boardLink = (issue) => boardTask(issue) !== undefined;
+
 async function cmdRows(args) {
   const taskId = taskIdOf(args);
   const issue = args.pos.issue || taskId;
@@ -2097,7 +2190,7 @@ async function cmdRows(args) {
   const summary = `rows added=${counts.added} reset=${counts.reset} retired=${counts.retired} updated=${counts.updated} unchanged=${counts.unchanged} total=${wanted.size}`;
   const parser = process.env.FM_TASK_ACCEPTANCE || path.join(HERE, 'fm-acceptance.mjs');
   const digestRun = spawnSync('node', [parser, 'digest', issue, '--strict'], { encoding: 'utf8', timeout: 60000 });
-  const taskNative = !args.pos.issue || issue.startsWith('task:') || /^https?:\/\/[^\s]+[?&]task=/.test(issue);
+  const taskNative = !args.pos.issue || issue.startsWith('task:') || boardLink(issue);
   if (taskNative && (digestRun.status !== 0 || !/^[a-f0-9]{64}\s*$/.test(digestRun.stdout))) throw rule('acceptance digest could not be read');
   const sets = { ...(taskNative && task.acceptanceDigest !== digestRun.stdout.trim() ? { acceptanceDigest: digestRun.stdout.trim() } : {}), ...(taskNative ? (task.issueUrl !== issue ? { issueUrl: issue } : {}) : (args.pos.issue && !/^https?:\/\//.test(task.issueUrl ?? '') ? { issueUrl: issue } : {})) };
   if (counts.added + counts.reset + counts.retired + counts.updated === 0 && !Object.keys(sets).length) {
