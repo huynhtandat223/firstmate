@@ -3079,8 +3079,14 @@ async function cmdOwnerRecord(args) {
     }
     const created = await http('POST', `/api/${spec.table}`, body);
     if (created.status === 409) {
-      // An insert race must be reconciled by the caller against the winner.
-      throw rule('owner record was created concurrently; read it before retrying');
+      if (args.pos.table === 'note' && body.requestId) {
+        const winner = await firstRow(spec.table, `home eq ${lit(body.home)} and requestId eq ${lit(body.requestId)}`);
+        if (winner && winner.text === body.text && winner.source === body.source) {
+          out(JSON.stringify(winner));
+          return;
+        }
+      }
+      throw rule('owner record conflicts with an existing identity or request body; read it before retrying');
     }
     ok(created, 'create owner record');
   } else {

@@ -509,6 +509,14 @@ case_owner_records() {
   FM_HOME="$home" "$BIN/fm-inbox.sh" drain --ack "$note_id" >/dev/null || return 1
   FM_HOME="$home" "$BIN/fm-inbox.sh" receipts --all-handled --all-replies > "$TMP_ROOT/receipts.json" || return 1
   db fm_owner_note | jq -e --arg id "$note_id" '.[] | select(.noteId==$id) | .state=="handled" and .reply=="public reply\n"' >/dev/null || return 1
+  printf '%s\n' '{"home":"legacy-home","noteId":"random-legacy","text":"legacy body","source":"cli","state":"waiting","requestId":"legacy-request"}' > "$file"
+  ft owner-record note put --identity random-legacy --home legacy-home --file "$file"
+  must 'seed legacy request identity' 0 || return 1
+  jq '.noteId="deterministic-retry"' "$file" > "$file.next"; mv "$file.next" "$file"
+  ft owner-record note put --identity deterministic-retry --home legacy-home --file "$file"
+  must 'reconcile legacy request identity' 0 || return 1
+  [ "$(printf '%s' "$OUT" | jq -r .noteId)" = random-legacy ] || return 1
+  [ "$(db fm_owner_note | jq '[.[]|select(.home=="legacy-home")]|length')" = 1 ] || return 1
   local second="$TMP_ROOT/central-inbox-second"
   mkdir -p "$second/state"
   FM_HOME="$second" "$BIN/fm-inbox.sh" receipts --all-handled --all-replies > "$TMP_ROOT/second-receipts.json" || return 1
