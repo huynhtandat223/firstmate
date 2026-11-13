@@ -18,6 +18,9 @@ PROJECT_MODE="$ROOT/bin/fm-project-mode.sh"
 TMP_ROOT=$(fm_test_tmproot fm-project-mode-tests)
 DATA="$TMP_ROOT/data"
 mkdir -p "$DATA"
+# This suite proves cached grammar, not integration. A closed port induces the
+# authorized outage without reading or overwriting a live project registry.
+export FM_TASK_BASE_URL=http://127.0.0.1:1
 
 cat > "$DATA/projects.md" <<'EOF'
 ## Projects
@@ -50,13 +53,13 @@ pass "fm-project-mode: an entry with no forge token reports forge none and keeps
 [ "$(run_mode lab)" = "no-mistakes off" ] || fail "lab entry's mode output changed: $(run_mode lab)"
 [ "$(run_forge lab)" = "forgejo" ] || fail "forge=forgejo after the mode token did not resolve: $(run_forge lab)"
 err=$(FM_DATA_OVERRIDE="$DATA" "$PROJECT_MODE" lab 2>&1 >/dev/null)
-[ -z "$err" ] || fail "a registered forge=forgejo warned: $err"
+assert_contains "$err" 'cache age=' 'an unavailable remote read must name the cache age'
 pass "fm-project-mode: forge=forgejo placed after the mode token binds forgejo without a warning"
 
 [ "$(run_mode lead)" = "direct-PR on" ] || fail "forge=forgejo must keep +yolo, which only gerrit deactivates: $(run_mode lead)"
 [ "$(run_forge lead)" = "forgejo" ] || fail "forge=forgejo placed before the mode token did not resolve: $(run_forge lead)"
 err=$(FM_DATA_OVERRIDE="$DATA" "$PROJECT_MODE" lead 2>&1 >/dev/null)
-[ -z "$err" ] || fail "+yolo on a forge=forgejo project was refused or warned: $err"
+assert_contains "$err" 'cache age=' 'an unavailable remote read must name the cache age'
 pass "fm-project-mode: forge=forgejo binds in any token order and keeps +yolo"
 
 for flag in "" --forge; do
@@ -87,7 +90,7 @@ pass "fm-project-mode: a value outside none|gerrit|forgejo|external is refused a
 [ "$(run_forge reviewed)" = "external" ] || fail "forge=external did not resolve: $(run_forge reviewed)"
 [ "$(run_mode reviewed)" = "direct-PR off" ] || fail "forge=external changed the two-word output: $(run_mode reviewed)"
 err=$(FM_DATA_OVERRIDE="$DATA" "$PROJECT_MODE" reviewed 2>&1 >/dev/null)
-[ -z "$err" ] || fail "a registered forge=external warned: $err"
+assert_contains "$err" 'cache age=' 'an unavailable remote read must name the cache age'
 [ "$(run_mode reviewed-yolo)" = "direct-PR off" ] || fail "+yolo on forge=external must report yolo=off: $(run_mode reviewed-yolo)"
 err=$(FM_DATA_OVERRIDE="$DATA" "$PROJECT_MODE" reviewed-yolo 2>&1 >/dev/null)
 assert_contains "$err" "yolo is inactive for forge=external" "+yolo on forge=external was dropped without a refusal"
