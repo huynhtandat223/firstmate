@@ -523,6 +523,11 @@ case_owner_records() {
   grep -F 'public reply' "$TMP_ROOT/second-receipts.json" >/dev/null || return 1
   FM_HOME="$home" "$BIN/fm-inbox.sh" note --request-id portable-request --json 'same request' > "$TMP_ROOT/first-request.json" || return 1
   FM_HOME="$second" "$BIN/fm-inbox.sh" note --request-id portable-request --json 'same request' > "$TMP_ROOT/second-request.json" || return 1
+  if FM_HOME="$second" "$BIN/fm-inbox.sh" note --request-id portable-request --json 'changed request' > "$TMP_ROOT/conflicting-request.json" 2>/dev/null; then
+    echo 'conflicting request body was accepted'; return 1
+  fi
+  FM_HOME="$second" "$BIN/fm-inbox.sh" note --request-id a..b --json $'trailing\n\n' >/dev/null || return 1
+  FM_HOME="$second" "$BIN/fm-inbox.sh" note --request-id a..b --json $'trailing\n\n' >/dev/null || return 1
   [ "$(jq -r .id "$TMP_ROOT/first-request.json")" = "$(jq -r .id "$TMP_ROOT/second-request.json")" ] || return 1
   printf 'schema=fm-decision-binding.v1\norigin=probe-origin\n' > "$TMP_ROOT/binding.payload"
   "$BIN/fm-owner-record.sh" hold-write binding probe-source "$TMP_ROOT/binding.payload" || return 1
