@@ -11,4 +11,10 @@ DIR=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
 # A worker's absolute command path identifies the supervising home when launch
 # environment carries only FM_TASK_ID. Explicit FM_HOME remains authoritative.
 export FM_HOME="${FM_HOME:-$(dirname "$DIR")}"
+if [ "${1:-}" = steers ]; then
+  # The absolute supervising-home command also selects its portable API settings.
+  # shellcheck source=bin/fm-task-shadow-config-lib.sh
+  . "$DIR/fm-task-shadow-config-lib.sh"
+  fm_task_shadow_config "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}/task-shadow"
+fi
 exec node "$DIR/fm-task-lib.mjs" "$@"

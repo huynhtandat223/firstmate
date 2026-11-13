@@ -276,7 +276,7 @@ fm_task_inbox_sync() { # <state-dir> <task-id>
   for rec in "$dir"/*.msg "$dir/handled"/*.msg; do
     [ -f "$rec" ] || continue
     [ ! -f "$dir/${rec##*/}.published" ] || continue
-    body=$(fm_task_inbox_body "$rec"; printf x) || continue
+    body=$(fm_task_inbox_body "$rec" && printf x) || continue
     body=${body%x}
     if fm_task_inbox_publish "$2.inbox" "$rec" "$body"; then
       : > "$dir/${rec##*/}.published"
@@ -521,8 +521,10 @@ fm_task_inbox_doorbell_line() {  # <record-path>
     ''|*[![:print:]]*) return 1 ;;
   esac
   quoted=$(printf '%s' "$name" | sed "s/'/'\\\\''/g")
-  printf ": Firstmate instruction waiting: run bin/fm-task.sh steers '%s'. If 5001 is down, list \"\$FM_TASK_INBOX\"/*.msg in numeric order, then mv to handled/." \
-    "${quoted%.inbox}"
+  local command_path=$_FM_TASK_INBOX_LIB_DIR/fm-task.sh
+  command_path=$(printf '%s' "$command_path" | sed "s/'/'\\\\''/g")
+  printf ": Firstmate instruction waiting: '%s' steers '%s'. On error list \"\$FM_TASK_INBOX\"/*.msg in numeric order, mv to handled/." \
+    "$command_path" "${quoted%.inbox}"
 }
 
 # Ring the doorbell, best-effort: one endpoint-liveness pre-check, one advisory

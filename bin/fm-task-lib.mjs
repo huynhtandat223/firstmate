@@ -2794,6 +2794,7 @@ async function cmdInbox(args) {
 
 async function cmdSteers(args) {
   const taskId = taskIdOf(args);
+  if (!await taskRow(taskId)) throw new Fail(5, `steers: missing task ${taskId}; use the local inbox fallback`);
   const consumer = `read:${taskId}`;
   if (consumer.length > 64) throw usage('read consumer exceeds 64 characters');
   const marks = await listAll('fm_task_delivery', { filter: `consumer eq ${lit(consumer)}` });

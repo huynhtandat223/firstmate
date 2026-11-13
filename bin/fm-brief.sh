@@ -608,7 +608,7 @@ INBOX_DIR=$(shell_quote "$STATE/$ID.inbox")
 # so waiting still spends no turns.
 IFS= read -r -d '' INBOX_SECTION <<EOF || true
 # Firstmate instruction inbox
-Firstmate stores steers on 5001. When an instruction arrives, run \`bin/fm-task.sh steers $ID\`: it prints unread messages and marks them read. Act on each returned message in order.
+Firstmate stores steers on 5001. When an instruction arrives, run \`'$FM_ROOT/bin/fm-task.sh' steers $ID\`: it prints unread messages and marks them read. Act on each returned message in order.
 If 5001 is unavailable or this launch has no task record, use the local cache in $INBOX_DIR.
 When a terminal message says an instruction is waiting there - and at any natural checkpoint when you are unsure - list them with \`find $INBOX_DIR -maxdepth 1 -name '*.msg' 2>/dev/null | sort -V\`, read and act on each message in numeric order, then acknowledge each handled message by moving it: \`mv $INBOX_DIR/NNN.msg $INBOX_DIR/handled/\`.
 The move IS the acknowledgement: without it firstmate rings again and eventually treats you as stuck. An empty or absent inbox needs no action.

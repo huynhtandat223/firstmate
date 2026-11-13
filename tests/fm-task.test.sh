@@ -427,6 +427,9 @@ test_steer_read_mark() {
   ft event steer-probe steer --note 'read this' --key steer:steer-probe:001.msg || return 1
   local seq
   seq=$(seq_of)
+  ft steers absent-steer-task
+  [ "$RC" = 5 ] || return 1
+  [[ "$ERR" == *'missing task'* ]] || return 1
   ft steers steer-probe --peek || return 1
   [ "$(printf '%s' "$OUT" | jq -r .note)" = 'read this' ] || return 1
   [ "$(count fm_task_delivery)" = 0 ] || return 1
@@ -455,6 +458,13 @@ test_steer_cache_replay() {
   [ -f "$rec" ] || return 1
   [ "$(db fm_task_event | jq '[.[] | select(.kind == "steer")] | length')" = 0 ] || return 1
   printf 'FM_TASK_BASE_URL=%s\n' "$BASE" > "$home/config/task-shadow"
+  # Inject an unreadable cache body; publication must not turn it into empty text.
+  FM_HOME="$home" FM_CONFIG_OVERRIDE="$home/config" bash -c '
+    source "$1/bin/fm-task-inbox-lib.sh"
+    fm_task_inbox_body() { return 1; }
+    fm_task_inbox_sync "$2/state" replay-probe
+  ' _ "$ROOT" "$home" || return 1
+  [ "$(db fm_task_event | jq '[.[] | select(.kind == "steer")] | length')" = 0 ] || return 1
   for before in 1 2; do
     FM_HOME="$home" FM_CONFIG_OVERRIDE="$home/config" bash -c '
       source "$1/bin/fm-task-inbox-lib.sh"
@@ -463,8 +473,13 @@ test_steer_cache_replay() {
   done
   [ "$(db fm_task_event | jq '[.[] | select(.kind == "steer")] | length')" = 1 ] || return 1
   [ -f "$rec" ] || return 1
-  ft steers replay-probe || return 1
-  [ "$(printf '%s' "$OUT" | jq -r .note)" = 'outage message' ] || return 1
+  # A worker in another repository needs only the absolute command and home;
+  # poisoned ambient credentials prove task-shadow is actually loaded.
+  local received
+  printf 'FM_TASK_BASE_URL=%s\nFM_TASK_TOKEN_FILE=%s\n' "$BASE" "$TMP_ROOT/token" > "$home/config/task-shadow"
+  received=$(cd / && FM_HOME="$home" FM_TASK_BASE_URL=http://127.0.0.1:1 FM_TASK_TOKEN_FILE=/nonexistent \
+    "$ROOT/bin/fm-task.sh" steers replay-probe) || return 1
+  [ "$(printf '%s' "$received" | jq -r .note)" = 'outage message' ] || return 1
   before=$(FM_HOME="$home" FM_CONFIG_OVERRIDE="$home/config" bash -c '
     source "$1/bin/fm-task-inbox-lib.sh"
     fm_task_inbox_due_action "$2/state" replay-probe
