@@ -405,6 +405,29 @@ scenario_backfill_deploy() {
     || { echo "a later successful run is not recorded: rc=$BF_RC $BF_OUT $(ledger)"; return 1; }
 }
 
+# A deployed line that cannot be written is a failure, never a success: autohandle leaves the deploy-only result
+# unacknowledged and the cursor where it was, so the next poll plans the deploy again and records it once the ledger
+# is writable; backfill-deploy refuses and does not say recorded. (The ledger path is a directory: no append can land.)
+scenario_deployed_unwritable() {
+  new_lab "$1"
+  fx_runs "1:completed:success:s0" "2:completed:success:s1"
+  fx_jobs 2 success
+  fx_compare s0 s1
+  set_cursor 1 s0
+  mkdir -p "$H/data/deploy-verify/ledger.jsonl"
+  cycle
+  [ "$CYCLE_AUTO" != 0 ] || { echo 'a deploy that could not be recorded was acknowledged'; return 1; }
+  [ "$(jq -r .cursor_run "$H/data/deploy-verify/state.json")" = 1 ] || { echo 'the cursor moved past a deploy that was not recorded'; return 1; }
+  fx_sha_runs b1 "7:completed:CI"; fx_jobs 7 success
+  backfill "$(sha b1)"
+  [ "$BF_RC" = 1 ] && [[ "$BF_OUT" == *"refused: the deployed line"* && "$BF_OUT" != *"recorded: "* ]] || { echo "backfill reported success with no line written: rc=$BF_RC $BF_OUT"; return 1; }
+  rmdir "$H/data/deploy-verify/ledger.jsonl"
+  cycle
+  [ "$CYCLE_AUTO" = 0 ] || { echo "the retry was not handled: $CYCLE_AUTO"; return 1; }
+  [ "$(jq -r .cursor_run "$H/data/deploy-verify/state.json")" = 2 ] || { echo 'the retry did not advance the cursor'; return 1; }
+  [ "$(ledger_count ".type == \"deployed\" and .sha == \"$(sha s1)\"")" = 1 ] || { echo "the retry did not record the deploy: $(ledger)"; return 1; }
+}
+
 # A new Tester is spawned as a scout `verify-<task>-<sha7>`: the backlog item is
 # filed, the role pin names the harness, the ask is written into the brief, and the
 # brief may write the evidence directory and, before T5, the task's Tester record.
@@ -1300,7 +1323,7 @@ scenario_task_native() {
 
 run_scenarios() {  # <bin-dir>
   local s rc=0
-  for s in ledger skips not_deployed deployed_lines backfill_deploy draft spawn_brief retry_brief failures runner live_tester cap skip_catchup rows refused replay replay_refused shadow rows_record carry rows_ask rows_lease rows_lease_two rows_lease_failed_send; do
+  for s in ledger skips not_deployed deployed_lines backfill_deploy deployed_unwritable draft spawn_brief retry_brief failures runner live_tester cap skip_catchup rows refused replay replay_refused shadow rows_record carry rows_ask rows_lease rows_lease_two rows_lease_failed_send; do
     out=$(scenario_"$s" "$1" 2>&1) || { printf 'scenario %s: %s\n' "$s" "$out"; rc=1; }
   done
   return $rc
@@ -1308,7 +1331,7 @@ run_scenarios() {  # <bin-dir>
 
 # ---- real adapter -----------------------------------------------------------
 
-for s in read_retry task_native ledger skips not_deployed deployed_lines backfill_deploy draft spawn_brief retry_brief failures runner live_tester cap skip_catchup rows refused replay replay_refused shadow rows_record carry rows_ask rows_ask_task rows_lease rows_lease_two rows_lease_failed_send; do
+for s in read_retry task_native ledger skips not_deployed deployed_lines backfill_deploy deployed_unwritable draft spawn_brief retry_brief failures runner live_tester cap skip_catchup rows refused replay replay_refused shadow rows_record carry rows_ask rows_ask_task rows_lease rows_lease_two rows_lease_failed_send; do
   out=$(scenario_"$s" "$ROOT/bin" 2>&1) || fail "scenario $s failed on the real adapter: $out"
   pass "deploy-verify $s"
 done
@@ -1392,7 +1415,7 @@ mutate 'the job conclusion cannot replace the deploy step conclusion' not_deploy
 mutate 'only a successful deploy step asks' not_deployed \
   's/if \[ "\$conclusion" = success \]; then/if true; then/'
 mutate 'a successful deploy step is recorded' deployed_lines \
-  's/    record_deploy "\$deploy_json"\n/    :\n/'
+  's/if ! record_deploy "\$deploy_json"; then/if false; then/'
 mutate 'a deploy with no PR is a result of its own' deployed_lines \
   's/ \|\| \[ "\$DEPLOYS" != .\[\]. \]\n\}/\n}/'
 mutate 'a skipped deploy step is no deploy' deployed_lines \
@@ -1417,6 +1440,10 @@ mutate 'backfill reports a recorded sha' backfill_deploy \
   's/  if ledger_test .\.type == "deployed" and \.sha == \$s. --arg s "\$sha"; then/  if false; then/'
 mutate 'backfill needs a full sha' backfill_deploy \
   's/\[\[ "\$sha" =~ \^\[0-9a-f\]\{40\}\$ \]\]/true/'
+mutate 'an unwritable ledger fails the autohandled deploy' deployed_unwritable \
+  's/if ! record_deploy "\$deploy_json"; then/if ! { record_deploy "\$deploy_json" || true; }; then/'
+mutate 'an unwritable ledger refuses the backfill' deployed_unwritable \
+  's/if ! record_deploy "\$\(jq -cn ([^\n]*)\)"; then/if ! { record_deploy "\$(jq -cn $1)" || true; }; then/'
 mutate 'a run in progress holds the cursor' not_deployed \
   's/\[ "\$status" = completed \] \|\| break/:/'
 mutate 'draft asks once per head' draft \

@@ -1225,7 +1225,11 @@ cmd_autohandle() {  # <source-id> <sequence> <result-file>
   rm -f "$result.holds"
   while IFS= read -r deploy_json; do
     [ -n "$deploy_json" ] || continue
-    record_deploy "$deploy_json"
+    # An unwritable ledger fails the result like a refused delivery: the cursor stays and the result stays unacknowledged.
+    if ! record_deploy "$deploy_json"; then
+      failed=1
+      [ -n "$reason" ] || reason="the deployed line of $(jq -r .sha <<<"$deploy_json") could not be written to $LEDGER"
+    fi
   done < <(jq -c '.deploys[]?' "$result")
   while IFS= read -r skip; do
     [ -n "$skip" ] || continue
@@ -1234,7 +1238,6 @@ cmd_autohandle() {  # <source-id> <sequence> <result-file>
     ledger_pr_final "$pr" "$task" && continue
     ledger_append "$(jq -c --argjson at "$(date +%s)" '{type: "skip", pr, task, reason, at: $at} + (if .detail then {detail} else {} end)' <<<"$skip")"
   done < <(jq -c '.skips[]' "$result")
-  reason=
   while IFS= read -r ask; do
     [ -n "$ask" ] || continue
     ledger_has_key "$(jq -r .key <<<"$ask")" && continue
@@ -1377,7 +1380,10 @@ cmd_backfill_deploy() {  # <sha>
     fi
     [ "$(deploy_step_field "$jobs" conclusion)" = success ] || continue
     completed=$(deploy_step_field "$jobs" completed_at)
-    record_deploy "$(jq -cn --arg s "$sha" --arg r "$(jq -r .html_url <<<"$run")" --arg c "$completed" '{sha: $s, run: $r, completed: $c}')"
+    if ! record_deploy "$(jq -cn --arg s "$sha" --arg r "$(jq -r .html_url <<<"$run")" --arg c "$completed" '{sha: $s, run: $r, completed: $c}')"; then
+      printf 'refused: the deployed line of %s could not be written to %s\n' "$sha" "$LEDGER" >&2
+      return 1
+    fi
     printf 'recorded: %s run %s completed %s\n' "$sha" "$(jq -r .html_url <<<"$run")" "$completed"
     return 0
   done < <(jq -c --arg wf "$WORKFLOW" --arg s "$sha" '[.workflow_runs[] | select(.name == $wf and .head_sha == $s and .status == "completed")] | sort_by(.id) | .[]' <<<"$runs")
