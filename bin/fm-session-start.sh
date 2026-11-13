@@ -1241,7 +1241,6 @@ fi
 # take (see this file's ORDERING note).
 stage context
 section "CONTEXT"
-"$SCRIPT_DIR/fm-project.sh" refresh >/dev/null || true
 print_file_or_absent "$DATA/projects.md" "data/projects.md"
 print_file_or_absent "$DATA/secondmates.md" "data/secondmates.md"
 print_file_or_absent "$DATA/learnings.md" "data/learnings.md"
