@@ -15,6 +15,8 @@ command -v node >/dev/null 2>&1 || { printf 'skip - node is not installed\n'; ex
 command -v jq >/dev/null 2>&1 || fail 'jq is required'
 
 TMP_ROOT=$(fm_test_tmproot fm-verify-gate)
+FM_DEPLOY_LEDGER_TASK="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/deploy-ledger-fixture.sh"
+export FM_DEPLOY_LEDGER_TASK
 FX="$ROOT/tests/fixtures/fm-acceptance"
 unset FM_TESTER_HOME FM_STATE_OVERRIDE
 vg_install_gh "$TMP_ROOT/gh"
