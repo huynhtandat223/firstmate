@@ -43,7 +43,7 @@ def pull():
         fields = {'id': identity, 'at': row['at'], 'source': row['source'], 'announce_marker': '1'}
         if row.get('requestId'):
             request = row['requestId']
-            if not re.fullmatch(r'[A-Za-z0-9_:-][A-Za-z0-9._:-]*', request) or '..' in request:
+            if not re.fullmatch(r'[A-Za-z0-9_:-][A-Za-z0-9._:-]*', request):
                 raise ValueError('unsafe owner request identity')
             fields['request_id'] = row['requestId']
             atomic(cache / '.requests' / row['requestId'], identity + '\n')

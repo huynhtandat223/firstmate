@@ -421,7 +421,7 @@ publish_from_reservation() {  # <request-id> <source> <body> <extra>
     write_note_file "$tmp" "$id" "$source" "$body" "$extra" "$request_id"
     mv "$tmp" "$INBOX/$id.note"
   fi
-  [ "$(read_note_body "$(note_path "$id")")" = "${body%$'\n'}" ] || die "request id $request_id already has different text"
+  [ "$(read_note_body "$(note_path "$id")"; printf x)" = "$(printf '%s' "$body"; case "$body" in *$'\n') ;; *) printf '\n';; esac; printf x)" ] || die "request id $request_id already has different text"
   printf '%s\n' "$id"
 }
 
@@ -735,6 +735,7 @@ def list_notes(folder):
             "body": body,
             "path": str(path),
         })
+    notes.sort(key=lambda note: (note.get("at") or "", note["id"]), reverse=True)
     return notes
 
 # The cursor is the reply sequence, a strict total order in creation order.

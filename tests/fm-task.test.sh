@@ -50,7 +50,7 @@ node - "$TMP_ROOT/schema.json" <<'JS'
 const fs = require('fs');
 const file = process.argv[2]; const s = JSON.parse(fs.readFileSync(file));
 s.fm_owner_note = {ops:['list','get','create','patch'],u:[['noteId']],f:Object.fromEntries(['home','noteId','text','source','state','reply','at','requestId','announcedAt','handledAt','replyAt','replySeq'].map(k=>[k,{t:k==='replySeq'?'i':'s',n:1}]))};
-s.fm_hold_record = {ops:['list','get','create','patch'],u:[['kind','sourceId']],f:Object.fromEntries(['kind','sourceId','taskId','payload','state','at'].map(k=>[k,{t:'s',n:1}]))};
+s.fm_hold_record = {ops:['list','get','create','patch'],u:[['kind','sourceId']],f:Object.fromEntries(['home','kind','sourceId','taskId','payload','state','at'].map(k=>[k,{t:'s',n:1}]))};
 s.fm_home = {ops:['list','get','create','patch'],u:[['home']],f:Object.fromEntries(['home','posture','postureWords','postureSince'].map(k=>[k,{t:'s',n:1}]))};
 s.fm_event_document = {ops:['list','get','create','delete'],f:{title:{t:'s',m:200},mediaType:{t:'s',m:100},content:{t:'s'}},u:[['fmTaskEventId']],parent:['fmTaskEvent','documents']};
 s.fm_event_video = {ops:['list','get','create','delete'],f:{label:{t:'s',m:200},mediaType:{t:'s',m:32},size:{t:'i'},content:{t:'s'}},u:[],parent:['fmTaskEvent','videos']};

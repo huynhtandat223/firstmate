@@ -3025,7 +3025,7 @@ async function cmdRule(args) {
 const OWNER_TABLES = {
   home: { table: 'fm_home', key: 'home', fields: ['home', 'posture', 'postureWords', 'postureSince'] },
   note: { table: 'fm_owner_note', key: 'noteId', fields: ['home', 'noteId', 'text', 'source', 'state', 'reply', 'at', 'requestId', 'announcedAt', 'handledAt', 'replyAt', 'replySeq'] },
-  hold: { table: 'fm_hold_record', key: 'sourceId', fields: ['kind', 'sourceId', 'taskId', 'payload', 'state', 'at'] },
+  hold: { table: 'fm_hold_record', key: 'sourceId', fields: ['home', 'kind', 'sourceId', 'taskId', 'payload', 'state', 'at'] },
 };
 async function cmdOwnerRecord(args) {
   const spec = OWNER_TABLES[args.pos.table];
@@ -3034,9 +3034,9 @@ async function cmdOwnerRecord(args) {
   if (!['list', 'get', 'put'].includes(action)) throw usage('owner-record action must be list, get or put');
   const f = args.flags;
   if (args.pos.table === 'hold' && !['binding', 'reconcile'].includes(f.kind)) throw usage('hold requires --kind binding or reconcile');
+  if (args.pos.table === 'hold' && !f.home) throw usage('hold requires --home');
   const filters = [];
   if (f.home) {
-    if (args.pos.table === 'hold') throw usage('hold does not accept --home');
     filters.push(`home eq ${lit(f.home)}`);
   }
   if (f.kind) {
@@ -3081,7 +3081,7 @@ async function cmdOwnerRecord(args) {
       // A unique reply_seq insert/update arbitrates competing machines. Never
       // derive a portable receipts cursor from a machine-local counter.
       for (let attempt = 0; attempt < 10; attempt++) {
-        const latest = await firstRow(spec.table, 'replySeq gt 0', 'replySeq desc');
+        const latest = await firstRow(spec.table, `home eq ${lit(body.home || before.home)} and replySeq gt 0`, 'replySeq desc');
         body.replySeq = Number(latest?.replySeq || 0) + 1;
         const result = await http('PATCH', endpoint, body);
         if (result.status === 409) continue;
