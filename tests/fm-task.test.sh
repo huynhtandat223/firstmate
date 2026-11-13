@@ -3755,7 +3755,11 @@ case_pr_record() {
   printf '{"ci":{"repo#1":{"head":"%s"}}}\n' "$head" > "$TMP_ROOT/pr-cursor.json"
   ft pr-round set-cursor --file "$TMP_ROOT/pr-cursor.json"; must 'store cursor' 0 || return 1
   ft pr-round cursor; must 'read cursor' 0 || return 1
-  jq -e --arg h "$head" '.ci["repo#1"].head == $h' <<<"$OUT" >/dev/null
+  jq -e --arg h "$head" '.ci["repo#1"].head == $h' <<<"$OUT" >/dev/null || return 1
+  printf '{"type":"round","task":"tk-pr-record","head":"older","round":0,"at":50}\n' > "$TMP_ROOT/older-round.json"
+  ft pr-round put --file "$TMP_ROOT/older-round.json"; must 'backfill earlier round' 0 || return 1
+  ft pr-round list; must 'chronological history' 0 || return 1
+  jq -se 'map(.at) == [50,100]' <<<"$OUT" >/dev/null
 }
 
 CASES=${FM_TASK_CASES:-"pr_record plan_task description_thread describe_rows describe_issue describe_source terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed long_notes status_view verify_view owner_writer workflow gate_internal gate_no_surface stage latest_wait latest_no_note wait carry slice_c model_rules checklist question_round setup_rules backlog_home owner_hold owner_request gate_before_approval handoff_gate delete owner_nav"}
