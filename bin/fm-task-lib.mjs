@@ -75,7 +75,7 @@
 //            --assistance-record-only removes an obsolete assistance row even while its pane runs; requires both
 //            the row and state/<id>.meta to have kind assistance. It never changes or stops the session, and it
 //            keeps the owner's picture files, which the live session may not have read yet: a delete without the
-//            flag, run after the session ended, removes them.
+//            flag removes them once the session ended, and is refused while its worker is alive or unreadable.
 //   home     <task> --home H                 sets the backlog home of a task that has none (any state but archived);
 //            the same home again is a no-op, another home is refused: a task belongs to one board
 //   describe <task> --document FILE.md [--document-title T]              any state; default title Description
@@ -1368,10 +1368,14 @@ async function dismissTaskNotices(taskId) {
 }
 // The owner's pictures kept as files for the worker (bin/fm-task-owner.sh, comment --image-data) go with their task,
 // except on a record-only delete, whose session still runs (deleteOutcome decides).
-function removeOwnerImages(taskId) {
+function ownerImagesDir(taskId) {
   const data = process.env.FM_DATA_OVERRIDE || (process.env.FM_HOME && path.join(process.env.FM_HOME, 'data'));
   const dir = data && path.join(data, taskId, 'owner-images');
-  if (!dir || !fs.existsSync(dir)) return false;
+  return dir && fs.existsSync(dir) ? dir : null;
+}
+function removeOwnerImages(taskId) {
+  const dir = ownerImagesDir(taskId);
+  if (!dir) return false;
   fs.rmSync(dir, { recursive: true });
   return true;
 }
@@ -1404,8 +1408,16 @@ async function deleteOutcome(taskId, assistanceRecordOnly = false) {
   const stored = task ? null : await firstRow('fm_task', `taskId eq ${lit(taskId)}`);
   if (!task && !stored && !events.length) {
     // A failed notification PATCH or picture removal can outlive the task row. Retry the cleanup without recreating the task.
+    // Pictures a record-only delete kept belong to a session that may still run: they go only once its worker is gone,
+    // and that refusal comes before a notice is dismissed.
+    const pictures = !assistanceRecordOnly && Boolean(ownerImagesDir(taskId));
+    if (pictures) {
+      const holder = workerState(taskId);
+      if (holder === 'alive') return { refuse: 'a live worker' };
+      if (holder === 'unknown') return { refuse: 'its worker state could not be read' };
+    }
     const dismissed = await dismissTaskNotices(taskId);
-    const pictures = !assistanceRecordOnly && removeOwnerImages(taskId);
+    if (pictures) removeOwnerImages(taskId);
     return dismissed || pictures ? { rows: 0 } : { refuse: 'no such task' };
   }
   const state = task ? task.state : stored?.state;
