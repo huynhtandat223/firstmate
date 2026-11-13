@@ -62,7 +62,7 @@ async function check(id) {
   if (!row || row.hostId !== id || row.releasedAt || !fresh(row)) fail(`home ${homeName} is not owned by ${id}; holder=${row?.hostId || 'none'} generation=${row?.generation || 0}`);
   return row;
 }
-async function host(id) { return (await list('fm_host', `host_id eq ${literal(id)}`))[0]; }
+async function host(id) { return (await list('fm_host', `hostId eq ${literal(id)}`))[0]; }
 async function patch(table, row, body) { return request('PATCH', table, `/${encodeURIComponent(row.id)}`, body); }
 function output(value) {
   if (json) console.log(JSON.stringify(value));
@@ -76,7 +76,7 @@ function output(value) {
 try {
   if (args.includes('--help')) { console.log(help); process.exit(0); }
   if (args.some(a => a.startsWith('--') && a !== '--json') || !['register','heartbeat','show','lease'].includes(cmd[0]) || (cmd[0] === 'lease' ? cmd.length !== 2 || !['take','release','show','check'].includes(cmd[1]) : cmd.length !== 1)) fail(help, 2);
-  if (cmd[0] === 'show') output(await list('fm_host', null, 'host_id'));
+  if (cmd[0] === 'show') output(await list('fm_host', null, 'hostId'));
   else if (cmd[0] === 'lease' && cmd[1] === 'show') output(await latest() || { home: homeName, holder: 'none' });
   else {
     const id = identity();
