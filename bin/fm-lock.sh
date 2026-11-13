@@ -57,6 +57,8 @@ mkdir -p "$STATE" 2>/dev/null || {
 # Stop auto-arm applies the exact same identity contract.
 # shellcheck source=bin/fm-session-lock-lib.sh
 . "$SCRIPT_DIR/fm-session-lock-lib.sh"
+# shellcheck source=bin/fm-home-lease-lib.sh
+. "$SCRIPT_DIR/fm-home-lease-lib.sh"
 
 if [ "${1:-}" = "status" ]; then
   fm_session_lock_inspect "$STATE"
@@ -214,6 +216,7 @@ confirm_own_lock() {  # <recorded-pid>
       REANCHOR=$recorded
       return 0
     fi
+    fm_home_lease_take || exit 1
     publish_lock_session_or_die
     commit_lock_session
     release_claim_lock
@@ -336,6 +339,7 @@ if [ -n "$REANCHOR" ] && fm_autoarm_ledger_read "$STATE" && [ "$FM_AUTOARM_SESSI
   fi
   release_autoarm_lock
 fi
+fm_home_lease_take || exit 1
 commit_lock_session
 release_lease_lock
 release_claim_lock
