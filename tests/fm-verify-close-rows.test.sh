@@ -224,10 +224,30 @@ test_rows_without_evidence_or_a_current_digest_are_refused_before_any_write() {
   pass "evidence and digest problems from the task record gate refuse the handoff before any write"
 }
 
+# A deploy whose PRs were all skipped writes no deploy-round ask, only a skip line and a `deployed` line: the rows ask
+# on its head then counts as a deployed head, so rows that passed on it are no longer refused as "no verify ask".
+test_a_deployed_line_makes_the_rows_ask_head_a_deployed_head() {
+  PR=https://github.com/example/repo/pull/6 ASK_ROUND=rows
+  make_case deployed-line review - - pass "$H"
+  run --check
+  [ "$RC" = 1 ] || fail "rows passed on a head no deploy line names were accepted: $OUT"
+  case "$OUT" in *"passed on $H, which has no verify ask"*) ;; *) fail "the undeployed head is not named: $OUT" ;; esac
+  printf '{"type":"skip","pr":"https://github.com/example/repo/pull/6","task":"%s","reason":"no-issue"}\n' "$ID" >>"$CASE/home/data/deploy-verify/ledger.jsonl"
+  run --check
+  case "$OUT" in *"passed on $H, which has no verify ask"*) ;; *) fail "a skip line proved a deploy: $OUT" ;; esac
+  printf '{"type":"deployed","sha":"%s","run":"https://example.test/runs/1","completed":"2026-11-13T07:00:00Z","at":1}\n' "$H" >>"$CASE/home/data/deploy-verify/ledger.jsonl"
+  run --check
+  case "$OUT" in *"which has no verify ask"*) fail "a deployed line did not prove the deploy: $OUT" ;; esac
+  case "$OUT" in *"no deploy event for $ID on head $H"*) ;; *) fail "the head is not the ledger head: $OUT" ;; esac
+  [ -z "$(writes)" ] || fail "--check wrote: $(writes)"
+  pass "a deployed line makes the head of a rows ask the deployed head, and a skip line does not"
+}
+
 test_handoff_writes_the_deploy_event_with_the_ledger_head
 test_open_rows_are_named_and_nothing_is_written
 test_an_expired_transient_wait_is_cleared_before_the_deploy_event
 test_a_row_with_no_head_looks_up_the_ask_on_the_deployed_head
+test_a_deployed_line_makes_the_rows_ask_head_a_deployed_head
 test_a_pending_worker_row_prints_check_not_changes
 test_the_handoff_writes_as_firstmate
 test_an_approved_task_prints_already_approved

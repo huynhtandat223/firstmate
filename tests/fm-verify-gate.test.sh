@@ -558,6 +558,24 @@ case_rows_ask_on_an_undeployed_head() {
   FAKE_PASS_HEAD=$c refuses "$1" "$home" "no deploy ask for $TASK"
 }
 
+# A `deployed` line (deploy-verify writes one per successful deploy step, also when every PR of the deploy was skipped)
+# proves a deploy: this task's rows ask on head B, with no deploy-round ask on B, is on a deployed head once a deployed
+# line names B, so rows that passed on B close the gate. The skip line such a deploy wrote before carries no sha and
+# proves nothing, a deployed line for another sha proves nothing for B, and a deployed line alone is no ask of the task.
+case_rows_a_deployed_line_proves_a_deploy() {
+  local home b=3333333333333333333333333333333333333333 c=4444444444444444444444444444444444444444 ledger
+  home=$(rows_home)
+  export FAKE_ARGS="$home/fake.args"
+  ledger="$home/data/deploy-verify/ledger.jsonl"
+  { ledger_ask rows "$TASK" "$b"; printf '{"type":"skip","pr":"https://github.com/o/r/pull/1","task":"%s","reason":"no-issue"}\n' "$TASK"; } > "$ledger"
+  FAKE_PASS_HEAD=$b refuses "$1" "$home" "no deploy ask for $TASK" || return 1
+  printf '{"type":"deployed","sha":"%s","run":"https://example.test/runs/1","completed":"2026-11-13T07:00:00Z","at":1}\n' "$c" >> "$ledger"
+  FAKE_PASS_HEAD=$b refuses "$1" "$home" "no deploy ask for $TASK" || return 1
+  printf '{"type":"deployed","sha":"%s","run":"https://example.test/runs/2","completed":"2026-11-13T07:30:00Z","at":2}\n' "$b" >> "$ledger"
+  FAKE_PASS_HEAD=$b passes "$1" "$home" || return 1
+  FAKE_PASS_HEAD=$c refuses "$1" "$home" 'A1@1440 has no pass on the asked head'
+}
+
 # A replay ask after a newer deploy does not make its older head newer: a held ask can keep the cursor at older head A
 # after this task's deploy ask on B, and replay-skips then writes the first deploy-round ask naming A after B's. A rows
 # ask on A then leaves the head at B. The replay still proves a deploy: with no other ask of the task, A is its head.
@@ -629,7 +647,7 @@ issue_cannot_be_parsed issue_cannot_be_read issue_without_user_visible_rows row_
 row_not_pass row_without_evidence_field row_pass_without_evidence row_evidence_path row_id_not_in_issue retired_row
 retired_row_of_a_present_id_at_another_width internal_scenario_row row_text_differs_from_the_issue malformed_tester_row verified_line_closes_the_record acceptance_digest verified_line_missing verified_line_without_head
 deployed_head_is_the_newest_ask a_pr_in_the_watched_repo_needs_an_ask a_pr_in_another_repo_takes_the_deployed_line the_backlog_line_names_the_pr approval home_video
-rows_read_the_record rows_problems rows_record_unreadable rows_deployed_head rows_ask_is_the_deployed_head rows_ask_on_an_older_head rows_ask_on_an_undeployed_head rows_ask_on_a_head_only_a_replay_names rows_heads_cannot_be_ordered rows_writer_settings rows_files_before_t5 rows_carried"
+rows_read_the_record rows_problems rows_record_unreadable rows_deployed_head rows_ask_is_the_deployed_head rows_ask_on_an_older_head rows_ask_on_an_undeployed_head rows_a_deployed_line_proves_a_deploy rows_ask_on_a_head_only_a_replay_names rows_heads_cannot_be_ordered rows_writer_settings rows_files_before_t5 rows_carried"
 
 # ---- real gate ------------------------------------------------------------------------
 
@@ -726,9 +744,10 @@ unsay 'a record that cannot be read is a problem' rows_record_unreadable 'the ta
 swap 'the record is asked about the deployed head' rows_deployed_head '--head "$want_sha"' '--head "$issue"'
 swap 'no deployed head, no read of the record' rows_deployed_head '[ -n "$want_sha" ] || return 0' ':'
 swap 'a rows ask is a deployed head' rows_ask_is_the_deployed_head '(.round == "deploy" or .round == "rows")' '.round == "deploy"'
-swap 'only a deploy-round ask proves a deploy' rows_ask_on_an_undeployed_head ' | select(.type == "ask" and .round == "deploy") | .sha] as $deployed' ' | select(.type == "ask") | .sha] as $deployed'
+swap 'only a deploy-round ask proves a deploy' rows_ask_on_an_undeployed_head 'select((.type == "ask" and .round == "deploy") or .type == "deployed") | .sha] as $deployed' 'select(.type == "ask" or .type == "deployed") | .sha] as $deployed'
+swap 'a deployed line proves a deploy' rows_a_deployed_line_proves_a_deploy ' or .type == "deployed") | .sha] as $deployed' ') | .sha] as $deployed'
 swap 'an ask on no deployed head is no head' rows_ask_on_an_undeployed_head ' | .sha | select(IN($deployed[]))]' ' | .sha]'
-swap 'a replay ask proves a deploy' rows_ask_on_a_head_only_a_replay_names 'select(.type == "ask" and .round == "deploy") | .sha] as $deployed' 'select(.type == "ask" and .round == "deploy" and (.key | startswith("replay:") | not)) | .sha] as $deployed'
+swap 'a replay ask proves a deploy' rows_ask_on_a_head_only_a_replay_names 'select((.type == "ask" and .round == "deploy") or .type == "deployed") | .sha] as $deployed' 'select((.type == "ask" and .round == "deploy" and (.key | startswith("replay:") | not)) or .type == "deployed") | .sha] as $deployed'
 swap 'a head ahead by ancestry is newer' deployed_head_is_the_newest_ask '        ahead) want_sha=$head ;;' '        ahead) ;;'
 swap 'a head behind by ancestry is older' rows_ask_on_an_older_head '        behind|identical) ;;' '        behind|identical) want_sha=$head ;;'
 swap 'the compare is in the watched repo' rows_ask_on_a_head_only_a_replay_names 'api "repos/$repo/compare/' 'api "repos/x/$repo/compare/'
