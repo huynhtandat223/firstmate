@@ -920,6 +920,18 @@ for tool in "${OPTIONAL_TOOLS[@]}"; do
   fi
 done
 
+# Document publishing is optional until the 5001 client is configured on this host.
+# When configured, compare committed bytes; never rewrite the local git source.
+if [ -n "${FM_TASK_BASE_URL:-}${FM_TASK_TOKEN_FILE:-}" ]; then
+  if docs_result=$("$SCRIPT_DIR/fm-doc.sh" diff --repo firstmate --root "$FM_ROOT" 2>&1); then
+    record published-docs "ok: committed shared documents match 5001"
+  else
+    printf '%s\n' "$docs_result"
+    record published-docs "human: shared documents differ or publication cannot be read" \
+      "run $SCRIPT_DIR/fm-doc.sh diff --repo firstmate --root $FM_ROOT"
+  fi
+fi
+
 GAPS=()
 i=0
 while [ "$i" -lt "${#CHECK_NAMES[@]}" ]; do
