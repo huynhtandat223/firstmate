@@ -306,7 +306,8 @@ if [ -n "$ACK_THROUGH" ]; then
   waiting_notes=
   if ! owner_rows=$(FM_HOME="${FM_HOME:-$FM_ROOT}" "$SCRIPT_DIR/fm-task.sh" owner-record note list --home "${FM_BACKLOG_HOME:-main}"); then
     printf 'wake drain: cannot establish whether owner notes are pending\n' >&2
-    exit 1
+    if [ "$(fm_enforce_mode "$owed_config" drain-ack)" = block ]; then exit 1; fi
+    owner_rows='[]'
   fi
   waiting_notes=$(printf '%s' "$owner_rows" | python3 -c 'import json,sys; print(" ".join(r["noteId"] for r in json.load(sys.stdin) if r.get("state")=="waiting"))') || exit 1
   for note_file in "$owed_state"/owner-note-spool/*.note "$owed_state"/inbox/*.note; do

@@ -447,7 +447,9 @@ show_field_value() {  # <show-output> <field>
 origin_exists_here() {  # <origin-id>
   # A live investigation attests before its terminal done call. Once a done
   # document exists it replaces the machine-local report as the artifact.
-  task_show "$1" || return 1
+  if ! task_show "$1"; then
+    [ -f "$STATE/$1.meta" ] || return 1
+  fi
   if "$FM_ROOT/bin/fm-task.sh" document "$1" --kind 'done' >/dev/null 2>&1; then return 0; fi
   [ -f "$STATE/$1.meta" ] && return 0
   task_show "$1"

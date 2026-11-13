@@ -78,8 +78,20 @@ def push():
             staged.flush()
             saved = call('put', '--home', home, '--identity', identity, '--file', staged.name)
         if saved['noteId'] != identity:
-            # The unique request binding won on another machine or predates
-            # deterministic ids. Retire only the local duplicate spool entry.
+            # Transfer local handling/reply before retiring a duplicate capture.
+            merged = dict(row, noteId=saved['noteId'], source=saved['source'])
+            if saved.get('reply') is not None:
+                if row.get('reply') is not None and row['reply'] != saved['reply']:
+                    raise ValueError('duplicate capture has a conflicting reply; retained for reconciliation')
+                merged.pop('reply', None)
+                merged.pop('replySeq', None)
+                merged.pop('replyAt', None)
+            if saved.get('state') == 'handled':
+                merged['state'] = 'handled'
+            with tempfile.NamedTemporaryFile(mode='w', dir=cache) as transfer:
+                json.dump(merged, transfer)
+                transfer.flush()
+                call('put', '--home', home, '--identity', saved['noteId'], '--file', transfer.name)
             if row.get('requestId'):
                 atomic(cache / '.requests' / row['requestId'], saved['noteId'] + '\n')
             path.unlink()

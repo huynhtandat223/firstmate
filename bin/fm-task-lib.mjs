@@ -3078,7 +3078,7 @@ async function cmdOwnerRecord(args) {
     if (args.pos.table === 'note' && body.requestId) {
       const prior = await firstRow(spec.table, `home eq ${lit(body.home)} and requestId eq ${lit(body.requestId)}`);
       if (prior) {
-        if (prior.text !== body.text || prior.source !== body.source) throw rule('request id already has different note content');
+        if (prior.text !== body.text || (prior.source === 'text' ? 'cli' : prior.source) !== (body.source === 'text' ? 'cli' : body.source)) throw rule('request id already has different note content');
         out(JSON.stringify(prior));
         return;
       }
@@ -3087,7 +3087,7 @@ async function cmdOwnerRecord(args) {
     if (created.status === 409) {
       if (args.pos.table === 'note' && body.requestId) {
         const winner = await firstRow(spec.table, `home eq ${lit(body.home)} and requestId eq ${lit(body.requestId)}`);
-        if (winner && winner.text === body.text && winner.source === body.source) {
+        if (winner && winner.text === body.text && (winner.source === 'text' ? 'cli' : winner.source) === (body.source === 'text' ? 'cli' : body.source)) {
           out(JSON.stringify(winner));
           return;
         }
