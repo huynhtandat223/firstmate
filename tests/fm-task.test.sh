@@ -429,12 +429,80 @@ test_steer_read_mark() {
   ft event steer-probe steer --note 'read this' --key steer:steer-probe:001.msg || return 1
   local seq
   seq=$(seq_of)
-  ft read-mark steer-probe --key steer:steer-probe:001.msg || return 1
+  ft steers absent-steer-task
+  [ "$RC" = 5 ] || return 1
+  [[ "$ERR" == *'missing task'* ]] || return 1
+  ft steers steer-probe --peek || return 1
+  [ "$(printf '%s' "$OUT" | jq -r .note)" = 'read this' ] || return 1
+  [ "$(count fm_task_delivery)" = 0 ] || return 1
+  ft steers steer-probe || return 1
+  [ "$(printf '%s' "$OUT" | jq -r .note)" = 'read this' ] || return 1
+  ft steers steer-probe || return 1
+  [ -z "$OUT" ] || return 1
   ft read-mark steer-probe --key steer:steer-probe:001.msg || return 1
   [ "$(db fm_task_delivery | jq --argjson seq "$seq" '[.[] | select(.consumer == "read:steer-probe" and .seq == $seq)] | length')" = 1 ] || return 1
   ft read-mark other-task --key steer:steer-probe:001.msg && return 1
-  [ "$RC" = 2 ]
+  [ "$RC" = 2 ] || return 1
+  local long
+  long=$(printf 'long%0100d' 1)
+  mk_running "$long" || return 1
+  ft event "$long" steer --note 'long task message' --key "steer:$long:001.msg" || return 1
+  ft steers "$long" || return 1
+  [ "$(printf '%s' "$OUT" | jq -r .note)" = 'long task message' ] || return 1
+  ft read-mark "$long" --key "steer:$long:001.msg" || return 1
+  ft steers "$long" || return 1
+  [ -z "$OUT" ]
 }
+
+# Replay uses the real inbox writer and watcher reconciliation against the suite
+# HTTP boundary. A closed port induces the otherwise unsafe dependency outage.
+test_steer_cache_replay() {
+  reset_db
+  mk_running replay-probe || return 1
+  local home="$TMP_ROOT/replay-home" rec before
+  mkdir -p "$home/config" "$home/state"
+  printf 'FM_TASK_BASE_URL=http://127.0.0.1:1\n' > "$home/config/task-shadow"
+  rec=$(FM_HOME="$home" FM_CONFIG_OVERRIDE="$home/config" bash -c '
+    source "$1/bin/fm-task-inbox-lib.sh"
+    fm_task_inbox_write "$2/state" replay-probe "outage message"
+  ' _ "$ROOT" "$home") || return 1
+  [ -f "$rec" ] || return 1
+  [ "$(db fm_task_event | jq '[.[] | select(.kind == "steer")] | length')" = 0 ] || return 1
+  printf 'FM_TASK_BASE_URL=%s\n' "$BASE" > "$home/config/task-shadow"
+  # Inject an unreadable cache body; publication must not turn it into empty text.
+  FM_HOME="$home" FM_CONFIG_OVERRIDE="$home/config" bash -c '
+    source "$1/bin/fm-task-inbox-lib.sh"
+    fm_task_inbox_body() { return 1; }
+    fm_task_inbox_sync "$2/state" replay-probe
+  ' _ "$ROOT" "$home" || return 1
+  [ "$(db fm_task_event | jq '[.[] | select(.kind == "steer")] | length')" = 0 ] || return 1
+  for before in 1 2; do
+    FM_HOME="$home" FM_CONFIG_OVERRIDE="$home/config" bash -c '
+      source "$1/bin/fm-task-inbox-lib.sh"
+      fm_task_inbox_sync "$2/state" replay-probe
+    ' _ "$ROOT" "$home" || return 1
+  done
+  [ "$(db fm_task_event | jq '[.[] | select(.kind == "steer")] | length')" = 1 ] || return 1
+  [ -f "$rec" ] || return 1
+  # A worker in another repository needs only the absolute command and home;
+  # poisoned ambient credentials prove task-shadow is actually loaded.
+  local received
+  printf 'FM_TASK_BASE_URL=%s\nFM_TASK_TOKEN_FILE=%s\n' "$BASE" "$TMP_ROOT/token" > "$home/config/task-shadow"
+  received=$(cd / && FM_HOME="$home" FM_TASK_BASE_URL=http://127.0.0.1:1 FM_TASK_TOKEN_FILE=/nonexistent \
+    "$ROOT/bin/fm-task.sh" steers replay-probe) || return 1
+  [ "$(printf '%s' "$received" | jq -r .note)" = 'outage message' ] || return 1
+  before=$(FM_HOME="$home" FM_CONFIG_OVERRIDE="$home/config" bash -c '
+    source "$1/bin/fm-task-inbox-lib.sh"
+    fm_task_inbox_due_action "$2/state" replay-probe
+  ' _ "$ROOT" "$home") || return 1
+  [ "$before" = quiet ] || return 1
+  [ ! -f "$rec" ] && [ -f "${rec%/*}/handled/${rec##*/}" ] || return 1
+  ft steers replay-probe || return 1
+  [ -z "$OUT" ]
+}
+
+test_steer_cache_replay || fail 'steer cache replays once and central receipt suppresses retry'
+pass 'steer cache replays once and central receipt suppresses retry'
 
 test_inbox_validation() {
   reset_db
@@ -559,6 +627,7 @@ case_terminal() {
   [ "$deliveries" -gt 0 ] || { echo 'no delivery rows'; return 1; }
   local wake_rows
   wake_rows=$(wc -l < "$FM_HOME/state/.wake-queue")
+  ft event tk10 comment --note 'Steer retry audit' --key steer-attempt:tk10:001:ring:1 || return 1
   ft deliver tk10 --consumer test-firstmate
   must 'replay delivery' 0 || return 1
   [ "$(wc -l < "$FM_HOME/state/.wake-queue")" = "$wake_rows" ] || { echo 'replay duplicated wake rows'; return 1; }

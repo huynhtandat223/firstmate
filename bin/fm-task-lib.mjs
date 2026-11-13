@@ -161,6 +161,7 @@
 //            [--scope REPO,...] [--enabled true|false] [--warning W] [--note WHY]   |   rule set <id> [the same flags]
 //            |   rule delete <id>     writes fm_model_rule, then a `rules` event on task fm-model-rules (created
 //            on first use in backlog home system); a re-sent --key writes nothing again
+//   steers   <task> [--peek]                  print unread steers, then mark each read; --peek reads only
 //   read-mark <task> --key steer:<task>:<record>  mark one handled steer in fm_task_delivery (consumer read:<task>)
 //   deliver  <task> --consumer NAME           claim each event in fm_task_delivery, then append a wake
 //            FM_HOME is required; delivery is scoped to this task, never a whole foreign fleet. The first call only
@@ -536,6 +537,7 @@ const SPECS = {
   'turn-end': { pos: ['task'], flags: { turn: 's' } },
   deliver: { pos: ['task'], flags: { consumer: 's' } },
   requests: { pos: ['task'], flags: {} },
+  steers: { pos: ['task'], flags: { peek: 'b' } },
   'read-mark': { pos: ['task'], flags: {} },
   inbox: { pos: ['task'], flags: { action: 's', target: 's', home: 's' } },
   document: { pos: ['task'], flags: {} },
@@ -2916,19 +2918,44 @@ async function cmdInbox(args) {
   out(`inbox=${id} task=${target} resolution=${action}`);
 }
 
-async function cmdReadMark(args) {
+const steerReadConsumer = (taskId) => taskId.length <= 59
+  ? `read:${taskId}` : `read:${crypto.createHash('sha256').update(taskId).digest('hex').slice(0, 59)}`;
+
+async function cmdSteers(args) {
   const taskId = taskIdOf(args);
-  const key = args.flags.key;
-  if (!key?.startsWith(`steer:${taskId}:`)) throw usage('read-mark needs this task’s steer key');
-  const consumer = `read:${taskId}`;
+  if (!await taskRow(taskId)) throw new Fail(5, `steers: missing task ${taskId}; use the local inbox fallback`);
+  const consumer = steerReadConsumer(taskId);
   if (consumer.length > 64) throw usage('read consumer exceeds 64 characters');
-  const event = (await taskEvents(taskId)).find((e) => e.kind === 'steer' && e.idempotencyKey === key);
-  if (!event) throw new Fail(5, 'steer event not stored yet');
+  const marks = await listAll('fm_task_delivery', { filter: `consumer eq ${lit(consumer)}` });
+  const read = new Set(marks.map((m) => Number(m.seq)));
+  const events = (await taskEvents(taskId)).filter((e) => e.kind === 'steer' && !read.has(Number(e.seq)));
+  for (const event of events) {
+    // Wait for the output callback before claiming consumption, including pipe errors.
+    await new Promise((resolve, reject) => {
+      process.stdout.write(`${JSON.stringify({ seq: event.seq, key: event.idempotencyKey, note: bodyOf(event).note })}\n`, (error) => error ? reject(error) : resolve());
+    });
+    if (!args.flags.peek) await markSteerRead(taskId, event);
+  }
+}
+
+async function markSteerRead(taskId, event) {
+  const consumer = steerReadConsumer(taskId);
   const prior = await listAll('fm_task_delivery', { filter: `consumer eq ${lit(consumer)} and seq eq ${event.seq}` });
   if (!prior.length) {
     const res = await http('POST', '/api/fm_task_delivery', { consumer, seq: event.seq });
     if (res.status !== 409) ok(res, 'mark steer read');
   }
+}
+
+async function cmdReadMark(args) {
+  const taskId = taskIdOf(args);
+  const key = args.flags.key;
+  if (!key?.startsWith(`steer:${taskId}:`)) throw usage('read-mark needs this task’s steer key');
+  const consumer = steerReadConsumer(taskId);
+  if (consumer.length > 64) throw usage('read consumer exceeds 64 characters');
+  const event = (await taskEvents(taskId)).find((e) => e.kind === 'steer' && e.idempotencyKey === key);
+  if (!event) throw new Fail(5, 'steer event not stored yet');
+  await markSteerRead(taskId, event);
   out(`read ${consumer} seq=${event.seq}`);
 }
 
@@ -2980,7 +3007,7 @@ async function cmdDeliver(args) {
     baseline = lastSeq;
   } else baseline = Number(fs.readFileSync(activation, 'utf8'));
   const open = new Set(openRequests(taskStream).map((e) => e.seq));
-  const events = taskStream.filter((e) => e.seq > baseline || open.has(e.seq));
+  const events = taskStream.filter((e) => (e.seq > baseline || open.has(e.seq)) && !e.idempotencyKey?.startsWith('steer-attempt:'));
   for (const event of events) {
     if (event.kind === 'comment' && event.actorRole === 'owner' && event.idempotencyKey?.startsWith('owner-comment:')) continue;
     const receipt = path.join(spool, `${event.seq}.json`);
@@ -3208,7 +3235,7 @@ const COMMANDS = {
   'deploy-ledger': cmdDeployLedger,
   setup: cmdSetup, move: cmdMove, step: cmdStep,
   rules: cmdRules, rule: cmdRule, answer: cmdAnswer,
-  'turn-end': cmdTurnEnd, deliver: cmdDeliver, requests: cmdRequests, 'read-mark': cmdReadMark, inbox: cmdInbox, describe: cmdDescribe, plan: cmdPlan, 'plan-decision': cmdPlanDecision, thread: cmdThread,
+  'turn-end': cmdTurnEnd, deliver: cmdDeliver, requests: cmdRequests, steers: cmdSteers, 'read-mark': cmdReadMark, inbox: cmdInbox, describe: cmdDescribe, plan: cmdPlan, 'plan-decision': cmdPlanDecision, thread: cmdThread,
   create: cmdCreate, import: cmdImport, assign: cmdAssign, start: cmdStart, heartbeat: cmdHeartbeat, done: cmdDone, ask: cmdAsk, block: cmdBlock,
   'merge-authority': cmdMergeAuthority, 'pr-record': cmdPrRecord, 'pr-round': cmdPrRound,
   unblock: cmdUnblock, approve: cmdApprove, changes: cmdChanges, reopen: cmdReopen, reassign: cmdReassign, archive: cmdArchive, delete: cmdDelete, home: cmdHome, comment: cmdComment, event: cmdEvent,
