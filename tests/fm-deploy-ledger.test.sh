@@ -10,7 +10,8 @@ chmod 600 "$TMP/token"
 node "$ROOT/tests/fm-task-fake-api/server.mjs" "$TMP/port" "$ROOT/tests/fm-task-fake-api/schema.json" ledger-test > "$TMP/server.log" 2>&1 &
 PID=$!
 for ((i=0; i<100; i++)); do [ ! -s "$TMP/port" ] || break; sleep 0.05; done
-export FM_TASK_BASE_URL="http://127.0.0.1:$(<"$TMP/port")" FM_TASK_TOKEN_FILE="$TMP/token" FM_HOME="$TMP/home"
+FM_TASK_BASE_URL="http://127.0.0.1:$(<"$TMP/port")"
+export FM_TASK_BASE_URL FM_TASK_TOKEN_FILE="$TMP/token" FM_HOME="$TMP/home"
 mkdir -p "$FM_HOME/config"
 call() { bash "$ROOT/bin/fm-task.sh" deploy-ledger "$@"; }
 printf '%s\n' '{"type":"deployed","sha":"abc","run":"https://example.test/run/1"}' '{"type":"ask","task":"probe","round":"deploy","sha":"abc","rows":["DV1@-"],"tester":"tester"}' '{"type":"hold","task":"probe","sha":"abc","at":1}' '{"type":"hold","task":"probe","sha":"abc","at":2}' > "$TMP/seed"
