@@ -1507,7 +1507,7 @@ case_handoff_gate() {
   rm -rf "$home"; mkdir -p "$home/data/$t" "$home/data/deploy-verify" "$home/state" "$home/config"
   printf 'surface: user-visible\nissue: %s\nrecord: rows\n' "$ISSUE" > "$home/data/$t/verify.md"
   printf '{"type":"ask","round":"rows","task":"%s","head":"%s","sha":"%s","tester":"running","prs":[]}\n' "$t" "$h" "$h" > "$home/data/deploy-verify/ledger.jsonl"
-  handoff() { OUT=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" FM_VERIFY_GATE_TASK="$BIN/fm-task.sh" FM_DEPLOY_VERIFY_REPO=example/repo "$close" "$@" "$t" 2>&1); RC=$?; return "$RC"; }
+  handoff() { OUT=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" FM_DEPLOY_LEDGER_TASK="$ROOT/tests/deploy-ledger-fixture.sh" FM_VERIFY_GATE_TASK="$BIN/fm-task.sh" FM_DEPLOY_VERIFY_REPO=example/repo "$close" "$@" "$t" 2>&1); RC=$?; return "$RC"; }
   use_issue v1
   mk_running $t >/dev/null || { echo "setup: $ERR"; return 1; }
   { ft rows $t "$ISSUE" >/dev/null && ft "done" $t "${DONE_FLAGS[@]}" --head b0 >/dev/null; } || { echo "setup: $ERR"; return 1; }
