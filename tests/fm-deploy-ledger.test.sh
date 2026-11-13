@@ -28,6 +28,16 @@ printf '{"type":"ask","task":"undeployed","round":"rows","sha":"not-deployed"}\n
 call append --file "$TMP/row"
 bash -c '. "$1/bin/fm-verify-gate-lib.sh"; fm_verify_gate_ledger_shas /absent/ledger.jsonl undeployed' _ "$ROOT" > "$TMP/heads"
 [ ! -s "$TMP/heads" ]
+# Independent CLI processes contend for the same repository position allocation.
+RACE_PIDS=()
+for ((i=0; i<12; i++)); do
+  printf '{"type":"hold","task":"race-%s","at":%s}\n' "$i" "$i" > "$TMP/race-$i"
+  call append --file "$TMP/race-$i" > "$TMP/race-$i.out" 2>&1 &
+  RACE_PIDS+=("$!")
+done
+for child in "${RACE_PIDS[@]}"; do wait "$child"; done
+call list > "$TMP/raced"
+jq -s -e '[.[] | select((.task // "") | startswith("race-"))] | length == 12' "$TMP/raced" >/dev/null
 export FM_TASK_BASE_URL=http://127.0.0.1:1
 if call list > "$TMP/out" 2> "$TMP/error"; then echo 'outage was accepted' >&2; exit 1; fi
 printf 'PASS deploy ledger lossless seed, retry, cursor, deployed-head filtering, and outage refusal\n'

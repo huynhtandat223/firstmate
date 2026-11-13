@@ -3026,7 +3026,7 @@ function deployCanonical(value) {
 }
 async function cmdDeployLedger(args) {
   const repo = args.flags.repo || process.env.FM_DEPLOY_VERIFY_REPO || 'huynhtandat223/cfw-modules';
-  const records = () => listAll('fm_deploy_ask', { filter: `repo eq ${lit(repo)}`, orderby: 'position,id' });
+  const records = () => listAll('fm_deploy_ask', { filter: `repo eq ${lit(repo)}`, orderby: 'position' });
   const append = async (payload) => {
     if (!payload || Array.isArray(payload) || typeof payload !== 'object' || !['ask', 'deployed', 'cursor', 'carry', 'hold', 'release', 'skip', 'draft-skip'].includes(payload.type)) throw usage('deploy ledger record needs a supported type');
     const text = JSON.stringify(deployCanonical(payload));
@@ -3036,7 +3036,8 @@ async function cmdDeployLedger(args) {
       if (previous.payload !== text) throw rule('deploy ledger key has a different payload');
       return;
     }
-    const last = await firstRow('fm_deploy_ask', `repo eq ${lit(repo)}`, 'position desc,id desc');
+    for (let attempt = 0; attempt < 20; attempt++) {
+    const last = await firstRow('fm_deploy_ask', `repo eq ${lit(repo)}`, 'position desc');
     const body = { recordKey, repo, position: (last?.position ?? 0) + 1, kind: payload.type,
       task: payload.task ?? null, sha: payload.sha ?? null, prs: JSON.stringify(payload.prs ?? []),
       runId: String(payload.run ?? ''), round: payload.round ?? null, tester: payload.tester ?? null,
@@ -3045,8 +3046,12 @@ async function cmdDeployLedger(args) {
     if (res.status === 409) {
       const existing = await firstRow('fm_deploy_ask', `recordKey eq ${lit(recordKey)}`);
       if (existing?.payload === text) return;
+      if (!existing) continue; // Another writer took repo,position; allocate again.
     }
     ok(res, 'append deploy ledger');
+    return;
+    }
+    throw rule('deploy ledger allocation kept moving; retry the same record');
   };
   const readFile = () => {
     if (!args.flags.file) throw usage('deploy-ledger needs --file');
@@ -3057,7 +3062,7 @@ async function cmdDeployLedger(args) {
       for (const row of await records()) if (row.kind !== 'cursor') out(row.payload);
       break;
     case 'cursor': {
-      const row = await firstRow('fm_deploy_ask', `repo eq ${lit(repo)} and kind eq 'cursor'`, 'position desc,id desc');
+      const row = await firstRow('fm_deploy_ask', `repo eq ${lit(repo)} and kind eq 'cursor'`, 'position desc');
       if (row) { const value = JSON.parse(row.payload); delete value.type; out(JSON.stringify(value)); }
       break;
     }
