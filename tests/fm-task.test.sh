@@ -440,7 +440,16 @@ test_steer_read_mark() {
   ft read-mark steer-probe --key steer:steer-probe:001.msg || return 1
   [ "$(db fm_task_delivery | jq --argjson seq "$seq" '[.[] | select(.consumer == "read:steer-probe" and .seq == $seq)] | length')" = 1 ] || return 1
   ft read-mark other-task --key steer:steer-probe:001.msg && return 1
-  [ "$RC" = 2 ]
+  [ "$RC" = 2 ] || return 1
+  local long
+  long=$(printf 'long%0100d' 1)
+  mk_running "$long" || return 1
+  ft event "$long" steer --note 'long task message' --key "steer:$long:001.msg" || return 1
+  ft steers "$long" || return 1
+  [ "$(printf '%s' "$OUT" | jq -r .note)" = 'long task message' ] || return 1
+  ft read-mark "$long" --key "steer:$long:001.msg" || return 1
+  ft steers "$long" || return 1
+  [ -z "$OUT" ]
 }
 
 # Replay uses the real inbox writer and watcher reconciliation against the suite
@@ -616,6 +625,7 @@ case_terminal() {
   [ "$deliveries" -gt 0 ] || { echo 'no delivery rows'; return 1; }
   local wake_rows
   wake_rows=$(wc -l < "$FM_HOME/state/.wake-queue")
+  ft event tk10 comment --note 'Steer retry audit' --key steer-attempt:tk10:001:ring:1 || return 1
   ft deliver tk10 --consumer test-firstmate
   must 'replay delivery' 0 || return 1
   [ "$(wc -l < "$FM_HOME/state/.wake-queue")" = "$wake_rows" ] || { echo 'replay duplicated wake rows'; return 1; }

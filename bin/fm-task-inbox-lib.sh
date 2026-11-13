@@ -521,10 +521,8 @@ fm_task_inbox_doorbell_line() {  # <record-path>
     ''|*[![:print:]]*) return 1 ;;
   esac
   quoted=$(printf '%s' "$name" | sed "s/'/'\\\\''/g")
-  local command_path=$_FM_TASK_INBOX_LIB_DIR/fm-task.sh
-  command_path=$(printf '%s' "$command_path" | sed "s/'/'\\\\''/g")
-  printf ": Firstmate instruction waiting: '%s' steers '%s'. On error list \"\$FM_TASK_INBOX\"/*.msg in numeric order, mv to handled/." \
-    "$command_path" "${quoted%.inbox}"
+  printf ": Firstmate instruction waiting: \"\$FM_TASK_COMMAND\" steers '%s'. On error list \"\$FM_TASK_INBOX\"/*.msg in numeric order, mv to handled/." \
+    "${quoted%.inbox}"
 }
 
 # Ring the doorbell, best-effort: one endpoint-liveness pre-check, one advisory

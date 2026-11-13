@@ -2792,10 +2792,13 @@ async function cmdInbox(args) {
   out(`inbox=${id} task=${target} resolution=${action}`);
 }
 
+const steerReadConsumer = (taskId) => taskId.length <= 59
+  ? `read:${taskId}` : `read:${crypto.createHash('sha256').update(taskId).digest('hex').slice(0, 59)}`;
+
 async function cmdSteers(args) {
   const taskId = taskIdOf(args);
   if (!await taskRow(taskId)) throw new Fail(5, `steers: missing task ${taskId}; use the local inbox fallback`);
-  const consumer = `read:${taskId}`;
+  const consumer = steerReadConsumer(taskId);
   if (consumer.length > 64) throw usage('read consumer exceeds 64 characters');
   const marks = await listAll('fm_task_delivery', { filter: `consumer eq ${lit(consumer)}` });
   const read = new Set(marks.map((m) => Number(m.seq)));
@@ -2810,7 +2813,7 @@ async function cmdSteers(args) {
 }
 
 async function markSteerRead(taskId, event) {
-  const consumer = `read:${taskId}`;
+  const consumer = steerReadConsumer(taskId);
   const prior = await listAll('fm_task_delivery', { filter: `consumer eq ${lit(consumer)} and seq eq ${event.seq}` });
   if (!prior.length) {
     const res = await http('POST', '/api/fm_task_delivery', { consumer, seq: event.seq });
@@ -2822,7 +2825,7 @@ async function cmdReadMark(args) {
   const taskId = taskIdOf(args);
   const key = args.flags.key;
   if (!key?.startsWith(`steer:${taskId}:`)) throw usage('read-mark needs this task’s steer key');
-  const consumer = `read:${taskId}`;
+  const consumer = steerReadConsumer(taskId);
   if (consumer.length > 64) throw usage('read consumer exceeds 64 characters');
   const event = (await taskEvents(taskId)).find((e) => e.kind === 'steer' && e.idempotencyKey === key);
   if (!event) throw new Fail(5, 'steer event not stored yet');
@@ -2876,7 +2879,7 @@ async function cmdDeliver(args) {
     baseline = lastSeq;
   } else baseline = Number(fs.readFileSync(activation, 'utf8'));
   const open = new Set(openRequests(taskStream).map((e) => e.seq));
-  const events = taskStream.filter((e) => e.seq > baseline || open.has(e.seq));
+  const events = taskStream.filter((e) => (e.seq > baseline || open.has(e.seq)) && !e.idempotencyKey?.startsWith('steer-attempt:'));
   for (const event of events) {
     if (event.kind === 'comment' && event.actorRole === 'owner' && event.idempotencyKey?.startsWith('owner-comment:')) continue;
     const receipt = path.join(spool, `${event.seq}.json`);
