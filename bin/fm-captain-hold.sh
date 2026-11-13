@@ -450,7 +450,11 @@ origin_exists_here() {  # <origin-id>
   if ! task_show "$1"; then
     local portable active
     active=$("$FM_ROOT/bin/fm-task.sh" owner-home) || return 1
-    portable=$("$FM_ROOT/bin/fm-task.sh" show "$1" --json) || return 1
+    portable=$("$FM_ROOT/bin/fm-task.sh" show "$1" --json) || {
+      [ ! -f "$STATE/$1.meta" ] || return 0
+      [ ! -f "$DATA/$1/report.md" ] || return 0
+      return 1
+    }
     printf '%s' "$portable" | python3 -c 'import json,sys; r=json.load(sys.stdin); sys.exit(0 if r.get("backlogHome")==sys.argv[1] else 1)' "$active" || return 1
   fi
   if "$FM_ROOT/bin/fm-task.sh" document "$1" --kind 'done' >/dev/null 2>&1; then return 0; fi
