@@ -52,6 +52,8 @@ const file = process.argv[2]; const s = JSON.parse(fs.readFileSync(file));
 s.fm_owner_note = {ops:['list','get','create','patch'],u:[['noteId']],f:Object.fromEntries(['home','noteId','text','source','state','reply','at','requestId','announcedAt','handledAt','replyAt','replySeq'].map(k=>[k,{t:k==='replySeq'?'i':'s',n:1}]))};
 s.fm_hold_record = {ops:['list','get','create','patch'],u:[['kind','sourceId']],f:Object.fromEntries(['home','kind','sourceId','taskId','payload','state','at'].map(k=>[k,{t:'s',n:1}]))};
 s.fm_home = {ops:['list','get','create','patch'],u:[['home']],f:Object.fromEntries(['home','posture','postureWords','postureSince'].map(k=>[k,{t:'s',n:1}]))};
+Object.assign(s.fm_task_event.f, {prHead:{t:'s',n:1,m:64},mergeAuthority:{t:'s',n:1,m:32}});
+s.fm_pr_round = {ops:['list','get','create','patch','delete'],f:{recordKey:{t:'s',n:1,m:200},task:{t:'s',n:1,m:128},prUrl:{t:'s',n:1,m:2048},head:{t:'s',n:1,m:64},round:{t:'i',n:1},kind:{t:'s',n:1,m:32},reviewers:{t:'s',n:1},delivered:{t:'b',n:1},retained:{t:'s',n:1},at:{t:'d',n:1},payload:{t:'s',n:1}},u:[['recordKey']]};
 s.fm_event_document = {ops:['list','get','create','delete'],f:{title:{t:'s',m:200},mediaType:{t:'s',m:100},content:{t:'s'}},u:[['fmTaskEventId']],parent:['fmTaskEvent','documents']};
 s.fm_event_video = {ops:['list','get','create','delete'],f:{label:{t:'s',m:200},mediaType:{t:'s',m:32},size:{t:'i'},content:{t:'s'}},u:[],parent:['fmTaskEvent','videos']};
 s.fm_model_rule = {ops:['list','get','create','patch','delete'],f:{state:{t:'s',n:1,m:16},harness:{t:'s',n:1,m:32},model:{t:'s',n:1,m:128},effort:{t:'s',n:1,m:16},rank:{t:'i',n:1},account:{t:'s',n:1,m:64},hours:{t:'s',n:1,m:64},scope:{t:'s',n:1,m:200},enabled:{t:'b',n:1},warning:{t:'s',n:1,m:200},note:{t:'s',n:1,m:300}},u:[]};
@@ -430,12 +432,80 @@ test_steer_read_mark() {
   ft event steer-probe steer --note 'read this' --key steer:steer-probe:001.msg || return 1
   local seq
   seq=$(seq_of)
-  ft read-mark steer-probe --key steer:steer-probe:001.msg || return 1
+  ft steers absent-steer-task
+  [ "$RC" = 5 ] || return 1
+  [[ "$ERR" == *'missing task'* ]] || return 1
+  ft steers steer-probe --peek || return 1
+  [ "$(printf '%s' "$OUT" | jq -r .note)" = 'read this' ] || return 1
+  [ "$(count fm_task_delivery)" = 0 ] || return 1
+  ft steers steer-probe || return 1
+  [ "$(printf '%s' "$OUT" | jq -r .note)" = 'read this' ] || return 1
+  ft steers steer-probe || return 1
+  [ -z "$OUT" ] || return 1
   ft read-mark steer-probe --key steer:steer-probe:001.msg || return 1
   [ "$(db fm_task_delivery | jq --argjson seq "$seq" '[.[] | select(.consumer == "read:steer-probe" and .seq == $seq)] | length')" = 1 ] || return 1
   ft read-mark other-task --key steer:steer-probe:001.msg && return 1
-  [ "$RC" = 2 ]
+  [ "$RC" = 2 ] || return 1
+  local long
+  long=$(printf 'long%0100d' 1)
+  mk_running "$long" || return 1
+  ft event "$long" steer --note 'long task message' --key "steer:$long:001.msg" || return 1
+  ft steers "$long" || return 1
+  [ "$(printf '%s' "$OUT" | jq -r .note)" = 'long task message' ] || return 1
+  ft read-mark "$long" --key "steer:$long:001.msg" || return 1
+  ft steers "$long" || return 1
+  [ -z "$OUT" ]
 }
+
+# Replay uses the real inbox writer and watcher reconciliation against the suite
+# HTTP boundary. A closed port induces the otherwise unsafe dependency outage.
+test_steer_cache_replay() {
+  reset_db
+  mk_running replay-probe || return 1
+  local home="$TMP_ROOT/replay-home" rec before
+  mkdir -p "$home/config" "$home/state"
+  printf 'FM_TASK_BASE_URL=http://127.0.0.1:1\n' > "$home/config/task-shadow"
+  rec=$(FM_HOME="$home" FM_CONFIG_OVERRIDE="$home/config" bash -c '
+    source "$1/bin/fm-task-inbox-lib.sh"
+    fm_task_inbox_write "$2/state" replay-probe "outage message"
+  ' _ "$ROOT" "$home") || return 1
+  [ -f "$rec" ] || return 1
+  [ "$(db fm_task_event | jq '[.[] | select(.kind == "steer")] | length')" = 0 ] || return 1
+  printf 'FM_TASK_BASE_URL=%s\n' "$BASE" > "$home/config/task-shadow"
+  # Inject an unreadable cache body; publication must not turn it into empty text.
+  FM_HOME="$home" FM_CONFIG_OVERRIDE="$home/config" bash -c '
+    source "$1/bin/fm-task-inbox-lib.sh"
+    fm_task_inbox_body() { return 1; }
+    fm_task_inbox_sync "$2/state" replay-probe
+  ' _ "$ROOT" "$home" || return 1
+  [ "$(db fm_task_event | jq '[.[] | select(.kind == "steer")] | length')" = 0 ] || return 1
+  for before in 1 2; do
+    FM_HOME="$home" FM_CONFIG_OVERRIDE="$home/config" bash -c '
+      source "$1/bin/fm-task-inbox-lib.sh"
+      fm_task_inbox_sync "$2/state" replay-probe
+    ' _ "$ROOT" "$home" || return 1
+  done
+  [ "$(db fm_task_event | jq '[.[] | select(.kind == "steer")] | length')" = 1 ] || return 1
+  [ -f "$rec" ] || return 1
+  # A worker in another repository needs only the absolute command and home;
+  # poisoned ambient credentials prove task-shadow is actually loaded.
+  local received
+  printf 'FM_TASK_BASE_URL=%s\nFM_TASK_TOKEN_FILE=%s\n' "$BASE" "$TMP_ROOT/token" > "$home/config/task-shadow"
+  received=$(cd / && FM_HOME="$home" FM_TASK_BASE_URL=http://127.0.0.1:1 FM_TASK_TOKEN_FILE=/nonexistent \
+    "$ROOT/bin/fm-task.sh" steers replay-probe) || return 1
+  [ "$(printf '%s' "$received" | jq -r .note)" = 'outage message' ] || return 1
+  before=$(FM_HOME="$home" FM_CONFIG_OVERRIDE="$home/config" bash -c '
+    source "$1/bin/fm-task-inbox-lib.sh"
+    fm_task_inbox_due_action "$2/state" replay-probe
+  ' _ "$ROOT" "$home") || return 1
+  [ "$before" = quiet ] || return 1
+  [ ! -f "$rec" ] && [ -f "${rec%/*}/handled/${rec##*/}" ] || return 1
+  ft steers replay-probe || return 1
+  [ -z "$OUT" ]
+}
+
+test_steer_cache_replay || fail 'steer cache replays once and central receipt suppresses retry'
+pass 'steer cache replays once and central receipt suppresses retry'
 
 test_inbox_validation() {
   reset_db
@@ -640,6 +710,7 @@ case_terminal() {
   [ "$deliveries" -gt 0 ] || { echo 'no delivery rows'; return 1; }
   local wake_rows
   wake_rows=$(wc -l < "$FM_HOME/state/.wake-queue")
+  ft event tk10 comment --note 'Steer retry audit' --key steer-attempt:tk10:001:ring:1 || return 1
   ft deliver tk10 --consumer test-firstmate
   must 'replay delivery' 0 || return 1
   [ "$(wc -l < "$FM_HOME/state/.wake-queue")" = "$wake_rows" ] || { echo 'replay duplicated wake rows'; return 1; }
@@ -3805,7 +3876,45 @@ case_setup_rules() {
   return 0
 }
 
-CASES=${FM_TASK_CASES:-"owner_records plan_task description_thread describe_rows describe_issue describe_source terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed long_notes status_view verify_view owner_writer workflow gate_internal gate_no_surface stage latest_wait latest_no_note wait carry slice_c model_rules checklist question_round setup_rules backlog_home owner_hold owner_request gate_before_approval handoff_gate delete owner_nav"}
+case_pr_record() {
+  BIN=$1
+  ft create tk-pr-record --title 'PR record' --kind ship >/dev/null || return 1
+  local head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  ft event tk-pr-record pr --pr-url https://github.com/example/repo/pull/1 --head "$head" --merge-authority attended
+  must 'ordinary event cannot grant authority' 2 || return 1
+  local receipt="$TMP_ROOT/merge-receipt.json"
+  jq -cn --arg h "$head" '{task:"tk-pr-record",prUrl:"https://github.com/example/repo/pull/1",head:$h,authority:"attended"}' > "$receipt"
+  chmod 600 "$receipt"
+  ft merge-authority tk-pr-record --pr-url https://github.com/example/repo/pull/1 --head "$head" --merge-authority attended --phase accepted
+  must 'receipt required' 2 || return 1
+  ft merge-authority tk-pr-record --pr-url https://github.com/example/repo/pull/2 --head "$head" --merge-authority attended --phase accepted --receipt "$receipt"
+  must 'other PR receipt refused' 2 || return 1
+  ft merge-authority tk-pr-record --pr-url https://github.com/example/repo/pull/1 --head bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb --merge-authority attended --phase accepted --receipt "$receipt"
+  must 'other head receipt refused' 2 || return 1
+  ft merge-authority tk-pr-record --pr-url https://github.com/example/repo/pull/1 --head "$head" --merge-authority attended --phase accepted --merged --receipt "$receipt"
+  must 'gate authority event' 0 || return 1
+  ft pr-record tk-pr-record; must 'PR readback' 0 || return 1
+  jq -e --arg h "$head" '.prHead == $h and .mergeAuthority == "attended" and .authorityPhase == "accepted" and .merged == true' <<<"$OUT" >/dev/null || return 1
+  db fm_task_event | jq -e --arg h "$head" 'any(.[]; .taskId == "tk-pr-record" and .prHead == $h and .mergeAuthority == "attended")' >/dev/null || return 1
+  ft event tk-pr-record ci --merge-authority attended; must 'authority only on PR' 2 || return 1
+  printf '{"type":"round","task":"tk-pr-record","head":"%s","round":1,"at":100,"delivered":true,"reader":{"answer":"full answer"},"retained":["pre-existing"]}\n' "$head" > "$TMP_ROOT/pr-round.json"
+  ft pr-round put --file "$TMP_ROOT/pr-round.json"; must 'store round' 0 || return 1
+  ft pr-round put --file "$TMP_ROOT/pr-round.json"; must 'retry round' 0 || return 1
+  cp "$TMP_ROOT/pr-round.json" "$TMP_ROOT/pr-seed.jsonl"
+  ft pr-round seed --file "$TMP_ROOT/pr-seed.jsonl"; must 'seed retry' 0 || return 1
+  ft pr-round list; must 'read history' 0 || return 1
+  jq -se 'length == 1 and .[0].reader.answer == "full answer" and .[0].retained == ["pre-existing"]' <<<"$OUT" >/dev/null || return 1
+  printf '{"ci":{"repo#1":{"head":"%s"}}}\n' "$head" > "$TMP_ROOT/pr-cursor.json"
+  ft pr-round set-cursor --file "$TMP_ROOT/pr-cursor.json"; must 'store cursor' 0 || return 1
+  ft pr-round cursor; must 'read cursor' 0 || return 1
+  jq -e --arg h "$head" '.ci["repo#1"].head == $h' <<<"$OUT" >/dev/null || return 1
+  printf '{"type":"round","task":"tk-pr-record","head":"older","round":0,"at":50}\n' > "$TMP_ROOT/older-round.json"
+  ft pr-round put --file "$TMP_ROOT/older-round.json"; must 'backfill earlier round' 0 || return 1
+  ft pr-round list; must 'chronological history' 0 || return 1
+  jq -se 'map(.at) == [50,100]' <<<"$OUT" >/dev/null
+}
+
+CASES=${FM_TASK_CASES:-"owner_records pr_record plan_task description_thread describe_rows describe_issue describe_source terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed long_notes status_view verify_view owner_writer workflow gate_internal gate_no_surface stage latest_wait latest_no_note wait carry slice_c model_rules checklist question_round setup_rules backlog_home owner_hold owner_request gate_before_approval handoff_gate delete owner_nav"}
 
 # ---- real command -------------------------------------------------------------------
 

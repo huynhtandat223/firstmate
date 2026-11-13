@@ -278,7 +278,22 @@ case "$EVENT" in
     ;;
   merged)
     # the note says merged too, so a wait that clears on the merge clears on this event
-    w "merged-$(short "${2:-}")" event "$TASK" pr --merged --pr-url "${2:-}" --note "merged ${2:-}"
+    PR_RECORD=$("$SCRIPT_DIR/fm-task.sh" pr-record "$TASK") || exit 1
+    PR_AUTHORITY=$(jq -r 'if .authorityPhase == "accepted" then (.mergeAuthority // empty) else empty end' <<<"$PR_RECORD")
+    PR_HEAD=$(jq -r '.prHead // empty' <<<"$PR_RECORD")
+    PR_ARGS=(event "$TASK" pr --merged --pr-url "${2:-}" --note "merged ${2:-}")
+    # Authority is carried only through the dedicated receipt-checked operation.
+    if [ -n "$PR_AUTHORITY" ] && [ -n "$PR_HEAD" ] && [ -f "$STATE/$TASK.merge-receipt" ]; then
+      "$SCRIPT_DIR/fm-task.sh" merge-authority "$TASK" --pr-url "${2:-}" --head "$PR_HEAD" \
+        --merge-authority "$PR_AUTHORITY" --phase accepted --merged --receipt "$STATE/$TASK.merge-receipt" \
+        --key "shadow:$TASK:merged-authority-$(short "${2:-}|$PR_HEAD")" >/dev/null || exit 1
+    fi
+    [ -z "$PR_HEAD" ] || PR_ARGS+=(--head "$PR_HEAD")
+    if [ -z "$PR_AUTHORITY" ] || [ ! -f "$STATE/$TASK.merge-receipt" ]; then
+      w "merged-$(short "${2:-}")" "${PR_ARGS[@]}" || exit 1
+    fi
+    # The pending receipt is a local safety check, not the authority record.
+    [ ! -f "$STATE/$TASK.merge-receipt" ] || rm -f "$STATE/$TASK.merge-receipt"
     ;;
   step-start)
     # a spawn on the harness default model names none: the writer keeps the setup's model for the state
