@@ -85,6 +85,7 @@
 //            task:<id> or board link) stays the source of its rows: describe seeds none, and `rows <task> <issue>` seeds
 //            them. There, and for a Description that sync refuses (no scenarios, a parser refusal), the Description is
 //            stored all the same, and describe prints `rows not seeded: <why>` and exits 0.
+//   materials <task>                     read latest 12 links and 6 images (base64 bytes) from 5001
 //   thread   <task> [--since SEQ]                                       full comments, oldest first
 //   comment  <task> [--note T] [--image PATH --image-label L]... [--video PATH --video-label L]...
 //            [--ask why|how|wait-what] [--reply-to SEQ]                 any state; reply-to must name a comment of this task
@@ -519,8 +520,9 @@ const SPECS = {
   describe: { pos: ['task'], flags: { document: 's', 'document-title': 's' } },
   plan: { pos: ['task'], flags: { document: 's', 'document-title': 's', image: 'm', 'image-label': 'm' } },
   'plan-decision': { pos: ['task'], flags: { decision: 's', 'plan-seq': 's' } },
+  materials: { pos: ['task'], flags: {} },
   thread: { pos: ['task'], flags: { since: 's' } },
-  comment: { pos: ['task'], flags: { image: 'm', 'image-label': 'm', video: 'm', 'video-label': 'm', ask: 's', 'reply-to': 's', 'anchor-quote': 's', 'anchor-prefix': 's', 'anchor-suffix': 's', outcome: 's', accept: 'b' } },
+  comment: { pos: ['task'], flags: { material: 's', image: 'm', 'image-label': 'm', video: 'm', 'video-label': 'm', ask: 's', 'reply-to': 's', 'anchor-quote': 's', 'anchor-prefix': 's', 'anchor-suffix': 's', outcome: 's', accept: 'b' } },
   'merge-authority': { pos: ['task'], flags: { 'pr-url': 's', head: 's', 'merge-authority': 's', receipt: 's', phase: 's', merged: 'b' } },
   'pr-record': { pos: ['task'], flags: {} },
   'pr-round': { pos: ['action'], flags: { file: 's' } },
@@ -1775,6 +1777,32 @@ async function cmdDocument(args) {
   out(doc.content);
 }
 
+async function cmdMaterials(args) {
+  const taskId = taskIdOf(args);
+  const events = await taskEvents(taskId);
+  if (!fold(events)) throw rule(`no such task ${taskId}`);
+  const links = [];
+  const images = [];
+  const seenMaterial = new Set();
+  // Newest first: a screenshot republished under the same material id keeps only its newest version.
+  for (const e of [...events].reverse()) {
+    const b = bodyOf(e);
+    if (e.kind === 'link' && links.length < 12 && b.url && !links.some((r) => r.url === b.url)) {
+      links.unshift({ url: b.url, label: b.note || b.url });
+    }
+    if (images.length < 6 && ['comment', 'plan', 'done', 'needs-decision', 'blocked'].includes(e.kind)) {
+      if (b.material && seenMaterial.has(b.material)) continue;
+      const rows = await listAll('fm_event_image', { filter: `fmTaskEventId eq ${e.id}`, orderby: 'position' });
+      if (b.material && rows.length) seenMaterial.add(b.material);
+      for (const r of rows.slice().reverse()) {
+        if (images.length >= 6) break;
+        images.unshift({ label: r.label, mediaType: r.mediaType, content: r.content, seq: e.seq, position: r.position });
+      }
+    }
+  }
+  out(JSON.stringify({ links, images }));
+}
+
 async function cmdThread(args) {
   const since = args.flags.since ?? '0';
   if (!/^\d+$/.test(since) || !Number.isSafeInteger(Number(since))) throw usage('--since must be a nonnegative integer');
@@ -1828,6 +1856,8 @@ async function cmdComment(args) {
   if ((outcome !== undefined || accept) && args.flags['reply-to'] === undefined) throw usage('--outcome and --accept answer a comment of a thread: give --reply-to');
   if (outcome !== undefined && accept) throw usage('a comment proposes an --outcome or accepts one, not both');
   if (outcome !== undefined && (!outcome.trim() || outcome.length > OUTCOME_MAX || /[\r\n]/.test(outcome))) throw usage(`--outcome is one line of 1 to ${OUTCOME_MAX} characters`);
+  const material = args.flags.material;
+  if (material !== undefined && !/^[A-Za-z0-9:._-]{1,128}$/.test(material)) throw usage('--material is a stable id of 1 to 128 letters, digits, : . _ -');
   const ask = args.flags.ask;
   if (ask !== undefined && !['why', 'how', 'wait-what'].includes(ask)) throw usage('--ask must be why, how or wait-what');
   const reply = args.flags['reply-to'];
@@ -1846,7 +1876,7 @@ async function cmdComment(args) {
     const proposed = accept ? bodyOf(parent).outcome : undefined;
     if (accept && !proposed) throw rule('--accept must answer a comment that proposes an --outcome');
     const settled = outcome !== undefined ? { outcome } : accept ? { outcome: proposed, accepted: parent.seq } : {};
-    const extra = { ...(ask ? { ask } : {}), ...(reply !== undefined ? { replyTo: Number(reply) } : {}), ...(thread ? { thread } : {}), ...(anchor ? { anchor } : {}), ...settled };
+    const extra = { ...(material ? { material } : {}), ...(ask ? { ask } : {}), ...(reply !== undefined ? { replyTo: Number(reply) } : {}), ...(thread ? { thread } : {}), ...(anchor ? { anchor } : {}), ...settled };
     const spec = { kind: 'comment', note: noteOf(args) || (accept ? `Accepted: ${proposed}` : ''), extra, set: Object.fromEntries([['threadsYourTurn', threadsYourTurn(events, { body: extra, role: who.role })]].filter(([, count]) => count !== undefined)), children: withVideos(withImages({}, images), videos) };
     return spec;
   });
@@ -3239,7 +3269,7 @@ const COMMANDS = {
   create: cmdCreate, import: cmdImport, assign: cmdAssign, start: cmdStart, heartbeat: cmdHeartbeat, done: cmdDone, ask: cmdAsk, block: cmdBlock,
   'merge-authority': cmdMergeAuthority, 'pr-record': cmdPrRecord, 'pr-round': cmdPrRound,
   unblock: cmdUnblock, approve: cmdApprove, changes: cmdChanges, reopen: cmdReopen, reassign: cmdReassign, archive: cmdArchive, delete: cmdDelete, home: cmdHome, comment: cmdComment, event: cmdEvent,
-  'plan-spec': cmdPlanSpec, 'plan-approve': cmdPlanApprove, 'plan-check': cmdPlanCheck, document: cmdDocument, link: cmdLink, rows: cmdRows, check: cmdCheck, 'owner-check': cmdOwnerCheck, gate: cmdGate, show: cmdShow, list: cmdList, resume: cmdResume, reproject: cmdReproject,
+  materials: cmdMaterials, 'plan-spec': cmdPlanSpec, 'plan-approve': cmdPlanApprove, 'plan-check': cmdPlanCheck, document: cmdDocument, link: cmdLink, rows: cmdRows, check: cmdCheck, 'owner-check': cmdOwnerCheck, gate: cmdGate, show: cmdShow, list: cmdList, resume: cmdResume, reproject: cmdReproject,
   checks: cmdChecks, checklist: cmdChecklist,
 };
 
