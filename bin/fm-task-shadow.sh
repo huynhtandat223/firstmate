@@ -205,6 +205,15 @@ status_line() {
   return 0
 }
 
+# The cursor only moves forward, even when the loop and the status command run together.
+status_cursor_forward() {  # <cursor file> <line number>
+  local now
+  now=$(cat "$1" 2>/dev/null) || now=0
+  case "$now" in ''|*[!0-9]*) now=0 ;; esac
+  [ "$2" -gt "$now" ] || return 0
+  if printf '%s\n' "$2" > "$1.$$"; then mv -f "$1.$$" "$1" 2>/dev/null || rm -f "$1.$$"; fi
+}
+
 # Send every line of state/<task>.status after the cursor, in order, and move the cursor over what settled.
 status_replay() {  # <status file> <lines at the end that are new when the task has no cursor: 1 for the status command, 0 for replay>
   local file=$1 fresh=${2:-0} cursor_file="$STATE/$TASK.status-sent" total cursor n line
@@ -223,20 +232,15 @@ status_replay() {  # <status file> <lines at the end that are new when the task 
   while [ "$n" -lt "$total" ]; do
     n=$((n + 1))
     line=$(sed -n "${n}p" "$file" | tr -d '\r')
-    if [ -n "${line//[[:space:]]/}" ]; then
+    # a line the task record wrote itself (fm-task.sh's status view ends it with its [event=N] marker) is already stored
+    if [ -n "${line//[[:space:]]/}" ] && ! [[ "$line" =~ \[event=[0-9]+\]$ ]]; then
       W_UNREACHABLE=0
       status_line "$n" "$line"
       if [ "$W_UNREACHABLE" -ne 0 ]; then n=$((n - 1)); break; fi
     fi
+    # each settled line moves the cursor at once: a replay cut short by the step loop's time limit keeps its progress
+    status_cursor_forward "$cursor_file" "$n"
   done
-  [ "$n" -gt "$cursor" ] || return 0
-  # the cursor only moves forward, even when the loop and the status command run together
-  local now
-  now=$(cat "$cursor_file" 2>/dev/null) || now=0
-  case "$now" in ''|*[!0-9]*) now=0 ;; esac
-  if [ "$n" -gt "$now" ]; then
-    if printf '%s\n' "$n" > "$cursor_file.$$"; then mv -f "$cursor_file.$$" "$cursor_file" 2>/dev/null || rm -f "$cursor_file.$$"; fi
-  fi
   return 0
 }
 

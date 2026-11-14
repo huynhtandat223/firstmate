@@ -1142,7 +1142,7 @@ async function cmdStep(args) {
       if (current.status !== 'running') return { current, patch: { ...runtime, status: 'running', alive: 'alive', attempt: current.attempt + 1, startedAt: now, lastHeartbeatAt: now, endedAt: null, endReason: null, crewState: null, crewStateAt: null } };
       if (!generation || !started) throw rule('end the running step before starting another attempt');
       if (generation === started) return { current, unchanged: true };
-      return { current, patch: { ...runtime, status: 'running', alive: 'alive', lastHeartbeatAt: now } };
+      return { current, patch: { ...runtime, status: 'running', alive: 'alive', lastHeartbeatAt: now, crewState: null, crewStateAt: null } };
     }
     if (current.status !== 'running') return { current, unchanged: true };
     if (generation && started && generation !== started) throw rule(`step generation ${generation} is stale: the running attempt started at ${started}`);

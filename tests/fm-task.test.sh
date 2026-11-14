@@ -3121,6 +3121,10 @@ case_workflow() {
   ft step tk-flow alive --crew-state parked --generation g2; must 'new crew state' 0 || return 1
   step_of implement | jq -e '.crewState == "parked"' >/dev/null || { echo "crew state did not change: $(step_of implement)"; return 1; }
   ft step tk-flow alive --crew-state working --generation g2; must 'crew state back' 0 || return 1
+  # a relaunch does not inherit the last incarnation's crew state
+  ft step tk-flow start --harness claude --model opus --generation g2b; must 'a relaunch' 0 || return 1
+  step_of implement | jq -e '.crewState == null and .crewStateAt == null' >/dev/null || { echo "a relaunch kept the old crew state: $(step_of implement)"; return 1; }
+  ft step tk-flow alive --crew-state working --generation g2b; must 'the new incarnation crew state' 0 || return 1
   printf '# proof\nlanded\n' > "$TMP_ROOT/proof-a5.md"
   ft event tk-flow comment --note 'cleaned up' --document "$TMP_ROOT/proof-a5.md" --document-title 'Cleanup proof'; must 'a comment with a document' 0 || return 1
   db fm_event_document | jq -e '[.[] | select(.title == "Cleanup proof" and .content == "# proof\nlanded\n")] | length == 1' >/dev/null || { echo 'the comment document is not stored once'; return 1; }
@@ -3129,11 +3133,11 @@ case_workflow() {
   [ "$(task_row tk-flow | jq -r .stepModel)" = opus ] || { echo "card model after relaunch: $(task_row tk-flow)"; return 1; }
   ft step tk-flow dead --generation g1; must 'stale incarnation refused' 5 || return 1
   [ "$(task_row tk-flow | jq -r .stepAlive)" = alive ] || { echo "a stale report changed the dot"; return 1; }
-  ft step tk-flow alive --generation g2; must 'unchanged liveness' 0 || return 1
+  ft step tk-flow alive --generation g2b; must 'unchanged liveness' 0 || return 1
   [ "$OUT" = 'step tk-flow: unchanged' ] || { echo "an unchanged liveness wrote: $OUT"; return 1; }
-  ft step tk-flow dead --generation g2; must dead 0 || return 1
+  ft step tk-flow dead --generation g2b; must dead 0 || return 1
   [ "$(task_row tk-flow | jq -r .stepAlive)" = dead ] || { echo "card dot after dead: $(task_row tk-flow)"; return 1; }
-  ft step tk-flow end --reason cleanup --generation g2; must cleanup 0 || return 1
+  ft step tk-flow end --reason cleanup --generation g2b; must cleanup 0 || return 1
   step_of implement | jq -e '.status == "done" and .endReason == "cleanup" and .endedAt != null' >/dev/null || { echo "cleanup did not end the step: $(step_of implement)"; return 1; }
   ft step tk-flow end --reason cleanup; must 'end with nothing running' 0 || return 1
   [ "$OUT" = 'step tk-flow: unchanged' ] || { echo "a second end wrote: $OUT"; return 1; }
@@ -4141,7 +4145,8 @@ mutate 'a report from an older incarnation is refused' workflow "if (generation 
 mutate 'a long place is fitted to its published field' workflow 'fitText(v, STEP_PLACE_LIMITS[k])' 'v'
 mutate 'a crew state change is written' workflow 'const newCrew = crewState !== null && crewState !== current.crewState;' 'const newCrew = false;'
 mutate 'the brief rides on the step event' workflow '...(document ? { children: { documents: [document] } } : {}) };' '};'
-mutate 'a relaunch start marks its incarnation as the running one' workflow "patch: { ...runtime, status: 'running', alive: 'alive', lastHeartbeatAt: now }" "patch: { ...runtime, alive: 'alive', lastHeartbeatAt: now }"
+mutate 'a relaunch start marks its incarnation as the running one' workflow "patch: { ...runtime, status: 'running', alive: 'alive', lastHeartbeatAt: now, crewState: null" "patch: { ...runtime, alive: 'alive', lastHeartbeatAt: now, crewState: null"
+mutate 'a relaunch start clears the last incarnation crew state' workflow "lastHeartbeatAt: now, crewState: null, crewStateAt: null } };" "lastHeartbeatAt: now } };"
 mutate 'a removed pending state is skipped' workflow "...removed.map(s => ({ state: s.state, status: 'skipped' }))" "...[]"
 mutate 'reopen lets the states approve skipped wait again' workflow "s.status === 'skipped' && s.endReason === 'approved').map(" "false).map("
 mutate 'a start with no model keeps the configured model' workflow "model: args.flags.model || current.model," "model: args.flags.model,"
