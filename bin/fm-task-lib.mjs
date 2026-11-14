@@ -90,7 +90,7 @@
 //            stored all the same, and describe prints `rows not seeded: <why>` and exits 0.
 //   materials <task>                     read latest 12 links and 6 images (base64 bytes) from 5001
 //   thread   <task> [--since SEQ]                                       full comments, oldest first
-//   comment  <task> [--note T] [--image PATH --image-label L]... [--video PATH --video-label L]...
+//   comment  <task> [--note T] [--document FILE --document-title T] [--image PATH --image-label L]... [--video PATH --video-label L]...
 //            [--ask why|how|wait-what] [--reply-to SEQ]                 any state; reply-to must name a comment of this task
 //            [--anchor-quote Q [--anchor-prefix P] [--anchor-suffix S]]   opens a thread at the quoted passage (not with
 //            --reply-to); a reply joins the thread of the comment it answers and stores it as `thread`
@@ -526,7 +526,7 @@ const SPECS = {
   'plan-decision': { pos: ['task'], flags: { decision: 's', 'plan-seq': 's' } },
   materials: { pos: ['task'], flags: {} },
   thread: { pos: ['task'], flags: { since: 's' } },
-  comment: { pos: ['task'], flags: { material: 's', image: 'm', 'image-label': 'm', video: 'm', 'video-label': 'm', ask: 's', 'reply-to': 's', 'anchor-quote': 's', 'anchor-prefix': 's', 'anchor-suffix': 's', outcome: 's', accept: 'b' } },
+  comment: { pos: ['task'], flags: { document: 's', 'document-title': 's', material: 's', image: 'm', 'image-label': 'm', video: 'm', 'video-label': 'm', ask: 's', 'reply-to': 's', 'anchor-quote': 's', 'anchor-prefix': 's', 'anchor-suffix': 's', outcome: 's', accept: 'b' } },
   'merge-authority': { pos: ['task'], flags: { 'pr-url': 's', head: 's', 'merge-authority': 's', receipt: 's', phase: 's', merged: 'b' } },
   'pr-record': { pos: ['task'], flags: {} },
   'pr-round': { pos: ['action'], flags: { file: 's' } },
@@ -1859,7 +1859,8 @@ async function cmdComment(args) {
   const videos = videosOf(args);
   const outcome = args.flags.outcome;
   const accept = Boolean(args.flags.accept);
-  if (!args.flags.note && !images.length && !videos.length && !accept) throw usage('comment needs --note, --image or --video');
+  const document = args.flags.document ? documentOf(args.flags) : undefined;
+  if (!args.flags.note && !document && !images.length && !videos.length && !accept) throw usage('comment needs --note, --image or --video');
   if ((outcome !== undefined || accept) && args.flags['reply-to'] === undefined) throw usage('--outcome and --accept answer a comment of a thread: give --reply-to');
   if (outcome !== undefined && accept) throw usage('a comment proposes an --outcome or accepts one, not both');
   if (outcome !== undefined && (!outcome.trim() || outcome.length > OUTCOME_MAX || /[\r\n]/.test(outcome))) throw usage(`--outcome is one line of 1 to ${OUTCOME_MAX} characters`);
@@ -1884,7 +1885,7 @@ async function cmdComment(args) {
     if (accept && !proposed) throw rule('--accept must answer a comment that proposes an --outcome');
     const settled = outcome !== undefined ? { outcome } : accept ? { outcome: proposed, accepted: parent.seq } : {};
     const extra = { ...(material ? { material } : {}), ...(ask ? { ask } : {}), ...(reply !== undefined ? { replyTo: Number(reply) } : {}), ...(thread ? { thread } : {}), ...(anchor ? { anchor } : {}), ...settled };
-    const spec = { kind: 'comment', note: noteOf(args) || (accept ? `Accepted: ${proposed}` : ''), extra, set: Object.fromEntries([['threadsYourTurn', threadsYourTurn(events, { body: extra, role: who.role })]].filter(([, count]) => count !== undefined)), children: withVideos(withImages({}, images), videos) };
+    const spec = { kind: 'comment', note: noteOf(args) || (accept ? `Accepted: ${proposed}` : ''), extra, set: Object.fromEntries([['threadsYourTurn', threadsYourTurn(events, { body: extra, role: who.role })]].filter(([, count]) => count !== undefined)), children: withVideos(withImages(document ? { documents: [document] } : {}, images), videos) };
     return spec;
   });
 }

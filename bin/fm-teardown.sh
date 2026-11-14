@@ -3918,7 +3918,13 @@ remove_kimi_turnend_auth "$STATE" "$ID" || exit 1
 fm_backend_clear_transition "$BACKEND" "$STATE" "$T" || true
 # Remove the per-task temp root (/tmp/fm-<id>/, incl. its gotmp/) recorded by spawn.
 # Read before the state-file rm below; empty (pre-fix tasks without tasktmp=) is a no-op.
-[ -n "$TASK_TMP" ] && rm -rf "$TASK_TMP"
+if [ -e "$CONFIG/task-shadow" ]; then
+  FM_CLEAN_TASK_READER=${FM_TASK_SHADOW_WRITER:-$SCRIPT_DIR/fm-task.sh} FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_DATA_OVERRIDE=$DATA \
+    python3 "$SCRIPT_DIR/fm-clean-artifacts.py" "$ID" --apply --if-terminal --teardown-tmp --backup-only \
+    || { echo "error: artifact backup/cleanup failed; preserving remaining task material" >&2; exit 1; }
+else
+  [ -z "$TASK_TMP" ] || rm -rf -- "$TASK_TMP"
+fi
 # Retire only this Firstmate home's launch namespace. Its never-reused per-spawn
 # files leave the equal task-id namespace of every other home untouched.
 teardown_launch_home_token() {
@@ -4022,6 +4028,11 @@ else
     echo "error: $ID's endpoint and local copy are cleaned up, but its task record could not be removed ($FM_BACKLOG_TRANSITION_ERROR)" >&2
     exit 1
   fi
+fi
+if [ -e "$CONFIG/task-shadow" ]; then
+  FM_CLEAN_TASK_READER=${FM_TASK_SHADOW_WRITER:-$SCRIPT_DIR/fm-task.sh} FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_DATA_OVERRIDE=$DATA \
+    python3 "$SCRIPT_DIR/fm-clean-artifacts.py" "$ID" --apply --if-terminal ${TASK_TMP:+--tasktmp "$TASK_TMP"} \
+    || { echo "error: final artifact cleanup failed; backup retained" >&2; exit 1; }
 fi
 fm_lock_release "$META_LOCK"
 META_LOCK_HELD=0
