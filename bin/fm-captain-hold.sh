@@ -107,7 +107,7 @@
 # visibly refuses it, and never passes it to `answer`, so no channel and no
 # card-declared mode can turn it into a close, release, or request. A separate
 # `reconcile-requests` intake verifies a captured source's binding before it
-# records a durable request under `state/reconcile-requests/`.
+# records a durable request as an `fm_hold_record` row of kind `reconcile` on 5001.
 #
 # `reconcile` is the verify-then-decide half. Both outcomes require the pending
 # request created by the captain's board selection. `close` is the moot outcome:
@@ -125,8 +125,8 @@
 #
 # `bind`, `unbind`, and `binding` record that a captured-answer SOURCE feeds
 # this intake, for any channel whose answers arrive detached from their origin
-# (a process-event source id, for example). The binding is a private record
-# under `state/decision-bindings/`; a source with no binding feeds nothing, so
+# (a process-event source id, for example). The binding is an `fm_hold_record`
+# row of kind `binding` on 5001; a source with no binding feeds nothing, so
 # this whole path is opt-in per source and an unbound source behaves as if it
 # did not exist. `bind` deliberately does not require the source to exist yet,
 # so a channel can be bound BEFORE it is armed. The optional second argument
@@ -445,8 +445,20 @@ show_field_value() {  # <show-output> <field>
 }
 
 origin_exists_here() {  # <origin-id>
+  # A live investigation attests before its terminal done call. Once a done
+  # document exists it replaces the machine-local report as the artifact.
+  if ! task_show "$1"; then
+    local portable active
+    active=$("$FM_ROOT/bin/fm-task.sh" owner-home) || return 1
+    portable=$("$FM_ROOT/bin/fm-task.sh" show "$1" --json) || {
+      [ ! -f "$STATE/$1.meta" ] || return 0
+      [ ! -f "$DATA/$1/report.md" ] || return 0
+      return 1
+    }
+    printf '%s' "$portable" | python3 -c 'import json,sys; r=json.load(sys.stdin); sys.exit(0 if r.get("backlogHome")==sys.argv[1] else 1)' "$active" || return 1
+  fi
+  if "$FM_ROOT/bin/fm-task.sh" document "$1" --kind 'done' >/dev/null 2>&1; then return 0; fi
   [ -f "$STATE/$1.meta" ] && return 0
-  [ -f "$DATA/$1/report.md" ] && return 0
   task_show "$1"
 }
 
@@ -1300,8 +1312,12 @@ binding_path() { printf '%s/%s.origin\n' "$BINDING_DIR" "$1"; }
 # never when it is a corrupted record.
 read_binding() {  # <source-id>
   local path origin schema
-  path=$(binding_path "$1")
-  [ -e "$path" ] || return 0
+  path=$(mktemp)
+  if ! "$SCRIPT_DIR/fm-owner-record.sh" hold-read binding "$1" > "$path"; then
+    rm -f "$path"
+    fail "cannot read the authoritative binding for $1"
+  fi
+  if [ ! -s "$path" ]; then rm -f "$path"; return 0; fi
   [ -f "$path" ] && [ ! -L "$path" ] || fail "decision binding is unsafe: $path"
   schema=$(sed -n 's/^schema=//p' "$path" | head -1)
   [ "$schema" = "$BINDING_SCHEMA" ] || fail "decision binding has an incompatible schema: $path"
@@ -1311,11 +1327,12 @@ read_binding() {  # <source-id>
       ''|*[!A-Za-z0-9._-]*) fail "decision binding has an invalid origin id: $path" ;;
     esac
   fi
+  rm -f "$path"
   printf '%s\n' "$origin"
 }
 
 command_bind() {
-  local source=${1:-} origin=${2:-} dest tmp
+  local source=${1:-} origin=${2:-} tmp
   [ "$#" -ge 1 ] && [ "$#" -le 2 ] || { usage >&2; exit 2; }
   validate_source_id "$source"
   if [ -z "$origin" ] || [ "$origin" = --any-origin ]; then
@@ -1325,13 +1342,13 @@ command_bind() {
   fi
   (umask 077; mkdir -p "$BINDING_DIR") || fail "cannot create $BINDING_DIR"
   [ -d "$BINDING_DIR" ] && [ ! -L "$BINDING_DIR" ] || fail "decision binding dir is unsafe: $BINDING_DIR"
-  dest=$(binding_path "$source")
   tmp=$(umask 077; mktemp "$BINDING_DIR/.origin.XXXXXX") || fail "cannot stage the decision binding"
   if ! { printf 'schema=%s\norigin=%s\n' "$BINDING_SCHEMA" "$origin" > "$tmp" \
-    && chmod 0600 "$tmp" && mv -f -- "$tmp" "$dest"; }; then
+    && chmod 0600 "$tmp" && "$SCRIPT_DIR/fm-owner-record.sh" hold-write binding "$source" "$tmp"; }; then
     rm -f -- "$tmp"
     fail "cannot record the decision binding for $source"
   fi
+  rm -f "$tmp"
   printf 'bound: %s -> %s\n' "$source" "$origin"
 }
 
@@ -1339,7 +1356,8 @@ command_unbind() {
   local source=${1:-}
   [ "$#" -eq 1 ] || { usage >&2; exit 2; }
   validate_source_id "$source"
-  rm -f -- "$(binding_path "$source")"
+  "$SCRIPT_DIR/fm-owner-record.sh" hold-write binding "$source" /dev/null inactive \
+    || fail "cannot retire binding $source"
   printf 'unbound: %s\n' "$source"
 }
 
@@ -1539,9 +1557,10 @@ reconcile_request_path() { printf '%s/%s.request\n' "$RECONCILE_DIR" "$1"; }
 # original timestamp, so a re-delivered board answer never resets the clock on
 # an obligation that is already open.
 reconcile_request_record() {  # <task-id> <provenance>
-  local id=$1 source=$2 path tmp
+  local id=$1 source=$2 path tmp existing
+  existing=$("$SCRIPT_DIR/fm-owner-record.sh" hold-read reconcile "$id") || return 1
+  [ -z "$existing" ] || return 0
   path=$(reconcile_request_path "$id")
-  [ ! -e "$path" ] || return 0
   (umask 077; mkdir -p "$RECONCILE_DIR") || return 1
   [ -d "$RECONCILE_DIR" ] && [ ! -L "$RECONCILE_DIR" ] || return 1
   tmp=$(umask 077; mktemp "$RECONCILE_DIR/.request.XXXXXX") || return 1
@@ -1550,7 +1569,8 @@ reconcile_request_record() {  # <task-id> <provenance>
     printf 'task=%s\n' "$id"
     printf 'requested=%s\n' "${FM_CAPTAIN_HOLD_NOW:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
     printf 'source=%s\n' "$(sanitize_reconcile_provenance "$source")"
-  } > "$tmp" && chmod 0600 "$tmp" && mv -f -- "$tmp" "$path"; then
+  } > "$tmp" && chmod 0600 "$tmp" && "$SCRIPT_DIR/fm-owner-record.sh" hold-write reconcile "$id" "$tmp"; then
+    rm -f "$tmp"
     return 0
   fi
   rm -f -- "$tmp"
@@ -1559,26 +1579,31 @@ reconcile_request_record() {  # <task-id> <provenance>
 
 reconcile_request_read() {  # <task-id>; sets RECONCILE_REQUESTED/RECONCILE_SOURCE
   local id=$1 path schema task
-  path=$(reconcile_request_path "$id")
-  [ -f "$path" ] && [ ! -L "$path" ] || return 1
+  path=$(mktemp)
+  if ! "$SCRIPT_DIR/fm-owner-record.sh" hold-read reconcile "$id" > "$path"; then
+    rm -f "$path"
+    fail "cannot read authoritative reconciliation request $id"
+  fi
+  if [ ! -s "$path" ]; then rm -f "$path"; return 1; fi
   schema=$(sed -n 's/^schema=//p' "$path" | head -1)
   [ "$schema" = "$RECONCILE_SCHEMA" ] || fail "reconcile request has an incompatible schema: $path"
   task=$(sed -n 's/^task=//p' "$path" | head -1)
   [ "$task" = "$id" ] || fail "reconcile request names a different task: $path"
   RECONCILE_REQUESTED=$(sed -n 's/^requested=//p' "$path" | head -1)
   RECONCILE_SOURCE=$(sed -n 's/^source=//p' "$path" | head -1)
+  rm -f "$path"
 }
 
 reconcile_request_retire() {  # <task-id>
-  rm -f -- "$(reconcile_request_path "$1")" \
+  "$SCRIPT_DIR/fm-owner-record.sh" hold-write reconcile "$1" /dev/null inactive \
     || fail "could not retire the pending reconcile request for $1"
 }
 
 publish_parent_resolution_then_retire() {  # <task-id> <occurrence> <note>
   local id=$1 occurrence=$2 note=$3 request
-  request=$(reconcile_request_path "$id")
+  request=$("$SCRIPT_DIR/fm-owner-record.sh" hold-read reconcile "$id") || fail "cannot read reconciliation record $id"
   publish_parent_hold "$id" "$occurrence" resolved "$note"
-  if [ -e "$request" ] && [ "$PARENT_HOLD_PUBLISHED" != 1 ]; then
+  if [ -n "$request" ] && [ "$PARENT_HOLD_PUBLISHED" != 1 ]; then
     fail "could not publish the answered captain-held task $id to its parent"
   fi
   reconcile_request_retire "$id"
@@ -1656,18 +1681,18 @@ command_reconcile() {
 }
 
 reconcile_list() {
-  local path id count=0
+  local id rows ids count=0
   [ "$#" -eq 0 ] || { usage >&2; exit 2; }
-  [ -d "$RECONCILE_DIR" ] || { printf 'reconcile-requests: 0\n'; return 0; }
-  for path in "$RECONCILE_DIR"/*.request; do
-    [ -e "$path" ] || continue
-    id=${path##*/}; id=${id%.request}
+  rows=$("$FM_ROOT/bin/fm-task.sh" owner-record hold list --home "$("$FM_ROOT/bin/fm-task.sh" owner-home)" --kind reconcile) || fail "cannot list reconciliation records"
+  ids=$(printf '%s' "$rows" | python3 -c 'import json,sys; print("\n".join(r["sourceId"] for r in json.load(sys.stdin) if r.get("state")=="active"))') || return 1
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
     RECONCILE_REQUESTED=''
     RECONCILE_SOURCE=''
     reconcile_request_read "$id" || continue
     printf '%s\trequested=%s\tsource=%s\n' "$id" "$RECONCILE_REQUESTED" "$RECONCILE_SOURCE"
     count=$((count + 1))
-  done
+  done <<< "$ids"
   printf 'reconcile-requests: %s\n' "$count"
 }
 

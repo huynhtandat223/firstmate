@@ -15,6 +15,9 @@ set -euo pipefail
 TMP_ROOT=$(fm_test_tmproot fm-inbox)
 INBOX_BIN="$ROOT/bin/fm-inbox.sh"
 LOCK_BIN="$ROOT/bin/fm-lock.sh"
+. "$ROOT/tests/owner-api-helpers.sh"
+owner_api_start "$ROOT" "$TMP_ROOT"
+trap 'kill "$OWNER_API_PID" 2>/dev/null || true' EXIT
 
 make_home() {
   local home="$TMP_ROOT/$1"
@@ -25,7 +28,7 @@ make_home() {
 run_inbox() {
   local home=$1
   shift
-  FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+  FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_CONFIG_OVERRIDE="$home/config" "$INBOX_BIN" "$@"
 }
 
@@ -47,7 +50,7 @@ print(v)' "$@"
 }
 
 count_notes() {
-  find "$1/state/inbox" -maxdepth 1 -name '*.note' 2>/dev/null | wc -l | tr -d ' '
+  find "$1/state/owner-note-spool" -maxdepth 1 -name '*.note' 2>/dev/null | wc -l | tr -d ' '
 }
 
 count_wakes() {
@@ -76,10 +79,13 @@ pass "plain note, list, and wake stay on the historical human path"
 isolated="$TMP_ROOT/isolated"
 mkdir -p "$isolated/bin"
 cp "$INBOX_BIN" "$isolated/bin/fm-inbox.sh"
+for support in fm-task.sh fm-task-lib.mjs fm-task-sources-lib.mjs fm-owner-notes.py fm-home-lease-lib.sh; do
+  cp "$ROOT/bin/$support" "$isolated/bin/$support"
+done
 chmod +x "$isolated/bin/fm-inbox.sh"
 home=$(make_home human-wake-fail)
 set +e
-fail_out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+fail_out=$(FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
   "$isolated/bin/fm-inbox.sh" note "saved but not announced" 2>&1)
 fail_code=$?
 set -e
@@ -116,7 +122,7 @@ assert_equals "1" "$(count_notes "$home")" \
   "the same request id must not create a second note"
 assert_equals "1" "$(count_wakes "$home")" \
   "replay of an already-announced note must not append a second wake"
-replay_human=$(run_inbox "$home" note --request-id req-1 "line one") \
+replay_human=$(run_inbox "$home" note --request-id req-1 "$body") \
   || fail "human replay should succeed"
 assert_contains "$replay_human" "replay $first_id" \
   "human replay is distinguishable from queued"
@@ -126,10 +132,10 @@ pass "the same request id returns the original note as a distinguishable replay"
 # --- crash window: reservation exists, note not yet published ---------------
 
 home=$(make_home crash-reserve)
-mkdir -p "$home/state/inbox/.requests"
+mkdir -p "$home/state/owner-note-spool/.requests"
 crash_id="1700000000-crashwin"
-printf '%s\n' "$crash_id" > "$home/state/inbox/.requests/crash-rid"
-assert_absent "$home/state/inbox/$crash_id.note" \
+printf '%s\n' "$crash_id" > "$home/state/owner-note-spool/.requests/crash-rid"
+assert_absent "$home/state/owner-note-spool/$crash_id.note" \
   "fixture starts with a reservation and no published note"
 crash_out=$(run_inbox "$home" note --request-id crash-rid --json "recover me") \
   || fail "retry after a reservation-only crash should complete the original note"
@@ -137,11 +143,11 @@ assert_equals "replay" "$(printf '%s' "$crash_out" | json_get outcome)" \
   "completing a reserved request id is a replay of that request"
 assert_equals "$crash_id" "$(printf '%s' "$crash_out" | json_get id)" \
   "the reserved note id is reused"
-assert_present "$home/state/inbox/$crash_id.note" \
+assert_present "$home/state/owner-note-spool/$crash_id.note" \
   "the retry publishes the reserved note rather than minting a new id"
 assert_equals "1" "$(count_notes "$home")" \
   "crash-window retry leaves exactly one note"
-assert_grep "recover me" "$home/state/inbox/$crash_id.note" \
+assert_grep "recover me" "$home/state/owner-note-spool/$crash_id.note" \
   "the completed note carries the caller's body"
 pass "a crash between recording the request id and publishing the note reuses the original id"
 
@@ -149,7 +155,7 @@ pass "a crash between recording the request id and publishing the note reuses th
 
 home=$(make_home announce-fail)
 set +e
-saved_out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+saved_out=$(FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
   "$isolated/bin/fm-inbox.sh" note --request-id repair-1 --json "please announce" 2>/dev/null)
 saved_code=$?
 set -e
@@ -165,7 +171,7 @@ assert_equals "1" "$(count_notes "$home")" "isolated submit wrote one note"
 assert_equals "0" "$(count_wakes "$home")" "isolated submit wrote no wake"
 
 set +e
-replay_fail=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+replay_fail=$(FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
   "$isolated/bin/fm-inbox.sh" note --request-id repair-1 --json "please announce" 2>/dev/null)
 replay_fail_code=$?
 set -e
@@ -196,7 +202,7 @@ assert_equals "1" "$(count_wakes "$home")" \
   "already-announced must not append another wake"
 home=$(make_home announce-repair)
 set +e
-unannounced=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+unannounced=$(FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
   "$isolated/bin/fm-inbox.sh" note --request-id repair-2 --json "announce me" 2>/dev/null)
 set -e
 unannounced_id=$(printf '%s' "$unannounced" | json_get id)
@@ -211,7 +217,7 @@ pass "saved-but-unannounced notes are repairable without creating a second note"
 # path nor a request-id replay appends one.
 home=$(make_home announce-acked)
 set +e
-acked=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+acked=$(FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
   "$isolated/bin/fm-inbox.sh" note --request-id acked-1 --json "drained before repair" 2>/dev/null)
 set -e
 acked_id=$(printf '%s' "$acked" | json_get id)
@@ -290,7 +296,7 @@ home=$(make_home preexisting)
 run_inbox "$home" note "establish the inbox" >/dev/null || fail "seed note failed"
 legacy="1700000000-legacy"
 printf 'id=%s\nat=2026-01-01T00:00:00Z\nsource=text\n--\nfrom before the marker\n' \
-  "$legacy" > "$home/state/inbox/$legacy.note"
+  "$legacy" > "$home/state/owner-note-spool/$legacy.note"
 legacy_announced=$(run_inbox "$home" receipts --all-pending | python3 -c 'import json,sys
 rows={r["id"]: r["announced"] for r in json.load(sys.stdin)["pending"]}
 print(json.dumps(rows[sys.argv[1]]))' "$legacy")
@@ -314,12 +320,12 @@ pass "notes that predate the announcement marker are unknown, not re-announced"
 # Reply cursor: replies recorded within the same second are both readable, in
 # recording order, even when the later note id sorts below the earlier one.
 home=$(make_home cursor)
-mkdir -p "$home/state/inbox"
+mkdir -p "$home/state/owner-note-spool"
 later="1700000000-aaaaaa"
 earlier="1700000000-zzzzzz"
 for nid in "$earlier" "$later"; do
   printf 'id=%s\nat=2026-01-01T00:00:00Z\nsource=text\nannounce_marker=1\n--\norder %s\n' \
-    "$nid" "$nid" > "$home/state/inbox/$nid.note"
+    "$nid" "$nid" > "$home/state/owner-note-spool/$nid.note"
 done
 run_inbox "$home" reply "$earlier" "answer one" >/dev/null || fail "first reply failed"
 run_inbox "$home" reply "$later" "answer two" >/dev/null || fail "second reply failed"
@@ -351,10 +357,10 @@ pass "the reply channel is durable and its cursor is a strict order"
 # still sorts after every reply a client has already read.
 lost_cursor=$(printf '%s' "$replies" | python3 -c 'import json,sys
 print(json.load(sys.stdin)["reply_cursor"])')
-rm -f "$home/state/inbox/.replies/.seq"
+rm -f "$home/state/owner-note-spool/.replies/.seq"
 third="1700000000-mmmmmm"
 printf 'id=%s\nat=2026-01-01T00:00:00Z\nsource=text\nannounce_marker=1\n--\norder three\n' \
-  "$third" > "$home/state/inbox/$third.note"
+  "$third" > "$home/state/owner-note-spool/$third.note"
 run_inbox "$home" reply "$third" "answer three" >/dev/null || fail "third reply failed"
 after_lost=$(run_inbox "$home" receipts --after "$lost_cursor") \
   || fail "receipts after a lost counter should succeed"
@@ -365,12 +371,12 @@ pass "the reply cursor never goes backwards when the sequence counter is lost"
 # A reply without a valid sequence is malformed: it gets no invented position
 # and receipts say so instead of silently ordering it.
 home=$(make_home malformed-reply)
-mkdir -p "$home/state/inbox/.replies"
+mkdir -p "$home/state/owner-note-spool/.replies"
 bad="1700000000-badseq"
 printf 'id=%s\nat=2026-01-01T00:00:00Z\nsource=text\nannounce_marker=1\n--\norder\n' \
-  "$bad" > "$home/state/inbox/$bad.note"
+  "$bad" > "$home/state/owner-note-spool/$bad.note"
 printf 'id=%s\nat=2026-01-01T00:00:00Z\n--\nno sequence here\n' \
-  "$bad" >"$home/state/inbox/.replies/$bad"
+  "$bad" >"$home/state/owner-note-spool/.replies/$bad"
 malformed=$(run_inbox "$home" receipts) || fail "receipts with a malformed reply should succeed"
 assert_equals "0" "$(printf '%s' "$malformed" | json_len replies)" \
   "a reply without a sequence is not placed in the reply stream"
@@ -382,7 +388,7 @@ pass "a reply without a valid sequence is reported as malformed"
 home=$(make_home non-utf8)
 run_inbox "$home" note "readable note" >/dev/null || fail "seed note failed"
 printf 'id=1700000000-binary\nat=2026-01-01T00:00:00Z\nsource=text\n--\n\377\376 bytes\n' \
-  > "$home/state/inbox/1700000000-binary.note"
+  > "$home/state/owner-note-spool/1700000000-binary.note"
 binary=$(run_inbox "$home" receipts) || fail "receipts must survive a non-UTF-8 note"
 assert_equals "2" "$(printf '%s' "$binary" | json_len pending)" \
   "the undecodable note and the readable note are both listed"
@@ -541,6 +547,6 @@ queued=$(run_inbox "$home" note "ack me") || fail "note for drain failed"
 did=${queued#queued }
 did=${did%%$'\n'*}
 run_inbox "$home" drain --ack "$did" >/dev/null || fail "drain --ack failed"
-assert_absent "$home/state/inbox/$did.note" "acked note leaves pending"
-assert_present "$home/state/inbox/handled/$did.note" "acked note is in handled"
+assert_absent "$home/state/owner-note-spool/$did.note" "acked note leaves pending"
+assert_present "$home/state/owner-note-spool/handled/$did.note" "acked note is in handled"
 pass "drain --ack still moves the note to handled"

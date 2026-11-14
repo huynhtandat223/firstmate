@@ -226,7 +226,9 @@ record() {
   local id=$1 note payload name task title reason
   fm_assistance_require_dispatcher || exit 1
   valid_id "$id"
-  note="$STATE/inbox/$id.note"
+  # Owner notes live on 5001; the list call refreshes this machine's spool from there.
+  "$SCRIPT_DIR/fm-inbox.sh" list >/dev/null || die 'owner notes are unavailable'
+  note="$STATE/owner-note-spool/$id.note"
   [ -f "$note" ] && [ ! -L "$note" ] || die 'proposal note is unavailable'
   payload=$(awk 'body {print} $0 == "--" {body=1}' "$note")
   # Notes queued before sender capture remain recordable; new proposals are strict.
