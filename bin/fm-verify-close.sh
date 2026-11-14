@@ -9,8 +9,9 @@
 #   - Before firstmate approves (task state != done), acts as the one handoff after verify:
 #     takes the head the user-visible rows passed on from data/deploy-verify/ledger.jsonl
 #     (for a page-only task with no PR, the head of its rows ask), writes the deploy event
-#     with that head, clears a transient block whose until date has passed and whose rows
-#     all pass, then reports approve ready or prints each missing item with its next action.
+#     with that head and its deploy run when the ledger holds one, clears a transient block
+#     whose until date has passed and whose rows all pass, then reports approve ready or
+#     prints each missing item with its next action.
 #     Before any write it applies the task record's own gate (current Description rows, digest,
 #     evidence) to that head; only a transient block this run clears moves a task on to review,
 #     so a task returned to ready by `changes` is refused and left alone.
@@ -75,7 +76,7 @@ VERIFY_FILE="$DATA/$ID/verify.md"
 fm_verify_close_rows() {
   local task_writer ledger repo task_json checks_json
   local task_state task_stage block_kind block_reason hold_until pr_url last_seq current_head
-  local has_pr_in_repo=0 ledger_heads='' pass_heads='' target_head='' target_touched='none'
+  local has_pr_in_repo=0 ledger_heads='' pass_heads='' target_head='' target_touched='none' target_run=''
   local visible_count open_count as_deployed_json
   local can_unblock_transient=0 can_advance_ready_to_review=0 need_deploy_event=0 need_verify_md_deployed=0
   local until_future=0 until_invalid=0 after_unblock_state approve_out
@@ -191,6 +192,14 @@ fm_verify_close_rows() {
       ' "$ledger" | tail -n 1
     )
     target_touched=${target_touched:-none}
+    # The deploy run of that head, when the ledger holds one: the task's ask first, then the deployed record.
+    # shellcheck disable=SC2016
+    target_run=$(
+      jq -Rr --arg t "$ID" --arg h "$target_head" '
+        fromjson? | select((.sha == $h or .head == $h) and ((.type == "ask" and .task == $t) or .type == "deployed"))
+        | [(if .type == "ask" then 0 else 1 end), (.run // "" | strings)] | select(.[1] != "") | @tsv
+      ' "$ledger" | sort -s -k1,1n | head -n 1 | cut -f2
+    )
   fi
 
   if [ "$visible_count" -eq 0 ]; then
@@ -358,7 +367,7 @@ fm_verify_close_rows() {
     FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_DATA_OVERRIDE=$DATA "$task_writer" event "$ID" deploy --role firstmate \
       --head "$target_head" \
       --touched "$target_touched" \
-      --note "verify handoff: rows passed on $target_head (bin/fm-verify-close.sh)" \
+      --note "verify handoff: rows passed on $target_head${target_run:+ run $target_run}" \
       --key "verify-close:$ID:deploy:$target_head:$last_seq" >/dev/null \
       || refuse "could not write deploy event for $ID on head $target_head; next: bin/fm-task.sh event $ID deploy --role firstmate --head $target_head --touched $target_touched --note \"verify handoff\""
   fi

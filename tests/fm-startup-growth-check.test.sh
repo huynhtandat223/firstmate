@@ -434,6 +434,37 @@ make_isolated_bin() {  # <name> <register-exit-code>
   printf '%s\n' "$bin"
 }
 
+test_a_due_check_makes_no_memory_request() {
+  local rec root home result port_file="$TMP_ROOT/memory-port" hits="$TMP_ROOT/memory-hits" server
+  rec=$(make_world memory-home)
+  root=${rec%%|*}
+  home=${rec#*|}
+  printf 'probe\n' > "$home/config/memory-home"
+  printf 'token\n' > "$TMP_ROOT/memory-token"
+  chmod 600 "$TMP_ROOT/memory-token"
+  : > "$hits"
+  python3 - "$port_file" "$hits" <<'PY' &
+import http.server, json, sys
+port_file, hits = sys.argv[1:3]
+class H(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_GET(self):
+        open(hits, 'a').write(self.path + '\n')
+        self.send_response(200); self.end_headers(); self.wfile.write(json.dumps({'value': []}).encode())
+s = http.server.HTTPServer(('127.0.0.1', 0), H)
+open(port_file, 'w').write(str(s.server_port))
+s.serve_forever()
+PY
+  server=$!
+  for _ in $(seq 1 100); do [ ! -s "$port_file" ] || break; sleep .02; done
+  result=$(FM_TASK_BASE_URL="http://127.0.0.1:$(cat "$port_file")" FM_TASK_TOKEN_FILE="$TMP_ROOT/memory-token" run_check "$root" "$home" 1000)
+  kill "$server" 2>/dev/null || true
+  [ "$(status_part "$result")" = 0 ] || fail "check with config/memory-home failed: $(output_part "$result")"
+  [ ! -s "$hits" ] || fail "the daily check called 5001: $(tr '\n' ' ' < "$hits")"
+  assert_absent "$home/data/.memory-sync" "the daily check wrote the memory sync record"
+  pass "a due check stays local: no 5001 request and no memory cache write"
+}
+
 test_rearming_an_unchanged_binding_does_not_replace_the_shim() {
   local rec root home bin before after out
   rec=$(make_world rearm-noop)
@@ -623,6 +654,7 @@ test_interrupted_evaluation_abandons_its_partial_record
 test_aged_empty_orphan_records_are_swept_without_touching_live_work
 test_orphan_sweep_stays_inside_the_daily_cadence
 test_arm_and_disarm_use_authenticated_custom_check
+test_a_due_check_makes_no_memory_request
 test_rearming_an_unchanged_binding_does_not_replace_the_shim
 test_failed_first_arm_leaves_the_home_plainly_unarmed
 test_failed_rearm_keeps_the_previously_armed_shim_and_trust

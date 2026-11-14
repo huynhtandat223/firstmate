@@ -58,6 +58,8 @@
 # acknowledgement, announcement, and any recorded reply. Default bounds omit
 # rather than implying the first page is everything; omitted[] names the
 # surface and how to reveal it, the same convention as fm-bearings-snapshot.sh.
+# The output is one object, so the waiting-note count is `jq '.pending | length'`;
+# `jq length` counts the object's eight top-level keys, not notes.
 # `reply` is how the primary publishes its actual answer against a note id.
 # Each reply is stamped with a durable per-home sequence, so the receipts cursor
 # is a strict total order and two replies recorded in the same second are both

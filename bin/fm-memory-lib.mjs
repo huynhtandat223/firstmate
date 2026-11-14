@@ -87,7 +87,7 @@ export function splitRules(file, text) {
 }
 
 // ---- 5001 access -----------------------------------------------------------------------------------------------
-let token, timeoutMs = 20000;
+let token, timeoutMs = 20000, deadline = null; // deadline: one abort signal shared by every request of a sync
 function fail(message, code = 1) { const error = new Error(message); error.code = code; throw error; }
 async function http(method, suffix = '', body) {
   if (!token) {
@@ -102,7 +102,7 @@ async function http(method, suffix = '', body) {
   const headers = { accept: 'application/json', 'content-type': 'application/json' };
   if (process.env.FM_TASK_AUTH === 'cookie') headers.cookie = `cfw.auth.session=${token}`; else headers.authorization = `Bearer ${token}`;
   let response;
-  try { response = await fetch(`${base}/api/fm_doc${suffix}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs) }); }
+  try { response = await fetch(`${base}/api/fm_doc${suffix}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), signal: deadline || AbortSignal.timeout(timeoutMs) }); }
   catch { const error = new Error('document service unavailable'); error.code = 'offline'; throw error; }
   if (!response.ok) fail(`document service refused ${method}: HTTP ${response.status}`, response.status === 409 ? 409 : 1);
   if (response.status === 204) return null;
@@ -199,8 +199,11 @@ async function pull(ctx, files = ctx.files) {
 async function put(ctx) {
   const name = ctx.file, text = readLocal(ctx.data, name); let base = readBase(ctx.data, name);
   if (text === null) fail(`data/${name} does not exist`);
+  // A pull record of another home is never published here, also when this home has no row yet.
+  const otherHome = () => { if (base && base.scope && base.scope !== ctx.scope && !ctx.rebase) fail(`the pull record of ${name} is for ${base.scope}, not ${ctx.scope}; run fm-memory.sh pull, or put --rebase to publish this text on top of ${ctx.scope}`); };
   const row = await latest(ctx.scope, name);
   if (!row) {
+    otherHome();
     await insert(ctx.scope, name, 1, 'memory', 'text/markdown', text, ctx.by);
     await writeRules(ctx.scope, name, 1, text, ctx.by); writeBase(ctx.data, name, ctx.scope, 1, text);
     return { file: name, result: 'inserted', version: 1 };
@@ -210,8 +213,8 @@ async function put(ctx) {
     writeBase(ctx.data, name, ctx.scope, row.version, text);
     return { file: name, result: 'unchanged', version: row.version };
   }
+  otherHome();
   if (ctx.rebase) base = { version: row.version };
-  if (base && base.scope && base.scope !== ctx.scope && !ctx.rebase) fail(`the pull record of ${name} is for ${base.scope}, not ${ctx.scope}; run fm-memory.sh pull, or put --rebase to publish this text on top of ${ctx.scope}`);
   if (!base) fail(`no pull record for ${name}; run fm-memory.sh pull first, or put --rebase to publish this text on top of version ${row.version}`);
   const refuse = () => { const error = new Error(`5001 holds version ${row.version} of ${name}, but this cache started from version ${base.version}; nothing was written.\n${unifiedDiff(row.content, text)}`); error.code = 3; throw error; };
   if (row.version !== base.version) refuse();
@@ -266,7 +269,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     const ctx = parse(process.argv);
     if (ctx.command === 'sync') {
       if (ctx.off) process.exit(0);
-      timeoutMs = 5000;
+      deadline = AbortSignal.timeout(5000); // the whole sync, so a slow 5001 never holds session start longer
       try {
         const rows = await pull(ctx, ctx.files.filter(f => RULE_FILES.includes(f))), waiting = rows.filter(r => r.result.startsWith('kept')).map(r => r.file), wrote = rows.filter(r => r.result === 'written').map(r => r.file);
         console.log(`memory_source=5001 scope=${ctx.scope} ${rows.filter(r => r.version).map(r => `${r.file}=v${r.version}`).join(' ')}${waiting.length ? ` waiting_for_put=${waiting.join(',')}` : ''}${wrote.length ? ` written=${wrote.join(',')}` : ''}`);

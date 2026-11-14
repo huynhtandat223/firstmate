@@ -63,8 +63,28 @@ def pull():
                    f'id={identity}\nat={row["replyAt"]}\nseq={row["replySeq"]}\n--\n{row["reply"]}')
 
 
+# True when the saved row already holds everything push would send, so the
+# note needs no request. A remote handled row also covers a local waiting
+# note: pull then moves the local copy to handled.
+def saved_already(saved, row):
+    if saved is None:
+        return False
+    for key in ('text', 'source', 'at', 'announcedAt', 'reply', 'replyAt', 'replySeq'):
+        if key in row and saved.get(key) != row[key]:
+            return False
+    if (saved.get('requestId') or None) != (row.get('requestId') or None):
+        return False
+    return saved.get('state') == row['state'] or saved.get('state') == 'handled'
+
+
 def push():
-    for path in sorted(list(cache.glob('*.note')) + list((cache / 'handled').glob('*.note'))):
+    paths = sorted(list(cache.glob('*.note')) + list((cache / 'handled').glob('*.note')))
+    if not paths:
+        return
+    # One list call, then a put only for a new or changed note. A put per note
+    # made every fm-inbox.sh call cost minutes on a home with hundreds of notes.
+    saved_rows = {r['noteId']: r for r in call('list', '--home', home)}
+    for path in paths:
         try:
             fields, text = read(path)
         except UnicodeDecodeError:
@@ -75,9 +95,19 @@ def push():
                    state='handled' if path.parent.name == 'handled' else 'waiting', at=fields['at'],
                    requestId=fields.get('request_id'))
         announced = cache / '.announced' / identity
-        if announced.exists():
-            row['announcedAt'] = announced.read_text().strip()
+        # An empty marker file carries no time; 5001 refuses '' as a time.
+        announced_at = announced.read_text().strip() if announced.exists() else ''
+        if announced_at:
+            row['announcedAt'] = announced_at
         reply = cache / '.replies' / identity
+        if reply.exists():
+            reply_fields, body = read(reply)
+            if not reply_fields.get('seq', '').isdigit():
+                # Keep malformed local replies for receipts omission disclosure.
+                continue
+            row.update(reply=body, replyAt=reply_fields['at'], replySeq=int(reply_fields['seq']))
+        if saved_already(saved_rows.get(identity), row):
+            continue
         if reply.exists():
             # Replay is a reply write too: a former holder must not upload a
             # queued answer through receipts before the CLI's reply guard.
@@ -85,11 +115,6 @@ def push():
             checked = subprocess.run(['bash', '-c', '. "$1"; fm_home_lease_require', 'lease-replay', str(guard)], capture_output=True, text=True)
             if checked.returncode:
                 raise RuntimeError('queued reply requires the active home lease; retained locally')
-            reply_fields, body = read(reply)
-            if not reply_fields.get('seq', '').isdigit():
-                # Keep malformed local replies for receipts omission disclosure.
-                continue
-            row.update(reply=body, replyAt=reply_fields['at'], replySeq=int(reply_fields['seq']))
         if row['state'] == 'handled':
             row['handledAt'] = datetime.datetime.now(datetime.timezone.utc).isoformat()
         with tempfile.NamedTemporaryFile(mode='w', dir=cache) as staged:
