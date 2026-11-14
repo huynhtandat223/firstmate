@@ -949,6 +949,45 @@ FM_HOME="$FM_HOME" FM_CONFIG_OVERRIDE="$CONFIG" "$SCRIPT_DIR/fm-role.sh" report 
   || printf 'fm-role: unknown (bin/fm-role.sh report failed)\n'
 
 if [ "$READ_ONLY" -eq 0 ]; then
+  # A home with config/material-home syncs its portable config, roles and private skills with 5001 in a bounded
+  # background worker, so network time never delays the digest; the MATERIAL section below reports it without waiting.
+  # One worker per home at a time: the lock directory names its pid, and a later start reports instead of racing it.
+  MATERIAL_STATE=none
+  MATERIAL_OUT="$STATE/.material-sync.out"
+  MATERIAL_LOCK="$STATE/.material-sync.lock"
+  MATERIAL_TIMEOUT="${FM_MATERIAL_SYNC_TIMEOUT:-60}"
+  if [ "$REEMIT" -eq 0 ] && [ -f "$CONFIG/material-home" ]; then
+    mkdir -p "$STATE" 2>/dev/null || true
+    material_lock_stale() {
+      local pid
+      pid=$(cat "$MATERIAL_LOCK/pid" 2>/dev/null || true)
+      if [ -n "$pid" ]; then ! kill -0 "$pid" 2>/dev/null; return; fi
+      [ -n "$(find "$MATERIAL_LOCK" -maxdepth 0 -mmin "+$(( (MATERIAL_TIMEOUT / 60) + 2 ))" 2>/dev/null)" ]
+    }
+    MATERIAL_TOOK=0
+    if mkdir "$MATERIAL_LOCK" 2>/dev/null; then MATERIAL_TOOK=1
+    elif material_lock_stale; then
+      rm -rf "$MATERIAL_LOCK" 2>/dev/null || true
+      ! mkdir "$MATERIAL_LOCK" 2>/dev/null || MATERIAL_TOOK=1
+    fi
+    if [ "$MATERIAL_TOOK" -eq 1 ]; then
+      MATERIAL_STATE=started
+      MATERIAL_MARK="$STATE/.material-sync.start"
+      : > "$MATERIAL_MARK"
+      MATERIAL_HOME=$(head -n1 "$CONFIG/material-home" 2>/dev/null || true)
+      MATERIAL_TMP=$(mktemp "$STATE/.material-sync.XXXXXX" 2>/dev/null || printf '%s' "$STATE/.material-sync.$$")
+      (
+        trap 'rm -rf "$MATERIAL_LOCK" "$MATERIAL_TMP" 2>/dev/null || true' EXIT
+        printf '%s\n' "$BASHPID" > "$MATERIAL_LOCK/pid" 2>/dev/null || true
+        FM_HOME="$FM_HOME" fm_run_timed "$MATERIAL_TIMEOUT" "$SCRIPT_DIR/fm-doc.sh" sync > "$MATERIAL_TMP" 2>&1 \
+          || printf 'material_source=cache home=%s reason="sync did not finish in time"\n' "$MATERIAL_HOME" >> "$MATERIAL_TMP"
+        mv -f "$MATERIAL_TMP" "$MATERIAL_OUT" 2>/dev/null || true
+      ) >/dev/null 2>&1 &
+      disown "$!" 2>/dev/null || true
+    else
+      MATERIAL_STATE=running
+    fi
+  fi
   if [ "$REEMIT" -eq 0 ]; then
     rm -f "$COMPLETION_FILE" 2>/dev/null || true
   fi
@@ -1254,6 +1293,19 @@ if [ "$READ_ONLY" -eq 1 ]; then
   printf 'has no action they would gate. The session holding the lock runs them.\n'
 else
   "$SCRIPT_DIR/fm-startup-network.sh" harvest --pid $$ 2>&1 || true
+fi
+
+# The portable-material sync started at step 1 is read here without waiting. A report that finished before this digest
+# is printed as is; while a worker still runs, the last finished report is printed beside the pending line, so a
+# conflict that landed after an earlier digest is seen by the next session.
+if [ "${MATERIAL_STATE:-none}" != none ]; then
+  subsection "MATERIAL"
+  if [ "$MATERIAL_STATE" = started ] && [ -s "$MATERIAL_OUT" ] && [ "$MATERIAL_OUT" -nt "$MATERIAL_MARK" ]; then
+    cat "$MATERIAL_OUT"
+  else
+    printf 'material_source=pending home=%s (bounded background sync %s; result lands in state/.material-sync.out)\n' "$(head -n1 "$CONFIG/material-home" 2>/dev/null)" "$([ "$MATERIAL_STATE" = running ] && echo 'from an earlier start still running' || echo 'running')"
+    if [ -s "$MATERIAL_OUT" ]; then printf 'last finished report:\n'; sed 's/^/  /' "$MATERIAL_OUT"; fi
+  fi
 fi
 
 # --- 8. context digest -----------------------------------------------------

@@ -13,6 +13,7 @@ Start with the directory layout, then use the setting reference for the behavior
 | Backlog, preferences, and memory | [Backlog backend](#backlog-backend-taskstoml--configtasks-axi--configbacklog-backend), [captain preferences](#captain-preferences-datacaptainmd--datacaptain-sharedmd), [external memory tiers](#external-memory-tiers-memory-layering-section), [memory home](#memory-home-configmemory-home), and [startup memory budget](#startup-memory-budget-configstartup-memory-budget) |
 | Supervision and presentation | [Pi supervision branch](#pi-supervision-branch), [supervision host](#supervision-host-configsupervision-host), and [Calm preference](#calm-preference-configcalm) |
 | Persistent secondmates | [Secondmate routes](#secondmate-routes-datasecondmatesmd) |
+| Portable config, roles, and private skills on Dev 5001 | [Material home](#material-home-configmaterial-home) |
 | Review rounds for worker PRs | [PR review rounds](#pr-review-rounds-configpr-reviewjson) |
 | Per-run overrides and tuning | [Environment variables](#environment-variables) |
 
@@ -938,6 +939,27 @@ Until then local files are the only memory owners.
 
 [`AGENTS.md`](../AGENTS.md) section 6 owns what a declaration changes about knowledge routing, and the internal [`stow` skill](../.agents/skills/stow/SKILL.md) owns how curation reads the declaration and protects tier-owned entries from pruning.
 The section counts toward the startup memory budget like the rest of its file, so keep it to the mapping rather than restating these rules.
+
+## Material home (config/material-home)
+
+`config/material-home` is an optional one-line file naming a home, such as `main`.
+Its presence moves this home's portable material to Dev 5001 as insert-only `fm_doc` rows, source `5001`; the highest version is current, and the local files become a cache.
+Without the file nothing below runs and session start behaves as before.
+
+The portable list is fixed in `PORTABLE` and `classify` of `bin/fm-material-lib.mjs`, never found by scanning, so a new file is not uploaded until a reviewed code change names it.
+Scope `home:<name>` holds `config/crew-harness`, `dispatch-plan-gate`, `handoff-thresholds`, `notify-recipient`, `pr-review.json`, `reply-language`, `secondmate-harness`, `startup-memory-budget`, `config/assistances/*` and `config/roles/*` (`.json` and `.md`), every private skill (a top-level `.agents/skills/` folder in which git tracks nothing), `data/chatgpt-review.md`, and `data/firstmate-tools/**`.
+Scope `host:<hostId>` holds `config/claude-account`; only the captain edits it.
+`config/task-shadow`, `backend`, `tasks-axi/`, `supervision-host`, `host-id`, token files, backups, and dot-files stay on the machine.
+A name denylist and a token-shape scan refuse a whole upload and name the file.
+
+`bin/fm-doc.sh` owns the commands (`seed`, `status`, `materialize --home`, `sync`, `put`, `remove`) and `bin/fm-material-lib.mjs --help` owns their rules; `FM_TASK_BASE_URL` and `FM_TASK_TOKEN_FILE` select the service as for the git documents.
+Session start, while it holds the lock, starts `bin/fm-doc.sh sync` in a background worker bounded by `FM_MATERIAL_SYNC_TIMEOUT` (60 seconds) and never waits for it.
+The digest prints its `MATERIAL` line at the end: `material_source=5001`, `material_source=cache` with the cache age when 5001 is unreachable or the worker ran out of time, or `material_source=pending` while it still runs (the result lands in `state/.material-sync.out`).
+One worker runs per home at a time (`state/.material-sync.lock`); while one runs, the digest also prints the last finished report, so a late `material_conflict` reaches the next session.
+A local edit is never overwritten: `sync` uploads it as the next version when it sits on the version it started from, and otherwise prints `material_conflict` and keeps it; `put` refuses with the diff when 5001 moved first.
+`remove` copies the file to `state/material-backup/` before it inserts a tombstone and deletes it, and refuses a copy that is behind 5001; `seed` never restores a removed file, `put --rebase` does.
+Each machine records the versions it holds, and the Settings tab of the `firstmate.home` page lists them per file.
+Cutover for an existing home is `bin/fm-doc.sh seed --home <name>`, then writing the file.
 
 ## Memory home (config/memory-home)
 
