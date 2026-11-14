@@ -121,10 +121,12 @@ try {
     else if (cmd[1] === 'take') {
       const row = await latest();
       if (row && !row.releasedAt) {
-        // The holder keeps its own unreleased lease after it expired (a restart or a stopped renewal); its workers are
-        // its own, and only heartbeat can lower their count, which needs a fresh lease. Other hosts still wait.
-        if (row.hostId === id) {
-          if (!fresh(row)) await patch('fm_home_lease', row, { heartbeatAt: now() });
+        if (row.hostId === id && fresh(row)) { output(row); process.exit(0); }
+        // A holder whose lease expired with workers still counted (a restart or a stopped renewal) renews it: only
+        // heartbeat can lower that count, which needs a fresh lease, and no other host may take it meanwhile. With no
+        // workers counted it takes generation+1 below, so a competing take still conflicts on the generation.
+        if (row.hostId === id && Number((await host(id))?.liveWorkers) > 0) {
+          await patch('fm_home_lease', row, { heartbeatAt: now() });
           output(await check(id)); process.exit(0);
         }
         const holder = await host(row.hostId);

@@ -68,6 +68,10 @@ FM_HOST_ID=probe-b run lease take --json > "$TMP/retaken" || { echo "FAIL the ho
 node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1]));if(r.hostId!=="probe-b"||r.generation!==2||Date.now()-Date.parse(r.heartbeatAt)>60000)process.exit(1)' "$TMP/retaken"
 FM_HOST_ID=probe-b run lease check >/dev/null
 FM_HOST_ID=probe-b FM_HOST_LIVE_WORKERS=0 FM_HOST_WAKE_QUEUE_LENGTH=0 run heartbeat >/dev/null
+# With no workers counted, the holder retakes through a new generation, so a competing take conflicts on it.
+node "$TMP/expire.mjs" "$FM_TASK_BASE_URL"
+FM_HOST_ID=probe-b run lease take --json > "$TMP/retaken-idle"
+node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1]));if(r.hostId!=="probe-b"||r.generation!==3)process.exit(1)' "$TMP/retaken-idle" || { echo "FAIL an idle holder renewed in place instead of taking a new generation: $(cat "$TMP/retaken-idle")"; exit 1; }
 if run register --typo >/dev/null; then echo 'FAIL unknown flag accepted'; exit 1; fi
 # A configured authorization seam refuses an old host; an unconfigured home is unchanged.
 mkdir -p "$FM_HOME/config"; printf probe > "$FM_HOME/config/home-lease"
