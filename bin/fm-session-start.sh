@@ -451,6 +451,9 @@ print_file_or_absent() {
 HANDOFF_PRINT_MAX_BYTES=40000
 print_captain_context() {
   local start_line rel resolved home_real size
+  # A home with config/memory-home refreshes its cache from 5001 first and names the source in one line.
+  MEMORY_SYNC_LINE=$(FM_HOME="$FM_HOME" FM_CONFIG_OVERRIDE="$CONFIG" "$SCRIPT_DIR/fm-memory.sh" sync --data "$DATA" 2>/dev/null || true)
+  [ -z "$MEMORY_SYNC_LINE" ] || printf '%s\n' "$MEMORY_SYNC_LINE"
   print_file_or_absent "$DATA/captain.md" "data/captain.md"
   if [ -f "$DATA/captain.md" ] && [ -s "$DATA/captain.md" ]; then
     start_line=$(grep -m1 -F 'Start here' "$DATA/captain.md" 2>/dev/null || true)

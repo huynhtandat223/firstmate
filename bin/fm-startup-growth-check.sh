@@ -235,7 +235,7 @@ check_due() {
 
 evaluate_budget() {
   local report line reason valid=yes budget='' total='' status='' exception=''
-  if ! report=$(FM_HOME="$FM_HOME" FM_CONFIG_OVERRIDE="$CONFIG_DIR" FM_DATA_OVERRIDE="$DATA_DIR" \
+  if ! report=$(FM_HOME="$FM_HOME" FM_CONFIG_OVERRIDE="$CONFIG_DIR" FM_DATA_OVERRIDE="$DATA_DIR" FM_MEMORY_SYNC=skip \
     "$BUDGET_BIN" report 2>&1); then
     reason=${report##*startup-memory-budget: }
     append_finding "startup memory budget unavailable owner=bin/fm-startup-memory-budget.sh reason=${reason//$'\n'/ }"
@@ -285,6 +285,9 @@ run_check() {
   FINDINGS=
   printf '%s\n' "$RECORD_SCHEMA_LINE" > "$NEW_RECORD" || exit 1
   printf '%s\t%s\n' last_eval "$now" >> "$NEW_RECORD" || exit 1
+
+  # Refresh the memory cache from 5001 once (a home with config/memory-home); the budget report below then skips its own sync.
+  FM_HOME="$FM_HOME" FM_CONFIG_OVERRIDE="$CONFIG_DIR" "$SCRIPT_DIR/fm-memory.sh" sync --data "$DATA_DIR" >/dev/null 2>&1 || true
 
   stat_surface tracked AGENTS.md "$FM_ROOT/AGENTS.md" no
   stat_surface tracked CLAUDE.md "$FM_ROOT/CLAUDE.md" yes

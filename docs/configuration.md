@@ -10,7 +10,7 @@ Start with the directory layout, then use the setting reference for the behavior
 | Firstmate's code, private files, or project location | [FM_HOME](#fm_home) and [operational home layout](#operational-home-layout-and-state) |
 | Task windows and worker tools | [Runtime backend](#runtime-backend-configbackend--fm_backend) and [harness support](#harness-support) |
 | Worker permissions, accounts, or environment | [Claude permission mode](#claude-permission-mode-configclaude-permission-mode), [worker account pin](#worker-account-pin-configclaude-account-configpi-account), [worker tool exclusions](#worker-tool-exclusions-configcrew-exclude-tools), [worker launch environment](#worker-launch-environment-configlaunch-env-allowlist), and its [Orca environment source](#orca-environment-source-configlaunch-env-tmux-session) |
-| Backlog, preferences, and memory | [Backlog backend](#backlog-backend-taskstoml--configtasks-axi--configbacklog-backend), [captain preferences](#captain-preferences-datacaptainmd--datacaptain-sharedmd), [external memory tiers](#external-memory-tiers-memory-layering-section), and [startup memory budget](#startup-memory-budget-configstartup-memory-budget) |
+| Backlog, preferences, and memory | [Backlog backend](#backlog-backend-taskstoml--configtasks-axi--configbacklog-backend), [captain preferences](#captain-preferences-datacaptainmd--datacaptain-sharedmd), [external memory tiers](#external-memory-tiers-memory-layering-section), [memory home](#memory-home-configmemory-home), and [startup memory budget](#startup-memory-budget-configstartup-memory-budget) |
 | Supervision and presentation | [Pi supervision branch](#pi-supervision-branch), [supervision host](#supervision-host-configsupervision-host), and [Calm preference](#calm-preference-configcalm) |
 | Persistent secondmates | [Secondmate routes](#secondmate-routes-datasecondmatesmd) |
 | Review rounds for worker PRs | [PR review rounds](#pr-review-rounds-configpr-reviewjson) |
@@ -938,6 +938,18 @@ Until then local files are the only memory owners.
 
 [`AGENTS.md`](../AGENTS.md) section 6 owns what a declaration changes about knowledge routing, and the internal [`stow` skill](../.agents/skills/stow/SKILL.md) owns how curation reads the declaration and protects tier-owned entries from pruning.
 The section counts toward the startup memory budget like the rest of its file, so keep it to the mapping rather than restating these rules.
+
+## Memory home (config/memory-home)
+
+`config/memory-home` is an optional one-line file naming a home, such as `main`.
+Its presence moves this home's `data/captain.md`, `data/captain-shared.md`, `data/learnings.md`, and `data/memory-archive.md` to Dev 5001 as insert-only `fm_doc` rows, scope `home:<name>` and kind `memory`; the highest version is current, and `data/<file>` becomes a cache.
+Each of the first three files also has a `<file>.rules.json` row of the same version that holds its rules for the Memory tab of the `firstmate.home` page.
+Without the file, memory stays local and nothing below runs.
+
+`bin/fm-memory.sh` owns the commands (`seed`, `pull`, `put`, `show`, `history`, `sync`) and its header owns the rules for a waiting edit and a lost race; `FM_TASK_BASE_URL` and `FM_TASK_TOKEN_FILE` select the service as for `bin/fm-doc.sh`.
+Session start, `bin/fm-startup-memory-budget.sh report`, and `bin/fm-startup-growth-check.sh` run `sync` first, so they read the 5001 text; when 5001 is unreachable they use the cache and print one `memory_source=cache` line with its age.
+`/stow` pulls first and puts last, as its skill describes.
+Cutover for an existing home is `bin/fm-memory.sh seed`, then writing the file; a home whose local files already differ from 5001 puts them once with `put --rebase`.
 
 ## Startup memory budget (config/startup-memory-budget)
 

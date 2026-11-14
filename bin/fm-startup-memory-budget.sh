@@ -10,6 +10,8 @@
 # Bootstrap owns default materialization; this command never creates or repairs
 # configuration, so an absent, malformed, symlinked, hardlinked, or otherwise
 # unsafe value is a concrete error rather than an inferred default.
+# A home with config/memory-home first runs `fm-memory.sh sync`, so the measured cache is the 5001
+# text; the report then carries one memory_source line.  FM_MEMORY_SYNC=skip skips that step.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -38,7 +40,7 @@ read_budget() {
 }
 
 report() {
-  local budget bytes tokens presence total=0 shared_tokens=0 role=primary
+  local budget bytes tokens presence total=0 shared_tokens=0 role=primary sync_line=''
   if ! budget=$(read_budget); then
     return 2
   fi
@@ -47,7 +49,13 @@ report() {
     role=secondmate
   fi
 
+  # A home with config/memory-home reads memory from 5001: refresh the cache first so the
+  # report measures the 5001 text (or the cache, named in the memory_source line, when 5001 is down).
+  if [ "${FM_MEMORY_SYNC:-}" != skip ]; then
+    sync_line=$(FM_HOME="$FM_HOME" FM_CONFIG_OVERRIDE="$CONFIG" "$SCRIPT_DIR/fm-memory.sh" sync --data "$DATA" 2>/dev/null || true)
+  fi
   printf 'estimator=ceil(UTF-8 bytes / 3) conservative-local-estimate\n'
+  [ -z "${sync_line:-}" ] || printf '%s\n' "$sync_line"
   printf 'role=%s\n' "$role"
   printf 'effective_budget_tokens=%s\n' "$budget"
   for file in captain.md captain-shared.md learnings.md; do

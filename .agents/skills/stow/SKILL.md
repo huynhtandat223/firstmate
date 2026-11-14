@@ -216,6 +216,22 @@ A local skill exists only in this home, so offloading an entry out of `data/capt
    Until then the entry stays, so knowledge is never in limbo between owners.
    Leave no pointer behind by default, and at most one line only when the destination's discoverability is genuinely doubtful.
 
+## Memory on 5001 (a home with config/memory-home)
+
+While `config/memory-home` exists, the 5001 text is the source and `data/<file>` is its cache; `bin/fm-memory.sh --help` owns the commands.
+Without that file, none of this section applies and the local files are the source.
+
+1. **Pull first.** Run `bin/fm-memory.sh pull` before the budget report in the required pass.
+   A file it reports as `kept: local edit waiting for put` holds an edit an earlier pass could not upload: put it before you change anything else.
+2. **Put last.** After the final budget report, run `bin/fm-memory.sh put --file <name>` for every memory file this pass changed, including `memory-archive.md` after an archive append.
+   Each put inserts version n+1; record the printed versions in the receipt.
+   A read-only `data/captain-shared.md` in a secondmate home is never put.
+3. **A refusal is a lost race (exit 3).** 5001 holds a newer version and nothing was written.
+   Run `bin/fm-memory.sh show --file <name>`, apply this pass's change onto that text, write the result to the cache, and run `put --rebase`.
+   Never overwrite the newer version with the old cache.
+4. **An unreachable 5001 leaves the edit in the cache.**
+   Name each file still waiting for put in the receipt and do not call the session reset-safe; the next session start keeps the edit and `put` uploads it as n+1.
+
 ## Knowledge sweep and routing
 
 1. **Sweep the session for uncaptured durable knowledge.**
