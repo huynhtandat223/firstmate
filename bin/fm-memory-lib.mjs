@@ -253,7 +253,7 @@ function parse(argv) {
   if (home && !/^[a-z0-9][a-z0-9-]{0,40}$/.test(home)) fail('memory home must be lowercase letters, digits and dashes', 2);
   const secondmate = !!fmHome && fs.existsSync(path.join(fmHome, '.fm-secondmate-home'));
   const files = secondmate ? FILES.filter(f => f !== 'captain-shared.md') : FILES; // inherited from the primary, read-only here
-  if (secondmate && flags.file === 'captain-shared.md') fail('captain-shared.md is inherited from the primary home; this secondmate home never reads or writes it on 5001', 2);
+  if (secondmate && flags.file === 'captain-shared.md' && command !== 'rules') fail('captain-shared.md is inherited from the primary home; this secondmate home never reads or writes it on 5001', 2);
   const data = flags.data || process.env.FM_DATA_OVERRIDE || path.join(fmHome, 'data');
   if (flags.file && !FILES.includes(flags.file)) fail(`--file must be one of ${FILES.join(', ')}`, 2);
   if (['put', 'history', 'show', 'rules'].includes(command) && !flags.file) fail('--file is required', 2);

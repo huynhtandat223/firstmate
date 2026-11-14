@@ -132,6 +132,9 @@ out=$(run "$TMP/sm" seed)
 rm "$TMP/sm/data/captain-shared.md"; run "$TMP/sm" sync >/dev/null
 [ ! -e "$TMP/sm/data/captain-shared.md" ] || fail "sync restored the inherited captain-shared.md"
 if run "$TMP/sm" put --file captain-shared.md 2>/dev/null; then fail "secondmate put of captain-shared.md succeeded"; fi
+run "$TMP/sm" rules --file captain-shared.md >/dev/null 2>&1 || true
+printf 'shared\n' > "$TMP/sm/data/captain-shared.md"
+[ -n "$(run "$TMP/sm" rules --file captain-shared.md)" ] || fail "a secondmate could not inspect the rules of its local captain-shared.md"
 ok "a secondmate home leaves the inherited captain-shared.md alone"
 
 # Review fixes: a pull record from another home is never published into this one.

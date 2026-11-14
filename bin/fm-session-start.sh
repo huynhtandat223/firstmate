@@ -449,9 +449,8 @@ print_file_or_absent() {
 # named path, after every symlink is resolved, must be a regular file inside
 # this home.
 HANDOFF_PRINT_MAX_BYTES=40000
-print_captain_context() {
+print_start_handoff() {
   local start_line rel resolved home_real size
-  print_file_or_absent "$DATA/captain.md" "data/captain.md"
   if [ -f "$DATA/captain.md" ] && [ -s "$DATA/captain.md" ]; then
     start_line=$(grep -m1 -F 'Start here' "$DATA/captain.md" 2>/dev/null || true)
     # shellcheck disable=SC2016 # the backticks are literal sed text
@@ -478,6 +477,11 @@ print_captain_context() {
       fi
     fi
   fi
+}
+
+print_captain_context() {
+  print_file_or_absent "$DATA/captain.md" "data/captain.md"
+  print_start_handoff
   print_file_or_absent "$DATA/captain-shared.md" "data/captain-shared.md (shared, main-authoritative, read-only in secondmate homes)"
 }
 
@@ -924,7 +928,7 @@ if [ -f "$CONFIG/memory-home" ]; then
     printf '%s\n' "${MEMORY_SYNC_LINE:-memory_source=unknown reason=sync produced no output}"
     case "$MEMORY_SYNC_LINE" in
       *' written='*)
-        case ",${MEMORY_SYNC_LINE##* written=}," in *,captain.md,*) print_file_or_absent "$DATA/captain.md" "data/captain.md (refreshed from 5001)" ;; esac
+        case ",${MEMORY_SYNC_LINE##* written=}," in *,captain.md,*) print_file_or_absent "$DATA/captain.md" "data/captain.md (refreshed from 5001)"; print_start_handoff ;; esac
         case ",${MEMORY_SYNC_LINE##* written=}," in *,captain-shared.md,*) print_file_or_absent "$DATA/captain-shared.md" "data/captain-shared.md (refreshed from 5001)" ;; esac
         ;;
     esac
