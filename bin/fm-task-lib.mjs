@@ -78,6 +78,9 @@
 //            flag removes them once the session ended, and is refused while its worker is alive or unreadable.
 //   home     <task> --home H                 sets the backlog home of a task that has none (any state but archived);
 //            the same home again is a no-op, another home is refused: a task belongs to one board
+//   owner-record home|note|hold list|get|put [--home H] [--kind binding|reconcile]
+//            [--identity ID] [--file JSON] reads or writes portable owner records; JSON output for shell bridges
+//   document <task> [--kind description|done] prints the latest matching event document (default description)
 //   describe <task> --document FILE.md [--document-title T]              any state; default title Description
 //            A task that holds no scenario check row yet gets them from this Description, as `rows <task>` writes them;
 //            a task that holds one keeps its rows (`rows` is the re-sync). Only a task whose issue is none, its own id,
@@ -85,6 +88,7 @@
 //            task:<id> or board link) stays the source of its rows: describe seeds none, and `rows <task> <issue>` seeds
 //            them. There, and for a Description that sync refuses (no scenarios, a parser refusal), the Description is
 //            stored all the same, and describe prints `rows not seeded: <why>` and exits 0.
+//   materials <task>                     read latest 12 links and 6 images (base64 bytes) from 5001
 //   thread   <task> [--since SEQ]                                       full comments, oldest first
 //   comment  <task> [--note T] [--image PATH --image-label L]... [--video PATH --video-label L]...
 //            [--ask why|how|wait-what] [--reply-to SEQ]                 any state; reply-to must name a comment of this task
@@ -496,6 +500,7 @@ async function project(taskId) {
 // ---- arguments --------------------------------------------------------------------------------------------
 const COMMON = { actor: 's', role: 's', key: 's', note: 's', task: 's', json: 'b' };
 const SPECS = {
+  'owner-home': { pos: [], flags: {} },
   'deploy-ledger': { pos: ['action'], flags: { file: 's', repo: 's' } },
   setup: { pos: ['task'], flags: { file: 's', by: 's', 'from-rules': 'b', states: 's', repo: 's', account: 's', at: 's' } },
   move: { pos: ['task'], flags: { to: 's' } },
@@ -519,8 +524,9 @@ const SPECS = {
   describe: { pos: ['task'], flags: { document: 's', 'document-title': 's' } },
   plan: { pos: ['task'], flags: { document: 's', 'document-title': 's', image: 'm', 'image-label': 'm' } },
   'plan-decision': { pos: ['task'], flags: { decision: 's', 'plan-seq': 's' } },
+  materials: { pos: ['task'], flags: {} },
   thread: { pos: ['task'], flags: { since: 's' } },
-  comment: { pos: ['task'], flags: { image: 'm', 'image-label': 'm', video: 'm', 'video-label': 'm', ask: 's', 'reply-to': 's', 'anchor-quote': 's', 'anchor-prefix': 's', 'anchor-suffix': 's', outcome: 's', accept: 'b' } },
+  comment: { pos: ['task'], flags: { material: 's', image: 'm', 'image-label': 'm', video: 'm', 'video-label': 'm', ask: 's', 'reply-to': 's', 'anchor-quote': 's', 'anchor-prefix': 's', 'anchor-suffix': 's', outcome: 's', accept: 'b' } },
   'merge-authority': { pos: ['task'], flags: { 'pr-url': 's', head: 's', 'merge-authority': 's', receipt: 's', phase: 's', merged: 'b' } },
   'pr-record': { pos: ['task'], flags: {} },
   'pr-round': { pos: ['action'], flags: { file: 's' } },
@@ -540,7 +546,8 @@ const SPECS = {
   steers: { pos: ['task'], flags: { peek: 'b' } },
   'read-mark': { pos: ['task'], flags: {} },
   inbox: { pos: ['task'], flags: { action: 's', target: 's', home: 's' } },
-  document: { pos: ['task'], flags: {} },
+  document: { pos: ['task'], flags: { kind: 's' } },
+  'owner-record': { pos: ['table', 'action'], flags: { file: 's', home: 's', identity: 's', kind: 's' } },
   'plan-approve': { pos: ['task'], flags: {} },
   'plan-check': { pos: ['task'], flags: {} },
   'plan-spec': { pos: ['task'], flags: {} },
@@ -1768,11 +1775,39 @@ async function cmdPlanCheck(args) {
 
 async function cmdDocument(args) {
   const events = await taskEvents(taskIdOf(args));
-  const event = events.filter((e) => e.kind === 'description').at(-1);
-  if (!event) throw rule('task has no Description event');
+  const kind = args.flags.kind || 'description';
+  if (!['description', 'done'].includes(kind)) throw usage('--kind must be description or done');
+  const event = events.filter((e) => e.kind === kind).at(-1);
+  if (!event) throw rule(`task has no ${kind} event`);
   const doc = await firstRow('fm_event_document', `fmTaskEventId eq ${event.id}`);
-  if (!doc || !doc.content) throw rule('task Description document is missing');
+  if (!doc || !doc.content) throw rule(`task ${kind} document is missing`);
   out(doc.content);
+}
+
+async function cmdMaterials(args) {
+  const taskId = taskIdOf(args);
+  const events = await taskEvents(taskId);
+  if (!fold(events)) throw rule(`no such task ${taskId}`);
+  const links = [];
+  const images = [];
+  const seenMaterial = new Set();
+  // Newest first: a screenshot republished under the same material id keeps only its newest version.
+  for (const e of [...events].reverse()) {
+    const b = bodyOf(e);
+    if (e.kind === 'link' && links.length < 12 && b.url && !links.some((r) => r.url === b.url)) {
+      links.unshift({ url: b.url, label: b.note || b.url });
+    }
+    if (images.length < 6 && ['comment', 'plan', 'done', 'needs-decision', 'blocked'].includes(e.kind)) {
+      if (b.material && seenMaterial.has(b.material)) continue;
+      const rows = await listAll('fm_event_image', { filter: `fmTaskEventId eq ${e.id}`, orderby: 'position' });
+      if (b.material && rows.length) seenMaterial.add(b.material);
+      for (const r of rows.slice().reverse()) {
+        if (images.length >= 6) break;
+        images.unshift({ label: r.label, mediaType: r.mediaType, content: r.content, seq: e.seq, position: r.position });
+      }
+    }
+  }
+  out(JSON.stringify({ links, images }));
 }
 
 async function cmdThread(args) {
@@ -1828,6 +1863,8 @@ async function cmdComment(args) {
   if ((outcome !== undefined || accept) && args.flags['reply-to'] === undefined) throw usage('--outcome and --accept answer a comment of a thread: give --reply-to');
   if (outcome !== undefined && accept) throw usage('a comment proposes an --outcome or accepts one, not both');
   if (outcome !== undefined && (!outcome.trim() || outcome.length > OUTCOME_MAX || /[\r\n]/.test(outcome))) throw usage(`--outcome is one line of 1 to ${OUTCOME_MAX} characters`);
+  const material = args.flags.material;
+  if (material !== undefined && !/^[A-Za-z0-9:._-]{1,128}$/.test(material)) throw usage('--material is a stable id of 1 to 128 letters, digits, : . _ -');
   const ask = args.flags.ask;
   if (ask !== undefined && !['why', 'how', 'wait-what'].includes(ask)) throw usage('--ask must be why, how or wait-what');
   const reply = args.flags['reply-to'];
@@ -1846,7 +1883,7 @@ async function cmdComment(args) {
     const proposed = accept ? bodyOf(parent).outcome : undefined;
     if (accept && !proposed) throw rule('--accept must answer a comment that proposes an --outcome');
     const settled = outcome !== undefined ? { outcome } : accept ? { outcome: proposed, accepted: parent.seq } : {};
-    const extra = { ...(ask ? { ask } : {}), ...(reply !== undefined ? { replyTo: Number(reply) } : {}), ...(thread ? { thread } : {}), ...(anchor ? { anchor } : {}), ...settled };
+    const extra = { ...(material ? { material } : {}), ...(ask ? { ask } : {}), ...(reply !== undefined ? { replyTo: Number(reply) } : {}), ...(thread ? { thread } : {}), ...(anchor ? { anchor } : {}), ...settled };
     const spec = { kind: 'comment', note: noteOf(args) || (accept ? `Accepted: ${proposed}` : ''), extra, set: Object.fromEntries([['threadsYourTurn', threadsYourTurn(events, { body: extra, role: who.role })]].filter(([, count]) => count !== undefined)), children: withVideos(withImages({}, images), videos) };
     return spec;
   });
@@ -3169,6 +3206,101 @@ async function cmdRule(args) {
   out(`rule=${ruleId} action=${action}`);
 }
 
+// Owner records share the task writer's transport, authentication and paging.
+// Input files keep private note bodies out of process arguments.
+const OWNER_TABLES = {
+  home: { table: 'fm_home', key: 'home', fields: ['home', 'posture', 'postureWords', 'postureSince'] },
+  note: { table: 'fm_owner_note', key: 'noteId', fields: ['home', 'noteId', 'text', 'source', 'state', 'reply', 'at', 'requestId', 'announcedAt', 'handledAt', 'replyAt', 'replySeq'] },
+  hold: { table: 'fm_hold_record', key: 'sourceId', fields: ['home', 'kind', 'sourceId', 'taskId', 'payload', 'state', 'at'] },
+};
+async function cmdOwnerRecord(args) {
+  const spec = OWNER_TABLES[args.pos.table];
+  if (!spec) throw usage('owner-record table must be home, note or hold');
+  const action = args.pos.action;
+  if (!['list', 'get', 'put'].includes(action)) throw usage('owner-record action must be list, get or put');
+  const f = args.flags;
+  if (args.pos.table === 'hold' && !['binding', 'reconcile'].includes(f.kind)) throw usage('hold requires --kind binding or reconcile');
+  if (args.pos.table === 'hold' && !f.home) throw usage('hold requires --home');
+  const filters = [];
+  if (f.home) {
+    filters.push(`home eq ${lit(f.home)}`);
+  }
+  if (f.kind) {
+    if (args.pos.table !== 'hold') throw usage('--kind belongs to hold records');
+    filters.push(`kind eq ${lit(f.kind)}`);
+  }
+  if (action !== 'list' && !f.identity) throw usage('get and put require --identity');
+  if (f.identity) filters.push(`${spec.key} eq ${lit(f.identity)}`);
+  let body;
+  if (action === 'put') {
+    if (!f.file) throw usage('put requires --file with a JSON object');
+    try { body = JSON.parse(fs.readFileSync(f.file, 'utf8')); } catch { throw usage('--file must hold a readable JSON object'); }
+    if (!body || typeof body !== 'object' || Array.isArray(body)) throw usage('--file must hold a JSON object');
+    for (const key of Object.keys(body)) if (!spec.fields.includes(key)) throw usage(`unknown ${args.pos.table} field ${key}`);
+    if (body[spec.key] !== f.identity) throw usage('record identity does not match --identity');
+    if (f.kind && body.kind !== f.kind) throw usage('record kind does not match --kind');
+    if (f.home && body.home !== f.home) throw usage('record home does not match --home');
+  } else if (f.file) throw usage('--file belongs to put');
+  const filter = filters.join(' and ');
+  if (action === 'list') { out(JSON.stringify(await listAll(spec.table, { filter }))); return; }
+  const before = await firstRow(spec.table, filter);
+  if (action === 'get') { out(JSON.stringify(before)); return; }
+  // One unique identity owns a note's body and first reply, even after retries.
+  if (before && args.pos.table === 'note') {
+    for (const key of ['home', 'text', 'source', 'requestId']) {
+      if (body[key] !== undefined && body[key] !== before[key]) throw rule(`note ${key} conflicts with the saved record`);
+    }
+    if (before.reply && body.reply !== undefined && body.reply !== before.reply) throw rule('note already has a different reply');
+    if (before.state === 'handled' && body.state === 'waiting') body.state = 'handled';
+    if (before.handledAt) body.handledAt = before.handledAt;
+  }
+  if (!before) {
+    if (args.pos.table === 'note' && body.requestId) {
+      const prior = await firstRow(spec.table, `home eq ${lit(body.home)} and requestId eq ${lit(body.requestId)}`);
+      if (prior) {
+        if (prior.text !== body.text || (prior.source === 'text' ? 'cli' : prior.source) !== (body.source === 'text' ? 'cli' : body.source)) throw rule('request id already has different note content');
+        out(JSON.stringify(prior));
+        return;
+      }
+    }
+    const created = await http('POST', `/api/${spec.table}`, body);
+    if (created.status === 409) {
+      if (args.pos.table === 'note' && body.requestId) {
+        const winner = await firstRow(spec.table, `home eq ${lit(body.home)} and requestId eq ${lit(body.requestId)}`);
+        if (winner && winner.text === body.text && (winner.source === 'text' ? 'cli' : winner.source) === (body.source === 'text' ? 'cli' : body.source)) {
+          out(JSON.stringify(winner));
+          return;
+        }
+      }
+      throw rule('owner record conflicts with an existing identity or request body; read it before retrying');
+    }
+    ok(created, 'create owner record');
+  } else {
+    const endpoint = `/api/${spec.table}/${encodeURIComponent(before.id)}`;
+    if (args.pos.table === 'note' && body.reply !== undefined && !before.reply) {
+      // A unique reply_seq insert/update arbitrates competing machines. Never
+      // derive a portable receipts cursor from a machine-local counter.
+      for (let attempt = 0; attempt < 10; attempt++) {
+        const latest = await firstRow(spec.table, `home eq ${lit(body.home || before.home)} and replySeq gt 0`, 'replySeq desc');
+        body.replySeq = Number(latest?.replySeq || 0) + 1;
+        const current = await firstRow(spec.table, filter);
+        if (current?.reply !== null && current?.reply !== undefined) throw rule('reply already recorded; refusing to overwrite it');
+        const result = await http('PATCH', endpoint, body);
+        if (result.status === 409) continue;
+        ok(result, 'record reply');
+        const saved = await firstRow(spec.table, filter);
+        if (saved?.reply !== body.reply) throw rule('reply conflict after write; inspect the saved reply instead of retrying');
+        out(JSON.stringify(saved));
+        return;
+      }
+      throw rule('reply cursor kept moving; retry the saved reply');
+    }
+    if (before.replySeq) body.replySeq = before.replySeq;
+    ok(await http('PATCH', endpoint, body), 'update owner record');
+  }
+  out(JSON.stringify(await firstRow(spec.table, filter)));
+}
+
 // Deploy history is append-only; payload retains all adapter fields without narrowing its schema.
 function deployCanonical(value) {
   if (Array.isArray(value)) return value.map(deployCanonical);
@@ -3232,14 +3364,16 @@ async function cmdDeployLedger(args) {
 }
 
 const COMMANDS = {
+  'owner-home': async () => out(process.env.FM_BACKLOG_HOME || backlogHomeOf() || 'main'),
   'deploy-ledger': cmdDeployLedger,
+  'owner-record': cmdOwnerRecord,
   setup: cmdSetup, move: cmdMove, step: cmdStep,
   rules: cmdRules, rule: cmdRule, answer: cmdAnswer,
   'turn-end': cmdTurnEnd, deliver: cmdDeliver, requests: cmdRequests, steers: cmdSteers, 'read-mark': cmdReadMark, inbox: cmdInbox, describe: cmdDescribe, plan: cmdPlan, 'plan-decision': cmdPlanDecision, thread: cmdThread,
   create: cmdCreate, import: cmdImport, assign: cmdAssign, start: cmdStart, heartbeat: cmdHeartbeat, done: cmdDone, ask: cmdAsk, block: cmdBlock,
   'merge-authority': cmdMergeAuthority, 'pr-record': cmdPrRecord, 'pr-round': cmdPrRound,
   unblock: cmdUnblock, approve: cmdApprove, changes: cmdChanges, reopen: cmdReopen, reassign: cmdReassign, archive: cmdArchive, delete: cmdDelete, home: cmdHome, comment: cmdComment, event: cmdEvent,
-  'plan-spec': cmdPlanSpec, 'plan-approve': cmdPlanApprove, 'plan-check': cmdPlanCheck, document: cmdDocument, link: cmdLink, rows: cmdRows, check: cmdCheck, 'owner-check': cmdOwnerCheck, gate: cmdGate, show: cmdShow, list: cmdList, resume: cmdResume, reproject: cmdReproject,
+  materials: cmdMaterials, 'plan-spec': cmdPlanSpec, 'plan-approve': cmdPlanApprove, 'plan-check': cmdPlanCheck, document: cmdDocument, link: cmdLink, rows: cmdRows, check: cmdCheck, 'owner-check': cmdOwnerCheck, gate: cmdGate, show: cmdShow, list: cmdList, resume: cmdResume, reproject: cmdReproject,
   checks: cmdChecks, checklist: cmdChecklist,
 };
 

@@ -2488,6 +2488,8 @@ EOF
 # out of fleet state rather than being invented at render time.
 test_task_materials_publish_and_project_from_durable_records() {
   local home fakebin json before
+  local FM_TASK_BASE_URL=http://127.0.0.1:1
+  export FM_TASK_BASE_URL
   home=$(make_home task-materials)
   : > "$home/data/secondmates.md"
   mkdir -p "$home/projects/wt" "$home/data/material-task"
@@ -2498,12 +2500,12 @@ test_task_materials_publish_and_project_from_durable_records() {
   record_claude_state "$home/state" material-task busy
   printf '## Captain\x27s intent\n\nExplain the UI at a glance.\n\n## Firstmate spec\nOther text\n' > "$home/data/material-task/brief.md"
   printf 'done [at=1100]: Preview ready\nworking [at=1101]: internal activity after outcome\n' > "$home/state/material-task.status"
-  FM_HOME="$home" "$ROOT/bin/fm-task-links.sh" material-task add-url http://127.0.0.1:5001/review 'Review' >/dev/null || fail 'URL publication failed'
-  FM_HOME="$home" "$ROOT/bin/fm-task-links.sh" material-task add-image "$home/missing.png" 'Latest screen' >/dev/null || fail 'missing-image publication failed'
+  # Legacy offline cache coverage; real publication is covered at the writer HTTP seam.
+  jq -n --arg path "$home/missing.png" '{schema:"fm-task-links.v1",links:[{url:"http://127.0.0.1:5001/review",label:"Review"}],images:[{path:$path,label:"Latest screen"}]}' > "$home/data/material-task/links.json"
+  FM_HOME="$home" "$ROOT/bin/fm-task-links.sh" material-task add-image "$home/missing.png" 'Latest screen' >/dev/null 2>&1 && fail 'missing image accepted'
   before=$(FM_HOME="$home" "$ROOT/bin/fm-task-links.sh" material-task show --json)
   FM_HOME="$home" "$ROOT/bin/fm-task-links.sh" material-task add-url javascript:alert 'Bad' >/dev/null 2>&1 && fail 'unsafe URL accepted'
   [ "$before" = "$(FM_HOME="$home" "$ROOT/bin/fm-task-links.sh" material-task show --json)" ] || fail 'invalid publication changed the record'
-  FM_HOME="$home" "$ROOT/bin/fm-task-links.sh" material-task add-url http://127.0.0.1:5001/review 'Review' >/dev/null
   FM_HOME="$home" "$ROOT/bin/fm-task-links.sh" ../escape show >/dev/null 2>&1 && fail 'task traversal accepted'
   fakebin=$(make_fakebin "$home")
   json=$(run "$home" "$fakebin" --json)

@@ -12,7 +12,7 @@
 #        alone blocks the question and leaves the other checks log-only;
 #        passes; a turn already blocked once is not blocked again; no
 #        config/reply-language means the lint does nothing.
-#   RL4  two captain notes waiting in state/inbox/ block "Captain, mọi thứ ổn."
+#   RL4  two captain notes waiting in state/owner-note-spool/ block "Captain, mọi thứ ổn."
 #        once and name both note ids.
 #   RL5  a session that never read data/captain.md since its last SessionStart
 #        is blocked once, naming data/captain.md and the handoff to read.
@@ -33,7 +33,7 @@ make_primary() {  # <dir> [block]
   git init -q "$dir"
   git -C "$dir" commit -q --allow-empty -m init
   : > "$dir/AGENTS.md"
-  mkdir -p "$dir/bin" "$dir/state/inbox" "$dir/config" "$dir/data/handoffs"
+  mkdir -p "$dir/bin" "$dir/state/owner-note-spool" "$dir/config" "$dir/data/handoffs"
   for f in $LINT_FILES; do cp "$ROOT/bin/$f" "$dir/bin/$f"; done
   chmod +x "$dir/bin/fm-reply-lint.sh"
   printf 'vi\n' > "$dir/config/reply-language"
@@ -411,8 +411,8 @@ test_log_only_until_the_switch_is_set() {
 test_rl4_waiting_notes_block_once_naming_both() {
   local dir="$TMP_ROOT/rl4" tr
   make_primary "$dir" block
-  printf 'schema=note\n--\nfirst\n' > "$dir/state/inbox/1793248017-aI7HFO.note"
-  printf 'schema=note\n--\nsecond\n' > "$dir/state/inbox/1793248107-tfNEgn.note"
+  printf 'schema=note\n--\nfirst\n' > "$dir/state/owner-note-spool/1793248017-aI7HFO.note"
+  printf 'schema=note\n--\nsecond\n' > "$dir/state/owner-note-spool/1793248107-tfNEgn.note"
   tr="$dir/t.jsonl"
   t_session_start "$tr" in-reach
   t_reply "$tr" r1 "Captain, mọi thứ ổn."
