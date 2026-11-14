@@ -32,7 +32,11 @@
 //            `plan`, and the owner approves it on the task's Solution tab.
 //   step     <task> start --harness H [--model M] [--effort E] [--account A] [--generation G]   the current state runs;
 //            without --model (a harness default) the setup's model and effort for the state stand
-//   step     <task> alive|dead [--generation G]   on a change only     step <task> end --reason R [--generation G]
+//            [--host H] [--endpoint E] [--worktree W] [--branch B]   where the worker runs (fm_task_step hostId, endpoint,
+//            worktree, branch; a relaunch re-points them); [--document FILE --document-title T] [--note N] attach the brief
+//            and the dispatch evidence to the same step event
+//   step     <task> alive|dead [--crew-state S] [--generation G]   on a change only (liveness or crew state; S is the
+//            fm-crew-state.sh word)     step <task> end --reason R [--generation G]
 //            G is the spawn_gen of state/<task>.meta; a report from an older incarnation is refused (exit 5).
 //   heartbeat <task> [--note N]              running (today's `working:`)
 //   done     <task> --summary --changed-files --verification --residual-risk [--rows JSON]
@@ -97,6 +101,7 @@
 //            [--outcome LINE]   with --reply-to inside a thread: proposes the line the thread resolved with
 //            [--accept]         with --reply-to naming a proposal, role owner: resolves the thread with its outcome
 //                               (note optional); any later comment in the thread reopens it
+//   event    <task> comment --note N --document FILE [--document-title T]   a comment carrying one document child
 //   event    <task> <kind> [--note N] [--pr-url U] [--head H] [--url U] [--merged] kinds: steer comment pr deploy ci
 //            protocol_violation divergence link; --head on deploy (the deployed head), ci (the checked head) or pr
 //            (the recorded PR head); --merge-authority away|attended only on pr; --url on link; --merged on pr (the pull request merged:
@@ -404,8 +409,8 @@ function bodyOf(event) {
 // (and archived) keep the step they had. stageSince is the time of the event that set the step. lastEventAt comes from
 // the newest real event: a backlog view `row` event is not one. lastNote is the newest real event's note; an event with
 // no note leaves it as it was. A machine record is not a note either, so it leaves lastNote as it was: an import's source
-// stamp (`{"source","sha256"}` under a `backfill:<task>:` key, fm-task-backfill-lib.mjs) and a reconcile divergence
-// (`{"field","oldSource","record"}` under a `reconcile:<task>:` key, fm-task-reconcile-lib.mjs). The same JSON in a real
+// stamp (`{"source","sha256"}` under a `backfill:<task>:` key, written by the retired fm-task-backfill) and a reconcile divergence
+// (`{"field","oldSource","record"}` under a `reconcile:<task>:` key, written by the retired fm-task-reconcile). The same JSON in a real
 // comment is a note. Nor is the wait a command writes after its own event (waitOn, which done --pr-url,
 // ask --next-actor owner and the no-model stop call: its note the PR or the question), so the caller's --note stays.
 // waitOn marks that wait `followUp: true` in its body. A wait written before the mark is one when its key is an earlier
@@ -504,7 +509,7 @@ const SPECS = {
   'deploy-ledger': { pos: ['action'], flags: { file: 's', repo: 's' } },
   setup: { pos: ['task'], flags: { file: 's', by: 's', 'from-rules': 'b', states: 's', repo: 's', account: 's', at: 's' } },
   move: { pos: ['task'], flags: { to: 's' } },
-  step: { pos: ['task', 'action'], flags: { harness: 's', model: 's', effort: 's', account: 's', reason: 's', generation: 's' } },
+  step: { pos: ['task', 'action'], flags: { harness: 's', model: 's', effort: 's', account: 's', reason: 's', generation: 's', host: 's', endpoint: 's', worktree: 's', branch: 's', 'crew-state': 's', document: 's', 'document-title': 's' } },
   create: { pos: ['task'], flags: { title: 's', kind: 's', repo: 's', issue: 's', surface: 's', after: 'm' } },
   import: { pos: ['task'], flags: { title: 's', kind: 's', repo: 's', state: 's', assignee: 's', 'next-actor': 's', 'block-kind': 's', 'block-reason': 's', issue: 's', 'pr-url': 's', surface: 's', until: 's', since: 's' } },
   assign: { pos: ['task'], flags: { to: 's' } },
@@ -530,7 +535,7 @@ const SPECS = {
   'merge-authority': { pos: ['task'], flags: { 'pr-url': 's', head: 's', 'merge-authority': 's', receipt: 's', phase: 's', merged: 'b' } },
   'pr-record': { pos: ['task'], flags: {} },
   'pr-round': { pos: ['action'], flags: { file: 's' } },
-  event: { pos: ['task', 'kind'], flags: { 'pr-url': 's', head: 's', touched: 's', 'next-actor': 's', 'clears-on': 's', rows: 's', url: 's', merged: 'b', 'merge-authority': 's', receipt: 's' } },
+  event: { pos: ['task', 'kind'], flags: { 'pr-url': 's', head: 's', touched: 's', 'next-actor': 's', 'clears-on': 's', rows: 's', url: 's', merged: 'b', 'merge-authority': 's', receipt: 's', document: 's', 'document-title': 's' } },
   checks: { pos: ['task'], flags: { 'as-deployed': 's', touched: 's' } },
   link: { pos: ['parent', 'child'], flags: {} },
   rows: { pos: ['task', 'issue'], flags: { surface: 's' } },
@@ -987,6 +992,11 @@ async function verifyView(event) {
 const noteOf = (args) => args.flags.note ?? '';
 
 const stepRows = (taskId) => listAll('fm_task_step', { filter: `taskId eq ${lit(taskId)}`, orderby: 'position' });
+// A published field length cannot change, so a longer value is stored as its leading characters, `~` and an 8-character
+// hash of the whole value: it fits, stays stable, and never fails the write. The machine cache keeps the full value.
+const STEP_PLACE_LIMITS = { hostId: 64, endpoint: 200, worktree: 500, branch: 200 };
+const fitText = (value, max) => (value.length <= max ? value : `${value.slice(0, max - 9)}~${crypto.createHash('sha256').update(value).digest('hex').slice(0, 8)}`);
+const CREW_STATES = ['working', 'parked', 'done', 'blocked', 'paused', 'failed', 'unknown'];
 const stepProjection = (step) => ({ stepHarness: step?.harness ?? null, stepModel: step?.model ?? null, stepEffort: step?.effort ?? null, stepAlive: step?.alive ?? null });
 async function saveStep(taskId, step) {
   const old = await firstRow('fm_task_step', `taskId eq ${lit(taskId)} and state eq ${lit(step.state)}`);
@@ -1109,6 +1119,12 @@ async function cmdStep(args) {
   const who = identity(args, 'firstmate');
   if (action === 'start' && !args.flags.harness) throw usage('step start needs --harness');
   if (action === 'end' && !args.flags.reason) throw usage('step end needs --reason');
+  const crewState = args.flags['crew-state'] ?? null;
+  if (crewState !== null && !CREW_STATES.includes(crewState)) throw usage(`--crew-state is one of ${CREW_STATES.join(', ')}`);
+  if (crewState !== null && !['alive', 'dead'].includes(action)) throw usage('--crew-state goes with step alive or dead');
+  const place = Object.fromEntries([['hostId', args.flags.host], ['endpoint', args.flags.endpoint], ['worktree', args.flags.worktree], ['branch', args.flags.branch]].filter(([, v]) => v !== undefined).map(([k, v]) => [k, fitText(v, STEP_PLACE_LIMITS[k])]));
+  if (Object.keys(place).length && action !== 'start') throw usage('--host, --endpoint, --worktree and --branch go with step start');
+  const document = action === 'start' ? documentOf(args.flags) : (args.flags.document ? (() => { throw usage('--document goes with step start'); })() : null);
   // the decision on the record as it is now; the write repeats it against the events really before it
   const decide = async (task, events) => {
     if (!task) throw rule('no such task');
@@ -1119,9 +1135,9 @@ async function cmdStep(args) {
     if (action === 'start') {
       if (current.state === 'merge') throw rule('Merge has no worker model');
       // a spawn on the harness default names no model: the configured step's model and effort stand
-      const runtime = { harness: args.flags.harness, model: args.flags.model || current.model, effort: args.flags.effort || current.effort || null, account: args.flags.account || null };
+      const runtime = { harness: args.flags.harness, model: args.flags.model || current.model, effort: args.flags.effort || current.effort || null, account: args.flags.account || null, ...place };
       if (!runtime.model) throw usage('step start needs --model: the setup names no model for this state');
-      if (current.status !== 'running') return { current, patch: { ...runtime, status: 'running', alive: 'alive', attempt: current.attempt + 1, startedAt: now, lastHeartbeatAt: now, endedAt: null, endReason: null } };
+      if (current.status !== 'running') return { current, patch: { ...runtime, status: 'running', alive: 'alive', attempt: current.attempt + 1, startedAt: now, lastHeartbeatAt: now, endedAt: null, endReason: null, crewState: null, crewStateAt: null } };
       if (!generation || !started) throw rule('end the running step before starting another attempt');
       if (generation === started) return { current, unchanged: true };
       return { current, patch: { ...runtime, status: 'running', alive: 'alive', lastHeartbeatAt: now } };
@@ -1129,17 +1145,19 @@ async function cmdStep(args) {
     if (current.status !== 'running') return { current, unchanged: true };
     if (generation && started && generation !== started) throw rule(`step generation ${generation} is stale: the running attempt started at ${started}`);
     if (action === 'end') return { current, patch: { status: args.flags.reason === 'failed' ? 'failed' : 'done', alive: 'dead', endedAt: now, endReason: args.flags.reason } };
-    if (current.alive === action) return { current, unchanged: true };
-    return { current, patch: { alive: action } };
+    const newCrew = crewState !== null && crewState !== current.crewState;
+    if (current.alive === action && !newCrew) return { current, unchanged: true };
+    return { current, patch: { alive: action, ...(newCrew ? { crewState, crewStateAt: now } : {}) } };
   };
   const before = await taskEvents(taskId);
   const first = await decide(fold(before), before);
   if (first.unchanged) return out(`step ${taskId}: unchanged`);
-  if (['alive', 'dead'].includes(action)) who.key = args.flags.key ?? `step-live:${taskId}:${first.current.state}:${first.current.attempt}:${generation ?? '-'}:${action}:${fold(before).lastSeq}`;
+  if (['alive', 'dead'].includes(action)) who.key = args.flags.key ?? `step-live:${taskId}:${first.current.state}:${first.current.attempt}:${generation ?? '-'}:${action}${crewState ? `:${crewState}` : ''}:${fold(before).lastSeq}`;
   return write(taskId, who, async ({ task, events }) => {
     const { current, patch, unchanged } = await decide(task, events);
     if (unchanged) throw rule('the step changed meanwhile; nothing to write');
-    return { kind: 'step', note: args.flags.reason ?? action, extra: { generation, stepWrites: [{ state: current.state, ...patch }] }, set: stepProjection({ ...current, ...patch }) };
+    return { kind: 'step', note: args.flags.reason ?? (noteOf(args) || action), extra: { generation, stepWrites: [{ state: current.state, ...patch }] }, set: stepProjection({ ...current, ...patch }),
+      ...(document ? { children: { documents: [document] } } : {}) };
   });
 }
 
@@ -1995,6 +2013,8 @@ async function cmdEvent(args) {
   const taskId = taskIdOf(args);
   const who = identity(args, 'worker');
   const kind = oneOf([...FREE_KINDS, 'wait'], args.pos.kind, 'event kind');
+  if (args.flags.document !== undefined && kind !== 'comment') throw usage('--document goes only on a comment event');
+  const document = documentOf(args.flags);
   const prUrl = args.flags['pr-url'];
   const head = args.flags.head;
   const url = args.flags.url;
@@ -2053,7 +2073,7 @@ async function cmdEvent(args) {
       if (kind === 'closed' && task.state !== 'done') throw rule(`closed is refused: ${taskId} is ${task.state}, not approved`);
       return { kind, note: noteOf(args), set: kind === 'closed' ? {} : { nextActor: 'owner' } };
     }
-    return { kind, note: noteOf(args) || (kind === 'link' ? url : ''), set: kind === 'pr' && prUrl ? { prUrl } : {}, ...((head || merged || mergeAuthority || kind === 'link') ? { extra: { ...(head ? { head, ...(kind === 'pr' ? { prHead: head } : {}), ...(touched ? { touched } : {}) } : {}), ...(merged ? { merged: true } : {}), ...(mergeAuthority ? { mergeAuthority, authorityPhase: noteOf(args).endsWith(' accepted') ? 'accepted' : 'pending' } : {}), ...(kind === 'link' ? { url } : {}) } } : {}) };
+    return { kind, note: noteOf(args) || (kind === 'link' ? url : ''), set: kind === 'pr' && prUrl ? { prUrl } : {}, ...(document ? { children: { documents: [document] } } : {}), ...((head || merged || mergeAuthority || kind === 'link') ? { extra: { ...(head ? { head, ...(kind === 'pr' ? { prHead: head } : {}), ...(touched ? { touched } : {}) } : {}), ...(merged ? { merged: true } : {}), ...(mergeAuthority ? { mergeAuthority, authorityPhase: noteOf(args).endsWith(' accepted') ? 'accepted' : 'pending' } : {}), ...(kind === 'link' ? { url } : {}) } } : {}) };
   }, kind === 'deploy' && head ? () => routeReview(taskId, who) : undefined);
 }
 

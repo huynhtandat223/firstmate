@@ -15,6 +15,16 @@ fm_home_lease_state_dir() {
   home=${FM_HOME:-${FM_ROOT_OVERRIDE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}}
   printf '%s\n' "${FM_STATE_OVERRIDE:-$home/state}"
 }
+# The machine name: FM_HOST_ID, else config/host-id (written by bin/fm-host.sh), else the hostname for a home that has not registered yet.
+fm_host_id() {
+  local home config id
+  [ -z "${FM_HOST_ID:-}" ] || { printf '%s\n' "$FM_HOST_ID"; return 0; }
+  home=${FM_HOME:-${FM_ROOT_OVERRIDE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}}
+  config=${FM_CONFIG_OVERRIDE:-$home/config}
+  id=$(head -n 1 "$config/host-id" 2>/dev/null | tr -d '[:space:]' || true)
+  [ -n "$id" ] || id=$(hostname)
+  printf '%s\n' "$id"
+}
 fm_home_lease_require() {
   local result=0 dir
   fm_home_lease_config || result=$?

@@ -3948,7 +3948,26 @@ retire_busy_state "$STATE" "$ID" "$BUSY_GEN" || exit 1
 # Opt-in task record shadow: the running workflow step of this incarnation ends with the cleanup (plan v2 D1).
 [ ! -e "$CONFIG/task-shadow" ] || FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_CONFIG_OVERRIDE=$CONFIG FM_DATA_OVERRIDE=$DATA "$SCRIPT_DIR/fm-task-shadow.sh" step-end "$ID" "$TEARDOWN_SPAWN_GEN" cleanup || true
 # Opt-in task record shadow (bin/fm-task-shadow.sh); off costs one file test.
-[ ! -e "$CONFIG/task-shadow" ] || FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_CONFIG_OVERRIDE=$CONFIG FM_DATA_OVERRIDE=$DATA "$SCRIPT_DIR/fm-task-shadow.sh" cleaned-up "$ID" || true
+# The outcome and the landed-work proof this cleanup relied on ride on the event as a document.
+if [ -e "$CONFIG/task-shadow" ]; then
+  CLEANUP_PROOF_DIR=$(mktemp -d "${TMPDIR:-/tmp}/fm-cleanup-proof.XXXXXX" 2>/dev/null) || CLEANUP_PROOF_DIR=
+  CLEANUP_PROOF=
+  if [ -n "$CLEANUP_PROOF_DIR" ]; then
+    CLEANUP_PROOF=$CLEANUP_PROOF_DIR/proof.md
+    CLEANUP_BRANCH=$(fm_meta_get "$META" branch)
+    {
+      printf '# Cleanup proof for %s\n\n' "$ID"
+      printf -- '- outcome: cleaned up%s\n' "$([ -z "$FORCE" ] || printf ' (forced: the captain authorized discarding unlanded work)')"
+      printf -- '- kind: %s\n- mode: %s\n- branch: %s\n' "$KIND" "${MODE:--}" "${CLEANUP_BRANCH:--}"
+      printf -- '- pull request: %s\n' "${PR_URL:--}"
+      printf -- '- recorded head: %s\n' "$(fm_meta_get "$META" pr_head)"
+      [ -z "$CLEANUP_BRANCH" ] || printf -- '- remote branch head: %s\n' "$(git -C "$PROJ" rev-parse --verify -q "refs/remotes/origin/$CLEANUP_BRANCH" 2>/dev/null || echo none)"
+      [ "$KIND" != scout ] || printf -- '- scout report: %s bytes\n' "$(wc -c < "$DATA/$ID/report.md" 2>/dev/null | tr -d ' ' || echo 0)"
+    } > "$CLEANUP_PROOF" 2>/dev/null || { rm -rf "$CLEANUP_PROOF_DIR"; CLEANUP_PROOF_DIR=; CLEANUP_PROOF=; }
+  fi
+  FM_CLEANUP_PROOF_FILE=$CLEANUP_PROOF FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_CONFIG_OVERRIDE=$CONFIG FM_DATA_OVERRIDE=$DATA "$SCRIPT_DIR/fm-task-shadow.sh" cleaned-up "$ID" || true
+  [ -z "$CLEANUP_PROOF_DIR" ] || rm -rf "$CLEANUP_PROOF_DIR"
+fi
 status_retire_presentation_task "$STATE" "$ID" || exit 1
 fm_wake_queue_prune_task "$STATE" "$ID" "$T" 2>/dev/null || true
 rm -f "$STATE/$ID.turn-ended" "$STATE/$ID.progress" \
