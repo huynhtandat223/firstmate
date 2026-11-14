@@ -6,7 +6,8 @@
 # exact past commands, and bin/fm-drain-pretool-check.sh turns that into the
 # hook answer under the log-only switch (config/enforce-drain-ack).
 # DA4: bin/fm-wake-drain.sh refuses an ack while a captain note waits in
-# state/inbox/, and accepts the same ack after the note is acked.
+# the central owner notes (controlled HTTP persistence), and accepts the same
+# ack after the note is acked.
 # Every case runs in a lab home under a temp root, never the live home.
 set -u
 
@@ -15,6 +16,10 @@ set -u
 
 fm_git_identity fmtest fmtest@example.invalid
 TMP_ROOT=$(fm_test_tmproot fm-drain-pretool-check)
+
+. "$ROOT/tests/owner-api-helpers.sh"
+owner_api_start "$ROOT" "$TMP_ROOT"
+trap 'kill "$OWNER_API_PID" 2>/dev/null || true' EXIT
 
 POLICY="$ROOT/bin/fm-drain-command-policy.mjs"
 LIVE_HOME_PATH=/home/dathuynh/codes/firstmate
@@ -282,10 +287,11 @@ lab_ack_args() {  # <dir>: prints "<seq> <generation>" from the drain's WAKE_ACK
 }
 
 test_da4_ack_refused_while_a_captain_note_waits() {
-  local dir="$TMP_ROOT/da4" seq gen note=1793248017-aI7HFO
-  mkdir -p "$dir/state/inbox" "$dir/config"
+  local dir="$TMP_ROOT/da4" seq gen note
+  mkdir -p "$dir/state" "$dir/config"
   printf '%s\t1\tcheck\tprobe-key\tcheck: probe\n' "$(date +%s)" >> "$dir/state/.wake-queue"
-  printf 'schema=note\n--\nplease look at this\n' > "$dir/state/inbox/$note.note"
+  note=$(FM_HOME="$dir" "$ROOT/bin/fm-inbox.sh" note --request-id da4-first --json 'please look at this' | jq -r .id)
+  [ -n "$note" ] || fail "DA4 the captain note was not stored"
   printf 'block\n' > "$dir/config/enforce-drain-ack"
   lab_drain "$dir" > "$dir/out"
   read -r seq gen <<< "$(lab_ack_args "$dir")"
@@ -306,10 +312,11 @@ test_da4_ack_refused_while_a_captain_note_waits() {
 }
 
 test_da4_logs_only_until_the_switch_is_set() {
-  local dir="$TMP_ROOT/da4-log" seq gen note=1793248107-tfNEgn
-  mkdir -p "$dir/state/inbox" "$dir/config"
+  local dir="$TMP_ROOT/da4-log" seq gen note
+  mkdir -p "$dir/state" "$dir/config"
   printf '%s\t1\tcheck\tprobe-key\tcheck: probe\n' "$(date +%s)" >> "$dir/state/.wake-queue"
-  printf 'schema=note\n--\nsecond note\n' > "$dir/state/inbox/$note.note"
+  note=$(FM_HOME="$dir" "$ROOT/bin/fm-inbox.sh" note --request-id da4-second --json 'second note' | jq -r .id)
+  [ -n "$note" ] || fail "DA4 the second captain note was not stored"
   lab_drain "$dir" > "$dir/out"
   read -r seq gen <<< "$(lab_ack_args "$dir")"
   lab_drain "$dir" --ack-through "$seq" --recovery-generation "$gen" > "$dir/out2" \
