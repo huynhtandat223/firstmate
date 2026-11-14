@@ -978,11 +978,12 @@ if [ "$READ_ONLY" -eq 0 ]; then
       MATERIAL_TMP=$(mktemp "$STATE/.material-sync.XXXXXX" 2>/dev/null || printf '%s' "$STATE/.material-sync.$$")
       (
         trap 'rm -rf "$MATERIAL_LOCK" "$MATERIAL_TMP" 2>/dev/null || true' EXIT
-        printf '%s\n' "$BASHPID" > "$MATERIAL_LOCK/pid" 2>/dev/null || true
         FM_HOME="$FM_HOME" fm_run_timed "$MATERIAL_TIMEOUT" "$SCRIPT_DIR/fm-doc.sh" sync > "$MATERIAL_TMP" 2>&1 \
           || printf 'material_source=cache home=%s reason="sync did not finish in time"\n' "$MATERIAL_HOME" >> "$MATERIAL_TMP"
         mv -f "$MATERIAL_TMP" "$MATERIAL_OUT" 2>/dev/null || true
       ) >/dev/null 2>&1 &
+      # The lock names the worker by the pid the parent got for it: bash 3.2 (macOS) lacks the bash 4 pid variable.
+      printf '%s\n' "$!" > "$MATERIAL_LOCK/pid" 2>/dev/null || true
       disown "$!" 2>/dev/null || true
     else
       MATERIAL_STATE=running

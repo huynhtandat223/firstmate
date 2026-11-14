@@ -266,6 +266,25 @@ for _ in $(seq 1 20); do [ ! -e "$M2/state/.material-sync.lock" ] && break; slee
 [ ! -e "$M2/state/.material-sync.lock" ] || { echo 'lock left behind'; exit 1; }
 ls "$M2"/state/.material-sync.??????  >/dev/null 2>&1 && { echo 'temporary output left behind'; exit 1; } || true
 
+# Review round 3: the worker lock names a live worker without BASHPID (bash 3.2 has none, and set -u would stop the worker).
+# bash 5 cannot reproduce 3.2 here, so the test pins the contract: no BASHPID in the script, and the pid in the lock is alive while the sync runs.
+! grep -n 'BASHPID' "$ROOT/bin/fm-session-start.sh" || { echo 'fm-session-start.sh uses BASHPID'; exit 1; }
+python3 - "$TMP/hang2-port" <<'PY' &
+import socket, sys, time
+s = socket.socket(); s.bind(('127.0.0.1', 0)); s.listen(8); open(sys.argv[1], 'w').write(str(s.getsockname()[1]))
+conns = []
+while True: conns.append(s.accept()[0]); time.sleep(0)
+PY
+HANG2=$!
+for _ in $(seq 1 100); do [ ! -s "$TMP/hang2-port" ] || break; sleep .02; done
+W="$TMP/home-pid"; mkdir -p "$W/config" "$W/data" "$W/state"; git init -q "$W"; printf 'main\n' > "$W/config/material-home"
+FM_HOME="$W" FM_TASK_BASE_URL="http://127.0.0.1:$(< "$TMP/hang2-port")" FM_MATERIAL_SYNC_TIMEOUT=20 timeout 100 "$ROOT/bin/fm-session-start.sh" > "$TMP/pid.out" 2>&1 || true
+WPID=$(cat "$W/state/.material-sync.lock/pid" 2>/dev/null || true)
+[ -n "$WPID" ] && kill -0 "$WPID" 2>/dev/null || { echo 'lock does not name a live worker'; exit 1; }
+for _ in $(seq 1 60); do [ -s "$W/state/.material-sync.out" ] && break; sleep 1; done
+grep -q 'material_source=cache home=main' "$W/state/.material-sync.out"
+kill "$HANG2" 2>/dev/null || true
+
 # The C1 git export keeps working through the same entry point.
 if "$DOC" materialize --repo firstmate --output "$TMP/export-should-fail" --unknown 2>/dev/null; then exit 1; fi
 if "$DOC" list --unknown; then exit 1; fi
