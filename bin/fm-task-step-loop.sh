@@ -27,7 +27,8 @@
 #
 # With config/home-lease the loop writes steps only while this host holds the lease: it checks before every pass,
 # skips a pass without it, and logs each change to state/.task-step-loop.log. It also renews the lease every
-# FM_HOST_HEARTBEAT_EVERY seconds (default 30); bin/fm-lock.sh starts it as soon as the session takes the lease.
+# FM_HOST_HEARTBEAT_EVERY seconds (default 30), also before each task of a pass so slow reads and replays cannot outlast it;
+# bin/fm-lock.sh starts it as soon as the session takes the lease.
 #
 # A stop (TERM, INT, HUP or `stop`) lets the in-flight writer call finish, records it, and only then releases the
 # lock, so no writer of a stopped loop can commit after a successor's write. Each writer call is bounded by a 2 s
@@ -116,6 +117,8 @@ task_step_pass() {
     [ "$STOP" -eq 0 ] || break
     [ -f "$meta" ] || continue
     [ "$(fm_meta_get "$meta" kind)" != assistance ] || continue
+    # a crew-state read (10 s) and a replay (60 s) per task can outlast the lease: renew it between tasks (rate-limited inside)
+    host_heartbeat_pass || true
     id=${meta##*/}; id=${id%.meta}
     generation=$(fm_meta_get "$meta" spawn_gen)
     live=$(fm_backend_agent_alive "$(fm_backend_of_meta "$meta")" "$(fm_backend_target_of_meta "$meta")" 2>/dev/null) || live=unknown

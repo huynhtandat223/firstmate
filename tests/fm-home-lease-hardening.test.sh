@@ -358,6 +358,46 @@ test_step_loop_writes_only_while_its_host_holds_the_lease() {
   stop_loop "$home"; kill "$live" 2>/dev/null
 }
 
+# One pass runs a crew-state read (10 s) and a replay (60 s) per task. With slow replays the lease must still be renewed
+# between tasks: the stub writer sleeps on every call but `step`, three tasks hold an unsent status line each, and the
+# host's heartbeat must move at least every few seconds while the pass is under way, not once per pass.
+test_a_slow_replay_still_lets_the_heartbeat_run() {
+  reset_db
+  local home t i prev cur stamp max=0 changes=0 gap
+  home=$(make_home slowreplay)
+  printf '#!/bin/sh\n[ "$1" = step ] || sleep 3\necho "$@" >> "%s"\n' "$TMP_ROOT/slow-writer.log" > "$TMP_ROOT/slow-writer.sh"
+  chmod +x "$TMP_ROOT/slow-writer.sh"
+  : > "$home/config/task-shadow"
+  mkdir -p "$TMP_ROOT/tmuxquiet" && printf '#!/bin/sh\nexit 0\n' > "$TMP_ROOT/tmuxquiet/tmux" && chmod +x "$TMP_ROOT/tmuxquiet/tmux"
+  for t in t1 t2 t3; do
+    printf 'window=test:fm-%s\nkind=ship\nharness=claude\nbackend=tmux\nspawn_gen=g1\n' "$t" > "$home/state/$t.meta"
+    printf 'working: one line the record has not stored\n' > "$home/state/$t.status"
+    printf '0\n' > "$home/state/$t.status-sent"
+  done
+  FM_HOME="$home" FM_HOST_ID=probe-a FM_HOME_NAME="$LEASE_HOME" "$ROOT/bin/fm-host.sh" register >/dev/null
+  FM_HOME="$home" FM_HOST_ID=probe-a FM_HOME_NAME="$LEASE_HOME" "$ROOT/bin/fm-host.sh" lease take >/dev/null || { echo 'probe-a could not take the lease'; return 1; }
+  sleep 60 & local live=$!
+  printf '%s\n' "$live" > "$home/state/.lock"
+  FM_HOME="$home" FM_HOST_ID=probe-a FM_HOME_NAME="$LEASE_HOME" FM_TASK_SHADOW_WRITER="$TMP_ROOT/slow-writer.sh" FM_TASK_STEP_EVERY=1 FM_HOST_HEARTBEAT_EVERY=1 \
+    FM_TASK_REPLAY_EVERY=600 PATH="$TMP_ROOT/tmuxquiet:$PATH" "$ROOT/bin/fm-task-step-loop.sh" start >/dev/null
+  # watch the host's heartbeat for 14 s; the first pass alone takes about 9 s of replays
+  prev=$(host_row probe-a | jq -r .lastHeartbeatAt)
+  stamp=$(date +%s.%N)
+  for ((i = 0; i < 56; i++)); do
+    sleep 0.25
+    cur=$(host_row probe-a | jq -r .lastHeartbeatAt)
+    if [ "$cur" != "$prev" ]; then
+      gap=$(awk -v a="$(date +%s.%N)" -v b="$stamp" 'BEGIN { printf "%.2f", a - b }')
+      awk -v g="$gap" -v m="$max" 'BEGIN { exit !(g > m) }' && max=$gap
+      stamp=$(date +%s.%N); prev=$cur; changes=$((changes + 1))
+    fi
+  done
+  stop_loop "$home"; kill "$live" 2>/dev/null
+  [ "$(grep -c . "$TMP_ROOT/slow-writer.log" 2>/dev/null || true)" -ge 3 ] || { echo "the replays did not run: $(cat "$TMP_ROOT/slow-writer.log" 2>&1)"; return 1; }
+  [ "$changes" -ge 4 ] || { echo "the heartbeat moved only $changes time(s) in 14 s"; return 1; }
+  awk -v m="$max" 'BEGIN { exit !(m < 5) }' || { echo "the heartbeat went $max s without moving while replays ran"; return 1; }
+}
+
 run_case() {
   local name=$1
   if "$name"; then pass "$name"; else fail "$name"; fi
@@ -372,3 +412,4 @@ run_case test_the_give_back_runs_under_the_task_spawn_lock
 run_case test_an_expired_claim_stops_counting
 run_case test_delivery_stops_claiming_when_the_lease_moves
 run_case test_step_loop_writes_only_while_its_host_holds_the_lease
+run_case test_a_slow_replay_still_lets_the_heartbeat_run
