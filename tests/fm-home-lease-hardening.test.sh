@@ -7,7 +7,7 @@
 # shellcheck disable=SC2016 # fixture children expand their own variables
 set -u
 # shellcheck source=tests/lib.sh
-. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/fixtures.sh"
 
 command -v node >/dev/null 2>&1 || { printf 'skip - node is not installed\n'; exit 0; }
 command -v jq >/dev/null 2>&1 || fail 'jq is required'
@@ -164,6 +164,115 @@ test_a_failed_spawn_gives_its_worker_slot_back() {
   lease_taken_by probe-b || { echo "the lease did not move: $(lease_row)"; return 1; }
 }
 
+# The give-back rules, driven through the real spawn in a spawn world (fake tmux, real worktree and backlog). A tmux
+# wrapper fails the one call a case names: FM_FAKE_FAIL_ON=new-window (before any endpoint exists) or Enter (the key that
+# runs the launch command, refused once the command was typed into an endpoint that stays open).
+world() {  # <name> <task>: a home that holds the lease as probe-a, ready to spawn <task>
+  local name=$1 id=$2
+  home=$(make_home "$name")
+  fm_test_spawn_home "$home" claude
+  fm_test_spawn_brief "$home" "$id"
+  fm_git_worktree "$home/projects/proj" "$home/pane" "fixture-$name"
+  fakebin=$(fm_test_make_spawn_fakebin "$home/tools" claude)
+  fm_test_fake_gh "$fakebin"
+  mv "$fakebin/tmux" "$fakebin/tmux.real"
+  cat > "$fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+here=$(dirname "$0")
+case " $* " in *'#{pane_tty}'*) [ -z "${FM_FAKE_TTY:-}" ] || { printf '%s\n' "$FM_FAKE_TTY"; exit 0; } ;; esac
+case "${FM_FAKE_FAIL_ON:-}" in
+  new-window) [ "${1:-}" = new-window ] && exit 1 ;;
+  Enter)
+    if [ "${1:-}" = send-keys ]; then
+      case " $* " in *" -l "*) : > "$here/.literal-sent" ;; esac
+      case " $* " in *" Enter "*) [ ! -e "$here/.literal-sent" ] || exit 1 ;; esac
+    fi ;;
+esac
+exec "$here/tmux.real" "$@"
+SH
+  chmod +x "$fakebin/tmux"
+  tasks-axi add "$id" "Build $name" --kind ship --file "$home/data/backlog.md" >/dev/null
+  FM_HOME="$home" FM_HOST_ID=probe-a FM_HOME_NAME="$LEASE_HOME" "$ROOT/bin/fm-host.sh" register >/dev/null
+  FM_HOME="$home" FM_HOST_ID=probe-a FM_HOME_NAME="$LEASE_HOME" "$ROOT/bin/fm-host.sh" lease take >/dev/null || return 1
+}
+wspawn() {  # <task> [spawn args...]: a ship spawn (or relaunch) as probe-a; CODE_ROOT picks the tool copy
+  local id=$1; shift
+  FM_HOST_ID=probe-a ROOT=${CODE_ROOT:-$ROOT} fm_test_run_spawn "$home" "${PANE_AT:-$home/pane}" "$fakebin" "$id" "$@"
+}
+pane_with_a_shell() {  # writes the pty path of a pane whose foreground is a bare bash to pane.tty; the holder ends after 300 s
+  local i
+  rm -f "$TMP_ROOT/pane.tty"
+  python3 - > "$TMP_ROOT/pane.tty" 2>/dev/null <<'PY' &
+import os, pty, fcntl, termios, subprocess, sys, time
+master, slave = pty.openpty()
+def child():
+    os.setsid(); fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+subprocess.Popen(['bash', '-c', 'read x'], stdin=slave, stdout=slave, stderr=slave, preexec_fn=child, close_fds=True)
+print(os.ttyname(slave)); sys.stdout.flush()
+time.sleep(300)
+PY
+  PANE_HOLDER=$!
+  for ((i = 0; i < 50; i++)); do [ -s "$TMP_ROOT/pane.tty" ] && break; sleep 0.1; done
+  [ -s "$TMP_ROOT/pane.tty" ]
+}
+claimed() { [ -e "$home/state/.host-claim.$1" ]; }
+
+# Launch delivered, then the spawn fails (the Enter key is refused) with the endpoint still open: a worker may be
+# running, so the claim and the raised count stay.
+test_a_failure_after_the_launch_keeps_the_claim() {
+  reset_db
+  local out
+  world afterlaunch al-w1 || { echo 'no world'; return 1; }
+  out=$(FM_FAKE_FAIL_ON=Enter wspawn al-w1 "$home/projects/proj" --mode direct-PR --yolo off) && { echo "the spawn did not fail: $out"; return 1; }
+  claimed al-w1 || { echo "the claim was removed although the launch was sent: $out"; return 1; }
+  workers_are probe-a 1 || { echo "the count was lowered although the launch was sent: $(host_row probe-a) $out"; return 1; }
+}
+
+# A relaunch fails before its replacement starts (its pane has drifted out of the recorded worktree), and its task
+# record stays: the replacement's claim still goes back.
+test_a_failed_relaunch_gives_its_claim_back() {
+  reset_db
+  local out
+  world relaunch rl-w1 || { echo 'no world'; return 1; }
+  out=$(wspawn rl-w1 "$home/projects/proj" --mode direct-PR --yolo off) || { echo "the first spawn failed: $out"; return 1; }
+  # a heartbeat has since counted the live record and dropped the claim
+  rm -f "$home/state/.host-claim.rl-w1"
+  api -X PATCH "$BASE/api/fm_host/$(host_row probe-a | jq -r .id)" -d '{"liveWorkers":1}' | jq -e '.success == true' >/dev/null || { echo 'could not seed the count'; return 1; }
+  # the old endpoint is a pane whose foreground is a bare shell: positively agent-free, so a relaunch may replace it
+  local tty
+  pane_with_a_shell && tty=$(cat "$TMP_ROOT/pane.tty") || { echo 'could not make a pane tty'; return 1; }
+  out=$(FM_FAKE_TTY=$tty PANE_AT="$home/elsewhere" wspawn rl-w1 --relaunch) && { echo "the relaunch did not fail: $out"; return 1; }
+  case "$out" in *'not its recorded worktree'*) ;; *) echo "the relaunch did not stop at the worktree check: $out"; return 1 ;; esac
+  [ -e "$home/state/rl-w1.meta" ] || { echo "the relaunch removed the task record: $out"; return 1; }
+  ! claimed rl-w1 || { echo "the failed relaunch left its claim file: $out"; return 1; }
+  kill "${PANE_HOLDER:-0}" 2>/dev/null
+  workers_are probe-a 1 || { echo "the failed relaunch left liveWorkers at $(host_row probe-a | jq -r .liveWorkers), want 1: $out"; return 1; }
+}
+
+# The give-back runs while the spawn locks are still held: a retry of the same task started during it is refused.
+test_the_give_back_runs_under_the_task_spawn_lock() {
+  reset_db
+  local code="$TMP_ROOT/code" out first
+  git clone -q "$ROOT" "$code" && cp -a "$ROOT/bin/." "$code/bin/" || { echo 'could not copy the tools'; return 1; }
+  cat > "$code/bin/fm-host.sh" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-} ${2:-}" = "worker release" ]; then : > "$FM_TEST_RELEASE_MARK"; sleep 4; fi
+exec node "$(dirname "${BASH_SOURCE[0]}")/fm-host-lib.mjs" "$@"
+SH
+  chmod +x "$code/bin/fm-host.sh"
+  world lockorder lo-w1 || { echo 'no world'; return 1; }
+  export FM_TEST_RELEASE_MARK="$TMP_ROOT/release-mark"; rm -f "$FM_TEST_RELEASE_MARK"
+  (CODE_ROOT=$code FM_FAKE_FAIL_ON=new-window wspawn lo-w1 "$home/projects/proj" --mode direct-PR --yolo off > "$TMP_ROOT/lo-first.out" 2>&1) &
+  first=$!
+  wait_for 60 test -e "$FM_TEST_RELEASE_MARK" || { echo "the first spawn never gave its slot back: $(cat "$TMP_ROOT/lo-first.out")"; kill "$first"; return 1; }
+  out=$(CODE_ROOT=$code FM_FAKE_FAIL_ON=new-window wspawn lo-w1 "$home/projects/proj" --mode direct-PR --yolo off)
+  wait "$first"
+  unset FM_TEST_RELEASE_MARK
+  # the spawn locks nest (task set, then task); whichever the retry meets first refuses it while the give-back runs
+  case "$out" in *'another spawn is already creating task lo-w1'*|*'task set is locked by another spawn'*) ;; *) echo "a retry during the give-back was not refused: $out"; return 1 ;; esac
+  workers_are probe-a 0 || { echo "the count is $(host_row probe-a | jq -r .liveWorkers), want 0"; return 1; }
+}
+
 # A launch that never produced a worker record must not block hand-over for ever.
 test_an_expired_claim_stops_counting() {
   reset_db
@@ -257,6 +366,9 @@ run_case() {
 run_case test_session_start_renews_the_lease_without_a_watcher
 run_case test_a_worker_claim_blocks_takeover_until_the_worker_record_counts
 run_case test_a_failed_spawn_gives_its_worker_slot_back
+run_case test_a_failure_after_the_launch_keeps_the_claim
+run_case test_a_failed_relaunch_gives_its_claim_back
+run_case test_the_give_back_runs_under_the_task_spawn_lock
 run_case test_an_expired_claim_stops_counting
 run_case test_delivery_stops_claiming_when_the_lease_moves
 run_case test_step_loop_writes_only_while_its_host_holds_the_lease

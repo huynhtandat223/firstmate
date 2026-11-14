@@ -1750,6 +1750,16 @@ spawn_abort_cleanup() {
       fi
     fi
   fi
+  # The worker slot claimed for this launch (bin/fm-home-lease-lib.sh) goes back only when no worker can be running
+  # from it: the launch command was never sent, or its endpoint is confirmed closed. Whether a task record exists
+  # decides nothing - a rollback removes the record of a worker that may run, and a failed relaunch keeps the record
+  # of one that never started. The give-back runs while this task's spawn lock is still held, so a concurrent retry
+  # of the same task cannot have its own claim removed.
+  if [ "$status" -ne 0 ] && [ "${SPAWN_HOME_LEASE_CLAIMED:-0}" = 1 ] &&
+    { [ "$SPAWN_LAUNCH_SENT" = 0 ] || [ "$SPAWN_ENDPOINT_CLOSED" = 1 ]; }; then
+    SPAWN_HOME_LEASE_CLAIMED=0
+    fm_home_lease_release_worker "$ID" || echo "warning: could not give back the worker slot claimed for $ID" >&2
+  fi
   if [ "$SPAWN_TASK_LOCK_HELD" = 1 ]; then
     SPAWN_TASK_LOCK_HELD=0
     fm_lock_release "$SPAWN_TASK_LOCK" || true
@@ -1878,11 +1888,6 @@ spawn_abort_cleanup() {
       rm -rf "$GIT_HOOKS_DIR" 2>/dev/null || true
     fi
     fm_lock_release "$SPAWN_TASK_LOCK" || true
-  fi
-  # A worker slot claimed for a launch that left no worker record is given back (bin/fm-home-lease-lib.sh).
-  if [ "$status" -ne 0 ] && [ "${SPAWN_HOME_LEASE_CLAIMED:-0}" = 1 ] && [ ! -e "$STATE/$ID.meta" ]; then
-    SPAWN_HOME_LEASE_CLAIMED=0
-    fm_home_lease_release_worker "$ID" || echo "warning: could not give back the worker slot claimed for $ID" >&2
   fi
   return "$status"
 }
