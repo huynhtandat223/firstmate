@@ -15,9 +15,10 @@ JS
 node "$ROOT/tests/fm-task-fake-api/server.mjs" "$TMP_ROOT/port" "$TMP_ROOT/schema.json" token &
 PID=$!
 for _ in {1..100}; do [ ! -s "$TMP_ROOT/port" ] || break; sleep .1; done
-export FM_TASK_BASE_URL="http://127.0.0.1:$(<"$TMP_ROOT/port")" FM_TASK_TOKEN_FILE="$TMP_ROOT/token" FM_HOME="$TMP_ROOT/home"
+FM_TASK_BASE_URL="http://127.0.0.1:$(<"$TMP_ROOT/port")"
+export FM_TASK_BASE_URL FM_TASK_TOKEN_FILE="$TMP_ROOT/token" FM_HOME="$TMP_ROOT/home"
 for task in clean open unsafe dirty; do
-  state=done; [ "$task" != open ] || state=running
+  state='done'; [ "$task" != open ] || state=running
   "$ROOT/bin/fm-task.sh" import "$task" --title "$task" --kind other --state "$state" --assignee worker --next-actor firstmate >/dev/null
   mkdir -p "$FM_HOME/data/$task"
   printf 'unique original evidence %s\n' "$task" > "$FM_HOME/data/$task/evidence.txt"
