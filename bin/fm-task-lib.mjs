@@ -514,7 +514,7 @@ const SPECS = {
   'plan-decision': { pos: ['task'], flags: { decision: 's', 'plan-seq': 's' } },
   materials: { pos: ['task'], flags: {} },
   thread: { pos: ['task'], flags: { since: 's' } },
-  comment: { pos: ['task'], flags: { image: 'm', 'image-label': 'm', video: 'm', 'video-label': 'm', ask: 's', 'reply-to': 's', 'anchor-quote': 's', 'anchor-prefix': 's', 'anchor-suffix': 's', outcome: 's', accept: 'b' } },
+  comment: { pos: ['task'], flags: { material: 's', image: 'm', 'image-label': 'm', video: 'm', 'video-label': 'm', ask: 's', 'reply-to': 's', 'anchor-quote': 's', 'anchor-prefix': 's', 'anchor-suffix': 's', outcome: 's', accept: 'b' } },
   event: { pos: ['task', 'kind'], flags: { 'pr-url': 's', head: 's', touched: 's', 'next-actor': 's', 'clears-on': 's', rows: 's', url: 's', merged: 'b' } },
   checks: { pos: ['task'], flags: { 'as-deployed': 's', touched: 's' } },
   link: { pos: ['parent', 'child'], flags: {} },
@@ -1769,13 +1769,17 @@ async function cmdMaterials(args) {
   if (!fold(events)) throw rule(`no such task ${taskId}`);
   const links = [];
   const images = [];
+  const seenMaterial = new Set();
+  // Newest first: a screenshot republished under the same material id keeps only its newest version.
   for (const e of [...events].reverse()) {
     const b = bodyOf(e);
     if (e.kind === 'link' && links.length < 12 && b.url && !links.some((r) => r.url === b.url)) {
       links.unshift({ url: b.url, label: b.note || b.url });
     }
     if (images.length < 6 && ['comment', 'plan', 'done', 'needs-decision', 'blocked'].includes(e.kind)) {
+      if (b.material && seenMaterial.has(b.material)) continue;
       const rows = await listAll('fm_event_image', { filter: `fmTaskEventId eq ${e.id}`, orderby: 'position' });
+      if (b.material && rows.length) seenMaterial.add(b.material);
       for (const r of rows.slice().reverse()) {
         if (images.length >= 6) break;
         images.unshift({ label: r.label, mediaType: r.mediaType, content: r.content, seq: e.seq, position: r.position });
@@ -1838,6 +1842,8 @@ async function cmdComment(args) {
   if ((outcome !== undefined || accept) && args.flags['reply-to'] === undefined) throw usage('--outcome and --accept answer a comment of a thread: give --reply-to');
   if (outcome !== undefined && accept) throw usage('a comment proposes an --outcome or accepts one, not both');
   if (outcome !== undefined && (!outcome.trim() || outcome.length > OUTCOME_MAX || /[\r\n]/.test(outcome))) throw usage(`--outcome is one line of 1 to ${OUTCOME_MAX} characters`);
+  const material = args.flags.material;
+  if (material !== undefined && !/^[A-Za-z0-9:._-]{1,128}$/.test(material)) throw usage('--material is a stable id of 1 to 128 letters, digits, : . _ -');
   const ask = args.flags.ask;
   if (ask !== undefined && !['why', 'how', 'wait-what'].includes(ask)) throw usage('--ask must be why, how or wait-what');
   const reply = args.flags['reply-to'];
@@ -1856,7 +1862,7 @@ async function cmdComment(args) {
     const proposed = accept ? bodyOf(parent).outcome : undefined;
     if (accept && !proposed) throw rule('--accept must answer a comment that proposes an --outcome');
     const settled = outcome !== undefined ? { outcome } : accept ? { outcome: proposed, accepted: parent.seq } : {};
-    const extra = { ...(ask ? { ask } : {}), ...(reply !== undefined ? { replyTo: Number(reply) } : {}), ...(thread ? { thread } : {}), ...(anchor ? { anchor } : {}), ...settled };
+    const extra = { ...(material ? { material } : {}), ...(ask ? { ask } : {}), ...(reply !== undefined ? { replyTo: Number(reply) } : {}), ...(thread ? { thread } : {}), ...(anchor ? { anchor } : {}), ...settled };
     const spec = { kind: 'comment', note: noteOf(args) || (accept ? `Accepted: ${proposed}` : ''), extra, set: Object.fromEntries([['threadsYourTurn', threadsYourTurn(events, { body: extra, role: who.role })]].filter(([, count]) => count !== undefined)), children: withVideos(withImages({}, images), videos) };
     return spec;
   });
