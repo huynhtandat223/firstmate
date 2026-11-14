@@ -955,6 +955,7 @@ A name denylist and a token-shape scan refuse a whole upload and name the file.
 `bin/fm-doc.sh` owns the commands (`seed`, `status`, `materialize --home`, `sync`, `put`, `remove`) and `bin/fm-material-lib.mjs --help` owns their rules; `FM_TASK_BASE_URL` and `FM_TASK_TOKEN_FILE` select the service as for the git documents.
 Session start, while it holds the lock, starts `bin/fm-doc.sh sync` in a background worker bounded by `FM_MATERIAL_SYNC_TIMEOUT` (60 seconds) and never waits for it.
 The digest prints its `MATERIAL` line at the end: `material_source=5001`, `material_source=cache` with the cache age when 5001 is unreachable or the worker ran out of time, or `material_source=pending` while it still runs (the result lands in `state/.material-sync.out`).
+One worker runs per home at a time (`state/.material-sync.lock`); while one runs, the digest also prints the last finished report, so a late `material_conflict` reaches the next session.
 A local edit is never overwritten: `sync` uploads it as the next version when it sits on the version it started from, and otherwise prints `material_conflict` and keeps it; `put` refuses with the diff when 5001 moved first.
 `remove` copies the file to `state/material-backup/` before it inserts a tombstone and deletes it, and refuses a copy that is behind 5001; `seed` never restores a removed file, `put --rebase` does.
 Each machine records the versions it holds, and the Settings tab of the `firstmate.home` page lists them per file.
