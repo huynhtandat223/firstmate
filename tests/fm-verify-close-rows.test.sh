@@ -92,6 +92,22 @@ test_handoff_writes_the_deploy_event_with_the_ledger_head() {
   pass "the handoff writes the deploy event with the head the rows passed on and leaves approve to firstmate"
 }
 
+test_the_deploy_event_note_names_the_head_and_the_run() {
+  make_case run-note review - - pass "$H"
+  printf '{"type":"ask","round":"deploy","task":"%s","head":"%s","sha":"%s","run":"https://github.com/example/repo/actions/runs/42","tester":"running","prs":[]}\n' "$ID" "$H" "$H" >>"$CASE/home/data/deploy-verify/ledger.jsonl"
+  run
+  [ "$RC" = 0 ] || fail "the handoff was refused: $OUT"
+  grep -qF -- "--note verify handoff: rows passed on $H run https://github.com/example/repo/actions/runs/42 --key" "$CASE/calls" \
+    || fail "the deploy event note does not name the head and the run: $(grep '^event ' "$CASE/calls")"
+  make_case no-run-note review - - pass "$H"
+  run
+  [ "$RC" = 0 ] || fail "the handoff with no run was refused: $OUT"
+  grep -qF -- "--note verify handoff: rows passed on $H --key" "$CASE/calls" \
+    || fail "with no run on record the note should end at the head: $(grep '^event ' "$CASE/calls")"
+  if grep '^event ' "$CASE/calls" | grep -q 'bin/'; then fail "the deploy event note holds a file path: $(grep '^event ' "$CASE/calls")"; fi
+  pass "the deploy event note names the head and the deploy run, and holds no file path"
+}
+
 test_open_rows_are_named_and_nothing_is_written() {
   make_case open-rows review - - pending -
   run
@@ -246,6 +262,7 @@ test_a_deployed_line_makes_the_rows_ask_head_a_deployed_head() {
 }
 
 test_handoff_writes_the_deploy_event_with_the_ledger_head
+test_the_deploy_event_note_names_the_head_and_the_run
 test_open_rows_are_named_and_nothing_is_written
 test_an_expired_transient_wait_is_cleared_before_the_deploy_event
 test_a_row_with_no_head_looks_up_the_ask_on_the_deployed_head
