@@ -9,6 +9,7 @@ printf token > "$TMP_ROOT/token"; chmod 600 "$TMP_ROOT/token"
 node - "$ROOT/tests/fm-task-fake-api/schema.json" "$TMP_ROOT/schema.json" <<'JS'
 const fs = require('fs');
 const schema = JSON.parse(fs.readFileSync(process.argv[2]));
+schema.fm_event_video = {ops:['list','get','create'],f:{content:{t:'s'},label:{t:'s'},mediaType:{t:'s'}},u:[],parent:['fmTaskEvent','videos']};
 schema.fm_event_document = {ops:['list','get','create'],f:{title:{t:'s',m:200},mediaType:{t:'s',m:100},content:{t:'s'}},u:[],parent:['fmTaskEvent','documents']};
 fs.writeFileSync(process.argv[3], JSON.stringify(schema));
 JS
@@ -25,6 +26,10 @@ for task in clean open unsafe dirty; do
 done
 mkdir -p "$FM_HOME/data/verify/clean"
 printf verification > "$FM_HOME/data/verify/clean/proof"
+mkdir -p "$FM_HOME/data/clean/node_modules"
+printf regenerable > "$FM_HOME/data/clean/node_modules/output"
+printf 'stored document bytes' > "$FM_HOME/data/clean/stored.md"
+"$ROOT/bin/fm-task.sh" comment clean --document "$FM_HOME/data/clean/stored.md" --document-title Stored >/dev/null
 ln -s "$TMP_ROOT" "$FM_HOME/data/unsafe/link"
 git -C "$FM_HOME/data/dirty" init -q
 python3 "$ROOT/bin/fm-clean-artifacts.py" --sweep > "$TMP_ROOT/dry"
@@ -39,6 +44,8 @@ test -f "$FM_HOME/data/dirty/evidence.txt"
 archive=$(find "$FM_HOME/data/artifact-archives/clean" -name files.tar.gz)
 mkdir "$TMP_ROOT/restored"
 tar xzf "$archive" -C "$TMP_ROOT/restored"
+test ! -e "$TMP_ROOT/restored/${FM_HOME#/}/data/clean/stored.md"
+test ! -e "$TMP_ROOT/restored/${FM_HOME#/}/data/clean/node_modules/output"
 grep -q 'unique original evidence clean' "$TMP_ROOT/restored/${FM_HOME#/}/data/clean/evidence.txt"
 curl -fsS "$FM_TASK_BASE_URL/__x/rows/fm_event_document" | jq -e 'any(.[]; .title == "Artifact backup manifest" and (.content | contains("sha256")))' >/dev/null
 # Sensitivity: remove only the safety guard in the isolated probe, then observe deletion.

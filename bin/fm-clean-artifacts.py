@@ -141,10 +141,24 @@ def check_record(task):
     return row
 
 
+def classify(task, entries):
+    copies = {item['sha256']: item['reference'] for item in json.loads(task_call('artifact-copies', task))}
+    for entry in entries:
+        parts = Path(entry['path']).parts
+        if entry['sha256'] in copies:
+            entry['copy'] = copies[entry['sha256']]
+        elif any(part in {'node_modules', '__pycache__', '.pytest_cache', '.mypy_cache', '.next', '.nuxt', '.cache'} for part in parts):
+            entry['copy'] = 'regenerable'
+        else:
+            entry['copy'] = 'archive:' + entry['path'].lstrip('/')
+    return entries
+
+
 def pack(stream, entries):
     with tarfile.open(fileobj=stream, mode='w:gz') as archive:
         for entry in entries:
-            archive.add(entry['path'], arcname=entry['path'].lstrip('/'), recursive=False)
+            if entry['copy'].startswith('archive:'):
+                archive.add(entry['path'], arcname=entry['path'].lstrip('/'), recursive=False)
 
 
 class Counter(io.RawIOBase):
@@ -185,7 +199,7 @@ def process(task, data, state, apply, if_terminal=False, teardown_tmp=False, bac
             roots.append(candidate)
     if not roots:
         return None
-    entries = snapshot(roots)
+    entries = classify(task, snapshot(roots))
     gross = sum(entry['size'] for entry in entries)
     if not apply:
         counter = Counter()
@@ -205,6 +219,8 @@ def process(task, data, state, apply, if_terminal=False, teardown_tmp=False, bac
             os.fsync(stream.fileno())
         with tarfile.open(archive_path, 'r:gz') as archive:
             for entry in entries:
+                if not entry['copy'].startswith('archive:'):
+                    continue
                 stream = archive.extractfile(entry['path'].lstrip('/'))
                 digest = hashlib.sha256()
                 while chunk := stream.read(1024 * 1024):
@@ -222,7 +238,7 @@ def process(task, data, state, apply, if_terminal=False, teardown_tmp=False, bac
                   '--document-title', 'Artifact backup manifest', '--key', 'artifact-backup:' + task + ':' + generation.name)
         check_record(task)
         worker_absent(state / (task + '.meta'))
-        if snapshot(roots) != entries:
+        if snapshot(roots) != [{k: v for k, v in entry.items() if k != 'copy'} for entry in entries]:
             raise ValueError('task files or ownership changed before removal')
         if not backup_only:
             for root in roots:

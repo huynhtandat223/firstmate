@@ -524,6 +524,7 @@ const SPECS = {
   describe: { pos: ['task'], flags: { document: 's', 'document-title': 's' } },
   plan: { pos: ['task'], flags: { document: 's', 'document-title': 's', image: 'm', 'image-label': 'm' } },
   'plan-decision': { pos: ['task'], flags: { decision: 's', 'plan-seq': 's' } },
+  'artifact-copies': { pos: ['task'], flags: {} },
   materials: { pos: ['task'], flags: {} },
   thread: { pos: ['task'], flags: { since: 's' } },
   comment: { pos: ['task'], flags: { document: 's', 'document-title': 's', material: 's', image: 'm', 'image-label': 'm', video: 'm', 'video-label': 'm', ask: 's', 'reply-to': 's', 'anchor-quote': 's', 'anchor-prefix': 's', 'anchor-suffix': 's', outcome: 's', accept: 'b' } },
@@ -1782,6 +1783,20 @@ async function cmdDocument(args) {
   const doc = await firstRow('fm_event_document', `fmTaskEventId eq ${event.id}`);
   if (!doc || !doc.content) throw rule(`task ${kind} document is missing`);
   out(doc.content);
+}
+
+// Read every stored attachment, without the presentation limits of materials.
+async function cmdArtifactCopies(args) {
+  const copies = [];
+  for (const event of await taskEvents(taskIdOf(args))) {
+    for (const table of ['fm_event_image', 'fm_event_video', 'fm_event_document']) {
+      for (const row of await listAll(table, { filter: `fmTaskEventId eq ${event.id}` })) {
+        const bytes = table === 'fm_event_document' ? Buffer.from(row.content, 'utf8') : Buffer.from(row.content, 'base64');
+        copies.push({ sha256: crypto.createHash('sha256').update(bytes).digest('hex'), reference: `5001:${table}:${row.id}:event:${event.seq}` });
+      }
+    }
+  }
+  out(JSON.stringify(copies));
 }
 
 async function cmdMaterials(args) {
@@ -3381,7 +3396,7 @@ const COMMANDS = {
   create: cmdCreate, import: cmdImport, assign: cmdAssign, start: cmdStart, heartbeat: cmdHeartbeat, done: cmdDone, ask: cmdAsk, block: cmdBlock,
   'merge-authority': cmdMergeAuthority, 'pr-record': cmdPrRecord, 'pr-round': cmdPrRound,
   unblock: cmdUnblock, approve: cmdApprove, changes: cmdChanges, reopen: cmdReopen, reassign: cmdReassign, archive: cmdArchive, delete: cmdDelete, home: cmdHome, comment: cmdComment, event: cmdEvent,
-  materials: cmdMaterials, 'plan-spec': cmdPlanSpec, 'plan-approve': cmdPlanApprove, 'plan-check': cmdPlanCheck, document: cmdDocument, link: cmdLink, rows: cmdRows, check: cmdCheck, 'owner-check': cmdOwnerCheck, gate: cmdGate, show: cmdShow, list: cmdList, resume: cmdResume, reproject: cmdReproject,
+  'artifact-copies': cmdArtifactCopies, materials: cmdMaterials, 'plan-spec': cmdPlanSpec, 'plan-approve': cmdPlanApprove, 'plan-check': cmdPlanCheck, document: cmdDocument, link: cmdLink, rows: cmdRows, check: cmdCheck, 'owner-check': cmdOwnerCheck, gate: cmdGate, show: cmdShow, list: cmdList, resume: cmdResume, reproject: cmdReproject,
   checks: cmdChecks, checklist: cmdChecklist,
 };
 
