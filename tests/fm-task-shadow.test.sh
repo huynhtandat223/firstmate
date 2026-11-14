@@ -319,6 +319,37 @@ test_status_replay_after_an_outage() {
   pass "status replay: lines keyed by number, stopped by an outage, sent once each in order, settled by a refusal, and never resent from a seeded cursor"
 }
 
+# Review of PR 309: the record writes status lines itself (fm-task.sh's status view ends each with its [event=N]
+# marker); a replay must not send them again as second events, and a replay that the step loop cuts short at its time
+# limit must keep the progress it made.
+test_status_replay_skips_record_lines() {
+  make_case replay-record on
+  local st="$HOME_DIR/state/t1.status"
+  printf '0\n' > "$HOME_DIR/state/t1.status-sent"
+  printf '%s\n' 'working [at=1]: one' 'working [at=2]: written by the record [event=7]' 'working [at=3]: three' > "$st"
+  hook replay t1
+  assert_equals "$(printf '%s\n' 'heartbeat t1 --note one' 'heartbeat t1 --note three')" "$(calls)" "a line the record wrote is not sent again"
+  assert_equals 3 "$(cat "$HOME_DIR/state/t1.status-sent")" "the cursor moves over a record line"
+  pass "status replay: a line written by the record itself is skipped and the cursor moves over it"
+}
+
+test_status_replay_keeps_its_progress_when_cut_short() {
+  make_case replay-cut on
+  local st="$HOME_DIR/state/t1.status" cursor
+  printf '0\n' > "$HOME_DIR/state/t1.status-sent"
+  printf '%s\n' 'working [at=1]: one' 'working [at=2]: two' 'working [at=3]: three' 'working [at=4]: four' > "$st"
+  # every writer call takes 1 s and the replay is stopped after 2.5 s, as the step loop stops one at its time limit
+  timeout 2.5 env FM_ROOT_OVERRIDE='' FM_HOME="$HOME_DIR" FM_CONFIG_OVERRIDE="$HOME_DIR/config" FM_STATE_OVERRIDE="$HOME_DIR/state" \
+    FM_DATA_OVERRIDE="$HOME_DIR/data" FM_TASK_SHADOW_WRITER="$WRITER" FAKE_CALLS="$CALLS" FAKE_HANG=1 "${HOOK:-$ROOT/bin/fm-task-shadow.sh}" replay t1 || true
+  cursor=$(cat "$HOME_DIR/state/t1.status-sent")
+  { [ "$cursor" -ge 1 ] && [ "$cursor" -le 3 ]; } || fail "a replay stopped part way kept no progress: cursor $cursor"
+  : > "$CALLS"
+  hook replay t1
+  assert_equals 4 "$(cat "$HOME_DIR/state/t1.status-sent")" "the next replay finishes the lines"
+  assert_equals 0 "$(grep -c 'note one$' "$CALLS" || true)" "the next replay does not send the first line again"
+  pass "status replay: the cursor moves after each settled line, so a replay cut short keeps its progress"
+}
+
 test_status_command_keeps_its_own_line_without_a_cursor() {
   make_case replay-seed on
   printf '%s\n' 'working [at=1]: old one' 'working [at=2]: old two' > "$HOME_DIR/state/t1.status"
@@ -658,6 +689,27 @@ test_step_loop_publishes_the_crew_state_and_replays_status() {
   pass "step loop: the crew-state word is written once per change and unsent status lines are replayed once"
 }
 
+# Review of PR 309: a relaunched worker must not show the last incarnation's crew state while the loop's cache holds it.
+test_step_loop_drops_the_crew_state_of_a_replaced_incarnation() {
+  local bin="$TMP_ROOT/crew-gen-bin"
+  make_step_case step-loop-crew-gen
+  rm -rf "$HOME_DIR"/state/t[2-5].meta
+  rm -rf "$bin"; cp -R "${SBIN:-$ROOT/bin}" "$bin"
+  printf '%s\n' '#!/usr/bin/env bash' 'printf "state: %s · source: stub · detail\n" "$(cat "$CRASH_WORD_FILE")"' > "$bin/fm-crew-state.sh"
+  chmod +x "$bin/fm-crew-state.sh"
+  printf 'parked\n' > "$CASE_DIR/word"
+  (export CRASH_WORD_FILE="$CASE_DIR/word" FM_TASK_CREW_EVERY=600 FM_TASK_REPLAY_EVERY=600; SBIN="$bin"; loop start >/dev/null)
+  wait_calls 4 '^step t1 alive --generation g1 --crew-state parked$' || { loop stop; end_session; fail "the first word did not reach the record: $(cat "$CALLS")"; }
+  # the worker is relaunched as g1b and works at once; the cache would hold 'parked' for ten minutes
+  printf 'working\n' > "$CASE_DIR/word"
+  sed -i.bak 's/^spawn_gen=g1$/spawn_gen=g1b/' "$HOME_DIR/state/t1.meta"
+  wait_calls 4 '^step t1 alive --generation g1b' || { loop stop; end_session; fail "the relaunch did not reach the record: $(cat "$CALLS")"; }
+  loop stop >/dev/null
+  end_session
+  assert_equals 'step t1 alive --generation g1b --crew-state working' "$(grep '^step t1 alive --generation g1b' "$CALLS" | head -n 1)" "a new incarnation reads its own crew state"
+  pass "step loop: a replaced incarnation does not inherit the last crew state from the cache"
+}
+
 # The loop ends with the session: a home whose session lock names a dead pid, or has none, runs no loop.
 test_step_loop_ends_with_the_session() {
   local pid t=0
@@ -728,6 +780,7 @@ test_arm_starts_the_step_loop() {
 
 test_step_loop_writes_every_task_liveness
 test_step_loop_publishes_the_crew_state_and_replays_status
+test_step_loop_drops_the_crew_state_of_a_replaced_incarnation
 test_step_loop_ends_with_the_session
 test_step_loop_stop_waits_for_the_write
 test_arm_starts_the_step_loop
@@ -742,6 +795,8 @@ test_step_events
 test_step_start_carries_place_and_brief
 test_control_and_cleanup_events
 test_status_replay_after_an_outage
+test_status_replay_skips_record_lines
+test_status_replay_keeps_its_progress_when_cut_short
 test_status_command_keeps_its_own_line_without_a_cursor
 test_assistance_producers_write_nothing
 test_rows_task_hold_keeps_review
@@ -777,6 +832,8 @@ mutate_hook 'the title comes from the backlog row' test_dispatched_creates_assig
 mutate_hook 'a status line is keyed by its line number' test_status_replay_after_an_outage 'status_line "$n" "$line"' 'status_line "x" "$line"'
 mutate_hook 'an unanswered API keeps the status cursor' test_status_replay_after_an_outage 'if [ "$W_UNREACHABLE" -ne 0 ]; then n=$((n - 1)); break; fi' ':'
 mutate_hook 'a status file with no cursor is not resent' test_status_replay_after_an_outage 'cursor=$((total - fresh))' 'cursor=0'
+mutate_hook 'a line written by the record is not replayed' test_status_replay_skips_record_lines ' && ! [[ "$line" =~ \[event=[0-9]+\]$ ]]; then' '; then'
+mutate_hook 'each settled line moves the cursor at once' test_status_replay_keeps_its_progress_when_cut_short "$(printf '    status_cursor_forward "$cursor_file" "$n"\n  done\n')" "$(printf '  done\n  status_cursor_forward "$cursor_file" "$n"\n')"
 mutate_hook 'the status command keeps its own new line' test_status_command_keeps_its_own_line_without_a_cursor 'status) status_replay "$2" 1 ;;' 'status) status_replay "$2" 0 ;;'
 mutate_hook 'the step start carries the brief' test_step_start_carries_place_and_brief '${FM_STEP_BRIEF_FILE:+--document "$FM_STEP_BRIEF_FILE" --document-title Brief}' ''
 mutate_hook 'the cleanup proof rides on the event' test_control_and_cleanup_events '--document "$proof" --document-title '"'"'Cleanup proof'"'"'' ''
@@ -828,6 +885,7 @@ mutate_script 'fm-watch.sh hands delivery the flag settings' test_arm_starts_the
 mutate_script 'a stop waits for the in-flight write' test_step_loop_stop_waits_for_the_write fm-task-step-loop.sh "trap 'STOP=1' TERM INT HUP"
 mutate_script 'an interrupted wait waits again for the write' test_step_loop_stop_waits_for_the_write fm-task-step-loop.sh 'while ! wait "$writer" && kill -0 "$writer"'
 mutate_script 'the loop excludes assistance sessions' test_step_loop_writes_every_task_liveness fm-task-step-loop.sh '[ "$(fm_meta_get "$meta" kind)" != assistance ] || continue'
-mutate_script 'the loop publishes the crew state' test_step_loop_publishes_the_crew_state_and_replays_status fm-task-step-loop.sh 'crew=$(crew_word "$id" "$now")'
+mutate_script 'the loop publishes the crew state' test_step_loop_publishes_the_crew_state_and_replays_status fm-task-step-loop.sh 'crew_word "$id" "$now" "$generation"'
 mutate_script 'the loop replays unsent status lines' test_step_loop_publishes_the_crew_state_and_replays_status fm-task-step-loop.sh '    status_replay_pass "$id" "$now"'
+mutate_script 'a replaced incarnation drops the cached crew state' test_step_loop_drops_the_crew_state_of_a_replaced_incarnation fm-task-step-loop.sh 'unset "CREW_AT[$id]" "CREW_WORD[$id]"'
 mutate_script 'the loop ends with the session' test_step_loop_ends_with_the_session fm-task-step-loop.sh 'case "$FM_LOCK_INSPECT_STATE" in free|stale) return 1 ;; esac'

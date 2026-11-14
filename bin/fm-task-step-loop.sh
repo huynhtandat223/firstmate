@@ -60,7 +60,7 @@ TASK_STEP_WRITTEN="$STATE/.task-step-live"
 TASK_STEP_EVERY=${FM_TASK_STEP_EVERY:-5}
 TASK_CREW_EVERY=${FM_TASK_CREW_EVERY:-60}
 TASK_REPLAY_EVERY=${FM_TASK_REPLAY_EVERY:-15}
-declare -A CREW_AT CREW_WORD REPLAY_AT
+declare -A CREW_AT CREW_WORD CREW_GEN REPLAY_AT
 STOP=0
 # seconds between lease heartbeats; the lease expires after 180
 HOST_HEARTBEAT_EVERY=${FM_HOST_HEARTBEAT_EVERY:-30}
@@ -82,15 +82,17 @@ loop_pid() {
   fm_pid_alive "$pid" && printf '%s\n' "$pid"
 }
 
-# The crew-state word of a task, read at most every TASK_CREW_EVERY seconds; empty until the first read answers.
-crew_word() {  # <task> <now>
+# Refresh CREW_WORD[<task>], read at most every TASK_CREW_EVERY seconds; empty until the first read answers. Not run in a
+# subshell: the cache lives in this shell.
+crew_word() {  # <task> <now> <spawn generation>: a new incarnation never inherits the last one's word
   local id=$1 now=$2 word
+  if [ "${CREW_GEN[$id]:-$3}" != "$3" ]; then unset "CREW_AT[$id]" "CREW_WORD[$id]"; fi
+  CREW_GEN[$id]=$3
   if [ -z "${CREW_AT[$id]:-}" ] || [ $((now - CREW_AT[$id])) -ge "$TASK_CREW_EVERY" ]; then
     CREW_AT[$id]=$now
     word=$(FM_HOME="$FM_HOME" FM_CREW_STATE_NO_FORGE=1 fm_run_timed 10 "$SCRIPT_DIR/fm-crew-state.sh" "$id" 2>/dev/null </dev/null | sed -nE 's/^state: ([a-z]+) .*/\1/p' | head -n 1)
     [ -z "$word" ] || CREW_WORD[$id]=$word
   fi
-  printf '%s' "${CREW_WORD[$id]:-}"
 }
 
 # Send the status lines the record has not stored yet, bounded and not more often than TASK_REPLAY_EVERY.
@@ -124,7 +126,7 @@ task_step_pass() {
     live=$(fm_backend_agent_alive "$(fm_backend_of_meta "$meta")" "$(fm_backend_target_of_meta "$meta")" 2>/dev/null) || live=unknown
     now=$(date +%s)
     crew=''
-    case "$live" in alive|dead) crew=$(crew_word "$id" "$now") ;; esac
+    case "$live" in alive|dead) crew_word "$id" "$now" "$generation"; crew=${CREW_WORD[$id]:-} ;; esac
     line=$(printf '%s\t%s\t%s\t%s' "$id" "$generation" "$live" "$crew")
     status_replay_pass "$id" "$now"
     [ "$STOP" -eq 0 ] || break
