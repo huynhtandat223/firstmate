@@ -62,3 +62,13 @@ fm_home_lease_claim_worker() {  # <task>
   fm_lock_release "$lock"
   return "$result"
 }
+# Prints the lease generation this host holds right now (nothing when the lease is off); non-zero when it holds none.
+fm_home_lease_generation() {
+  local result=0 dir out
+  fm_home_lease_config || result=$?
+  [ "$result" -ne 1 ] || return 0
+  [ "$result" -eq 0 ] || return "$result"
+  dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+  out=$("$dir/fm-host.sh" lease check --json) || { printf '%s\n' "$out"; return 1; }
+  printf '%s\n' "$out" | sed -n 's/.*"generation":\([0-9][0-9]*\).*/\1/p'
+}

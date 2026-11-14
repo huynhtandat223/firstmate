@@ -152,6 +152,41 @@ test_an_expired_claim_stops_counting() {
   stop_loop "$home"; kill "$SESSION_PID" 2>/dev/null
 }
 
+# The lease moves while a delivery run is under way: events the run had not claimed yet stay unclaimed. The wake
+# queue lock is held from outside, so the run stops after claiming event 1 until the case has moved the lease.
+add_event() {  # <task> <seq>
+  api -X POST "$BASE/api/fm_task_event" -d "{\"taskId\":\"$1\",\"seq\":$2,\"kind\":\"comment\",\"actor\":\"probe\",\"actorRole\":\"system\",\"body\":\"{}\",\"idempotencyKey\":\"probe-$1-$2\"}" | jq -e '.success == true' >/dev/null
+}
+deliveries() { db fm_task_delivery | jq -c '[.[] | .seq] | sort'; }
+delivery_count_is() { [ "$(db fm_task_delivery | jq length)" -ge "$1" ]; }
+
+test_delivery_stops_claiming_when_the_lease_moves() {
+  reset_db
+  local home task=fm-probe-lease-deliver rc holder
+  home=$(make_home deliver)
+  export_a() { FM_HOME="$home" FM_HOST_ID=probe-a FM_HOME_NAME="$LEASE_HOME" "$@"; }
+  export_a "$ROOT/bin/fm-host.sh" register >/dev/null && export_a "$ROOT/bin/fm-host.sh" lease take >/dev/null || { echo 'probe-a could not take the lease'; return 1; }
+  export_a "$ROOT/bin/fm-task.sh" deliver "$task" --consumer probe-consumer >/dev/null || { echo 'activation failed'; return 1; }
+  add_event "$task" 1 && add_event "$task" 2 && add_event "$task" 3 || { echo 'could not add the probe events'; return 1; }
+  export FM_LOCK_STALE_AFTER=600   # a held lock stays held for the whole case
+  FM_HOME="$home" bash -c 'source "$1/bin/fm-wake-lib.sh"; fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"; : > "$2/held"; sleep 120' _ "$ROOT" "$home/state" &
+  holder=$!
+  wait_for 10 test -e "$home/state/held" || { echo 'the lock holder did not start'; kill "$holder"; return 1; }
+  export_a "$ROOT/bin/fm-task.sh" deliver "$task" --consumer probe-consumer > "$TMP_ROOT/deliver.log" 2>&1 &
+  local run=$!
+  wait_for 15 delivery_count_is 1 || { echo "the run claimed no event: $(cat "$TMP_ROOT/deliver.log")"; kill "$holder" "$run"; return 1; }
+  # the lease moves to probe-b while event 1's wake append waits
+  FM_HOME="$TMP_ROOT/other" FM_HOST_ID=probe-b FM_HOME_NAME="$LEASE_HOME" "$ROOT/bin/fm-host.sh" register >/dev/null
+  api -X PATCH "$BASE/api/fm_home_lease/$(lease_row | jq -r .id)" -d '{"releasedAt":"2026-11-14T00:00:00.000Z"}' >/dev/null
+  api -X POST "$BASE/api/fm_home_lease" -d "{\"home\":\"$LEASE_HOME\",\"generation\":2,\"hostId\":\"probe-b\",\"takenAt\":\"$(date -u +%FT%T.000Z)\",\"heartbeatAt\":\"$(date -u +%FT%T.000Z)\"}" | jq -e '.success == true' >/dev/null || { echo 'the lease did not move'; return 1; }
+  kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
+  rm -rf "$home/state/.wake-queue.lock"
+  wait "$run"; rc=$?
+  unset FM_LOCK_STALE_AFTER
+  [ "$rc" -eq 5 ] || { echo "the run exited $rc, want 5: $(cat "$TMP_ROOT/deliver.log")"; return 1; }
+  [ "$(deliveries)" = '[1]' ] || { echo "the former holder claimed events after the move: $(deliveries)"; return 1; }
+}
+
 run_case() {
   local name=$1
   if "$name"; then pass "$name"; else fail "$name"; fi
@@ -160,3 +195,4 @@ run_case() {
 run_case test_session_start_renews_the_lease_without_a_watcher
 run_case test_a_worker_claim_blocks_takeover_until_the_worker_record_counts
 run_case test_an_expired_claim_stops_counting
+run_case test_delivery_stops_claiming_when_the_lease_moves
