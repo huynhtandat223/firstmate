@@ -969,9 +969,10 @@ Each of the first three files also has a `<file>.rules.json` row of the same ver
 Without the file, memory stays local and nothing below runs.
 
 `bin/fm-memory.sh` owns the commands (`seed`, `pull`, `put`, `show`, `history`, `sync`) and its header owns the rules for a waiting edit and a lost race; `FM_TASK_BASE_URL` and `FM_TASK_TOKEN_FILE` select the service as for `bin/fm-doc.sh`.
-Session start prints the last synchronized cache first, then refreshes it with `sync` (5 s limit) only after it verified the fleet lock, and prints a refreshed `data/captain.md` or `data/captain-shared.md` again under `MEMORY (5001)`; a lock-refused session leaves the cache alone.
-`bin/fm-startup-memory-budget.sh report` and `bin/fm-startup-growth-check.sh` run `sync` first, so they measure the 5001 text.
-When 5001 is unreachable they use the cache and print one `memory_source=cache` line with its age.
+Session start prints the last synchronized cache first, then refreshes it with `sync` (5 s in total) only after it verified the fleet lock, and prints a refreshed `data/captain.md` or `data/captain-shared.md` again under `MEMORY (5001)`; a lock-refused session leaves the cache alone.
+`bin/fm-startup-memory-budget.sh report` runs `sync` first, so it measures the 5001 text.
+When 5001 is unreachable it uses the cache and prints one `memory_source=cache` line with its age.
+The daily `bin/fm-startup-growth-check.sh` makes no 5001 call and measures the cache that session start refreshed.
 A secondmate home never reads or writes `captain-shared.md` on 5001; the primary's inheritance owns it.
 `put` refuses a pull record taken from another memory home.
 `/stow` pulls first and puts last, as its skill describes.
