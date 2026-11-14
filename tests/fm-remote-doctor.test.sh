@@ -887,3 +887,56 @@ assert_contains "$DOCTOR_OUT" 'check entrypoint-link=human:' "an operator-owned 
 unset FM_ROOT_OVERRIDE
 pass "the entrypoint symlink is recreated when absent and never overwritten when operator-owned"
 
+
+# --- the doctor names every published-document difference and both commits ---
+
+new_case Linux with-herdr no-gui
+command -v node >/dev/null 2>&1 && ln -sf "$(command -v node)" "$TOOLS/node"
+DOC_ROOT="$CASE_DIR/doc-root"
+git init -q "$DOC_ROOT"
+git -C "$DOC_ROOT" config user.email test@example.invalid
+git -C "$DOC_ROOT" config user.name Test
+mkdir -p "$DOC_ROOT/bin"
+printf '#!/usr/bin/env bash\n' > "$DOC_ROOT/bin/fm-remote-entrypoint.sh"
+printf original > "$DOC_ROOT/AGENTS.md"
+git -C "$DOC_ROOT" add .
+git -C "$DOC_ROOT" commit -qm initial
+cat > "$CASE_DIR/doc-server.py" <<'PY'
+import http.server,json,urllib.parse,sys
+rows=[]
+class Handler(http.server.BaseHTTPRequestHandler):
+ def log_message(self,*a):pass
+ def do_GET(self):
+  p=urllib.parse.urlsplit(self.path)
+  if p.path=='/api/fm_doc':
+   skip=int(urllib.parse.parse_qs(p.query).get('$skip',['0'])[0]);body={'value':[{k:v for k,v in r.items() if k!='content'} for r in rows[skip:skip+100]]}
+  else:body={'success':True,'data':next(r for r in rows if r['id']==p.path.rsplit('/',1)[-1])}
+  self.send_response(200);self.end_headers();self.wfile.write(json.dumps(body).encode())
+ def do_POST(self):
+  row=json.loads(self.rfile.read(int(self.headers['Content-Length'])));row['id']=str(len(rows)+1);rows.append(row)
+  self.send_response(201);self.end_headers();self.wfile.write(json.dumps(row).encode())
+s=http.server.HTTPServer(('127.0.0.1',0),Handler);open(sys.argv[1],'w').write(str(s.server_port));s.serve_forever()
+PY
+python3 "$CASE_DIR/doc-server.py" "$CASE_DIR/doc-port" &
+DOC_SERVER=$!
+for _ in $(seq 1 100); do [ ! -s "$CASE_DIR/doc-port" ] || break; sleep .02; done
+printf test > "$CASE_DIR/doc-token"
+chmod 600 "$CASE_DIR/doc-token"
+DOC_PORT=$(< "$CASE_DIR/doc-port")
+export FM_ROOT_OVERRIDE="$DOC_ROOT" FM_TASK_BASE_URL="http://127.0.0.1:$DOC_PORT" FM_TASK_TOKEN_FILE="$CASE_DIR/doc-token"
+PUBLISHED_SHA=$(git -C "$DOC_ROOT" rev-parse HEAD)
+"$ROOT/bin/fm-doc.sh" publish --repo firstmate --root "$DOC_ROOT" >/dev/null
+printf changed > "$DOC_ROOT/AGENTS.md"
+git -C "$DOC_ROOT" commit -qam changed
+LOCAL_SHA=$(git -C "$DOC_ROOT" rev-parse HEAD)
+doctor
+assert_contains "$DOCTOR_OUT" 'check published-docs=human:' "a clone behind the published documents was not reported"
+assert_contains "$DOCTOR_OUT" 'firstmate/AGENTS.md' "the differing file was not named"
+assert_contains "$DOCTOR_OUT" "$LOCAL_SHA" "the local commit was not named"
+assert_contains "$DOCTOR_OUT" "$PUBLISHED_SHA" "the published commit was not named"
+"$ROOT/bin/fm-doc.sh" publish --repo firstmate --root "$DOC_ROOT" >/dev/null
+doctor
+assert_contains "$DOCTOR_OUT" 'check published-docs=ok:' "a clone that matches the published documents was not confirmed"
+kill "$DOC_SERVER" 2>/dev/null || true
+unset FM_ROOT_OVERRIDE FM_TASK_BASE_URL FM_TASK_TOKEN_FILE
+pass "the doctor names each differing published document with the local and published commits"
