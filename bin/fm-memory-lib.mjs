@@ -63,9 +63,10 @@ export function splitRules(file, text) {
   const flush = () => {
     if (!block.length) return;
     const whole = block.join('\n'); block = [];
+    const blockMark = tierOf(whole, sectionMark); // the marker may sit in the last sentence; it governs the whole learning
     const parts = file === 'learnings.md' ? sentenceGroups(whole) : [whole];
     for (const part of parts) {
-      const bytes = bytesOf(part), mark = tierOf(part, sectionMark);
+      const bytes = bytesOf(part), mark = blockMark;
       items.push({ n: items.length + 1, section, text: part, bytes, tokens: tokensOf(bytes), tier: mark.tier, date: mark.date || '' });
     }
   };
@@ -163,7 +164,7 @@ async function hasRules(scope, name, version) {
 }
 async function seed(ctx) {
   const results = [];
-  for (const name of FILES) {
+  for (const name of ctx.files) {
     const text = readLocal(ctx.data, name);
     if (text === null) { results.push({ file: name, result: 'no local file' }); continue; }
     const row = await latest(ctx.scope, name);
@@ -182,7 +183,7 @@ async function seed(ctx) {
   }
   return results;
 }
-async function pull(ctx, files = FILES) {
+async function pull(ctx, files = ctx.files) {
   const results = [];
   for (const name of files) {
     const row = await latest(ctx.scope, name);
@@ -210,6 +211,7 @@ async function put(ctx) {
     return { file: name, result: 'unchanged', version: row.version };
   }
   if (ctx.rebase) base = { version: row.version };
+  if (base && base.scope && base.scope !== ctx.scope && !ctx.rebase) fail(`the pull record of ${name} is for ${base.scope}, not ${ctx.scope}; run fm-memory.sh pull, or put --rebase to publish this text on top of ${ctx.scope}`);
   if (!base) fail(`no pull record for ${name}; run fm-memory.sh pull first, or put --rebase to publish this text on top of version ${row.version}`);
   const refuse = () => { const error = new Error(`5001 holds version ${row.version} of ${name}, but this cache started from version ${base.version}; nothing was written.\n${unifiedDiff(row.content, text)}`); error.code = 3; throw error; };
   if (row.version !== base.version) refuse();
@@ -249,10 +251,13 @@ function parse(argv) {
   if (!home && fmHome) { try { home = fs.readFileSync(path.join(configDir, 'memory-home'), 'utf8').split('\n')[0].trim(); } catch { home = ''; } }
   if (!home && command !== 'rules') { if (command === 'sync') return { command, off: true }; fail('no memory home: pass --home or create config/memory-home', 2); }
   if (home && !/^[a-z0-9][a-z0-9-]{0,40}$/.test(home)) fail('memory home must be lowercase letters, digits and dashes', 2);
+  const secondmate = !!fmHome && fs.existsSync(path.join(fmHome, '.fm-secondmate-home'));
+  const files = secondmate ? FILES.filter(f => f !== 'captain-shared.md') : FILES; // inherited from the primary, read-only here
+  if (secondmate && flags.file === 'captain-shared.md') fail('captain-shared.md is inherited from the primary home; this secondmate home never reads or writes it on 5001', 2);
   const data = flags.data || process.env.FM_DATA_OVERRIDE || path.join(fmHome, 'data');
   if (flags.file && !FILES.includes(flags.file)) fail(`--file must be one of ${FILES.join(', ')}`, 2);
   if (['put', 'history', 'show', 'rules'].includes(command) && !flags.file) fail('--file is required', 2);
-  return { command, home, data, scope: `home:${home}`, file: flags.file, rebase: !!flags.rebase, version: flags.version, by: flags.by || process.env.FM_TASK_ACTOR || os.userInfo().username };
+  return { command, home, data, files, scope: `home:${home}`, file: flags.file, rebase: !!flags.rebase, version: flags.version, by: flags.by || process.env.FM_TASK_ACTOR || os.userInfo().username };
 }
 function print(rows) { for (const r of Array.isArray(rows) ? rows : [rows]) console.log(Object.entries(r).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(' ')); }
 
@@ -263,8 +268,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       if (ctx.off) process.exit(0);
       timeoutMs = 5000;
       try {
-        const rows = await pull(ctx, RULE_FILES), waiting = rows.filter(r => r.result.startsWith('kept')).map(r => r.file);
-        console.log(`memory_source=5001 scope=${ctx.scope} ${rows.filter(r => r.version).map(r => `${r.file}=v${r.version}`).join(' ')}${waiting.length ? ` waiting_for_put=${waiting.join(',')}` : ''}`);
+        const rows = await pull(ctx, ctx.files.filter(f => RULE_FILES.includes(f))), waiting = rows.filter(r => r.result.startsWith('kept')).map(r => r.file), wrote = rows.filter(r => r.result === 'written').map(r => r.file);
+        console.log(`memory_source=5001 scope=${ctx.scope} ${rows.filter(r => r.version).map(r => `${r.file}=v${r.version}`).join(' ')}${waiting.length ? ` waiting_for_put=${waiting.join(',')}` : ''}${wrote.length ? ` written=${wrote.join(',')}` : ''}`);
       }
       catch (error) {
         let age = 'absent'; try { age = fs.statSync(path.join(ctx.data, 'captain.md')).mtime.toISOString(); } catch {}

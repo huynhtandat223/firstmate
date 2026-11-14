@@ -846,6 +846,10 @@ EOF
   append_wake "$home/state" signal sm-x "done: surfaced before refusal" || fail "seed wake failed"
   git -C "$root" checkout -q -B fm/read-only-tangle
 
+  # An opted-in memory home must not touch 5001 or its cache without verified lock ownership.
+  mkdir -p "$home/config"
+  printf 'probe\n' > "$home/config/memory-home"
+
   sleep 300 &
   holder_pid=$!
   printf '%s\n' "$holder_pid" > "$home/state/.lock"
@@ -856,6 +860,8 @@ EOF
   wait "$holder_pid" 2>/dev/null || true
 
   expect_code 0 "$status" "fm-session-start.sh must exit 0 even on a lock refusal"
+  assert_contains "$out" "memory_source=cache reason=read-only session" "read-only session did not leave the memory cache alone"
+  [ ! -e "$home/data/.memory-sync" ] || fail "read-only session wrote the memory sync record"
   assert_contains "$out" "READ-ONLY SESSION" "read-only banner missing on lock refusal"
   assert_contains "$out" "another live firstmate session holds the lock" "read-only banner did not surface fm-lock.sh's own error text"
   assert_contains "$out" "Skipping every mutating step" "read-only banner did not explain what was skipped"

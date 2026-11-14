@@ -125,6 +125,26 @@ case "$report" in *memory_source=5001*) ;; *) fail "budget report named no 5001 
 case "$report" in *"file=data/learnings.md bytes=$want "*) ;; *) fail "budget report measured a stale cache, wanted $want bytes: $report" ;; esac
 ok "budget report reads the 5001 text"
 
+# Review fixes: a secondmate never reads or writes its inherited captain-shared.md on 5001.
+mkhome "$TMP/sm"; printf 'sm1\n' > "$TMP/sm/config/memory-home"; : > "$TMP/sm/.fm-secondmate-home"
+out=$(run "$TMP/sm" seed)
+[ "$(printf '%s\n' "$out" | grep -c 'result="inserted"')" = 3 ] || fail "secondmate seed did not skip captain-shared.md: $out"
+rm "$TMP/sm/data/captain-shared.md"; run "$TMP/sm" sync >/dev/null
+[ ! -e "$TMP/sm/data/captain-shared.md" ] || fail "sync restored the inherited captain-shared.md"
+if run "$TMP/sm" put --file captain-shared.md 2>/dev/null; then fail "secondmate put of captain-shared.md succeeded"; fi
+ok "a secondmate home leaves the inherited captain-shared.md alone"
+
+# Review fixes: a pull record from another home is never published into this one.
+mkhome "$TMP/x"; printf 'homea\n' > "$TMP/x/config/memory-home"; run "$TMP/x" seed >/dev/null
+mkhome "$TMP/y"; printf 'homeb\n' > "$TMP/y/config/memory-home"; run "$TMP/y" seed >/dev/null
+printf 'edit based on home a\n' >> "$TMP/x/data/captain.md"
+printf 'homeb\n' > "$TMP/x/config/memory-home"
+set +e; err=$(run "$TMP/x" put --file captain.md 2>&1); rc=$?; set -e
+[ "$rc" != 0 ] || fail "put published a record based on another home"
+case "$err" in *'is for home:homea, not home:homeb'*) ;; *) fail "scope refusal was: $err" ;; esac
+[ "$(run "$TMP/y" history --file captain.md | wc -l)" = 1 ] || fail "home b gained a version"
+ok "put refuses a pull record from another memory home"
+
 # T7: the rule splitter.
 long=$(python3 -c "print(' '.join(f'Sentence number {i} is a short fact.' for i in range(30)))")
 printf '# Fleet learnings\n\n## Tools <!--a:2026-11-13-->\n\n%s\n\n- not a bullet rule here\n' "$long" > "$TMP/split-learnings.md"
@@ -133,6 +153,8 @@ mkdir -p "$TMP/split"; cp "$TMP/split-learnings.md" "$TMP/split/learnings.md"
 printf '# Captain preferences\n<!-- memory tiers: see the stow skill -->\n\n**Start here:** read `a.b`. <!--p:2026-11-13-->\n\n## Workers\n\n- First rule (2026-01-01): one. Two. e.g. three.\n  continues here.\n- Pinned rule. <!--P-->\n- Aging rule. <!--a:2026-10-01/3-->\n' > "$TMP/split/captain.md"
 node "$ROOT/bin/fm-memory-lib.mjs" rules --home t --data "$TMP/split" --file captain.md > "$TMP/rc.json"
 node "$ROOT/bin/fm-memory-lib.mjs" rules --home t --data "$TMP/split" --file learnings.md > "$TMP/rl.json"
+mkdir -p "$TMP/split2"; printf '# Fleet learnings\n\n## Tools <!--a:2026-11-01-->\n\n%s <!--p:2026-11-13-->\n' "$long" > "$TMP/split2/learnings.md"
+node "$ROOT/bin/fm-memory-lib.mjs" rules --home t --data "$TMP/split2" --file learnings.md > "$TMP/rm.json"
 python3 - "$TMP" <<'PY'
 import json,sys
 t=sys.argv[1];c=json.load(open(t+'/rc.json'));l=json.load(open(t+'/rl.json'))
@@ -143,5 +165,6 @@ assert c[2]['tier']=='pinned' and c[3]['tier']=='aging' and c[3]['date']=='2026-
 assert all(x['bytes']==len(x['text'].encode()) and x['tokens']==-(-x['bytes']//3) for x in c+l)
 assert len(l)>=4 and all(x['bytes']<=400 for x in l[:-1]) and all(x['tier']=='aging' and x['date']=='2026-11-13' for x in l[:-1])
 assert ' '.join(x['text'] for x in l[:-1]).startswith('Sentence number 0')
+m=json.load(open(t+'/rm.json'));assert len(m)>=3 and all(x['tier']=='perishable' and x['date']=='2026-11-13' for x in m),m
 PY
 ok "rule splitter keeps bullets whole, cuts learnings at sentence ends and reads tiers"
