@@ -15,6 +15,9 @@ backup = pathlib.Path(sys.argv[2]).resolve()
 backup.mkdir(parents=True, exist_ok=True, mode=0o700)
 root = pathlib.Path(__file__).resolve().parent
 env = dict(os.environ, FM_HOME=str(home))
+# The home's own backlog home: FM_BACKLOG_HOME when exported, else its tasks-axi config, else main.
+owner_home = subprocess.run([str(root / 'fm-task.sh'), 'owner-home'], env=env, capture_output=True,
+                            text=True, check=True).stdout.strip()
 for name in ('inbox', 'decision-bindings', 'reconcile-requests'):
     source = home / 'state' / name
     if not source.exists():
@@ -26,7 +29,7 @@ for name in ('inbox', 'decision-bindings', 'reconcile-requests'):
     print(f'backup: {target}')
     if name == 'inbox':
         subprocess.run([sys.executable, str(root / 'fm-owner-notes.py'), 'push', str(source),
-                        env.get('FM_BACKLOG_HOME', 'main'), str(root / 'fm-task.sh')], env=env, check=True)
+                        owner_home, str(root / 'fm-task.sh')], env=env, check=True)
     else:
         kind, suffix = ('binding', '*.origin') if name == 'decision-bindings' else ('reconcile', '*.request')
         for path in sorted(source.glob(suffix)):

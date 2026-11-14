@@ -551,6 +551,30 @@ use_issue() { issue_body "$1" > "$TMP_ROOT/issue.body"; }
 
 # ---- cases: each returns 0 when the behavior holds -------------------------------
 
+# An empty announce marker file reads as absent: the seed uploads the note and finishes.
+case_owner_seed_marker() {
+  BIN=$1; reset_db
+  local h="$TMP_ROOT/seed-marker-home"
+  rm -rf "$h" "$h-backup"; mkdir -p "$h/state/inbox/handled" "$h/state/inbox/.announced"
+  printf 'id=empty-marker\nat=2026-01-01T00:00:00Z\nsource=cli\nannounce_marker=1\n--\nhandled with an empty marker\n' > "$h/state/inbox/handled/empty-marker.note"
+  : > "$h/state/inbox/.announced/empty-marker"
+  FM_HOME="$h" FM_BACKLOG_HOME=seed-marker python3 "$BIN/fm-owner-seed.py" "$h" "$h-backup" >/dev/null 2>&1 || { echo 'seed stopped on an empty marker'; return 1; }
+  db fm_owner_note | jq -e '[.[] | select(.noteId == "empty-marker" and .home == "seed-marker" and .state == "handled" and .announcedAt == null)] | length == 1' >/dev/null \
+    || { echo "stored: $(db fm_owner_note | jq -c '[.[] | {noteId, home, state, announcedAt}]')"; return 1; }
+}
+
+# A non-main home seeds its legacy notes under its own backlog home when FM_BACKLOG_HOME is not exported.
+case_owner_seed_home() {
+  BIN=$1; reset_db
+  local h="$TMP_ROOT/seed-home-home"
+  rm -rf "$h" "$h-backup"; mkdir -p "$h/state/inbox" "$h/config/tasks-axi"
+  printf 'backend = "cfw5001"\n[cfw5001]\nhome = "seed-probe"\n' > "$h/config/tasks-axi/.tasks.toml"
+  printf 'id=probe-legacy\nat=2026-01-01T00:00:00Z\nsource=cli\nannounce_marker=1\n--\nprobe legacy note\n' > "$h/state/inbox/probe-legacy.note"
+  env -u FM_BACKLOG_HOME FM_HOME="$h" python3 "$BIN/fm-owner-seed.py" "$h" "$h-backup" >/dev/null 2>&1 || { echo 'seed failed'; return 1; }
+  db fm_owner_note | jq -e '[.[] | select(.noteId == "probe-legacy")] | map(.home) == ["seed-probe"]' >/dev/null \
+    || { echo "seeded under: $(db fm_owner_note | jq -c '[.[] | {noteId, home}]')"; return 1; }
+}
+
 # TR10: a terminal call stores its event and child in one request and prints the seq;
 # a missing template field prints the API's field and stores nothing.
 case_owner_records() {
@@ -3975,7 +3999,7 @@ case_pr_record() {
   jq -se 'map(.at) == [50,100]' <<<"$OUT" >/dev/null
 }
 
-CASES=${FM_TASK_CASES:-"owner_records pr_record plan_task description_thread describe_rows describe_issue describe_source terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed long_notes status_view verify_view owner_writer workflow gate_internal gate_no_surface stage latest_wait latest_no_note wait carry slice_c model_rules checklist question_round setup_rules backlog_home owner_hold owner_request gate_before_approval handoff_gate delete owner_nav"}
+CASES=${FM_TASK_CASES:-"owner_records owner_seed_marker owner_seed_home pr_record plan_task description_thread describe_rows describe_issue describe_source terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed long_notes status_view verify_view owner_writer workflow gate_internal gate_no_surface stage latest_wait latest_no_note wait carry slice_c model_rules checklist question_round setup_rules backlog_home owner_hold owner_request gate_before_approval handoff_gate delete owner_nav"}
 
 # ---- real command -------------------------------------------------------------------
 

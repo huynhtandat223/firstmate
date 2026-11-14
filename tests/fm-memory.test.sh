@@ -115,6 +115,26 @@ out=$(run "$TMP/a" put --file learnings.md)
 [ "$(field "$out" version)" = 3 ] || fail "the waiting edit did not upload as n+1: $out"
 ok "offline sync prints the cache age and a waiting edit uploads as n+1"
 
+# Review fixes: a slow 5001 holds sync for 5 s in total, not 5 s per request.
+cat > "$TMP/slow.py" <<'PY'
+import http.server,json,sys,time
+class H(http.server.BaseHTTPRequestHandler):
+ def log_message(self,*a):pass
+ def do_GET(self):
+  time.sleep(4);self.send_response(200);self.end_headers();self.wfile.write(json.dumps({'value':[]}).encode())
+s=http.server.ThreadingHTTPServer(('127.0.0.1',0),H);open(sys.argv[1],'w').write(str(s.server_port));s.serve_forever()
+PY
+python3 "$TMP/slow.py" "$TMP/slow-port" &
+SLOW=$!
+for _ in $(seq 1 100); do [ ! -s "$TMP/slow-port" ] || break; sleep .02; done
+start=$(date +%s)
+line=$(FM_TASK_BASE_URL="http://127.0.0.1:$(< "$TMP/slow-port")" run "$TMP/a" sync)
+took=$(( $(date +%s) - start ))
+kill "$SLOW" 2>/dev/null || true
+case "$line" in memory_source=cache*) ;; *) fail "a slow 5001 did not fall back to the cache: $line" ;; esac
+[ "$took" -le 7 ] || fail "sync waited ${took}s on a slow 5001, wanted at most 7s"
+ok "sync on a slow 5001 ends within its 5 s deadline and reports the cache"
+
 # T6: the budget report measures the 5001 text, not a stale cache.
 mkdir -p "$TMP/c/config"; printf '7500\n' > "$TMP/c/config/startup-memory-budget"; printf 'probe\n' > "$TMP/c/config/memory-home"; run "$TMP/c" pull >/dev/null  # a stale cache: pulled, then 5001 moves on
 printf 'a much longer learnings text that only 5001 holds now, long enough to change the byte count\n' >> "$TMP/a/data/learnings.md"
@@ -147,6 +167,17 @@ set +e; err=$(run "$TMP/x" put --file captain.md 2>&1); rc=$?; set -e
 case "$err" in *'is for home:homea, not home:homeb'*) ;; *) fail "scope refusal was: $err" ;; esac
 [ "$(run "$TMP/y" history --file captain.md | wc -l)" = 1 ] || fail "home b gained a version"
 ok "put refuses a pull record from another memory home"
+
+# Review fixes: a pull record from another home is never published into an empty home either.
+mkhome "$TMP/z"; printf 'homez\n' > "$TMP/z/config/memory-home"; run "$TMP/z" seed >/dev/null
+printf 'homenew\n' > "$TMP/z/config/memory-home"
+set +e; err=$(run "$TMP/z" put --file learnings.md 2>&1); rc=$?; set -e
+[ "$rc" != 0 ] || fail "put published a record of home z into the empty home"
+case "$err" in *'is for home:homez, not home:homenew'*) ;; *) fail "empty-home scope refusal was: $err" ;; esac
+[ "$(run "$TMP/z" history --file learnings.md | wc -l)" = 0 ] || fail "the empty home gained a version"
+out=$(run "$TMP/z" put --file learnings.md --rebase)
+[ "$(field "$out" version)" = 1 ] || fail "put --rebase into the empty home did not insert version 1: $out"
+ok "put refuses another home's pull record into an empty home unless --rebase"
 
 # T7: the rule splitter.
 long=$(python3 -c "print(' '.join(f'Sentence number {i} is a short fact.' for i in range(30)))")
