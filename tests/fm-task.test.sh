@@ -3235,8 +3235,10 @@ case_board_column() {
   ft assign $t --to w >/dev/null && ft start $t; col 'started on an approved Solution' $t implement || return 1
   ft "done" $t "${DONE_FLAGS[@]}" --pr-url https://github.com/example/repo/pull/8 --head $h; col 'done while the Tester is asked' $t testing || return 1
   [ "$(task_row $t | jq -r .nextActor)" = tester ] || { echo "the Tester is not asked: $(task_row $t)"; return 1; }
+  ft event $t pr --pr-url https://github.com/example/repo/pull/8 --merged; col 'a merged pr while the Tester is asked' $t testing || return 1
   ft check $t V1@1440 --status fail --evidence red --head $h; col 'a failed row' $t testing || return 1
   ft check $t V1@1440 --status pass --evidence green --head $h; col 'the rows pass' $t merge || return 1
+  printf '%s' '{"steps":[{"state":"implement","harness":"pi","model":"example"},{"state":"testing","harness":"pi","model":"example"},{"state":"merge"}]}' > "$TMP_ROOT/setup-col.json"
   # a pr event recorded while the worker runs puts the card in Merge; the done that asks the Tester then moves it back to Testing
   t=tk-col-prfirst
   ft create $t --title 'PR first' --kind ship --surface user-visible --repo example/repo >/dev/null && approve_solution $t || return 1
@@ -3251,9 +3253,24 @@ case_board_column() {
   ft "done" $t "${DONE_FLAGS[@]}" --pr-url https://github.com/example/repo/pull/11 --head $h; col 'done with a PR' $t merge || return 1
   ft changes $t --note 'fix the edge case'; col 'changes alone keeps the column' $t merge || return 1
   ft start $t; col 'a start after changes' $t implement new || return 1
+  # a pr event the running worker records puts the card in Merge; after a block, the next start returns it to the work column
+  t=tk-col-block
+  ft create $t --title 'Blocked' --kind ship --repo example/repo >/dev/null && approve_solution $t || return 1
+  ft assign $t --to w >/dev/null && ft start $t; col 'started' $t implement || return 1
+  ft event $t pr --pr-url https://github.com/example/repo/pull/12; col 'a pr event while the worker runs' $t merge || return 1
+  ft block external $t --reason 'waits on a vendor' --next-actor firstmate; must 'block' 0 || return 1
+  ft unblock $t; col 'unblocked' $t merge || return 1
+  ft start $t; col 'a start after the block' $t implement new || return 1
+  # reopen restores the state that ran last; the next start keeps it
+  t=tk-col-reopen
+  ft create $t --title 'Reopen' --kind ship --repo example/repo >/dev/null && approve_solution $t || return 1
+  ft setup $t --file "$TMP_ROOT/setup-col.json" >/dev/null && ft assign $t --to w >/dev/null && ft start $t; col 'started' $t implement || return 1
+  ft step $t start --harness pi --generation r1 >/dev/null && ft move $t --to testing >/dev/null && ft step $t start --harness pi --generation r2; col 'testing runs' $t testing || return 1
+  ft "done" $t "${DONE_FLAGS[@]}" >/dev/null && ft approve $t; col 'approved' $t 'done' || return 1
+  ft reopen $t --reason 'again'; col 'reopened' $t testing || return 1
+  ft start $t; col 'a start after reopen keeps the restored state' $t testing || return 1
   # move is the override: it holds until an event implies a later column, and an earlier one changes nothing
   t=tk-col-mv
-  printf '%s' '{"steps":[{"state":"implement","harness":"pi","model":"example"},{"state":"testing","harness":"pi","model":"example"},{"state":"merge"}]}' > "$TMP_ROOT/setup-col.json"
   ft create $t --title 'Moved' --kind ship --repo example/repo >/dev/null && approve_solution $t || return 1
   ft setup $t --file "$TMP_ROOT/setup-col.json" >/dev/null && ft assign $t --to w >/dev/null || return 1
   ft start $t; col 'started' $t implement || return 1
@@ -4174,12 +4191,14 @@ mutate 'a setup edit of the current pending state shows on the card' workflow "s
 mutate 'reopen returns to the state that ran last in event order' workflow "const last = steps.find(s => s.state === lastRan);" "const last = steps.filter(s => ['done', 'failed', 'running'].includes(s.status)).at(-1);"
 mutate 'approve skips the states that never started' workflow ": s.status === 'pending' ? [{ state: s.state, status: 'skipped', endReason: 'approved' }] : []);" ": []);"
 mutate 'a move ends the running attempt of the state left behind' workflow "const stepWrites = left ? [{ state: left.state, status: 'done'" "const stepWrites = false ? [{ state: left.state, status: 'done'"
-mutate 'an event moves the card only forward' board_column "(back || WORKFLOW_STATES.indexOf(column) > WORKFLOW_STATES.indexOf(task.workflowState ?? 'queued'))" "(true)"
+mutate 'an event moves the card only forward' board_column "(back || WORKFLOW_STATES.indexOf(column) > WORKFLOW_STATES.indexOf(before ?? 'queued'))" "(true)"
 mutate 'a pull request waits in Testing while the Tester is asked' board_column "(task.nextActor === 'tester' ? 'testing' : 'merge')" "'merge'"
 mutate 'a ship task waits in Plan until its Solution is approved' board_column "task.planDecision !== 'approve' && task.kind === 'ship' ? 'plan'" "false ? 'plan'"
 mutate 'liveness reports on the running step' board_column "const current = action === 'start' ? own : running ?? own;" "const current = own;"
 mutate 'a start ends the step another column runs' board_column "const other = action === 'start' && running && running.state !== current.state ? running : null;" "const other = null;"
-mutate 'a start after changes returns the card to its work column' board_column "(event.kind === 'started' && restart)" "false"
+mutate 'a start after changes returns the card to its work column' board_column "(event.kind === 'started' && (restart || prDuringWork))" "(event.kind === 'started' && prDuringWork)"
+mutate 'a start after a pr event during the work returns the card to its work column' board_column "(event.kind === 'started' && (restart || prDuringWork))" "(event.kind === 'started' && restart)"
+mutate 'a start after reopen keeps the restored state' board_column "if (event.kind === 'changes') restart = true;" "if (event.kind === 'changes' || event.kind === 'reopened') restart = true;"
 mutate 'a done that asks the Tester moves the card back from Merge' board_column "case 'done': return task.nextActor === 'tester' ? 'testing' : " "case 'done': return "
 mutate 'an unapproved Solution holds a ship before implement' workflow "task.kind === 'ship' && task.planDecision !== 'approve') {" "task.kind === 'ship' && false) {"
 mutate 'the Solution gate needs the approval, not just a plan' workflow "task.kind === 'ship' && task.planDecision !== 'approve') {" "task.kind === 'ship' && !task.planSeq) {"

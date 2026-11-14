@@ -455,8 +455,10 @@ function impliedColumn(event, task, set) {
 
 function fold(events) {
   let task = null;
-  // changes or reopen sends the task back to its worker: the next start sets the column its start implies
+  // the next start sets the column its start implies: after changes, and while a pr event the worker recorded during
+  // its work put the card where it is (reopen restores the state that ran last, and a start keeps it)
   let restart = false;
+  let prDuringWork = false;
   let deployed = false;
   let pullRequest = false;
   const byKey = new Map();
@@ -471,13 +473,16 @@ function fold(events) {
     task = { ...task, ...set, lastSeq: event.seq };
     if (event.kind === 'created' && !task.workflowState) Object.assign(task, { workflowState: 'queued', workflowSince: event.createdAt ?? null });
     // An event moves the card only forward; one that sets the column itself (moved, approved, reopened) sets it as given.
-    // Two events move it back: a start after changes or reopen, and a done or routed event that asks the Tester while the
-    // card is in Merge. The card's step fields stay: they show the worker that runs.
-    if (event.kind === 'changes' || event.kind === 'reopened') restart = true;
+    // Two events move it back: a start after changes or after a pr event during the work, and a done or routed event that
+    // asks the Tester while the card is in Merge. The card's step fields stay: they show the worker that runs.
+    if (event.kind === 'changes') restart = true;
+    const before = task.workflowState;
     const column = set.workflowState === undefined ? impliedColumn(event, task, set) : null;
-    const back = (event.kind === 'started' && restart) || (column === 'testing' && task.workflowState === 'merge' && ['done', 'routed'].includes(event.kind));
-    if (column && column !== task.workflowState && (back || WORKFLOW_STATES.indexOf(column) > WORKFLOW_STATES.indexOf(task.workflowState ?? 'queued'))) Object.assign(task, { workflowState: column, workflowSince: event.createdAt ?? null });
+    const back = (event.kind === 'started' && (restart || prDuringWork)) || (column === 'testing' && before === 'merge' && ['done', 'routed'].includes(event.kind));
+    if (column && column !== before && (back || WORKFLOW_STATES.indexOf(column) > WORKFLOW_STATES.indexOf(before ?? 'queued'))) Object.assign(task, { workflowState: column, workflowSince: event.createdAt ?? null });
     if (event.kind === 'started') restart = false;
+    if (event.kind === 'pr' && ['running', 'blocked'].includes(task.state)) prDuringWork ||= task.workflowState !== before;
+    else if (set.workflowState !== undefined || ['started', 'done', 'routed', 'check', 'deploy'].includes(event.kind)) prDuringWork = false;
     const stage = STEP_OF_STATE[task.state] ?? (task.state === 'review' ? (deployed ? 'dev' : 'pr')
       : task.state === 'running' ? (pullRequest ? 'pr' : 'working') : task.stage ?? 'queued');
     if (stage !== task.stage) Object.assign(task, { stage, stageSince: event.createdAt ?? null });
