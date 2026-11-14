@@ -1779,7 +1779,7 @@ async function cmdHandoff(args) {
   const document = documentOf({ ...args.flags, 'document-title': args.flags['document-title'] ?? 'Handoff' });
   await write(taskIdOf(args), identity(args, 'worker'), async ({ task }) => {
     if (!task) throw rule('no such task');
-    return { kind: 'comment', note: 'Worker handoff', children: { documents: [document] } };
+    return { kind: 'comment', note: 'Worker handoff', extra: { documentKind: 'handoff' }, children: { documents: [document] } };
   });
 }
 
@@ -1787,7 +1787,7 @@ async function cmdDocument(args) {
   const events = await taskEvents(taskIdOf(args));
   const kind = args.flags.kind || 'description';
   if (!['description', 'done', 'handoff'].includes(kind)) throw usage('--kind must be description, done or handoff');
-  const event = events.filter((e) => kind === 'handoff' ? e.kind === 'comment' && bodyOf(e).note === 'Worker handoff' : e.kind === kind).at(-1);
+  const event = events.filter((e) => kind === 'handoff' ? e.kind === 'comment' && bodyOf(e).documentKind === 'handoff' : e.kind === kind).at(-1);
   if (!event) throw rule(`task has no ${kind} event`);
   const doc = await firstRow('fm_event_document', `fmTaskEventId eq ${event.id}`);
   if (!doc || !doc.content) throw rule(`task ${kind} document is missing`);

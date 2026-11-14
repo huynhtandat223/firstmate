@@ -316,7 +316,13 @@ if (import.meta.url === `file://${process.argv[1]}`) {
               target = resolved;
             }
             const localName = path.relative(ctx.data, target);
-            if (readLocal(ctx.data, localName) !== row.content) { writeLocal(ctx.data, localName, row.content); wrote.push(pointer); }
+            const local = readLocal(ctx.data, localName), base = readBase(ctx.data, localName);
+            if (local !== null && local !== row.content && !(base?.scope === ctx.scope && base.sha256 === sha(local))) {
+              waiting.push(pointer);
+            } else {
+              if (local !== row.content) { writeLocal(ctx.data, localName, row.content); wrote.push(pointer); }
+              writeBase(ctx.data, localName, ctx.scope, row.version, row.content);
+            }
           }
         }
         console.log(`memory_source=5001 scope=${ctx.scope} ${rows.filter(r => r.version).map(r => `${r.file}=v${r.version}`).join(' ')}${waiting.length ? ` waiting_for_put=${waiting.join(',')}` : ''}${wrote.length ? ` written=${wrote.join(',')}` : ''}`);

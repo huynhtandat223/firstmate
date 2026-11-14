@@ -69,6 +69,10 @@ rm "$TMP/docs/data/handoffs/day.md"
 run "$TMP/docs" sync >/dev/null
 [ -L "$TMP/docs/data/handoffs/latest.md" ] || fail 'sync replaced latest symlink'
 [ "$(< "$TMP/docs/data/handoffs/day.md")" = 'current handoff' ] || fail 'sync did not restore handoff'
+printf 'unpublished local handoff\n' > "$TMP/docs/data/handoffs/day.md"
+line=$(run "$TMP/docs" sync)
+[ "$(< "$TMP/docs/data/handoffs/day.md")" = 'unpublished local handoff' ] || fail 'sync lost unpublished handoff'
+case "$line" in *waiting_for_put=handoffs/latest.md*) ;; *) fail "missing waiting handoff: $line" ;; esac
 rm "$TMP/docs/data/project-rules/cfw-modules.md"
 FM_HOME="$TMP/docs" "$ROOT/bin/fm-brief.sh" hf2 cfw-modules --mode direct-PR >/dev/null
 [ "$(grep '^brief:' "$TMP/docs/data/hf2/brief.md")" = 'brief: remote project rule' ] || fail 'brief did not read remote rules'

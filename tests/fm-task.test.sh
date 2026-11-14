@@ -2633,6 +2633,7 @@ case_description_thread() {
   [[ "$OUT" == *'Full description.'* ]] || return 1
   printf '# Replacement handoff\nNew continuation.\n' > "$TMP_ROOT/handoff.md"
   ft handoff "$t" --document "$TMP_ROOT/handoff.md" >/dev/null || return 1
+  ft comment "$t" --note 'Worker handoff' >/dev/null || return 1
   ft document "$t" --kind handoff
   must 'latest handoff readback' 0 || return 1
   [[ "$OUT" == *'New continuation.'* && "$OUT" != *'Full description.'* ]] || return 1
