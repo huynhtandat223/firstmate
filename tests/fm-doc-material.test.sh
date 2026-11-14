@@ -247,6 +247,23 @@ FM_HOME="$N" PATH="$TMP/nopath" timeout=none "$(command -v bash)" "$ROOT/bin/fm-
 for _ in $(seq 1 60); do [ -s "$N/state/.material-sync.out" ] && break; sleep 1; done
 grep -q 'material_source=5001 home=main' "$N/state/.material-sync.out" || { echo 'no sync without GNU timeout'; cat "$N/state/.material-sync.out"; exit 1; }
 
+# Review round 2 (2): one worker per home. A live lock makes the next start report instead of racing; a dead lock is replaced.
+M2="$TMP/home-sf"; mkdir -p "$M2/config" "$M2/data" "$M2/state"; git init -q "$M2"; printf 'main\n' > "$M2/config/material-home"
+sleep 300 & LIVE=$!
+mkdir "$M2/state/.material-sync.lock"; printf '%s\n' "$LIVE" > "$M2/state/.material-sync.lock/pid"
+printf 'material_conflict path="config/crew-harness" reason="5001 moved"\nmaterial_source=5001 home=main files=3 written=0 uploaded=0 waiting=0 conflicts=1\n' > "$M2/state/.material-sync.out"
+FM_HOME="$M2" "$ROOT/bin/fm-session-start.sh" > "$TMP/sf.out" 2>&1 || true
+grep -q 'material_source=pending home=main (bounded background sync from an earlier start still running' "$TMP/sf.out" || { echo 'second start did not see the running worker'; exit 1; }
+grep -q material_conflict "$M2/state/.material-sync.out" || { echo 'the running worker output was deleted'; exit 1; }
+[ "$(cat "$M2/state/.material-sync.lock/pid")" = "$LIVE" ]
+kill "$LIVE"; wait "$LIVE" 2>/dev/null || true
+FM_HOME="$M2" "$ROOT/bin/fm-session-start.sh" > "$TMP/sf2.out" 2>&1 || true
+for _ in $(seq 1 60); do grep -q 'material_source=5001' "$M2/state/.material-sync.out" 2>/dev/null && break; sleep 1; done
+grep -q 'material_source=5001 home=main' "$M2/state/.material-sync.out" || { echo 'dead lock was not replaced'; exit 1; }
+for _ in $(seq 1 20); do [ ! -e "$M2/state/.material-sync.lock" ] && break; sleep .5; done
+[ ! -e "$M2/state/.material-sync.lock" ] || { echo 'lock left behind'; exit 1; }
+ls "$M2"/state/.material-sync.??????  >/dev/null 2>&1 && { echo 'temporary output left behind'; exit 1; } || true
+
 # The C1 git export keeps working through the same entry point.
 if "$DOC" materialize --repo firstmate --output "$TMP/export-should-fail" --unknown 2>/dev/null; then exit 1; fi
 if "$DOC" list --unknown; then exit 1; fi
