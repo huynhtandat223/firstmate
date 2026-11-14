@@ -3,6 +3,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -49,7 +50,8 @@ function identity() {
   const file = path.join(config, 'host-id');
   if (fs.existsSync(file)) return fs.readFileSync(file, 'utf8').trim();
   fs.mkdirSync(config, { recursive: true });
-  const id = os.hostname();
+  // Hostnames repeat across machines; a random suffix makes the id one machine's own.
+  const id = `${os.hostname().replace(/[^a-zA-Z0-9_.-]/g, '-').replace(/^[^a-zA-Z0-9]+/, '').slice(0, 100) || 'host'}-${crypto.randomBytes(4).toString('hex')}`;
   try { fs.writeFileSync(file, `${id}\n`, { flag: 'wx', mode: 0o600 }); }
   catch (e) { if (e.code !== 'EEXIST') throw e; }
   return fs.readFileSync(file, 'utf8').trim();
@@ -85,7 +87,7 @@ try {
       const existing = await host(id);
       let version = 'unknown';
       try { version = execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(); } catch { /* Non-git install. */ }
-      const body = { hostId: id, sshAlias: process.env.FM_SSH_ALIAS || id, fmVersion: version, toolsJson: JSON.stringify({ node: process.version }), lastHeartbeatAt: now(), ...(existing ? {} : { registeredAt: now(), wakeQueueLength: 0, liveWorkers: 0 }) };
+      const body = { hostId: id, sshAlias: process.env.FM_SSH_ALIAS || os.hostname(), fmVersion: version, toolsJson: JSON.stringify({ node: process.version }), lastHeartbeatAt: now(), ...(existing ? {} : { registeredAt: now(), wakeQueueLength: 0, liveWorkers: 0 }) };
       if (existing) await patch('fm_host', existing, body); else await request('POST', 'fm_host', '', body);
       output(body);
     } else if (cmd[0] === 'heartbeat') {
