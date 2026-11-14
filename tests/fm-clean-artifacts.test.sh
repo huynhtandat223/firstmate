@@ -54,4 +54,4 @@ python3 "$ROOT/bin/fm-clean-artifacts.py" unsafe --apply >/dev/null
 test ! -e "$FM_HOME/data/unsafe"
 python3 "$ROOT/bin/fm-clean-artifacts.py" clean --apply > "$TMP_ROOT/retry"
 grep -q 'eligibleTasks: 0' "$TMP_ROOT/retry"
-printf 'PASS: dry run, selection, verified archive, attachment, guard sensitivity, retry\n'
+printf 'ok - dry run, selection, verified archive, attachment, guard sensitivity, retry\n'

@@ -124,7 +124,7 @@ fm_verify_close_rows() {
       fi
     fi
     if [ "$CHECK" -ne 1 ]; then
-      FM_CLEAN_TASK_READER=$task_writer FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_DATA_OVERRIDE=$DATA python3 "$SCRIPT_DIR/fm-clean-artifacts.py" "$ID" --apply --if-terminal || refuse "artifact backup/cleanup failed for $ID"
+      FM_CLEAN_TASK_READER=$task_writer FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_DATA_OVERRIDE=$DATA python3 "$SCRIPT_DIR/fm-clean-artifacts.py" "$ID" --apply --if-terminal >&2 || echo "warning: $ID remains approved; artifact cleanup failed and retained its files" >&2
     fi
     printf 'already approved task=%s state=done%s; next: none\n' "$ID" "${current_head:+ head=$current_head}"
     exit 0
