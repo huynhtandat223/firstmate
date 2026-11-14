@@ -23,6 +23,8 @@
 #   fm-captain-hold.sh hold <task-id> --reason <reason> \
 #     [--title <title>] [--repo <repo>] [--origin <origin-id>] [--until YYYY-MM-DD]
 #   fm-captain-hold.sh answer <task-id> --decision-file <path> [--release]
+#   fm-captain-hold.sh pr-policy <task-id> <PR-url> <merged|closed|terminal> <close|release>
+#   fm-captain-hold.sh settle-pr <task-id> <PR-url>
 #   fm-captain-hold.sh answers [<legacy-origin> | --any-origin] --source <provenance>   (keyed answers on stdin)
 #   fm-captain-hold.sh reconcile-requests --source-id <source-id> --source <provenance>   (task ids on stdin)
 #   fm-captain-hold.sh bind <source-id> [<legacy-origin> | --any-origin]
@@ -64,7 +66,13 @@
 # tasks-axi --archive-body). It closes a question with `tasks-axi done` - or,
 # with `--release`, lifts the hold with `tasks-axi unhold` so a captain-gated
 # WORK item resumes without closing - and restores resolution-first body
-# ordering. An exact retry also completes unfinished ordering normalization and
+# ordering. `--release` is attended-only: while the away-posture record exists
+# (state/.afk-contract, or the daemon flag state/.afk, read as away; a quiet
+# record is a present captain) it is refused before anything is written, so an
+# unattended supervisor cannot free held work with its own words and then steer
+# it; the captain releases the hold in an attended session. A closing answer
+# without `--release` is not gated by posture. An exact retry also completes
+# unfinished ordering normalization and
 # is idempotent only when its requested close mode
 # matches the newest record; a changed decision or a mode mismatch is rejected.
 # A call that bin/fm-teardown.sh kept open for an incomplete verification record (the marker
@@ -87,7 +95,9 @@
 # identically no matter which channel the answer arrived on. The key IS the
 # task id - no identity arithmetic. The optional fourth field selects the close:
 # empty or `done` completes the task, `release` lifts the hold so held work
-# resumes; anything else is skipped. A key that names no task, a task that is
+# resumes; anything else is skipped. A `release` line while the away-posture
+# record exists is reported as `refused:` under the same attended-only rule as
+# `answer --release` and feeds nothing. A key that names no task, a task that is
 # not held for the captain, or a task already closed is reported as `skipped:`
 # and feeds nothing. A replayed delivery whose answer digest and requested
 # close mode both match the newest record is reported `closed:` and is a no-op;
@@ -191,7 +201,8 @@
 # backlog close and, on 0, returns the row to Queued with its deliverable
 # recorded instead (bin/fm-backlog-transition-lib.sh owns that transition), so
 # holding the very work item a question gates is safe; only `answer` with the
-# captain's words or evidence-backed `reconcile close` closes the call.
+# captain's words, evidence-backed `reconcile close`, or the opt-in PR policy
+# below settles the call.
 # bin/fm-watch.sh asks it when an ordinary
 # crew task reaches a due stale alarm - its open backlog hold need not appear in
 # the task's last status line - and on a 0 bounds repeated alarms from new pane
@@ -200,9 +211,31 @@
 # `diverged` is the read-only guard over the seam between the two records of
 # one captain call. See "record divergence" beside command_diverged below.
 #
+# With config/hold-pr-settle present, pr-policy declares which forge events
+# answer this particular hold. It adds the structured PR link and atomically
+# records data/<task>/hold-pr-policy.json: schema fm-hold-pr.v1, task, url, on,
+# action, fingerprint (SHA-256 of the shown reason, title without its structured
+# links, hold-set timestamp and resolution count), occurrence.
+# `close` asserts the task contains only the decision; `release` preserves
+# unfinished work. `terminal` accepts either merge or unmerged closure.
+# No policy is inferred from links or prose. Re-holding invalidates the policy,
+# and editing the reason or title makes it stale; linking another PR does not.
+# A policy that can no longer settle is removed: silently once the task is done
+# or no longer a captain hold, and with a non-zero exit naming the cause when
+# the question changed or the PR ended in the other terminal state.
+# A `release` policy waits while the home is away, like `answer --release`, and
+# a later settle-pr applies it. Only github.com PRs supported
+# by the contribution observer qualify. settle-pr reads that observer's durable,
+# validated terminal evidence, never caller-supplied state or a captain answer.
+# It records forge-closed/forge-released reconciliation evidence before changing
+# the task, and retries interrupted settlement without duplicating the record.
+# Successful settlement removes the policy after parent-channel publication.
+# Removing the presence flag disables policy registration and settlement.
+#
 # Resolution records: the block written into the body names this script, the
-# decision digest, and a `Resolution mode:` of answered, released, repaired, or
-# reconciled. Records written by the retired fm-decision-hold.sh (routed,
+# decision digest, and a `Resolution mode:` of answered, released, repaired,
+# reconciled, forge-closed, or forge-released.
+# Records written by the retired fm-decision-hold.sh (routed,
 # declined, answered, repaired) are recognized everywhere a record is read, so
 # nothing already closed needs rewriting.
 #
@@ -214,7 +247,12 @@
 # <n> is the count of resolution records the body already carries plus one, so
 # a released and re-held task opens and closes a distinct parent decision with
 # no new persisted state, and an exact retry republishes the same line, which
-# the channel deduplicates. A main home has no channel and publishes nothing.
+# the channel deduplicates against that key's latest line, so a hold re-dated
+# back to an earlier `--until` is still delivered. A `hold --until` adds the
+# structured `[until=YYYY-MM-DD]` field to that line, which the parent watcher's
+# open-decision reminders read to keep the relayed key quiet until that date
+# (bin/fm-watch.sh open_decision_reminder_tick). A main home has no channel and
+# publishes nothing.
 # The hold or answer is already durable in the backlog, so a channel that
 # cannot be written is reported as `actionable:` on stderr rather than undoing
 # the record; bin/fm-inactive-reconcile.sh's diagnostics name a broken binding.
@@ -250,13 +288,19 @@ CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 # shellcheck source=bin/fm-parent-channel-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-parent-channel-lib.sh"
+# shellcheck source=bin/fm-afk-contract.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/fm-afk-contract.sh"
 
 PARENT_HOLD_PUBLISHED=0
-publish_parent_hold() {  # <task-id> <occurrence> <verb> <note>
-  local id=$1 occurrence=$2 verb=$3 note=$4 rc=0
+publish_parent_hold() {  # <task-id> <occurrence> <verb> <note> [until-date]
+  local id=$1 occurrence=$2 verb=$3 note=$4 until=${5:-} head rc=0
   PARENT_HOLD_PUBLISHED=0
+  head="$verb [key=captain-hold-$id-$occurrence]"
+  [ -z "$until" ] || head="$head [until=$until]"
   fm_parent_channel_report "$FM_HOME" "$STATE" \
-    "$verb [key=captain-hold-$id-$occurrence]: captain hold $id: $(fm_parent_channel_clean_note "$note")" || rc=$?
+    "$head: captain hold $id: $(fm_parent_channel_clean_note "$note")" \
+    "captain-hold-$id-$occurrence" || rc=$?
   case "$rc" in
     0|1) PARENT_HOLD_PUBLISHED=1 ;;
     *) printf 'actionable: task %s is held for the captain in this home but that did not reach the parent channel (rc=%s)\n' "$id" "$rc" >&2 ;;
@@ -276,6 +320,7 @@ captain_hold_cleanup() {
     fm_lock_release "$CAPTAIN_CONTROL_LOCK" || true
     CAPTAIN_CONTROL_LOCK_HELD=0
   fi
+  fm_afk_contract_lock_release || true
 }
 trap captain_hold_cleanup EXIT
 
@@ -537,11 +582,11 @@ closed_answer_replay_mode_compatible() {  # <mode> <task-body>
 }
 
 # The record's label is what keeps an evidence-backed reconciliation from
-# reading as the captain's own words. `reconciled` closes a call that went moot
-# and carries verified evidence; every other mode carries what the captain said.
+# reading as the captain's own words. Reconciliation modes carry evidence;
+# answer modes carry what the captain said.
 resolution_block() {  # <mode>
   local label='Captain decision:'
-  [ "$1" != reconciled ] || label='Reconciliation evidence:'
+  case "$1" in reconciled|forge-closed|forge-released) label='Reconciliation evidence:' ;; esac
   printf 'Resolution recorded by fm-captain-hold.\nDecision digest: %s\nResolution mode: %s\n\n%s\n%s\n' \
     "$DECISION_DIGEST" "$1" "$label" "$DECISION_TEXT"
 }
@@ -1164,6 +1209,8 @@ command_hold() {
         || fail "could not create task $id"
     fi
   fi
+  # A repeated hold may ask a different question even if it keeps its timestamp.
+  rm -f -- "$DATA/$id/hold-pr-policy.json"
   # Publish the timestamp before the captain-hold annotation. A concurrent
   # snapshot may see the harmless stamp by itself, but can never see a newly
   # held task without the timestamp that defines this hold lifecycle's age.
@@ -1198,7 +1245,7 @@ command_hold() {
   [ -n "$(body_hold_set_timestamp "$(show_field_value "$show" body)")" ] \
     || fail "task $id lost its hold-set stamp while being held"
   occurrence=$(( $(resolution_record_count "$(show_field "$show" body)") + 1 ))
-  publish_parent_hold "$id" "$occurrence" needs-decision "$reason"
+  publish_parent_hold "$id" "$occurrence" needs-decision "$reason" "$until"
   if [ -n "$origin" ]; then
     write_hold_origin "$id" "$(show_field "$show" body)" "$origin" || exit $?
   fi
@@ -1298,6 +1345,20 @@ shadow_record() {  # <hook event> <args...>
     "$SCRIPT_DIR/fm-task-shadow.sh" "$@" >/dev/null 2>&1 || true
 }
 
+# A captain hold is released only in an attended session. The away daemon flag
+# (state/.afk, bin/fm-wake-lib.sh fm_afk_mode) and the posture record
+# (state/.afk-contract, bin/fm-afk-contract.sh mode) are both read: either one
+# reading away refuses, a quiet record is a present captain, and no record is
+# attended. The check runs before any write, so a refusal leaves the hold and
+# the body untouched.
+RELEASE_AWAY_REASON='the away-posture record exists, and a captain hold is released only by the captain in an attended session; retry --release after the return archives the record'
+release_attended() {
+  if [ -e "$STATE/.afk" ] && [ "$(fm_afk_mode "$STATE")" = away ]; then
+    return 1
+  fi
+  ! fm_afk_contract_away_present "$STATE"
+}
+
 close_answered() {  # <task-id> <release-0-or-1>
   if verify_pending_open "$1"; then
     tasks_axi hold "$1" --reason "$(fm_backlog_verify_reason "$1" "$VERIFY_PENDING_ITEMS")" --kind external >/dev/null
@@ -1348,8 +1409,15 @@ command_answer() {
     shift
   done
   validate_slug task-id "$id"
+  if [ "$release" = 1 ] && ! release_attended; then
+    fail "task $id stays held: $RELEASE_AWAY_REASON"
+  fi
   load_decision "$decision_file"
   acquire_task_control_lock "$id"
+  if [ "$release" = 1 ]; then
+    fm_afk_contract_lock_hold "$STATE" || fail "task $id stays held: the away-posture record is locked"
+    release_attended || fail "task $id stays held: $RELEASE_AWAY_REASON"
+  fi
   require_tasks_axi
   task_show "$id" || fail "captain-held task $id is absent from this home's configured backlog (data directory $DATA)"
   show=$TASK_SHOW_OUTPUT
@@ -1621,6 +1689,11 @@ command_answers() {
         continue
         ;;
     esac
+    if [ "$release_flag" = --release ] && ! release_attended; then
+      printf 'refused: %s (%s)\n' "$key" "$RELEASE_AWAY_REASON"
+      skipped=$((skipped + 1))
+      continue
+    fi
     resolve_rc=0
     id=$(resolve_entry "$origin" "$key" 2>"$err") || resolve_rc=$?
     id=${id%% *}
@@ -1840,6 +1913,127 @@ command_reconcile_requests() {
   [ "$skipped" -eq 0 ]
 }
 
+pr_hold_fingerprint() { # <show-output>
+  local links=, word title=''
+  local -a words=()
+  # The markdown backend shows structured links inside the title, and linking a
+  # follow-up PR or a retained report does not change the question.
+  IFS=, read -r -a words <<< "$(show_field_value "$1" links)"
+  for word in ${words[@]+"${words[@]}"}; do links="$links${word#*:},"; done
+  read -r -a words <<< "$(show_field_value "$1" title)"
+  for word in ${words[@]+"${words[@]}"}; do
+    case "$links" in *",$word,"*) ;; *) title="$title $word" ;; esac
+  done
+  sha256_text "$(show_field "$1" hold_reason)
+$title
+$(body_hold_set_timestamp "$(show_field_value "$1" body)")
+$(resolution_record_count "$(show_field "$1" body)")"
+}
+
+command_pr_policy() {
+  local id=${1:-} url=${2:-} event=${3:-} action=${4:-} show dir tmp occurrence fingerprint
+  [ "$#" -eq 4 ] || { usage >&2; exit 2; }
+  [ -f "$CONFIG/hold-pr-settle" ] || fail 'config/hold-pr-settle is required'
+  validate_slug task-id "$id"
+  jq -ne --arg url "$url" '$url | test("^https://github[.]com/[A-Za-z0-9-]+/[A-Za-z0-9._-]+/pull/[1-9][0-9]*$")' >/dev/null \
+    || fail 'pr-policy requires a canonical github.com PR URL'
+  case "$event" in merged|closed|terminal) ;; *) fail 'event must be merged, closed, or terminal' ;; esac
+  case "$action" in close|release) ;; *) fail 'action must be close or release' ;; esac
+  acquire_task_control_lock "$id"
+  require_tasks_axi
+  command_open "$id" || fail "task $id is not an open captain hold"
+  tasks_axi update "$id" --pr "$url" >/dev/null || fail "could not link the PR on $id"
+  task_show_or_fail "$id" "task $id disappeared while declaring its PR policy"
+  fingerprint=$(pr_hold_fingerprint "$show")
+  occurrence=$(( $(resolution_record_count "$(show_field "$show" body)") + 1 ))
+  dir="$DATA/$id"
+  [ ! -L "$dir" ] || fail 'PR policy directory is a symlink'
+  mkdir -p "$dir"
+  [ ! -L "$dir/hold-pr-policy.json" ] || fail 'PR policy is a symlink'
+  [ ! -e "$dir/hold-pr-policy.json" ] || [ -f "$dir/hold-pr-policy.json" ] || fail 'PR policy is not a regular file'
+  tmp=$(umask 077; mktemp "$dir/.hold-pr-policy.XXXXXX")
+  jq -n --arg task "$id" --arg url "$url" --arg on "$event" --arg action "$action" \
+    --arg fingerprint "$fingerprint" --argjson occurrence "$occurrence" \
+    '{schema:"fm-hold-pr.v1",task:$task,url:$url,on:$on,action:$action,fingerprint:$fingerprint,occurrence:$occurrence}' > "$tmp"
+  mv -f -- "$tmp" "$dir/hold-pr-policy.json"
+  printf 'pr-policy: %s %s %s %s\n' "$id" "$url" "$event" "$action"
+}
+
+command_settle_pr() {
+  local id=${1:-} url=${2:-} policy record show body event action mode occurrence observed fingerprint evidence
+  [ "$#" -eq 2 ] || { usage >&2; exit 2; }
+  [ -f "$CONFIG/hold-pr-settle" ] || return 0
+  validate_slug task-id "$id"
+  policy="$DATA/$id/hold-pr-policy.json"
+  [ -f "$policy" ] || return 0
+  # An answer can hold this lock for minutes while it waits on the away record;
+  # the poll that calls this is cut after 30 seconds, so a busy task defers.
+  CAPTAIN_CONTROL_LOCK="$STATE/.control-$id.lock"
+  fm_lock_acquire_wait_bounded "$CAPTAIN_CONTROL_LOCK" 1 2>/dev/null || return 0
+  CAPTAIN_CONTROL_LOCK_HELD=1
+  [ -f "$policy" ] || return 0
+  [ ! -L "$DATA/$id" ] && [ ! -L "$policy" ] || fail 'unsafe PR policy path'
+  jq -e --arg task "$id" '.schema == "fm-hold-pr.v1" and .task == $task
+    and (.on | IN("merged","closed","terminal")) and (.action | IN("close","release"))
+    and (.fingerprint | test("^[a-f0-9]{64}$"))
+    and (.occurrence | type == "number" and . > 0 and floor == .)' "$policy" >/dev/null \
+    || fail "invalid PR settlement policy for $id"
+  [ "$(jq -r .url "$policy")" = "$url" ] || return 0
+  record="$DATA/$id/contributions.json"
+  [ -f "$record" ] && [ ! -L "$record" ] || return 0
+  jq -L "$SCRIPT_DIR" -e --arg task "$id" 'include "fm-contributions"; valid_record and .task == $task' "$record" >/dev/null \
+    || fail "invalid forge evidence for $id"
+  evidence=$(jq -c --arg url "$url" '[.records[] | select(.url == $url and .kind == "pr" and .error == null
+    and .retired == null and .checked_at != null and (.observation.state | IN("merged","closed")))] | first // empty' "$record")
+  [ -n "$evidence" ] || return 0
+  event=$(printf '%s' "$evidence" | jq -r .observation.state)
+  case "$(jq -r .on "$policy")" in
+    "$event"|terminal) ;;
+    *)
+      rm -f -- "$policy"
+      fail "dropped the PR policy for $id: the PR is $event and can no longer reach the declared event; the hold stays open"
+      ;;
+  esac
+  observed=$(printf '%s' "$evidence" | jq -r .checked_at)
+  action=$(jq -r .action "$policy")
+  if [ "$action" = release ]; then
+    release_attended && fm_afk_contract_lock_hold "$STATE" 1 2>/dev/null && release_attended || return 0
+  fi
+  occurrence=$(jq -r .occurrence "$policy")
+  fingerprint=$(jq -r .fingerprint "$policy")
+  if [ "$action" = close ]; then mode=forge-closed; else mode=forge-released; fi
+  DECISION_TEXT="Forge PR $event: $url
+Observed at: $observed
+Settlement policy: $(jq -r .on "$policy") -> $action"
+  DECISION_DIGEST=$(sha256_text "$DECISION_TEXT")
+  require_tasks_axi
+  task_show_or_fail "$id" "task $id is absent while settling its PR hold"
+  body=$(show_field "$show" body)
+  if [ "$(recorded_decision_digest "$body" || true)" = "$DECISION_DIGEST" ] \
+    && [ "$(recorded_resolution_mode "$body" || true)" = "$mode" ] \
+    && [ "$(resolution_record_count "$body")" = "$occurrence" ]; then
+    : # Resume an interrupted settlement after its evidence was recorded.
+  else
+    if [ "$(show_field "$show" state)" = "done" ] || [ "$(show_field_value "$show" hold_kind)" != captain ]; then
+      rm -f -- "$policy"
+      return 0
+    fi
+    if [ "$(pr_hold_fingerprint "$show")" != "$fingerprint" ]; then
+      rm -f -- "$policy"
+      fail "dropped the PR policy for $id: its question changed after the policy was declared; the hold stays open"
+    fi
+    write_resolution_record "$id" "$mode" "$body"
+  fi
+  if [ "$action" = close ]; then close_answered "$id" 0
+  else tasks_axi unhold "$id" >/dev/null; fi
+  remove_interrupted_answer_stamp "$id"
+  publish_parent_hold "$id" "$occurrence" resolved "PR $event: $url ($action)"
+  [ "$PARENT_HOLD_PUBLISHED" = 1 ] || fail "could not publish PR settlement for $id"
+  reconcile_request_retire "$id"
+  rm -f -- "$policy"
+  printf 'pr-settled: %s %s %s %s\n' "$id" "$url" "$event" "$action"
+}
+
 command_reconcile() {
   local action=${1:-}
   [ "$#" -ge 1 ] || { usage >&2; exit 2; }
@@ -1994,7 +2188,7 @@ reconcile_note() {
 
 command_complete() {
   local origin=${1:-} meta previous='' supplied='' keys='' entry key status_file open has_meta=0 transfer_rc transfers=() resolved
-  local resolved_how attested_by_prefix='' origin_state unrecorded_origin=''
+  local resolved_how attested_by_prefix='' origin_state unrecorded_origin='' tmp
   [ "$#" -ge 2 ] || { usage >&2; exit 2; }
   validate_slug origin-id "$origin"
   shift
@@ -2049,7 +2243,17 @@ EOF
 
   if [ "$has_meta" = 1 ]; then
     if [ "$(meta_value "$meta" decisions_reviewed)" != 1 ] || [ "$previous" != "$keys" ]; then
-      printf 'decisions_reviewed=1\ndecision_keys=%s\n' "$keys" >> "$meta"
+      tmp=$(mktemp "$STATE/.$origin.meta.XXXXXX") \
+        || fail "cannot stage the completion record for $origin"
+      if ! awk -v keys="$keys" '
+          /^(decisions_reviewed|decision_keys)=/ { next }
+          /^pr=/ && !done { print "decisions_reviewed=1"; print "decision_keys=" keys; done = 1 }
+          { print }
+          END { if (!done) { print "decisions_reviewed=1"; print "decision_keys=" keys } }
+        ' "$meta" > "$tmp" || ! mv -f -- "$tmp" "$meta"; then
+        rm -f -- "$tmp"
+        fail "cannot record completion for $origin"
+      fi
     fi
     fm_lock_release "$CAPTAIN_META_LOCK"
     CAPTAIN_META_LOCK_HELD=0
@@ -2314,6 +2518,8 @@ case "${1:-}" in
   open) shift; command_open "$@" ;;
   diverged) shift; command_diverged "$@" ;;
   reconcile) shift; command_reconcile "$@" ;;
+  pr-policy) shift; command_pr_policy "$@" ;;
+  settle-pr) shift; command_settle_pr "$@" ;;
   -h|--help) usage ;;
   *) usage >&2; exit 2 ;;
 esac
