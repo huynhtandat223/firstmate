@@ -3023,8 +3023,14 @@ async function cmdDeliver(args) {
   const consumer = args.flags.consumer;
   if (!consumer || consumer.length > 64) throw usage('deliver needs --consumer (up to 64 characters)');
   if (!process.env.FM_HOME) throw usage('deliver requires FM_HOME');
-  const lease = spawnSync('bash', ['-c', 'source "$1/fm-home-lease-lib.sh"; fm_home_lease_require', 'home-lease', HERE], { encoding: 'utf8', env: process.env });
-  if (lease.status !== 0) throw new Fail(5, `event delivery requires home ownership: ${lease.stdout}${lease.stderr}`);
+  // The generation held now ('' with the lease off). It is read again before each claim, so a run whose lease moved
+  // mid-way claims nothing more.
+  const leaseGeneration = () => {
+    const lease = spawnSync('bash', ['-c', 'source "$1/fm-home-lease-lib.sh"; fm_home_lease_generation', 'home-lease', HERE], { encoding: 'utf8', env: process.env });
+    if (lease.status !== 0) throw new Fail(5, `event delivery requires home ownership: ${lease.stdout}${lease.stderr}`);
+    return lease.stdout.trim();
+  };
+  const generation = leaseGeneration();
   const taskStream = await taskEvents(taskIdOf(args));
   await waitView(taskIdOf(args), taskStream);
   const firstSeq = taskStream[0]?.seq ?? 0;
@@ -3049,6 +3055,7 @@ async function cmdDeliver(args) {
     if (event.kind === 'comment' && event.actorRole === 'owner' && event.idempotencyKey?.startsWith('owner-comment:')) continue;
     const receipt = path.join(spool, `${event.seq}.json`);
     if (seen.has(event.seq) && !fs.existsSync(receipt)) continue;
+    if (generation && leaseGeneration() !== generation) throw new Fail(5, `event delivery stopped before seq ${event.seq}: the home lease moved from generation ${generation}`);
     // Persist recovery intent before claiming. A replay owns only this consumer's spool.
     if (!fs.existsSync(receipt)) fs.writeFileSync(receipt, JSON.stringify(event), { flag: 'wx' });
     const res = await http('POST', '/api/fm_task_delivery', { consumer, seq: event.seq });

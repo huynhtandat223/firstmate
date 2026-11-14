@@ -48,6 +48,11 @@ FM_HOST_LIVE_WORKERS=0 run lease release >/dev/null
 FM_HOST_ID=probe-b run lease take --json > "$TMP/second"
 node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1]));if(r.hostId!=="probe-b"||r.generation!==2)process.exit(1)' "$TMP/second"
 if FM_HOST_LIVE_WORKERS=0 FM_HOST_WAKE_QUEUE_LENGTH=0 run heartbeat >/dev/null; then echo 'FAIL old host renewed'; exit 1; fi
+# A worker claim needs the lease and raises the recorded count, which then blocks a release.
+if run worker claim w1 >/dev/null; then echo 'FAIL a non-holder claimed a worker'; exit 1; fi
+FM_HOST_ID=probe-b run worker claim w1 --json | grep -q '"liveWorkers":1' || { echo 'FAIL worker claim did not raise liveWorkers'; exit 1; }
+if FM_HOST_ID=probe-b FM_HOST_LIVE_WORKERS=0 run lease release >/dev/null; then echo 'FAIL released over a claimed worker'; exit 1; fi
+FM_HOST_ID=probe-b FM_HOST_LIVE_WORKERS=0 FM_HOST_WAKE_QUEUE_LENGTH=0 run heartbeat >/dev/null
 if run register --typo >/dev/null; then echo 'FAIL unknown flag accepted'; exit 1; fi
 # A configured authorization seam refuses an old host; an unconfigured home is unchanged.
 mkdir -p "$FM_HOME/config"; printf probe > "$FM_HOME/config/home-lease"
@@ -55,4 +60,16 @@ if bash -c 'source "$1/bin/fm-home-lease-lib.sh"; fm_home_lease_require' _ "$ROO
 FM_HOST_ID=probe-b bash -c 'source "$1/bin/fm-home-lease-lib.sh"; fm_home_lease_require' _ "$ROOT"
 rm "$FM_HOME/config/home-lease"
 bash -c 'source "$1/bin/fm-home-lease-lib.sh"; fm_home_lease_require' _ "$ROOT"
+# Two machines with one hostname get distinct, persisted ids and only the holder passes the lease check.
+anon() { local m=$1; shift; env -u FM_HOST_ID FM_HOME="$TMP/$m" FM_HOME_NAME=probe-id bash "$ROOT/bin/fm-host.sh" "$@"; }
+anon m1 register --json > "$TMP/m1-register"
+anon m2 register --json > "$TMP/m2-register"
+id1=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1])).hostId)' "$TMP/m1-register")
+id2=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1])).hostId)' "$TMP/m2-register")
+[ "$id1" != "$id2" ] || { echo "FAIL two machines with one hostname share host id $id1"; exit 1; }
+[ "$(tr -d '\n' < "$TMP/m1/config/host-id")" = "$id1" ] || { echo 'FAIL host id was not persisted'; exit 1; }
+anon m1 register --json | grep -q "\"hostId\":\"$id1\"" || { echo 'FAIL host id changed between calls'; exit 1; }
+anon m1 lease take >/dev/null
+anon m1 lease check >/dev/null
+if anon m2 lease check >/dev/null; then echo 'FAIL a second machine with the same hostname passed the lease check'; exit 1; fi
 echo 'PASS public host registry, lease contention, transfer, worker protection, old-holder refusal and opt-in compatibility (controlled API; live proof pending)'
