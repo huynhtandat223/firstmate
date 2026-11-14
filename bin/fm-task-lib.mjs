@@ -432,8 +432,9 @@ const isMachineRecord = (event, note) => {
 };
 // The Board column an event implies (kv2-column-auto); null when it implies none. The work starts in Plan on a ship task
 // whose current Solution is not approved, the tasks the move gate holds, and in Implement otherwise. A pull request is
-// in Testing while the Tester is asked and in Merge otherwise; Testing moves to Merge once no row waits (next actor
-// firstmate). A deploy is Verify. `task` is the fold after the event's own `set`.
+// in Testing while the Tester is asked and in Merge otherwise; a done or routed event that asks the Tester (next actor
+// tester) is Testing; Testing moves to Merge once no row waits (next actor firstmate). A deploy is Verify. `task` is the
+// fold after the event's own `set`.
 function impliedColumn(event, task, set) {
   const work = () => (task.planDecision !== 'approve' && task.kind === 'ship' ? 'plan' : 'implement');
   const pullRequest = () => (task.nextActor === 'tester' ? 'testing' : 'merge');
@@ -444,9 +445,9 @@ function impliedColumn(event, task, set) {
     case 'step': return (bodyOf(event).stepWrites ?? []).find((w) => w.status === 'running' && WORKFLOW_STATES.includes(w.state))?.state ?? null;
     case 'plan_decision': return set.planDecision === 'approve' && task.workflowState !== 'queued' ? 'implement' : null;
     case 'pr': return pullRequest();
-    case 'done': return set.prUrl ? pullRequest() : null;
-    case 'check':
-    case 'routed': return task.workflowState === 'testing' && task.prUrl && task.nextActor === 'firstmate' ? 'merge' : null;
+    case 'done': return task.nextActor === 'tester' ? 'testing' : set.prUrl ? 'merge' : null;
+    case 'routed': if (task.nextActor === 'tester') return 'testing'; // falls through
+    case 'check': return task.workflowState === 'testing' && task.prUrl && task.nextActor === 'firstmate' ? 'merge' : null;
     case 'deploy': return 'verify';
     default: return null;
   }
@@ -454,6 +455,8 @@ function impliedColumn(event, task, set) {
 
 function fold(events) {
   let task = null;
+  // changes or reopen sends the task back to its worker: the next start sets the column its start implies
+  let restart = false;
   let deployed = false;
   let pullRequest = false;
   const byKey = new Map();
@@ -468,9 +471,13 @@ function fold(events) {
     task = { ...task, ...set, lastSeq: event.seq };
     if (event.kind === 'created' && !task.workflowState) Object.assign(task, { workflowState: 'queued', workflowSince: event.createdAt ?? null });
     // An event moves the card only forward; one that sets the column itself (moved, approved, reopened) sets it as given.
-    // The card's step fields stay: they show the worker that runs.
+    // Two events move it back: a start after changes or reopen, and a done or routed event that asks the Tester while the
+    // card is in Merge. The card's step fields stay: they show the worker that runs.
+    if (event.kind === 'changes' || event.kind === 'reopened') restart = true;
     const column = set.workflowState === undefined ? impliedColumn(event, task, set) : null;
-    if (column && WORKFLOW_STATES.indexOf(column) > WORKFLOW_STATES.indexOf(task.workflowState ?? 'queued')) Object.assign(task, { workflowState: column, workflowSince: event.createdAt ?? null });
+    const back = (event.kind === 'started' && restart) || (column === 'testing' && task.workflowState === 'merge' && ['done', 'routed'].includes(event.kind));
+    if (column && column !== task.workflowState && (back || WORKFLOW_STATES.indexOf(column) > WORKFLOW_STATES.indexOf(task.workflowState ?? 'queued'))) Object.assign(task, { workflowState: column, workflowSince: event.createdAt ?? null });
+    if (event.kind === 'started') restart = false;
     const stage = STEP_OF_STATE[task.state] ?? (task.state === 'review' ? (deployed ? 'dev' : 'pr')
       : task.state === 'running' ? (pullRequest ? 'pr' : 'working') : task.stage ?? 'queued');
     if (stage !== task.stage) Object.assign(task, { stage, stageSince: event.createdAt ?? null });

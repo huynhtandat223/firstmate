@@ -3237,6 +3237,20 @@ case_board_column() {
   [ "$(task_row $t | jq -r .nextActor)" = tester ] || { echo "the Tester is not asked: $(task_row $t)"; return 1; }
   ft check $t V1@1440 --status fail --evidence red --head $h; col 'a failed row' $t testing || return 1
   ft check $t V1@1440 --status pass --evidence green --head $h; col 'the rows pass' $t merge || return 1
+  # a pr event recorded while the worker runs puts the card in Merge; the done that asks the Tester then moves it back to Testing
+  t=tk-col-prfirst
+  ft create $t --title 'PR first' --kind ship --surface user-visible --repo example/repo >/dev/null && approve_solution $t || return 1
+  row_of $t P1
+  ft assign $t --to w >/dev/null && ft start $t; col 'started' $t implement || return 1
+  ft event $t pr --pr-url https://github.com/example/repo/pull/10; col 'a pr event before done' $t merge || return 1
+  ft "done" $t "${DONE_FLAGS[@]}" --pr-url https://github.com/example/repo/pull/10 --head $h; col 'done asks the Tester after the pr event' $t testing new || return 1
+  # changes sends the task back to its worker: the next start returns the card to the column the start implies
+  t=tk-col-changes
+  ft create $t --title 'Changes' --kind ship --repo example/repo >/dev/null && approve_solution $t || return 1
+  ft assign $t --to w >/dev/null && ft start $t; col 'started' $t implement || return 1
+  ft "done" $t "${DONE_FLAGS[@]}" --pr-url https://github.com/example/repo/pull/11 --head $h; col 'done with a PR' $t merge || return 1
+  ft changes $t --note 'fix the edge case'; col 'changes alone keeps the column' $t merge || return 1
+  ft start $t; col 'a start after changes' $t implement new || return 1
   # move is the override: it holds until an event implies a later column, and an earlier one changes nothing
   t=tk-col-mv
   printf '%s' '{"steps":[{"state":"implement","harness":"pi","model":"example"},{"state":"testing","harness":"pi","model":"example"},{"state":"merge"}]}' > "$TMP_ROOT/setup-col.json"
@@ -4165,6 +4179,8 @@ mutate 'a pull request waits in Testing while the Tester is asked' board_column 
 mutate 'a ship task waits in Plan until its Solution is approved' board_column "task.planDecision !== 'approve' && task.kind === 'ship' ? 'plan'" "false ? 'plan'"
 mutate 'liveness reports on the running step' board_column "const current = action === 'start' ? own : running ?? own;" "const current = own;"
 mutate 'a start ends the step another column runs' board_column "const other = action === 'start' && running && running.state !== current.state ? running : null;" "const other = null;"
+mutate 'a start after changes returns the card to its work column' board_column "(event.kind === 'started' && restart)" "false"
+mutate 'a done that asks the Tester moves the card back from Merge' board_column "case 'done': return task.nextActor === 'tester' ? 'testing' : " "case 'done': return "
 mutate 'an unapproved Solution holds a ship before implement' workflow "task.kind === 'ship' && task.planDecision !== 'approve') {" "task.kind === 'ship' && false) {"
 mutate 'the Solution gate needs the approval, not just a plan' workflow "task.kind === 'ship' && task.planDecision !== 'approve') {" "task.kind === 'ship' && !task.planSeq) {"
 mutate 'a retry passes the Solution gate too' workflow "if (to === 'implement' && task.kind === 'ship'" "if (to === 'implement' && !retry && task.kind === 'ship'"
