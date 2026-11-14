@@ -4162,7 +4162,7 @@ mutate 'approve skips the states that never started' workflow ": s.status === 'p
 mutate 'a move ends the running attempt of the state left behind' workflow "const stepWrites = left ? [{ state: left.state, status: 'done'" "const stepWrites = false ? [{ state: left.state, status: 'done'"
 mutate 'an event moves the card only forward' board_column "if (column && WORKFLOW_STATES.indexOf(column) > WORKFLOW_STATES.indexOf(task.workflowState ?? 'queued'))" "if (column)"
 mutate 'a pull request waits in Testing while the Tester is asked' board_column "(task.nextActor === 'tester' ? 'testing' : 'merge')" "'merge'"
-mutate 'a ship task waits in Plan until its Solution is approved' board_column "task.kind === 'ship' && task.planDecision !== 'approve' ? 'plan'" "false ? 'plan'"
+mutate 'a ship task waits in Plan until its Solution is approved' board_column "task.planDecision !== 'approve' && task.kind === 'ship' ? 'plan'" "false ? 'plan'"
 mutate 'liveness reports on the running step' board_column "const current = action === 'start' ? own : running ?? own;" "const current = own;"
 mutate 'a start ends the step another column runs' board_column "const other = action === 'start' && running && running.state !== current.state ? running : null;" "const other = null;"
 mutate 'an unapproved Solution holds a ship before implement' workflow "task.kind === 'ship' && task.planDecision !== 'approve') {" "task.kind === 'ship' && false) {"

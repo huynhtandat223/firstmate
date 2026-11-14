@@ -435,7 +435,7 @@ const isMachineRecord = (event, note) => {
 // in Testing while the Tester is asked and in Merge otherwise; Testing moves to Merge once no row waits (next actor
 // firstmate). A deploy is Verify. `task` is the fold after the event's own `set`.
 function impliedColumn(event, task, set) {
-  const work = () => (task.kind === 'ship' && task.planDecision !== 'approve' ? 'plan' : 'implement');
+  const work = () => (task.planDecision !== 'approve' && task.kind === 'ship' ? 'plan' : 'implement');
   const pullRequest = () => (task.nextActor === 'tester' ? 'testing' : 'merge');
   switch (event.kind) {
     case 'created': return ['running', 'blocked', 'review'].includes(set.state) ? work() : null;
