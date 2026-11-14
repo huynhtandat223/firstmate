@@ -12,8 +12,11 @@
 #
 # Each card's live dot follows its incarnation's endpoint. Every FM_TASK_STEP_EVERY seconds (default 5) the loop
 # reads every task's endpoint and calls the task record writer (bin/fm-task.sh step, or FM_TASK_SHADOW_WRITER) only
-# for a task whose liveness or spawn generation differs from the last one written (state/.task-step-live, one
-# `<task>\t<spawn generation>\t<alive|dead>` line each, kept across restarts). The writer refuses a report whose spawn
+# for a task whose liveness, crew state or spawn generation differs from the last one written (state/.task-step-live, one
+# `<task>\t<spawn generation>\t<alive|dead>\t<crew state>` line each, kept across restarts). The crew state is the word
+# bin/fm-crew-state.sh prints (FM_CREW_STATE_NO_FORGE=1), read at most every FM_TASK_CREW_EVERY seconds (default 60) for
+# a task; it is left out of the call until it has been read. Each pass also replays a task's status lines the record
+# has not stored yet (bin/fm-task-shadow.sh replay), at most every FM_TASK_REPLAY_EVERY seconds (default 15) for a task. The writer refuses a report whose spawn
 # generation is not the one that started the running step. A call the API did not answer is tried again on the next
 # pass; a refusal is settled like a write.
 #
@@ -54,6 +57,9 @@ LOCK="$STATE/.task-step-loop.lock"
 TASK_RECORD_WRITER=${FM_TASK_SHADOW_WRITER:-$SCRIPT_DIR/fm-task.sh}
 TASK_STEP_WRITTEN="$STATE/.task-step-live"
 TASK_STEP_EVERY=${FM_TASK_STEP_EVERY:-5}
+TASK_CREW_EVERY=${FM_TASK_CREW_EVERY:-60}
+TASK_REPLAY_EVERY=${FM_TASK_REPLAY_EVERY:-15}
+declare -A CREW_AT CREW_WORD REPLAY_AT
 STOP=0
 # seconds between lease heartbeats; the lease expires after 180
 HOST_HEARTBEAT_EVERY=${FM_HOST_HEARTBEAT_EVERY:-30}
@@ -75,8 +81,34 @@ loop_pid() {
   fm_pid_alive "$pid" && printf '%s\n' "$pid"
 }
 
+# The crew-state word of a task, read at most every TASK_CREW_EVERY seconds; empty until the first read answers.
+crew_word() {  # <task> <now>
+  local id=$1 now=$2 word
+  if [ -z "${CREW_AT[$id]:-}" ] || [ $((now - CREW_AT[$id])) -ge "$TASK_CREW_EVERY" ]; then
+    CREW_AT[$id]=$now
+    word=$(FM_HOME="$FM_HOME" FM_CREW_STATE_NO_FORGE=1 fm_run_timed 10 "$SCRIPT_DIR/fm-crew-state.sh" "$id" 2>/dev/null </dev/null | sed -nE 's/^state: ([a-z]+) .*/\1/p' | head -n 1)
+    [ -z "$word" ] || CREW_WORD[$id]=$word
+  fi
+  printf '%s' "${CREW_WORD[$id]:-}"
+}
+
+# Send the status lines the record has not stored yet, bounded and not more often than TASK_REPLAY_EVERY.
+status_replay_pass() {  # <task> <now>
+  local id=$1 now=$2 file="$STATE/$1.status" total cursor pid
+  [ -f "$file" ] || return 0
+  total=$(grep -ac '' "$file" 2>/dev/null) || total=0
+  cursor=$(cat "$STATE/$id.status-sent" 2>/dev/null) || cursor=''
+  case "$cursor" in ''|*[!0-9]*) ;; *) [ "$total" -gt "$cursor" ] || return 0 ;; esac
+  [ -z "${REPLAY_AT[$id]:-}" ] || [ $((now - REPLAY_AT[$id])) -ge "$TASK_REPLAY_EVERY" ] || return 0
+  REPLAY_AT[$id]=$now
+  fm_run_timed 60 env FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task-shadow.sh" replay "$id" >/dev/null 2>&1 </dev/null &
+  pid=$!
+  while ! wait "$pid" && kill -0 "$pid" 2>/dev/null; do :; done
+  wait "$pid" 2>/dev/null || true
+}
+
 task_step_pass() {
-  local meta id generation live line written writer next=''
+  local meta id generation live line written writer crew now next=''
   # the writer settings the flag file carries (FM_TASK_BASE_URL, FM_TASK_AUTH, FM_TASK_TOKEN_FILE), as the hook reads them
   fm_task_shadow_config "$CONFIG/task-shadow"
   written=$(cat "$TASK_STEP_WRITTEN" 2>/dev/null || true)
@@ -87,11 +119,16 @@ task_step_pass() {
     id=${meta##*/}; id=${id%.meta}
     generation=$(fm_meta_get "$meta" spawn_gen)
     live=$(fm_backend_agent_alive "$(fm_backend_of_meta "$meta")" "$(fm_backend_target_of_meta "$meta")" 2>/dev/null) || live=unknown
-    line=$(printf '%s\t%s\t%s' "$id" "$generation" "$live")
+    now=$(date +%s)
+    crew=''
+    case "$live" in alive|dead) crew=$(crew_word "$id" "$now") ;; esac
+    line=$(printf '%s\t%s\t%s\t%s' "$id" "$generation" "$live" "$crew")
+    status_replay_pass "$id" "$now"
+    [ "$STOP" -eq 0 ] || break
     case "$live" in
       alive|dead)
         if ! printf '%s\n' "$written" | grep -Fqx -- "$line"; then
-          fm_run_timed 2 env FM_HOME="$FM_HOME" "$TASK_RECORD_WRITER" step "$id" "$live" --generation "$generation" >/dev/null 2>&1 &
+          fm_run_timed 2 env FM_HOME="$FM_HOME" "$TASK_RECORD_WRITER" step "$id" "$live" --generation "$generation" ${crew:+--crew-state "$crew"} >/dev/null 2>&1 &
           writer=$!
           # a stop signal interrupts wait: wait again until the call has really ended, then read its status
           while ! wait "$writer" && kill -0 "$writer" 2>/dev/null; do :; done

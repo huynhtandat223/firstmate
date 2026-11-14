@@ -1,4 +1,4 @@
-// Read-only old-source mapping shared by the shadow backfill and reconciler.
+// Read-only old-source mapping (the backfill and reconcile scripts that shared it are retired).
 // This module owns the proto_data.py hermes mapping; task writes use fm-task.sh.
 import fs from 'node:fs';
 import path from 'node:path';

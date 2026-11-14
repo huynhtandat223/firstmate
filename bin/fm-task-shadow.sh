@@ -14,14 +14,21 @@
 #
 # Usage (the first word is the hook event):
 #   fm-task-shadow.sh dispatched <task> <kind> <repo> <harness>      create, assign, start         (bin/fm-spawn.sh)
-#   fm-task-shadow.sh status <config> <state>/<task>.status          the last status line          (the worker's status command)
-#   fm-task-shadow.sh cleaned-up <task>                              a comment event               (bin/fm-teardown.sh)
+#   fm-task-shadow.sh status <config> <state>/<task>.status          every status line not yet sent (the worker's status command)
+#   fm-task-shadow.sh replay <task>                                  the same replay for state/<task>.status   (bin/fm-task-step-loop.sh)
+#   fm-task-shadow.sh cleaned-up <task>                              a comment event, with the proof file named by
+#                                                                    FM_CLEANUP_PROOF_FILE as a document       (bin/fm-teardown.sh)
+#   fm-task-shadow.sh control <task> <action> <result>               a comment event: an interrupt, exit or relaunch
+#                                                                    result                                   (bin/fm-control.sh)
 #   fm-task-shadow.sh verified <task>                                a comment event               (bin/fm-verify-close.sh)
 #   fm-task-shadow.sh held <task> <hold-kind> <reason>               block (captain: transient)     (bin/fm-captain-hold.sh hold)
 #   fm-task-shadow.sh answered <task> <released|closed>              unblock or approve            (bin/fm-captain-hold.sh answer)
 #   fm-task-shadow.sh deploy-verify <task> <sha> <round> <issue>     a deploy event                (bin/fm-procevent-deploy-verify.sh)
 #   fm-task-shadow.sh merged <task> <pr-url>                         a pr event with --merged      (bin/fm-merge-outcome-lib.sh)
 #   fm-task-shadow.sh step-start <task> <generation> <harness> [<model> [<effort> [<account>]]]   (an empty model keeps the setup's)
+#                                                                    where it runs and the brief come from the environment:
+#                                                                    FM_STEP_HOST, FM_STEP_ENDPOINT, FM_STEP_WORKTREE,
+#                                                                    FM_STEP_BRANCH, FM_STEP_BRIEF_FILE (a .md file), FM_STEP_NOTE
 #                                                                    step start: the current workflow state runs (bin/fm-spawn.sh,
 #                                                                    a relaunch too); queued, merge and done have no worker and
 #                                                                    the writer refuses it, which is logged like any refusal
@@ -39,6 +46,13 @@
 #
 # Every writer call carries an idempotency key built from the task, the hook event and the change, so a repeated hook
 # call, or two hooks that report one change, store one event.
+#
+# Status lines are keyed by their line number in state/<task>.status, and state/<task>.status-sent holds the last line
+# number settled. The status command and `replay` send every line after it, in order. A writer answer of 3 (the API did
+# not answer) or a timeout stops the replay and keeps the cursor, so the lines go out after the outage; any other answer,
+# a refusal included, settles the line. The cursor only moves forward, and a lost cursor resends under the same keys.
+# A status file with lines and no cursor is seeded to its length (the status command keeps its own new last line): its
+# history was mirrored by hash key before.
 #
 # Environment: FM_HOME, FM_CONFIG_OVERRIDE, FM_STATE_OVERRIDE, FM_DATA_OVERRIDE resolve the home like the other bin/ scripts;
 # FM_TASK_SHADOW_WRITER replaces bin/fm-task.sh (the tests use a fake); FM_TASK_SHADOW_TIMEOUT bounds one writer call
@@ -97,8 +111,11 @@ w() {
   rc=$?
   mkdir -p "$STATE" 2>/dev/null
   printf '%s %s %s %s rc=%s %s\n' "$(date +%s)" "$TASK" "$EVENT" "$1" "$rc" "$(cut_to "$out" 160)" >> "$LOG" 2>/dev/null
+  # the API did not answer (3) or the call ran out of time: a replay keeps its cursor and tries again
+  case "$rc" in 3|124|137) W_UNREACHABLE=1 ;; esac
   return "$rc"
 }
+W_UNREACHABLE=0
 
 # The task's title and kind come from the backlog through bin/fm-tasks-axi.sh show; the backlog file is never read.
 backlog_field() {  # <field>: one top-level field of `fm-tasks-axi.sh show <task>`, empty when absent
@@ -139,13 +156,13 @@ close_task() {
   w "$1-approve" approve "$TASK"
 }
 
-status_event() {
+# one status line, written under the key of its line number
+status_line() {
   local line state text key until
-  line=$(grep -a '.' "$2" 2>/dev/null | tail -n 1)
-  [ -n "$line" ] || return 0
+  key=$1
+  line=$2
   state=$(printf '%s' "$line" | sed -nE 's/^([a-z][a-z-]*)[ :].*/\1/p')
   text=$(printf '%s' "$line" | sed -E 's/^[a-z][a-z-]*( \[[a-z]+=[^]]*\])*:? ?//')
-  key=$(short "$line")
   [ -n "$text" ] || text=$state
   text=$(cut_to "$text" 1500)
   case "$state" in
@@ -185,6 +202,41 @@ status_event() {
     resolved)
       w "status-$key" unblock "$TASK" ;;
   esac
+  return 0
+}
+
+# Send every line of state/<task>.status after the cursor, in order, and move the cursor over what settled.
+status_replay() {  # <status file> <lines at the end that are new when the task has no cursor: 1 for the status command, 0 for replay>
+  local file=$1 fresh=${2:-0} cursor_file="$STATE/$TASK.status-sent" total cursor n line
+  [ -f "$file" ] || return 0
+  total=$(grep -ac '' "$file" 2>/dev/null) || total=0
+  cursor=$(cat "$cursor_file" 2>/dev/null) || cursor=''
+  case "$cursor" in
+    ''|*[!0-9]*)
+      # the history of a task with no cursor was mirrored by hash key before: never write it twice. The status command
+      # has just appended its own line, which is new.
+      cursor=$((total - fresh))
+      [ "$cursor" -ge 0 ] || cursor=0
+      printf '%s\n' "$cursor" > "$cursor_file" 2>/dev/null || true ;;
+  esac
+  n=$cursor
+  while [ "$n" -lt "$total" ]; do
+    n=$((n + 1))
+    line=$(sed -n "${n}p" "$file" | tr -d '\r')
+    if [ -n "${line//[[:space:]]/}" ]; then
+      W_UNREACHABLE=0
+      status_line "$n" "$line"
+      if [ "$W_UNREACHABLE" -ne 0 ]; then n=$((n - 1)); break; fi
+    fi
+  done
+  [ "$n" -gt "$cursor" ] || return 0
+  # the cursor only moves forward, even when the loop and the status command run together
+  local now
+  now=$(cat "$cursor_file" 2>/dev/null) || now=0
+  case "$now" in ''|*[!0-9]*) now=0 ;; esac
+  if [ "$n" -gt "$now" ]; then
+    if printf '%s\n' "$n" > "$cursor_file.$$"; then mv -f "$cursor_file.$$" "$cursor_file" 2>/dev/null || rm -f "$cursor_file.$$"; fi
+  fi
   return 0
 }
 
@@ -254,13 +306,26 @@ case "$EVENT" in
   dispatched)
     kind=$(record_kind "${2:-}")
     repo=${3:-}
+    # a new task replays its status file from the first line
+    [ -f "$STATE/$TASK.status-sent" ] || printf '0\n' > "$STATE/$TASK.status-sent" 2>/dev/null || true
     w create create "$TASK" --title "$(title_of)" --kind "$kind" ${repo:+--repo "$repo"}
     w assign assign "$TASK" --to "$TASK"
     w start start "$TASK"
     ;;
-  status) status_event "$@" ;;
+  status) status_replay "$2" 1 ;;
+  replay) status_replay "$STATE/$TASK.status" ;;
   started) w "manual-start-${2:?start occurrence required}" start "$TASK" ;;
-  cleaned-up) w cleaned-up event "$TASK" comment --note 'cleaned up by bin/fm-teardown.sh' ;;
+  cleaned-up)
+    # the landed-work proof teardown computed rides on the event as a document
+    proof=${FM_CLEANUP_PROOF_FILE:-}
+    if [ -n "$proof" ] && [ -s "$proof" ]; then
+      w cleaned-up event "$TASK" comment --note 'cleaned up by bin/fm-teardown.sh' --document "$proof" --document-title 'Cleanup proof'
+    else
+      w cleaned-up event "$TASK" comment --note 'cleaned up by bin/fm-teardown.sh'
+    fi ;;
+  control)
+    # an interrupt, exit or relaunch result; each call is its own event
+    w "control-${2:-none}-$(short "${3:-}")-$(date +%s)-$$" event "$TASK" comment --note "control ${2:-?}: $(cut_to "${3:-}" 300)" ;;
   verified) w verified event "$TASK" comment --note 'verification record complete (bin/fm-verify-close.sh)' ;;
   held) hold_event "${2:-hold}" "${3:-}" "${4:-}" ;;
   answered)
@@ -297,7 +362,11 @@ case "$EVENT" in
     ;;
   step-start)
     # a spawn on the harness default model names none: the writer keeps the setup's model for the state
-    w "step-start-${2:-none}" step "$TASK" start --generation "${2:-}" --harness "${3:-}" ${4:+--model "$4"} ${5:+--effort "$5"} ${6:+--account "$6"}
+    # where it runs and the brief come from the environment; an absent variable adds no flag
+    w "step-start-${2:-none}" step "$TASK" start --generation "${2:-}" --harness "${3:-}" ${4:+--model "$4"} ${5:+--effort "$5"} ${6:+--account "$6"} \
+      ${FM_STEP_HOST:+--host "$FM_STEP_HOST"} ${FM_STEP_ENDPOINT:+--endpoint "$FM_STEP_ENDPOINT"} \
+      ${FM_STEP_WORKTREE:+--worktree "$FM_STEP_WORKTREE"} ${FM_STEP_BRANCH:+--branch "$FM_STEP_BRANCH"} \
+      ${FM_STEP_BRIEF_FILE:+--document "$FM_STEP_BRIEF_FILE" --document-title Brief} ${FM_STEP_NOTE:+--note "$FM_STEP_NOTE"}
     ;;
   step-end)
     w "step-end-${2:-none}-$(short "${3:-}")" step "$TASK" end --generation "${2:-}" --reason "${3:-cleanup}"

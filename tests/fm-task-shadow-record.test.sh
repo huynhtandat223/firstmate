@@ -26,9 +26,6 @@ bash "$ROOT/bin/fm-task-shadow.sh" dispatched fresh ship example/repo pi
 "$ROOT/bin/fm-task.sh" show fresh --json | jq -e '.assignee == "fresh"'
 bash "$ROOT/bin/fm-task-shadow.sh" held fresh external 'External dependency'
 "$ROOT/bin/fm-task.sh" show fresh --json | jq -e '.blockKind == "external"'
-printf '## Queued\n- [ ] mapped - Mapping probe (hold-kind: external) (hold: External dependency)\n' > "$FM_HOME/data/backlog.md"
-bash "$ROOT/bin/fm-task-backfill.sh"
-"$ROOT/bin/fm-task.sh" show mapped --json | jq -e '.blockKind == "external"'
 bash "$ROOT/bin/fm-task-shadow.sh" held repeat captain 'Same reason' occurrence-1
 "$ROOT/bin/fm-task.sh" unblock repeat
 bash "$ROOT/bin/fm-task-shadow.sh" held repeat captain 'Same reason' occurrence-2

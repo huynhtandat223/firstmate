@@ -65,7 +65,7 @@ Object.assign(s.fm_task.f, {backlogHome:{t:'s',n:1,m:64},row:{t:'s',n:1},notes:{
 Object.assign(s.fm_task.f, Object.fromEntries(['workflowState','stepHarness','stepModel','stepEffort','stepAlive','setupBy'].map(k => [k,{t:'s',n:1}])));
 Object.assign(s.fm_task.f, {workflowSince:{t:'d',n:1},setupAt:{t:'d',n:1}});
 Object.assign(s.fm_task.f, {threadsYourTurn:{t:'i',n:1}});
-s.fm_task_step = {ops:['list','get','create','patch','delete'],u:[['taskId','state']],f:{taskId:{t:'s'},state:{t:'s'},position:{t:'i'},attempt:{t:'i'},status:{t:'s'},...Object.fromEntries(['harness','model','effort','fallbacks','source','ruleIds','account','alive','endReason'].map(k=>[k,{t:'s',n:1}])),...Object.fromEntries(['startedAt','lastHeartbeatAt','endedAt'].map(k=>[k,{t:'d',n:1}]))}};
+s.fm_task_step = {ops:['list','get','create','patch','delete'],u:[['taskId','state']],f:{taskId:{t:'s'},state:{t:'s'},position:{t:'i'},attempt:{t:'i'},status:{t:'s'},...Object.fromEntries(['harness','model','effort','fallbacks','source','ruleIds','account','alive','endReason','crewState'].map(k=>[k,{t:'s',n:1}])),...Object.fromEntries(['startedAt','lastHeartbeatAt','endedAt','crewStateAt'].map(k=>[k,{t:'d',n:1}])),hostId:{t:'s',n:1,m:64},endpoint:{t:'s',n:1,m:200},worktree:{t:'s',n:1,m:500},branch:{t:'s',n:1,m:200}}};
 fs.writeFileSync(file, JSON.stringify(s));
 JS
 
@@ -3104,7 +3104,27 @@ case_workflow() {
   ft step tk-flow start --harness pi --model example --generation g1; must 'the same incarnation again' 0 || return 1
   [ "$OUT" = 'step tk-flow: unchanged' ] || { echo "a repeated start wrote: $OUT"; return 1; }
   # a relaunch: the new incarnation takes the running attempt over; the old one can no longer report
-  ft step tk-flow start --harness claude --model opus --effort xhigh --generation g2; must 'relaunch start' 0 || return 1
+  # A5: a relaunch carries where the worker runs and its brief
+  printf '# brief\nthe task\n' > "$TMP_ROOT/brief-a5.md"
+  ft step tk-flow start --harness claude --model opus --effort xhigh --generation g2 --host m1 --endpoint herdr:s:p1 --worktree /w/one --branch fm/one --document "$TMP_ROOT/brief-a5.md" --document-title Brief --note 'profile=p1 account=a'; must 'relaunch start' 0 || return 1
+  step_of implement | jq -e '.hostId == "m1" and .endpoint == "herdr:s:p1" and .worktree == "/w/one" and .branch == "fm/one" and .attempt == 1' >/dev/null || { echo "the step lost its place: $(step_of implement)"; return 1; }
+  db fm_event_document | jq -e '[.[] | select(.title == "Brief" and .content == "# brief\nthe task\n")] | length == 1' >/dev/null || { echo 'the brief is not stored once'; return 1; }
+  db fm_task_event | jq -e 'any(.[]; .kind == "step" and (.body | fromjson | .note == "profile=p1 account=a"))' >/dev/null || { echo 'the dispatch note is not on the step event'; return 1; }
+  ft step tk-flow start --harness claude --model opus --generation g2 --host other; must 'the same incarnation again, new place' 0 || return 1
+  { [ "$OUT" = 'step tk-flow: unchanged' ] && step_of implement | jq -e '.hostId == "m1"' >/dev/null; } || { echo "a repeated start moved the host: $OUT $(step_of implement)"; return 1; }
+  ft step tk-flow alive --crew-state working --generation g2; must 'crew state' 0 || return 1
+  step_of implement | jq -e '.crewState == "working" and .crewStateAt != null' >/dev/null || { echo "crew state not stored: $(step_of implement)"; return 1; }
+  ft step tk-flow alive --crew-state working --generation g2; must 'same crew state' 0 || return 1
+  [ "$OUT" = 'step tk-flow: unchanged' ] || { echo "an unchanged crew state wrote: $OUT"; return 1; }
+  ft step tk-flow alive --crew-state napping --generation g2; must 'a crew word outside the set' 2 || return 1
+  ft step tk-flow end --crew-state done --reason x; must 'crew state on end' 2 || return 1
+  ft step tk-flow alive --crew-state parked --generation g2; must 'new crew state' 0 || return 1
+  step_of implement | jq -e '.crewState == "parked"' >/dev/null || { echo "crew state did not change: $(step_of implement)"; return 1; }
+  ft step tk-flow alive --crew-state working --generation g2; must 'crew state back' 0 || return 1
+  printf '# proof\nlanded\n' > "$TMP_ROOT/proof-a5.md"
+  ft event tk-flow comment --note 'cleaned up' --document "$TMP_ROOT/proof-a5.md" --document-title 'Cleanup proof'; must 'a comment with a document' 0 || return 1
+  db fm_event_document | jq -e '[.[] | select(.title == "Cleanup proof" and .content == "# proof\nlanded\n")] | length == 1' >/dev/null || { echo 'the comment document is not stored once'; return 1; }
+  ft event tk-flow steer --note x --document "$TMP_ROOT/proof-a5.md"; must 'a document on another kind' 2 || return 1
   step_of implement | jq -e '.attempt == 1 and .model == "opus" and .status == "running"' >/dev/null || { echo "relaunch did not re-point the attempt: $(step_of implement)"; return 1; }
   [ "$(task_row tk-flow | jq -r .stepModel)" = opus ] || { echo "card model after relaunch: $(task_row tk-flow)"; return 1; }
   ft step tk-flow dead --generation g1; must 'stale incarnation refused' 5 || return 1
@@ -3145,7 +3165,10 @@ case_workflow() {
   mk_running tk-close >/dev/null && approve_solution tk-close || return 1
   ft setup tk-close --file "$TMP_ROOT/setup-verify.json"; must 'close setup' 0 || return 1
   ft move tk-close --to implement; must 'close move' 0 || return 1
-  ft step tk-close start --harness pi --generation c1; must 'start on the harness default model' 0 || return 1
+  ft step tk-close start --harness pi --generation c0 --host "$(printf 'h%.0s' $(seq 1 100))" --branch "fm/$(printf 'b%.0s' $(seq 1 250))" --worktree /w/short; must 'start with long places' 0 || return 1
+  db fm_task_step | jq -e '.[] | select(.taskId == "tk-close" and .state == "implement") | (.hostId | length == 64 and test("^h+~[0-9a-f]{8}$")) and (.branch | length == 200 and test("~[0-9a-f]{8}$")) and .worktree == "/w/short"' >/dev/null \
+    || { echo "a long place was not fitted: $(db fm_task_step | jq -c '.[] | select(.taskId == "tk-close")')"; return 1; }
+  ft step tk-close start --harness pi --generation c1; must 'relaunch from the start with long places' 0 || return 1
   db fm_task_step | jq -e '.[] | select(.taskId == "tk-close" and .state == "implement") | .model == "example" and .effort == "high"' >/dev/null \
     || { echo "a start with no model lost the configured one: $(db fm_task_step | jq -c '.[] | select(.taskId == "tk-close")')"; return 1; }
   ft "done" tk-close "${DONE_FLAGS[@]}"; must 'close done' 0 || return 1
@@ -3291,7 +3314,7 @@ case_stage() {
   ft reproject $t; must 'row event' 0 || return 1
   task_row $t | jq -e --arg at "$real_at" '.lastNote == "real note" and .lastEventAt == $at and .section == "In flight"' >/dev/null \
     || { echo "a row event moved lastNote or lastEventAt: $(task_row $t)"; return 1; }
-  # an import's source stamp ({"source","sha256"} under a backfill:<task>: key, fm-task-backfill-lib.mjs) points at a note
+  # an import's source stamp ({"source","sha256"} under a backfill:<task>: key, written by the retired fm-task-backfill) points at a note
   # and is not one: lastNote stays
   local stamp='{"source":"backlog","sha256":"0123abcd"}'
   ft event $t comment --note "$stamp" --key "backfill:$t:backlog:0123abcd"; must 'source stamp' 0 || return 1
@@ -3306,7 +3329,7 @@ case_stage() {
   task_row $t | jq -e --arg note "$stamp" '.lastNote == $note' >/dev/null \
     || { echo 'a foreign task key hid a real note'; return 1; }
   ft comment $t --note 'real note'; must 'real note again' 0 || return 1  # the note SG2 expects reproject to restore
-  # a reconcile divergence ({"field","oldSource","record"} under a reconcile:<task>: key, fm-task-reconcile-lib.mjs) is a
+  # a reconcile divergence ({"field","oldSource","record"} under a reconcile:<task>: key, written by the retired fm-task-reconcile) is a
   # comparison record, not a note: lastNote stays
   local diverged='{"field":"nextActor","oldSource":"tester","record":"worker"}'
   ft event $t divergence --note "$diverged" --key "reconcile:$t:nextActor:0123abcd"; must 'reconcile divergence' 0 || return 1
@@ -4115,6 +4138,9 @@ mutate 'a pr event after the newest started is pr' stage "if (event.kind === 'pr
 mutate 'stageSince moves only when the step changes' stage "if (stage !== task.stage) Object.assign(task, { stage, stageSince: event.createdAt ?? null });" "Object.assign(task, { stage, stageSince: event.createdAt ?? null });"
 mutate 'a move outside the setup is refused' workflow "if (!target || (next?.state !== to && !retry))" "if (!target && false)"
 mutate 'a report from an older incarnation is refused' workflow "if (generation && started && generation !== started) throw rule(" "if (false) throw rule("
+mutate 'a long place is fitted to its published field' workflow 'fitText(v, STEP_PLACE_LIMITS[k])' 'v'
+mutate 'a crew state change is written' workflow 'const newCrew = crewState !== null && crewState !== current.crewState;' 'const newCrew = false;'
+mutate 'the brief rides on the step event' workflow '...(document ? { children: { documents: [document] } } : {}) };' '};'
 mutate 'a relaunch start marks its incarnation as the running one' workflow "patch: { ...runtime, status: 'running', alive: 'alive', lastHeartbeatAt: now }" "patch: { ...runtime, alive: 'alive', lastHeartbeatAt: now }"
 mutate 'a removed pending state is skipped' workflow "...removed.map(s => ({ state: s.state, status: 'skipped' }))" "...[]"
 mutate 'reopen lets the states approve skipped wait again' workflow "s.status === 'skipped' && s.endReason === 'approved').map(" "false).map("
