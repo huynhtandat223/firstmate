@@ -148,6 +148,17 @@ case "$err" in *'is for home:homea, not home:homeb'*) ;; *) fail "scope refusal 
 [ "$(run "$TMP/y" history --file captain.md | wc -l)" = 1 ] || fail "home b gained a version"
 ok "put refuses a pull record from another memory home"
 
+# Review fixes: a pull record from another home is never published into an empty home either.
+mkhome "$TMP/z"; printf 'homez\n' > "$TMP/z/config/memory-home"; run "$TMP/z" seed >/dev/null
+printf 'homenew\n' > "$TMP/z/config/memory-home"
+set +e; err=$(run "$TMP/z" put --file learnings.md 2>&1); rc=$?; set -e
+[ "$rc" != 0 ] || fail "put published a record of home z into the empty home"
+case "$err" in *'is for home:homez, not home:homenew'*) ;; *) fail "empty-home scope refusal was: $err" ;; esac
+[ "$(run "$TMP/z" history --file learnings.md | wc -l)" = 0 ] || fail "the empty home gained a version"
+out=$(run "$TMP/z" put --file learnings.md --rebase)
+[ "$(field "$out" version)" = 1 ] || fail "put --rebase into the empty home did not insert version 1: $out"
+ok "put refuses another home's pull record into an empty home unless --rebase"
+
 # T7: the rule splitter.
 long=$(python3 -c "print(' '.join(f'Sentence number {i} is a short fact.' for i in range(30)))")
 printf '# Fleet learnings\n\n## Tools <!--a:2026-11-13-->\n\n%s\n\n- not a bullet rule here\n' "$long" > "$TMP/split-learnings.md"

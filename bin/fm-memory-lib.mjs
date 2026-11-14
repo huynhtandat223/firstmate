@@ -199,8 +199,11 @@ async function pull(ctx, files = ctx.files) {
 async function put(ctx) {
   const name = ctx.file, text = readLocal(ctx.data, name); let base = readBase(ctx.data, name);
   if (text === null) fail(`data/${name} does not exist`);
+  // A pull record of another home is never published here, also when this home has no row yet.
+  const otherHome = () => { if (base && base.scope && base.scope !== ctx.scope && !ctx.rebase) fail(`the pull record of ${name} is for ${base.scope}, not ${ctx.scope}; run fm-memory.sh pull, or put --rebase to publish this text on top of ${ctx.scope}`); };
   const row = await latest(ctx.scope, name);
   if (!row) {
+    otherHome();
     await insert(ctx.scope, name, 1, 'memory', 'text/markdown', text, ctx.by);
     await writeRules(ctx.scope, name, 1, text, ctx.by); writeBase(ctx.data, name, ctx.scope, 1, text);
     return { file: name, result: 'inserted', version: 1 };
@@ -210,8 +213,8 @@ async function put(ctx) {
     writeBase(ctx.data, name, ctx.scope, row.version, text);
     return { file: name, result: 'unchanged', version: row.version };
   }
+  otherHome();
   if (ctx.rebase) base = { version: row.version };
-  if (base && base.scope && base.scope !== ctx.scope && !ctx.rebase) fail(`the pull record of ${name} is for ${base.scope}, not ${ctx.scope}; run fm-memory.sh pull, or put --rebase to publish this text on top of ${ctx.scope}`);
   if (!base) fail(`no pull record for ${name}; run fm-memory.sh pull first, or put --rebase to publish this text on top of version ${row.version}`);
   const refuse = () => { const error = new Error(`5001 holds version ${row.version} of ${name}, but this cache started from version ${base.version}; nothing was written.\n${unifiedDiff(row.content, text)}`); error.code = 3; throw error; };
   if (row.version !== base.version) refuse();
