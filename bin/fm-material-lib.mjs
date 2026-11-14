@@ -158,7 +158,7 @@ function discover() {
     const abs = path.join(ctx.fmHome, rel), stat = fs.lstatSync(abs);
     const info = classify(rel);
     if (!stat.isFile()) return skipped.push({ path: rel, reason: 'not a regular file' });
-    if (!info) return skipped.push({ path: rel, reason: 'not on the portable list' });
+    if (!info) return /\.bak|^\./.test(path.basename(rel)) ? undefined : skipped.push({ path: rel, reason: 'not on the portable list' });
     if (stat.size > MAX_BYTES) return skipped.push({ path: rel, reason: 'larger than 1 MiB' });
     const bytes = fs.readFileSync(abs), text = bytes.toString('utf8');
     if (bytes.includes(0) || !Buffer.from(text).equals(bytes)) return skipped.push({ path: rel, reason: 'not text' });
@@ -170,6 +170,7 @@ function discover() {
     for (const name of names) {
       const child = `${rel}/${name}`, stat = fs.lstatSync(path.join(ctx.fmHome, child));
       if (stat.isDirectory() && SEGMENT.test(name) && name !== '__pycache__') walk(child);
+      else if (name === '__pycache__' || name.startsWith('.')) continue;
       else if (stat.isDirectory() || stat.isSymbolicLink()) skipped.push({ path: child, reason: 'folder or link the list does not take' });
       else add(child);
     }
