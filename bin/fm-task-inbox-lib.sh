@@ -15,13 +15,13 @@
 # fm_task_delivery read:<task> receipts own acknowledgement. The filesystem
 # caches messages and spools unavailable writes under the same event key.
 # Without task-shadow, the filesystem remains the durable delivery store.
-# The terminal carries only a short constant doorbell line. While the endpoint remains available, that
+# The backend endpoint carries only a short constant doorbell line. While the endpoint remains available, that
 # line does not need to be reliable because ringing it again is free. A
 # duplicated doorbell is a no-op by construction (the worker finds the inbox
 # empty or already handled), and a swallowed doorbell is detected by the
 # absence of the worker's acknowledgement and re-rung on a bounded schedule.
 # A positively dead or missing endpoint bypasses that schedule without being
-# typed into, and its unhandled record surfaces through the ordinary stale wake
+# submitted to, and its unhandled record surfaces through the ordinary stale wake
 # into stuck-crewmate-recovery.
 #
 # Layout under <state-dir>:
@@ -41,6 +41,7 @@
 # Record format (fm_task_inbox_write / fm_task_inbox_body):
 #   schema=fm-task-inbox.v1
 #   at=<utc timestamp>
+#   body-terminator=1          present on records written with a synthetic final newline
 #   delivery=fire-and-forget   present only when the re-ring ladder must ignore it
 #                              (it still gets one retry ring; see below)
 #   --
@@ -58,10 +59,11 @@
 # composer; an unsubmitted copy of this doorbell is retried. After
 # FM_TASK_INBOX_RING_MAX attempts without an acknowledgement it escalates. The
 # caller owns the busy and recovery-grade endpoint checks: due actions deferred
-# by a busy pane consume a separate durable consecutive-poll budget,
+# by the caller's delivery guard consume a separate durable consecutive-poll budget,
 # FM_TASK_INBOX_BUSY_MAX. At that bound the same escalation path surfaces a
-# stuck-busy reason without typing. A non-busy due check or acknowledgement resets
-# this budget. Fire-and-forget retries remain outside escalation. A positively
+# stuck-busy reason without submission. An allowed due check or acknowledgement
+# resets this budget. fm-busy-lib.sh owns the backend-specific delivery guard.
+# Fire-and-forget retries remain outside escalation. A positively
 # dead or missing endpoint skips delivery and the ladder and escalates directly.
 # This library owns the schedule, durable budgets, and escalation marker.
 # If delivery-attempt or busy-deferral bookkeeping fails while the record remains unhandled,
@@ -161,6 +163,11 @@ fm_task_inbox_dir() {  # <state-dir> <task-id>
   printf '%s/%s.inbox' "$1" "$2"
 }
 
+# Serializes a local inbox enqueue with parking the same task.
+fm_task_inbox_delivery_lock_path() {  # <state-dir> <task-id>
+  printf '%s/.%s.inbox-delivery.lock' "$1" "$2"
+}
+
 fm_task_inbox_handled_dir() {  # <state-dir> <task-id>
   printf '%s/%s.inbox/handled' "$1" "$2"
 }
@@ -221,9 +228,16 @@ _fm_task_inbox_write_record_locked() {  # <inbox-dir> <text> [delivery-mode]
   {
     printf 'schema=%s\n' "$FM_TASK_INBOX_SCHEMA"
     printf 'at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    case "$text" in
+      *$'\n') : ;;
+      *) printf 'body-terminator=1\n' ;;
+    esac
     [ "$delivery_mode" != fire-and-forget ] || printf 'delivery=fire-and-forget\n'
     printf -- '--\n'
-    printf '%s' "$text"
+    case "$text" in
+      *$'\n') printf '%s' "$text" ;;
+      *) printf '%s\n' "$text" ;;
+    esac
   } > "$tmp" || status=1
   if [ "$status" -eq 0 ]; then
     # Reserve the sequence under the lock, publish first, then expose the cache.
@@ -318,8 +332,8 @@ fm_task_inbox_write() {  # <state-dir> <task-id> <text> [delivery-mode]
 }
 
 # Durably enqueue one steer at most once: when a record with the exact same
-# body already exists - unhandled or already acknowledged in handled/ - no new
-# record is written and the existing record's path is printed instead.
+# body and delivery mode already exists, unhandled or acknowledged in handled/,
+# no new record is written and the existing record's path is printed instead.
 # This is the enqueue primitive for a transport that can fail with completion
 # unknown (the remote steer leg over ssh): the caller's safe recovery is to run
 # the same enqueue again, and this dedup is what makes the re-run land on the
@@ -331,13 +345,18 @@ fm_task_inbox_write() {  # <state-dir> <task-id> <text> [delivery-mode]
 # repeated identical local steer was a mistake, not a deliberate instruction.
 fm_task_inbox_write_idempotent() {  # <state-dir> <task-id> <text> [delivery-mode]
   local state=$1 task=$2 text=$3 delivery_mode=${4:-} dir lock want have f rec='' status=0
+  local first_line=${3%%$'\n'*} scan_dir
   dir=$(fm_task_inbox_dir "$state" "$task")
   mkdir -p "$dir/handled" || return 1
   lock="$dir/.seq.lock"
   fm_task_inbox_lock_acquire "$lock" || return 1
   if want=$(mktemp "$dir/.dedup.XXXXXX") && have=$(mktemp "$dir/.dedup.XXXXXX"); then
     if printf '%s' "$text" > "$want"; then
-      for f in "$dir"/*.msg "$dir/handled"/*.msg; do
+      # One grep per directory replaces per-record parsing of unrelated history.
+      # Header/other-line hits are harmless: mode and exact body still decide.
+      # Empty bodies also match the separator, including empty legacy records.
+      [ -n "$text" ] || first_line=--
+      while IFS= read -r -d '' f; do
         if [ ! -e "$f" ]; then
           case "$f" in
             "$dir"/*.msg)
@@ -365,7 +384,17 @@ fm_task_inbox_write_idempotent() {  # <state-dir> <task-id> <text> [delivery-mod
         [ ! -e "$dir/handled/${f##*/}" ] || f="$dir/handled/${f##*/}"
         rec=$f
         break
-      done
+      done < <(
+        # Expand handled/ only AFTER scanning pending records: an acknowledgement
+        # racing grep must remain visible even if its original path disappeared.
+        for scan_dir in "$dir" "$dir/handled"; do
+          # A read/argument-limit error must not turn an exact retry into a new
+          # request. Fall back to the original scan only on error, not no-match.
+          LC_ALL=C grep -lFx --null -- "$first_line" "$scan_dir"/*.msg 2>/dev/null || {
+            [ "$?" -eq 1 ] || printf '%s\0' "$scan_dir"/*.msg
+          }
+        done
+      )
     else
       status=1
     fi
@@ -487,15 +516,24 @@ fm_task_inbox_steer_match() {  # <record> <inbox-dir> <want-file> <scratch-file>
 
 # The exact enqueued text back out of a record.
 fm_task_inbox_body() {  # <record-path>
-  local line
+  local meta body_offset synthetic total count
   [ -f "$1" ] || return 1
-  while IFS= read -r line; do
-    if [ "$line" = -- ]; then
-      cat
-      return 0
-    fi
-  done < "$1"
-  return 1
+  meta=$(LC_ALL=C awk '
+    $0 == "body-terminator=1" { synthetic=1 }
+    { bytes += length($0) + 1 }
+    $0 == "--" { printf "%d\t%d\n", bytes, synthetic; exit }
+  ' "$1") || return 1
+  IFS=$(printf '\t') read -r body_offset synthetic <<EOF
+$meta
+EOF
+  case "$body_offset" in ''|*[!0-9]*) return 1 ;; esac
+  total=$(wc -c < "$1") || return 1
+  count=$((total - body_offset))
+  if [ "$synthetic" = 1 ]; then
+    [ "$count" -gt 0 ] || return 1
+    count=$((count - 1))
+  fi
+  dd if="$1" bs=1 skip="$body_offset" count="$count" 2>/dev/null
 }
 
 # The constant self-describing doorbell line for the inbox containing a record.
