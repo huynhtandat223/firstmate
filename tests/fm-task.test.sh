@@ -1193,6 +1193,23 @@ case_reads_and_images() {
   FM_HOME="$TMP_ROOT/material-home" "$ROOT/bin/fm-task-links.sh" tk-r1 add-url https://example.com/first First >/dev/null || return 1
   ft materials tk-r1
   jq -e '.links[-1].url == "https://example.com/first"' <<<"$OUT" >/dev/null || { echo "a republished URL fell off the remote reader: $OUT"; return 1; }
+  # A migrated URL that fell out of the newest 12 is published again, with a new label when the label changed.
+  ft materials tk-r1
+  jq -e 'any(.links[]; .url == "https://example.com/seeded") | not' <<<"$OUT" >/dev/null || { echo 'the seeded URL did not fall out of the newest 12'; return 1; }
+  jq '.links[0].label = "Seeded v2"' "$TMP_ROOT/migrate-home/data/tk-r1/links.json" > "$TMP_ROOT/links-v2.json" && mv "$TMP_ROOT/links-v2.json" "$TMP_ROOT/migrate-home/data/tk-r1/links.json"
+  migrated=$(FM_HOME="$TMP_ROOT/migrate-home" "$ROOT/bin/fm-task-links.sh" tk-r1 migrate 2>/dev/null) || { echo 'second-round migrate failed'; return 1; }
+  ft materials tk-r1
+  jq -e '.links[-1] == {url:"https://example.com/seeded",label:"Seeded v2"}' <<<"$OUT" >/dev/null || { echo "migrate did not republish the fallen or relabeled URL: $OUT"; return 1; }
+  # The backup is private and keeps no copy of the remote read.
+  local bdir
+  bdir=$(printf '%s\n' "$migrated" | sed -n 's/^backup: //p')
+  [ "$(stat -c %a "$bdir")" = 700 ] && [ "$(stat -c %a "$bdir/links.json")" = 600 ] && [ -z "$(find "$bdir" -name 'remote*')" ] || { echo "migrate backup is not private: $(stat -c %a "$bdir")"; return 1; }
+  # Changed image bytes start a new publication instead of reusing the pending key of the old bytes.
+  cp "$png" "$TMP_ROOT/edit.png"
+  FM_TASK_BASE_URL=http://127.0.0.1:1 FM_HOME="$TMP_ROOT/material-home" "$ROOT/bin/fm-task-links.sh" tk-r1 add-image "$TMP_ROOT/edit.png" Edit >/dev/null 2>&1 && { echo 'offline image publication claimed success'; return 1; }
+  printf 'more' >> "$TMP_ROOT/edit.png"
+  FM_TASK_BASE_URL=http://127.0.0.1:1 FM_HOME="$TMP_ROOT/material-home" "$ROOT/bin/fm-task-links.sh" tk-r1 add-image "$TMP_ROOT/edit.png" Edit >/dev/null 2>&1 && { echo 'offline image publication claimed success'; return 1; }
+  [ "$(find "$TMP_ROOT/material-home/data/tk-r1/links-pending" -type f | wc -l)" = 2 ] || { echo 'changed image bytes reused the pending publication'; return 1; }
   ft heartbeat tk-r1
   must 'heartbeat from ready' 5 || return 1
   FM_TASK_ID=tk-r1 ft comment --note 'task from the environment'

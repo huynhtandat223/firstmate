@@ -13,7 +13,8 @@
 # links-pending/ so a rerun retries that publication, and a later republish is a new event.
 # Images carry a stable material id from the publishing path; readers keep the newest.
 # migrate backs up the record and image files in links-backups/, then publishes the
-# local URLs and images that 5001 does not yet hold.
+# local URLs (by URL and label) and images (by bytes and label) that 5001 does not yet hold.
+# The backup directory is mode 0700 with 0600 files.
 # show reads 5001 first and materializes images locally; an outage uses the cache.
 # Records survive task cleanup alongside the retained brief and scout report.
 # show adds purpose (first nonblank Captain's intent line, title fallback in the
@@ -54,6 +55,21 @@ if [ -e "$record" ]; then
 else
   data='{"schema":"fm-task-links.v1","links":[],"images":[]}'
 fi
+# One key per publication. The pending file holds the nonce of an unfinished publication,
+# named by its identity (command, value, label, and image bytes); a retry reuses it, and
+# changed bytes or a new label start a new publication. Callers remove the file on success.
+pending_file() { printf '%s/data/%s/links-pending/%s' "$FM_HOME" "$id" "$(printf '%s' "$1:$2:$3:${4:-}" | shasum -a 256 | awk '{print $1}')"; }
+publication_key() {
+  local pending nonce
+  pending=$(pending_file "$@")
+  if [ -s "$pending" ]; then nonce=$(cat "$pending"); else
+    mkdir -p "$(dirname "$pending")"; chmod 700 "$(dirname "$pending")"
+    nonce=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+    (umask 077; printf '%s' "$nonce" > "$pending")
+  fi
+  printf 'materials-%s' "$(printf '%s' "$id:$1:$2:$3:${4:-}:$nonce" | shasum -a 256 | awk '{print $1}')"
+}
+material_id() { printf 'image-%s' "$(printf '%s' "$id:$1" | shasum -a 256 | awk '{print $1}')"; }
 if [ "$cmd" = add-url ] || [ "$cmd" = add-image ]; then
   value=$1; label=${2:-$value}
   if [ "$cmd" = add-image ]; then
@@ -82,21 +98,15 @@ if [ "$cmd" = add-url ] || [ "$cmd" = add-image ]; then
     . "$SCRIPT_DIR/fm-task-shadow-config-lib.sh"
     if [ -e "$shadow_config" ]; then fm_task_shadow_config "$shadow_config"; fi
     {
-      # One key per publication: a retry after a failed write reuses the pending nonce,
-      # a later republish of the same item draws a new one and records a new event.
-      pending="$FM_HOME/data/$id/links-pending/$(printf '%s' "$cmd:$value:$label" | shasum -a 256 | awk '{print $1}')"
-      if [ -s "$pending" ]; then nonce=$(cat "$pending"); else
-        mkdir -p "$(dirname "$pending")"
-        nonce=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
-        printf '%s' "$nonce" > "$pending"
-      fi
-      pubkey="materials-$(printf '%s' "$id:$cmd:$value:$label:$nonce" | shasum -a 256 | awk '{print $1}')"
+      digest=''
+      [ "$cmd" = add-image ] && digest=$(shasum -a 256 "$value" | awk '{print $1}')
+      pubkey=$(publication_key "$cmd" "$value" "$label" "$digest")
       if [ "$cmd" = add-url ]; then
         FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task.sh" event "$id" link --url "$value" --note "$label" --key "$pubkey" || exit $?
       else
-        FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task.sh" comment "$id" --image "$value" --image-label "$label" --material "image-$(printf '%s' "$id:$value" | shasum -a 256 | awk '{print $1}')" --key "$pubkey" || exit $?
+        FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task.sh" comment "$id" --image "$value" --image-label "$label" --material "$(material_id "$value")" --key "$pubkey" || exit $?
       fi
-      rm -f "$pending"
+      rm -f "$(pending_file "$cmd" "$value" "$label" "$digest")"
     }
   }
   printf 'task: %s\npublished: %s\nhelp: fm-task-links.sh %s show\n' "$id" "$cmd" "$id"
@@ -109,36 +119,46 @@ if [ "$cmd" = migrate ]; then
   . "$SCRIPT_DIR/fm-task-shadow-config-lib.sh"
   if [ -e "$shadow_config" ]; then fm_task_shadow_config "$shadow_config"; fi
   remote=$(FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task.sh" materials "$id") || fail "cannot read 5001 materials for $id"
+  # The backup holds protected screenshot bytes: private directory, private files.
+  umask 077
   backup="$FM_HOME/data/$id/links-backups/migrate-$(date -u +%Y%m%dT%H%M%SZ)-$$"
-  mkdir -p "$backup/images"
+  mkdir -p "$backup/images"; chmod 700 "$backup" "$backup/images"
   cp "$record" "$backup/links.json"
   # Missing legacy images are recorded, never dropped: they stay in links.json.
-  remote_file="$backup/remote-materials.json"
+  remote_file=$(mktemp "$backup/remote.XXXXXX")
   printf '%s' "$remote" > "$remote_file"
   todo=$(FM_REMOTE_FILE="$remote_file" FM_BACKUP="$backup" node -e '
     const fs=require("fs"),path=require("path"),crypto=require("crypto");
     const local=JSON.parse(fs.readFileSync(process.argv[1],"utf8")),remote=JSON.parse(fs.readFileSync(process.env.FM_REMOTE_FILE,"utf8"));
     const sha=b=>crypto.createHash("sha256").update(b).digest("hex");
     const have=new Set(remote.images.map(r=>sha(Buffer.from(r.content,"base64"))+":"+r.label));
-    const urls=new Set(remote.links.map(r=>r.url));
+    const urls=new Set(remote.links.map(r=>r.url+"\n"+r.label));
     const out=[];
-    for(const r of local.links) if(!urls.has(r.url)) out.push({kind:"url",value:r.url,label:r.label});
+    for(const r of local.links) if(!urls.has(r.url+"\n"+r.label)) out.push({kind:"url",value:r.url,label:r.label});
     for(const r of local.images){
       let b; try{ b=fs.readFileSync(r.path); }catch{ out.push({kind:"skip",value:r.path,label:r.label}); continue; }
       fs.writeFileSync(path.join(process.env.FM_BACKUP,"images",sha(r.path).slice(0,16)+path.extname(r.path)),b,{mode:0o600});
       if(!have.has(sha(b)+":"+r.label)) out.push({kind:"image",value:r.path,label:r.label});
     }
     console.log(JSON.stringify(out));
-  ' "$record") || fail 'cannot compare local and 5001 materials'
+  ' "$record") || { rm -f "$remote_file"; fail 'cannot compare local and 5001 materials'; }
+  rm -f "$remote_file"
   published=0 skipped=0 status=0
   while IFS=$'\t' read -r kind value label; do
-    seed="materials-seed-$(printf '%s' "$id:$kind:$value:$label" | shasum -a 256 | awk '{print $1}')"
     case "$kind" in
-      url) FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task.sh" event "$id" link --url "$value" --note "$label" --key "$seed" >/dev/null || status=1 ;;
-      image) FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task.sh" comment "$id" --image "$value" --image-label "$label" --material "image-$(printf '%s' "$id:$value" | shasum -a 256 | awk '{print $1}')" --key "$seed" >/dev/null || status=1 ;;
-      skip) skipped=$((skipped + 1)); printf 'skipped: %s (image unreadable; kept in links.json)\n' "$value" >&2; continue ;;
+      url)
+        pubkey=$(publication_key add-url "$value" "$label")
+        if FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task.sh" event "$id" link --url "$value" --note "$label" --key "$pubkey" >/dev/null; then
+          rm -f "$(pending_file add-url "$value" "$label")"; published=$((published + 1))
+        else status=1; fi ;;
+      image)
+        digest=$(shasum -a 256 "$value" | awk '{print $1}')
+        pubkey=$(publication_key add-image "$value" "$label" "$digest")
+        if FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task.sh" comment "$id" --image "$value" --image-label "$label" --material "$(material_id "$value")" --key "$pubkey" >/dev/null; then
+          rm -f "$(pending_file add-image "$value" "$label" "$digest")"; published=$((published + 1))
+        else status=1; fi ;;
+      skip) skipped=$((skipped + 1)); printf 'skipped: %s (image unreadable; kept in links.json)\n' "$value" >&2 ;;
     esac
-    [ "$status" -eq 0 ] && published=$((published + 1))
   done < <(printf '%s' "$todo" | jq -r '.[] | [.kind,.value,.label] | @tsv')
   printf 'task: %s\nmigrated: %s\nskipped: %s\nbackup: %s\n' "$id" "$published" "$skipped" "$backup"
   exit "$status"
