@@ -23,6 +23,7 @@ cat >"$WRITER" <<'SH'
 printf '%s\n' "$*" >>"$FAKE_DIR/calls"
 case "$1" in
   show) cat "$FAKE_DIR/task.json" ;;
+  artifact-copies) printf '[]\n' ;;
   checks) case " $* " in *" --as-deployed "*) echo '{"rows":[]}' ;; *) cat "$FAKE_DIR/checks.json" ;; esac ;;
   unblock|start|done)
     st=ready; [ "$1" = start ] && st=running; [ "$1" = done ] && st=review
