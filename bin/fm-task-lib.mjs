@@ -482,7 +482,8 @@ function fold(events) {
     if (column && column !== before && (back || WORKFLOW_STATES.indexOf(column) > WORKFLOW_STATES.indexOf(before ?? 'queued'))) Object.assign(task, { workflowState: column, workflowSince: event.createdAt ?? null });
     if (event.kind === 'started') restart = false;
     if (event.kind === 'pr' && ['running', 'blocked'].includes(task.state)) prDuringWork ||= task.workflowState !== before;
-    else if (set.workflowState !== undefined || ['started', 'done', 'routed', 'check', 'deploy'].includes(event.kind)) prDuringWork = false;
+    // it holds until the next start, or until another event sets or moves the column
+    else if (set.workflowState !== undefined || event.kind === 'started' || task.workflowState !== before) prDuringWork = false;
     const stage = STEP_OF_STATE[task.state] ?? (task.state === 'review' ? (deployed ? 'dev' : 'pr')
       : task.state === 'running' ? (pullRequest ? 'pr' : 'working') : task.stage ?? 'queued');
     if (stage !== task.stage) Object.assign(task, { stage, stageSince: event.createdAt ?? null });

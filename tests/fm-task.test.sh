@@ -3282,6 +3282,8 @@ case_board_column() {
   ft create $t --title 'Blocked' --kind ship --repo example/repo >/dev/null && approve_solution $t || return 1
   ft assign $t --to w >/dev/null && ft start $t; col 'started' $t implement || return 1
   ft event $t pr --pr-url https://github.com/example/repo/pull/12; col 'a pr event while the worker runs' $t merge || return 1
+  row_of $t B1
+  ft check $t B1@1440 --status pass --evidence 'checked while the worker runs'; col 'a check while the worker runs' $t merge || return 1
   ft block external $t --reason 'waits on a vendor' --next-actor firstmate; must 'block' 0 || return 1
   ft unblock $t; col 'unblocked' $t merge || return 1
   ft start $t; col 'a start after the block' $t implement new || return 1
@@ -4223,6 +4225,7 @@ mutate 'a start ends the step another column runs' board_column "const other = a
 mutate 'a start after changes returns the card to its work column' board_column "(event.kind === 'started' && (restart || prDuringWork))" "(event.kind === 'started' && prDuringWork)"
 mutate 'a start after a pr event during the work returns the card to its work column' board_column "(event.kind === 'started' && (restart || prDuringWork))" "(event.kind === 'started' && restart)"
 mutate 'a start after reopen keeps the restored state' board_column "if (event.kind === 'changes') restart = true;" "if (event.kind === 'changes' || event.kind === 'reopened') restart = true;"
+mutate 'a check while the worker runs keeps the mid-work pr mark' board_column "event.kind === 'started' || task.workflowState !== before) prDuringWork = false;" "event.kind === 'started' || event.kind === 'check' || task.workflowState !== before) prDuringWork = false;"
 mutate 'a done that asks the Tester moves the card back from Merge' board_column "case 'done': return task.nextActor === 'tester' ? 'testing' : " "case 'done': return "
 mutate 'an unapproved Solution holds a ship before implement' workflow "task.kind === 'ship' && task.planDecision !== 'approve') {" "task.kind === 'ship' && false) {"
 mutate 'the Solution gate needs the approval, not just a plan' workflow "task.kind === 'ship' && task.planDecision !== 'approve') {" "task.kind === 'ship' && !task.planSeq) {"
