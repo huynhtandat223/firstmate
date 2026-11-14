@@ -1313,7 +1313,7 @@ binding_path() { printf '%s/%s.origin\n' "$BINDING_DIR" "$1"; }
 read_binding() {  # <source-id>
   local path origin schema
   path=$(mktemp)
-  if ! "$FM_ROOT/bin/fm-owner-record.sh" hold-read binding "$1" > "$path"; then
+  if ! "$SCRIPT_DIR/fm-owner-record.sh" hold-read binding "$1" > "$path"; then
     rm -f "$path"
     fail "cannot read the authoritative binding for $1"
   fi
@@ -1344,7 +1344,7 @@ command_bind() {
   [ -d "$BINDING_DIR" ] && [ ! -L "$BINDING_DIR" ] || fail "decision binding dir is unsafe: $BINDING_DIR"
   tmp=$(umask 077; mktemp "$BINDING_DIR/.origin.XXXXXX") || fail "cannot stage the decision binding"
   if ! { printf 'schema=%s\norigin=%s\n' "$BINDING_SCHEMA" "$origin" > "$tmp" \
-    && chmod 0600 "$tmp" && "$FM_ROOT/bin/fm-owner-record.sh" hold-write binding "$source" "$tmp"; }; then
+    && chmod 0600 "$tmp" && "$SCRIPT_DIR/fm-owner-record.sh" hold-write binding "$source" "$tmp"; }; then
     rm -f -- "$tmp"
     fail "cannot record the decision binding for $source"
   fi
@@ -1356,7 +1356,7 @@ command_unbind() {
   local source=${1:-}
   [ "$#" -eq 1 ] || { usage >&2; exit 2; }
   validate_source_id "$source"
-  "$FM_ROOT/bin/fm-owner-record.sh" hold-write binding "$source" /dev/null inactive \
+  "$SCRIPT_DIR/fm-owner-record.sh" hold-write binding "$source" /dev/null inactive \
     || fail "cannot retire binding $source"
   printf 'unbound: %s\n' "$source"
 }
@@ -1558,7 +1558,7 @@ reconcile_request_path() { printf '%s/%s.request\n' "$RECONCILE_DIR" "$1"; }
 # an obligation that is already open.
 reconcile_request_record() {  # <task-id> <provenance>
   local id=$1 source=$2 path tmp existing
-  existing=$("$FM_ROOT/bin/fm-owner-record.sh" hold-read reconcile "$id") || return 1
+  existing=$("$SCRIPT_DIR/fm-owner-record.sh" hold-read reconcile "$id") || return 1
   [ -z "$existing" ] || return 0
   path=$(reconcile_request_path "$id")
   (umask 077; mkdir -p "$RECONCILE_DIR") || return 1
@@ -1569,7 +1569,7 @@ reconcile_request_record() {  # <task-id> <provenance>
     printf 'task=%s\n' "$id"
     printf 'requested=%s\n' "${FM_CAPTAIN_HOLD_NOW:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
     printf 'source=%s\n' "$(sanitize_reconcile_provenance "$source")"
-  } > "$tmp" && chmod 0600 "$tmp" && "$FM_ROOT/bin/fm-owner-record.sh" hold-write reconcile "$id" "$tmp"; then
+  } > "$tmp" && chmod 0600 "$tmp" && "$SCRIPT_DIR/fm-owner-record.sh" hold-write reconcile "$id" "$tmp"; then
     rm -f "$tmp"
     return 0
   fi
@@ -1580,7 +1580,7 @@ reconcile_request_record() {  # <task-id> <provenance>
 reconcile_request_read() {  # <task-id>; sets RECONCILE_REQUESTED/RECONCILE_SOURCE
   local id=$1 path schema task
   path=$(mktemp)
-  if ! "$FM_ROOT/bin/fm-owner-record.sh" hold-read reconcile "$id" > "$path"; then
+  if ! "$SCRIPT_DIR/fm-owner-record.sh" hold-read reconcile "$id" > "$path"; then
     rm -f "$path"
     fail "cannot read authoritative reconciliation request $id"
   fi
@@ -1595,13 +1595,13 @@ reconcile_request_read() {  # <task-id>; sets RECONCILE_REQUESTED/RECONCILE_SOUR
 }
 
 reconcile_request_retire() {  # <task-id>
-  "$FM_ROOT/bin/fm-owner-record.sh" hold-write reconcile "$1" /dev/null inactive \
+  "$SCRIPT_DIR/fm-owner-record.sh" hold-write reconcile "$1" /dev/null inactive \
     || fail "could not retire the pending reconcile request for $1"
 }
 
 publish_parent_resolution_then_retire() {  # <task-id> <occurrence> <note>
   local id=$1 occurrence=$2 note=$3 request
-  request=$("$FM_ROOT/bin/fm-owner-record.sh" hold-read reconcile "$id") || fail "cannot read reconciliation record $id"
+  request=$("$SCRIPT_DIR/fm-owner-record.sh" hold-read reconcile "$id") || fail "cannot read reconciliation record $id"
   publish_parent_hold "$id" "$occurrence" resolved "$note"
   if [ -n "$request" ] && [ "$PARENT_HOLD_PUBLISHED" != 1 ]; then
     fail "could not publish the answered captain-held task $id to its parent"

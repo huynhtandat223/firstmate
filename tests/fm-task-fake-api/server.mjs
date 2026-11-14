@@ -18,6 +18,7 @@ for (const [table, def] of Object.entries(SCHEMA)) {
 }
 let log = [];
 let rivals = 0;
+let retireFailures = 0;
 let lose = { mode: '', n: 0 };
 let delay = { table: '', ms: 0, n: 0, verb: 'patch' };
 
@@ -155,8 +156,12 @@ const server = http.createServer((req, res) => {
   req.on('end', () => {
     const url = new URL(req.url, 'http://x');
     const raw = Buffer.concat(chunks).toString('utf8');
+    if (req.method === 'PATCH' && req.url.startsWith('/api/fm_hold_record/') && retireFailures > 0 && JSON.parse(raw || '{}').state === 'inactive') {
+      retireFailures--; return reply(res, 500, { message: 'test retirement unavailable' });
+    }
     const parts = url.pathname.split('/').filter(Boolean);
     if (parts[0] === '__x') {
+      if (parts[1] === 'fail-retire') { retireFailures = Number(url.searchParams.get('n') || 0); return reply(res, 200, {}); }
       if (parts[1] === 'rows') return reply(res, 200, db[parts[2]] || []);
       if (parts[1] === 'log') {
         if (req.method === 'POST') log = [];
