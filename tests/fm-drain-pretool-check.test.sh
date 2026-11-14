@@ -311,6 +311,25 @@ test_da4_ack_refused_while_a_captain_note_waits() {
   pass "DA4: the ack is refused naming the note, and succeeds once fm-inbox.sh drain --ack handled it"
 }
 
+test_da4_counts_each_waiting_note_once_and_ignores_the_retired_inbox() {
+  local dir="$TMP_ROOT/da4-once" seq gen note logged
+  export FM_BACKLOG_HOME=da4-once
+  mkdir -p "$dir/state/inbox" "$dir/config"
+  printf '%s\t1\tcheck\tprobe-key\tcheck: probe\n' "$(date +%s)" >> "$dir/state/.wake-queue"
+  # One note is on 5001 and in the spool; another waits only in the retired state/inbox.
+  note=$(FM_HOME="$dir" "$ROOT/bin/fm-inbox.sh" note --request-id da4-once --json 'on 5001 and in the spool' | jq -r .id)
+  [ -f "$dir/state/owner-note-spool/$note.note" ] || fail "DA4 the note is not in the spool: $(ls "$dir/state")"
+  printf 'id=legacy-left\nat=2026-01-01T00:00:00Z\nsource=text\n--\nretired folder note\n' > "$dir/state/inbox/legacy-left.note"
+  lab_drain "$dir" > "$dir/out"
+  read -r seq gen <<< "$(lab_ack_args "$dir")"
+  lab_drain "$dir" --ack-through "$seq" --recovery-generation "$gen" > "$dir/out2" \
+    || fail "log-only default must accept the ack: $(cat "$dir/err")"
+  logged=$(awk -F'\t' '$3 == "waiting-captain-note" {print $4}' "$dir/state/enforce-drain-ack.log")
+  [ "$logged" = "$note" ] || fail "DA4 waiting set should be the one note once, got: $logged"
+  unset FM_BACKLOG_HOME
+  pass "DA4: a note on 5001 and in the spool counts once, and a note left in state/inbox counts zero"
+}
+
 test_da4_logs_only_until_the_switch_is_set() {
   local dir="$TMP_ROOT/da4-log" seq gen note
   mkdir -p "$dir/state" "$dir/config"
@@ -354,5 +373,6 @@ test_hook_is_inert_in_a_task_worktree_and_fails_open
 test_claude_settings_register_the_drain_guard
 test_da4_ack_refused_while_a_captain_note_waits
 test_da4_logs_only_until_the_switch_is_set
+test_da4_counts_each_waiting_note_once_and_ignores_the_retired_inbox
 
 echo "# fm-drain-pretool-check.test.sh: all assertions passed"

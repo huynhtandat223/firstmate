@@ -297,9 +297,10 @@ else
   printf 'FIRSTMATE OWES SKIPPED: config/firstmate-wait-minutes could not be read; repair it before relying on this gate.\n' >&2
 fi
 
-# Captain notes (spec huynhtandat223/firstmate#200, E3): a note waiting in
-# state/inbox/ is the captain's word to firstmate, and an acknowledgement given
-# while one waits skips it. The ack is refused until each note is handled and
+# Captain notes (spec huynhtandat223/firstmate#200, E3): a waiting owner note
+# (fm_owner_note on 5001, plus the local spool awaiting upload) is the
+# captain's word to firstmate, and an acknowledgement given while one waits
+# skips it. The ack is refused until each note is handled and
 # acked with fm-inbox.sh drain --ack. Like every new check it only logs
 # (state/enforce-drain-ack.log) until config/enforce-drain-ack holds `block`.
 if [ -n "$ACK_THROUGH" ]; then
@@ -309,12 +310,17 @@ if [ -n "$ACK_THROUGH" ]; then
     if [ "$(fm_enforce_mode "$owed_config" drain-ack)" = block ]; then exit 1; fi
     owner_rows='[]'
   fi
-  waiting_notes=$(printf '%s' "$owner_rows" | python3 -c 'import json,sys; print(" ".join(r["noteId"] for r in json.load(sys.stdin) if r.get("state")=="waiting"))') || exit 1
-  for note_file in "$owed_state"/owner-note-spool/*.note "$owed_state"/inbox/*.note; do
-    [ -f "$note_file" ] || continue
-    note_id=$(basename "$note_file" .note)
-    waiting_notes="${waiting_notes:+$waiting_notes }$note_id"
-  done
+  # Waiting set: 5001 rows in state waiting, plus spool notes 5001 does not hold yet; each id once.
+  # state/inbox is the retired legacy folder and is never read.
+  waiting_notes=$(printf '%s' "$owner_rows" | python3 -c '
+import json, pathlib, sys
+rows = json.load(sys.stdin)
+known = {r["noteId"] for r in rows}
+ids = [r["noteId"] for r in rows if r.get("state") == "waiting"]
+for path in sorted(pathlib.Path(sys.argv[1]).glob("*.note")):
+    if path.stem not in known and path.stem not in ids:
+        ids.append(path.stem)
+print(" ".join(dict.fromkeys(ids)))' "$owed_state/owner-note-spool") || exit 1
   if [ -n "$waiting_notes" ]; then
     if [ "$(fm_enforce_mode "$owed_config" drain-ack)" = block ]; then
       fm_enforce_log "$owed_state" drain-ack refuse waiting-captain-note "$waiting_notes"
