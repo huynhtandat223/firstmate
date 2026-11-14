@@ -927,6 +927,10 @@ FM_HOME="$FM_HOME" FM_CONFIG_OVERRIDE="$CONFIG" "$SCRIPT_DIR/fm-role.sh" report 
   || printf 'fm-role: unknown (bin/fm-role.sh report failed)\n'
 
 if [ "$READ_ONLY" -eq 0 ]; then
+  # A home with config/material-home refreshes its portable config, roles and private skills from 5001 first (docs/configuration.md).
+  if [ "$REEMIT" -eq 0 ] && [ -f "$CONFIG/material-home" ]; then
+    FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-doc.sh" sync 2>&1 || true
+  fi
   if [ "$REEMIT" -eq 0 ]; then
     rm -f "$COMPLETION_FILE" 2>/dev/null || true
   fi
