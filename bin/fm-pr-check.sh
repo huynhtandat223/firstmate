@@ -233,6 +233,14 @@ fm_pr_metadata_identity_parse "$META" || exit 1
 fm_lock_release "$META_LOCK"
 META_LOCK_HELD=0
 
+# Publish the exact ready head before arming its merge notification.
+if [ -e "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}/task-shadow" ]; then
+  PR_EVENT_KEY=$(printf '%s\n%s\n%s\n' "$ID" "$URL" "${PR_HEAD:-unknown}" | shasum -a 256 | cut -d' ' -f1)
+  PR_EVENT_ARGS=(event "$ID" pr --pr-url "$URL" --key "pr-ready:$PR_EVENT_KEY")
+  [ -z "$PR_HEAD" ] || PR_EVENT_ARGS+=(--head "$PR_HEAD")
+  FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task.sh" "${PR_EVENT_ARGS[@]}" >/dev/null || exit 1
+fi
+
 PR_POLL_PUBLISH_LOCK="$STATE/.pr-poll-publish-$ID.lock"
 fm_lock_acquire_wait "$PR_POLL_PUBLISH_LOCK"
 PR_POLL_PUBLISH_LOCK_HELD=1

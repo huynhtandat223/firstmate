@@ -11,6 +11,8 @@ command -v jq >/dev/null 2>&1 || { echo 'ok - skipped (jq is not installed)'; ex
 
 CLOSE="${CLOSE_OVERRIDE:-$ROOT/bin/fm-verify-close.sh}"
 TMP_ROOT=$(fm_test_tmproot fm-verify-close-rows)
+FM_DEPLOY_LEDGER_TASK="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/deploy-ledger-fixture.sh"
+export FM_DEPLOY_LEDGER_TASK
 ID=page-task
 H=1111111111111111111111111111111111111111
 OLD=2222222222222222222222222222222222222222

@@ -97,7 +97,9 @@ function seedRows(file) {
       else if (word.startsWith('branch=')) branchPrefix = word.slice(7);
       else mode = word;
     }
-    const clone = path.join(process.env.FM_PROJECTS_OVERRIDE || path.join(home, 'projects'), name);
+    const projectClone = path.join(process.env.FM_PROJECTS_OVERRIDE || path.join(home, 'projects'), name);
+    // The operational home itself is a registered repository, not a child clone.
+    const clone = name === path.basename(home) ? home : projectClone;
     function git(...args) { try { return execFileSync('git', ['-C', clone, ...args], { encoding: 'utf8', stdio: ['ignore','pipe','ignore'] }).trim(); } catch { return null; } }
     const row = { name, mode, yolo, forge, branchPrefix, description, origin: git('remote','get-url','origin'), defaultBranch: git('symbolic-ref','--short','refs/remotes/origin/HEAD')?.replace(/^origin\//, '') || null, addedAt: added ? new Date(added.slice(0, 10)).toISOString() : null, removedAt: null };
     validate(row);

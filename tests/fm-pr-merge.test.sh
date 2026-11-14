@@ -39,6 +39,27 @@ FJ_STALE_HEAD=dddddddddddddddddddddddddddddddddddddddd
 
 JQ_BIN=$(command -v jq) || fail "these tests read glab's JSON with the real jq, which was not found"
 REAL_MV=$(command -v mv) || fail "these tests need mv to simulate a failed poll publish"
+# Controlled task-CLI boundary; real 5001 integration is proved separately.
+export FM_MERGE_AUTHORITY_TASK="$TMP_ROOT/authority-task"
+cat > "$FM_MERGE_AUTHORITY_TASK" <<'SH'
+#!/usr/bin/env bash
+set -eu
+[ "${FM_AUTHORITY_REFUSE:-0}" != 1 ] || exit 3
+if [ "$1" = pr-record ]; then cat "$FM_STATE_OVERRIDE/$2.authority-test.json"; exit; fi
+shift
+id=$1; shift 2
+url='' head='' authority=''
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --pr-url) url=$2 ;;
+    --head) head=$2 ;;
+    --merge-authority) authority=$2 ;;
+  esac
+  shift 2
+done
+jq -cn --arg u "$url" --arg h "$head" --arg a "$authority" '{prUrl:$u,prHead:$h,mergeAuthority:$a}' > "$FM_STATE_OVERRIDE/$id.authority-test.json"
+SH
+chmod +x "$FM_MERGE_AUTHORITY_TASK"
 
 # Build a fresh sandbox for one test case: a state dir with task metadata and a
 # directory for its forge-command mocks. Echoes the case directory.
@@ -786,6 +807,39 @@ test_merge_failure_propagates_after_recording() {
   assert_grep 'pr=https://github.com/example/repo/pull/13' "$case_dir/state/task-x1.meta" \
     "merge-fails: pr= should already be recorded even though the merge itself failed"
   pass "fm-pr-merge propagates a real merge failure without silently succeeding"
+}
+
+test_legacy_authority_read_lock() {
+  local case_dir rc
+  case_dir=$(make_case legacy-read-lock)
+  printf '%s\n' fm-merge-authority-v1 github github.com example/repo 51 attended > "$case_dir/state/task-x1.merge-authority"
+  chmod 600 "$case_dir/state/task-x1.merge-authority"
+  ln -s "$case_dir/missing" "$case_dir/state/task-x1.merge-authority.lock"
+  set +e
+  FM_HOME="$case_dir/home" FM_LOCK_TIMEOUT=0 FM_ROOT_OVERRIDE="$ROOT" bash -c '
+    . "$1/bin/fm-merge-authority-lib.sh"
+    fm_merge_authority_read "$2/state" task-x1 github github.com example/repo 51
+  ' _ "$ROOT" "$case_dir" > "$case_dir/read.out" 2>&1
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail 'legacy authority read bypassed its held lock'
+  pass 'legacy authority read refuses when its lock cannot be acquired'
+}
+
+test_receipt_symlink_refuses() {
+  local case_dir rc
+  case_dir=$(make_case receipt-symlink)
+  add_gh_mocks "$case_dir" 1010101010101010101010101010101010101010
+  printf 'untouched\n' > "$case_dir/target"
+  ln -s "$case_dir/target" "$case_dir/state/task-x1.merge-receipt"
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/51 > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" 'receipt symlink must refuse before merge'
+  [ "$(cat "$case_dir/target")" = untouched ] || fail 'receipt symlink target changed'
+  ! grep -Eq ' pr merge ' "$case_dir/gh.log" || fail 'receipt symlink reached forge merge'
+  pass 'merge receipt symlink refuses without touching its target or merging'
 }
 
 test_github_merged_outcome_is_verified() {
@@ -2535,7 +2589,7 @@ test_forgejo_transient_confirm_read_failure_still_persists_authority() {
   [ "$(cat "$case_dir/tea-post-merge-view-failures")" = 0 ] \
     || fail "forgejo-confirm-retry: the confirmation read was not retried"
   [ "$(sed -n 6p "$case_dir/state/task-x1.merge-authority" 2>/dev/null || true)" = attended ] \
-    || fail "forgejo-confirm-retry: the merge authority was not persisted: $(cat "$case_dir/state/task-x1.merge-authority" 2>/dev/null || true)"
+    || fail "forgejo-confirm-retry: non-shadow authority was not preserved"
   if grep -q "did not confirm" "$case_dir/stderr"; then
     fail "forgejo-confirm-retry: a landed merge was reported as unconfirmed"
   fi
@@ -2951,6 +3005,8 @@ test_secondmate_without_parent_binding_is_loud() {
   pass "a secondmate home that cannot report upward says so instead of merging in silence"
 }
 
+test_legacy_authority_read_lock
+test_receipt_symlink_refuses
 test_github_zero_exit_queue_required_refuses_with_exact_retry
 test_github_closed_unqueued_outcome_omits_retry_flags
 test_github_agreeing_queue_rules_keep_retry_guidance
@@ -3554,7 +3610,7 @@ test_quiet_record_keeps_merges_attended() {
     "quiet-allow-red: quiet mode was treated as away"
   assert_logged_gh_merge "$case_dir" 84 example/repo --squash
   [ "$(sed -n 6p "$case_dir/state/task-x1.merge-authority" 2>/dev/null || true)" = attended ] \
-    || fail "quiet-allow-red: the persisted merge authority is not attended: $(cat "$case_dir/state/task-x1.merge-authority" 2>/dev/null || true)"
+    || fail "quiet-allow-red: non-shadow authority is not attended"
   pass "fm-pr-merge keeps a quiet-mode home's merges attended, the named red-check waiver included"
 }
 
@@ -3609,7 +3665,7 @@ test_away_record_permits_any_green_merge_under_away_authority() {
   assert_no_grep 'away-grant' "$case_dir/state/.wake-queue" \
     "away-green: the retired away-grant tag reappeared"
   [ "$(sed -n 6p "$case_dir/state/task-x1.merge-authority" 2>/dev/null || true)" = away ] \
-    || fail "away-green: the persisted merge authority is not away: $(cat "$case_dir/state/task-x1.merge-authority" 2>/dev/null || true)"
+    || fail "away-green: non-shadow authority is not away"
 
   # A yolo=on task merges under the same away authority: the posture, not the
   # task's standing autonomy, is what the ledger records while away.
