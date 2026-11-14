@@ -220,6 +220,7 @@ confirm_own_lock() {  # <recorded-pid>
     publish_lock_session_or_die
     commit_lock_session
     release_claim_lock
+    fm_home_lease_renew_start
     echo "lock acquired: harness pid $recorded"
     exit 0
   fi
@@ -343,4 +344,5 @@ fm_home_lease_take || exit 1
 commit_lock_session
 release_lease_lock
 release_claim_lock
+fm_home_lease_renew_start
 echo "lock acquired: harness pid $me"
