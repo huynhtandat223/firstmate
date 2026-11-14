@@ -87,7 +87,7 @@ export function splitRules(file, text) {
 }
 
 // ---- 5001 access -----------------------------------------------------------------------------------------------
-let token, timeoutMs = 20000;
+let token, timeoutMs = 20000, deadline = null; // deadline: one abort signal shared by every request of a sync
 function fail(message, code = 1) { const error = new Error(message); error.code = code; throw error; }
 async function http(method, suffix = '', body) {
   if (!token) {
@@ -102,7 +102,7 @@ async function http(method, suffix = '', body) {
   const headers = { accept: 'application/json', 'content-type': 'application/json' };
   if (process.env.FM_TASK_AUTH === 'cookie') headers.cookie = `cfw.auth.session=${token}`; else headers.authorization = `Bearer ${token}`;
   let response;
-  try { response = await fetch(`${base}/api/fm_doc${suffix}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs) }); }
+  try { response = await fetch(`${base}/api/fm_doc${suffix}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), signal: deadline || AbortSignal.timeout(timeoutMs) }); }
   catch { const error = new Error('document service unavailable'); error.code = 'offline'; throw error; }
   if (!response.ok) fail(`document service refused ${method}: HTTP ${response.status}`, response.status === 409 ? 409 : 1);
   if (response.status === 204) return null;
@@ -269,7 +269,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     const ctx = parse(process.argv);
     if (ctx.command === 'sync') {
       if (ctx.off) process.exit(0);
-      timeoutMs = 5000;
+      deadline = AbortSignal.timeout(5000); // the whole sync, so a slow 5001 never holds session start longer
       try {
         const rows = await pull(ctx, ctx.files.filter(f => RULE_FILES.includes(f))), waiting = rows.filter(r => r.result.startsWith('kept')).map(r => r.file), wrote = rows.filter(r => r.result === 'written').map(r => r.file);
         console.log(`memory_source=5001 scope=${ctx.scope} ${rows.filter(r => r.version).map(r => `${r.file}=v${r.version}`).join(' ')}${waiting.length ? ` waiting_for_put=${waiting.join(',')}` : ''}${wrote.length ? ` written=${wrote.join(',')}` : ''}`);
