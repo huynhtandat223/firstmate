@@ -107,7 +107,7 @@
 # visibly refuses it, and never passes it to `answer`, so no channel and no
 # card-declared mode can turn it into a close, release, or request. A separate
 # `reconcile-requests` intake verifies a captured source's binding before it
-# records a durable request under `state/reconcile-requests/`.
+# records a durable request as an `fm_hold_record` row of kind `reconcile` on 5001.
 #
 # `reconcile` is the verify-then-decide half. Both outcomes require the pending
 # request created by the captain's board selection. `close` is the moot outcome:
@@ -125,8 +125,8 @@
 #
 # `bind`, `unbind`, and `binding` record that a captured-answer SOURCE feeds
 # this intake, for any channel whose answers arrive detached from their origin
-# (a process-event source id, for example). The binding is a private record
-# under `state/decision-bindings/`; a source with no binding feeds nothing, so
+# (a process-event source id, for example). The binding is an `fm_hold_record`
+# row of kind `binding` on 5001; a source with no binding feeds nothing, so
 # this whole path is opt-in per source and an unbound source behaves as if it
 # did not exist. `bind` deliberately does not require the source to exist yet,
 # so a channel can be bound BEFORE it is armed. The optional second argument
