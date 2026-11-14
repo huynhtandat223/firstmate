@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const home = process.env.FM_HOME || root;
 const config = process.env.FM_CONFIG_OVERRIDE || path.join(home, 'config');
-const help = 'fm-host.sh register|heartbeat|show [--json] | lease take|release|show|check [--json] | worker claim <task>\nFM_HOST_ID: stable machine identity; FM_HOME_NAME: backlog home (default main).\nconfig/home-lease enables mandatory cross-machine ownership checks.';
+const help = 'fm-host.sh register|heartbeat|show [--json] | lease take|release|show|check [--json] | worker claim|release <task>\nFM_HOST_ID: stable machine identity; FM_HOME_NAME: backlog home (default main).\nconfig/home-lease enables mandatory cross-machine ownership checks.';
 const args = process.argv.slice(2);
 const json = args.includes('--json');
 const cmd = args.filter(a => a !== '--json');
@@ -77,7 +77,7 @@ function output(value) {
 }
 try {
   if (args.includes('--help')) { console.log(help); process.exit(0); }
-  if (args.some(a => a.startsWith('--') && a !== '--json') || !['register','heartbeat','show','lease','worker'].includes(cmd[0]) || (cmd[0] === 'lease' ? cmd.length !== 2 || !['take','release','show','check'].includes(cmd[1]) : cmd[0] === 'worker' ? cmd.length !== 3 || cmd[1] !== 'claim' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(cmd[2]) : cmd.length !== 1)) fail(help, 2);
+  if (args.some(a => a.startsWith('--') && a !== '--json') || !['register','heartbeat','show','lease','worker'].includes(cmd[0]) || (cmd[0] === 'lease' ? cmd.length !== 2 || !['take','release','show','check'].includes(cmd[1]) : cmd[0] === 'worker' ? cmd.length !== 3 || !['claim','release'].includes(cmd[1]) || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(cmd[2]) : cmd.length !== 1)) fail(help, 2);
   if (cmd[0] === 'show') output(await list('fm_host', null, 'hostId'));
   else if (cmd[0] === 'lease' && cmd[1] === 'show') output(await latest() || { home: homeName, holder: 'none' });
   else {
@@ -104,13 +104,19 @@ try {
       await patch('fm_home_lease', row, { heartbeatAt: at });
       output({ hostId: id, generation: row.generation, heartbeatAt: at });
     } else if (cmd[0] === 'worker') {
-      // Claimed before the launch: the count is a conservative floor until the next heartbeat reconciles it.
-      await check(id);
       const machine = await host(id);
       if (!machine) fail('host is not registered; run register');
-      const count = (Number(machine.liveWorkers) || 0) + 1;
-      await patch('fm_host', machine, { liveWorkers: count });
-      output({ hostId: id, task: cmd[2], liveWorkers: count });
+      const current = Number(machine.liveWorkers) || 0;
+      if (cmd[1] === 'claim') {
+        // Claimed before the launch: the count is a conservative floor until the next heartbeat reconciles it.
+        await check(id);
+        await patch('fm_host', machine, { liveWorkers: current + 1 });
+        output({ hostId: id, task: cmd[2], liveWorkers: current + 1 });
+      } else {
+        // A launch that never produced a worker gives its slot back; no lease is needed to lower our own count.
+        await patch('fm_host', machine, { liveWorkers: Math.max(0, current - 1) });
+        output({ hostId: id, task: cmd[2], liveWorkers: Math.max(0, current - 1) });
+      }
     } else if (cmd[1] === 'check') output(await check(id));
     else if (cmd[1] === 'take') {
       const row = await latest();

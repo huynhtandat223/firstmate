@@ -72,3 +72,19 @@ fm_home_lease_generation() {
   out=$("$dir/fm-host.sh" lease check --json) || { printf '%s\n' "$out"; return 1; }
   printf '%s\n' "$out" | sed -n 's/.*"generation":\([0-9][0-9]*\).*/\1/p'
 }
+# The claim's undo, for a spawn that exits before its worker record exists: the slot goes back, and so does the count.
+fm_home_lease_release_worker() {  # <task>
+  local result=0 dir state lock
+  fm_home_lease_config || result=$?
+  [ "$result" -eq 0 ] || return 0
+  dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+  state=$(fm_home_lease_state_dir)
+  lock=$state/.host-count.lock
+  fm_lock_acquire_wait_max "$lock" 60 || return 1
+  if [ -f "$state/.host-claim.$1" ]; then
+    rm -f "$state/.host-claim.$1"
+    "$dir/fm-host.sh" worker release "$1" >/dev/null 2>&1 || result=1
+  fi
+  fm_lock_release "$lock"
+  return "$result"
+}

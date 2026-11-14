@@ -123,9 +123,9 @@ test_a_worker_claim_blocks_takeover_until_the_worker_record_counts() {
   session "$home" probe-a 40 "$TMP_ROOT/claim.log"
   wait_for 10 lease_taken_by probe-a || { echo "the session did not take the lease: $(cat "$TMP_ROOT/claim.log")"; return 1; }
   wait_for 10 workers_are probe-a 0 || { echo "no zero-worker heartbeat: $(host_row probe-a)"; return 1; }
-  spawn_fixture "$home" claim-w1 || return 1
-  out=$(run_spawn "$home" probe-a claim-w1)
-  [ -f "$home/state/.host-claim.claim-w1" ] || { echo "the spawn left no claim: $out"; return 1; }
+  # the claim a launch in progress holds (a failed launch gives it back: the next case)
+  out=$(FM_HOME="$home" FM_HOST_ID=probe-a bash -c 'source "$1/bin/fm-wake-lib.sh"; source "$1/bin/fm-home-lease-lib.sh"; fm_home_lease_claim_worker claim-w1' _ "$ROOT" 2>&1) || { echo "the claim was refused: $out"; return 1; }
+  [ -f "$home/state/.host-claim.claim-w1" ] || { echo "the claim left no record: $out"; return 1; }
   workers_are probe-a 1 || { echo "the spawn did not raise liveWorkers: $(host_row probe-a)"; return 1; }
   sleep 3   # at least two heartbeats, each counting no worker record
   workers_are probe-a 1 || { echo "a heartbeat erased the claim: $(host_row probe-a)"; return 1; }
@@ -136,6 +136,32 @@ test_a_worker_claim_blocks_takeover_until_the_worker_record_counts() {
   out=$(FM_HOST_ID=probe-b FM_HOME="$TMP_ROOT/other" FM_HOME_NAME="$LEASE_HOME" "$ROOT/bin/fm-host.sh" lease take)
   case "$out" in *'held by probe-a'*'liveWorkers=1'*) ;; *) echo "takeover was not refused with the holder and count: $out"; return 1 ;; esac
   lease_taken_by probe-a || { echo "the lease moved: $(lease_row)"; return 1; }
+}
+
+# A spawn that fails before any worker record exists gives its slot back at once: the claim file goes, the host count
+# falls, and the lease can be handed over. The refusing tmux reads the host row on its way, which shows the claim
+# was already counted before any endpoint was asked for.
+test_a_failed_spawn_gives_its_worker_slot_back() {
+  reset_db
+  local home out
+  home=$(make_home giveback)
+  session "$home" probe-a 40 "$TMP_ROOT/giveback.log"
+  wait_for 10 lease_taken_by probe-a || { echo "the session did not take the lease: $(cat "$TMP_ROOT/giveback.log")"; return 1; }
+  wait_for 10 workers_are probe-a 0 || { echo "no zero-worker heartbeat: $(host_row probe-a)"; return 1; }
+  spawn_fixture "$home" giveback-w1 || return 1
+  mkdir -p "$TMP_ROOT/tmuxseen"
+  printf '#!/bin/sh\ncurl -s -H "Authorization: Bearer %s" "%s/api/fm_host?\\$top=100" >> "%s/seen"\nexit 1\n' "$TOKEN" "$BASE" "$TMP_ROOT/tmuxseen" > "$TMP_ROOT/tmuxfail/tmux"
+  out=$(run_spawn "$home" probe-a giveback-w1)
+  [ ! -e "$home/state/giveback-w1.meta" ] || { echo "the spawn left a worker record: $out"; return 1; }
+  grep -q '"liveWorkers":1' "$TMP_ROOT/tmuxseen/seen" 2>/dev/null || { echo "the claim was not counted before the endpoint step: $(cat "$TMP_ROOT/tmuxseen/seen" 2>&1) $out"; return 1; }
+  [ ! -e "$home/state/.host-claim.giveback-w1" ] || { echo "the failed spawn left its claim file: $out"; return 1; }
+  workers_are probe-a 0 || { echo "the failed spawn left liveWorkers raised: $(host_row probe-a) $out"; return 1; }
+  # the session ends at once; nothing is left to lower the count later
+  kill "$SESSION_PID" 2>/dev/null; stop_loop "$home"
+  api -X PATCH "$BASE/api/fm_home_lease/$(lease_row | jq -r .id)" -d '{"heartbeatAt":"2026-01-01T00:00:00.000Z"}' >/dev/null
+  FM_HOST_ID=probe-b FM_HOME="$TMP_ROOT/other" FM_HOME_NAME="$LEASE_HOME" "$ROOT/bin/fm-host.sh" register >/dev/null
+  FM_HOST_ID=probe-b FM_HOME="$TMP_ROOT/other" FM_HOME_NAME="$LEASE_HOME" "$ROOT/bin/fm-host.sh" lease take >/dev/null || { echo 'the takeover was refused after the failed spawn gave its slot back'; return 1; }
+  lease_taken_by probe-b || { echo "the lease did not move: $(lease_row)"; return 1; }
 }
 
 # A launch that never produced a worker record must not block hand-over for ever.
@@ -230,6 +256,7 @@ run_case() {
 
 run_case test_session_start_renews_the_lease_without_a_watcher
 run_case test_a_worker_claim_blocks_takeover_until_the_worker_record_counts
+run_case test_a_failed_spawn_gives_its_worker_slot_back
 run_case test_an_expired_claim_stops_counting
 run_case test_delivery_stops_claiming_when_the_lease_moves
 run_case test_step_loop_writes_only_while_its_host_holds_the_lease

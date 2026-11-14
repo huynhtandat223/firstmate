@@ -1879,6 +1879,11 @@ spawn_abort_cleanup() {
     fi
     fm_lock_release "$SPAWN_TASK_LOCK" || true
   fi
+  # A worker slot claimed for a launch that left no worker record is given back (bin/fm-home-lease-lib.sh).
+  if [ "$status" -ne 0 ] && [ "${SPAWN_HOME_LEASE_CLAIMED:-0}" = 1 ] && [ ! -e "$STATE/$ID.meta" ]; then
+    SPAWN_HOME_LEASE_CLAIMED=0
+    fm_home_lease_release_worker "$ID" || echo "warning: could not give back the worker slot claimed for $ID" >&2
+  fi
   return "$status"
 }
 trap spawn_abort_cleanup EXIT
@@ -4542,6 +4547,7 @@ fi
 W="fm-$ID"
 # With config/home-lease, count this worker on the host record before any endpoint exists (bin/fm-home-lease-lib.sh).
 fm_home_lease_claim_worker "$ID" || exit 1
+SPAWN_HOME_LEASE_CLAIMED=1
 if [ "$RELAUNCH" -eq 1 ]; then
   # A secondmate's home already resolved WT above through the same validation a
   # fresh secondmate spawn uses; every other kind takes the recorded worktree.
