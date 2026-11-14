@@ -49,6 +49,9 @@ JSON
 node - "$TMP_ROOT/schema.json" <<'JS'
 const fs = require('fs');
 const file = process.argv[2]; const s = JSON.parse(fs.readFileSync(file));
+s.fm_owner_note = {ops:['list','get','create','patch'],u:[['noteId']],f:Object.fromEntries(['home','noteId','text','source','state','reply','at','requestId','announcedAt','handledAt','replyAt','replySeq'].map(k=>[k,{t:k==='replySeq'?'i':'s',n:1}]))};
+s.fm_hold_record = {ops:['list','get','create','patch'],u:[['kind','sourceId']],f:Object.fromEntries(['home','kind','sourceId','taskId','payload','state','at'].map(k=>[k,{t:'s',n:1}]))};
+s.fm_home = {ops:['list','get','create','patch'],u:[['home']],f:Object.fromEntries(['home','posture','postureWords','postureSince'].map(k=>[k,{t:'s',n:1}]))};
 Object.assign(s.fm_task_event.f, {prHead:{t:'s',n:1,m:64},mergeAuthority:{t:'s',n:1,m:32}});
 s.fm_pr_round = {ops:['list','get','create','patch','delete'],f:{recordKey:{t:'s',n:1,m:200},task:{t:'s',n:1,m:128},prUrl:{t:'s',n:1,m:2048},head:{t:'s',n:1,m:64},round:{t:'i',n:1},kind:{t:'s',n:1,m:32},reviewers:{t:'s',n:1},delivered:{t:'b',n:1},retained:{t:'s',n:1},at:{t:'d',n:1},payload:{t:'s',n:1}},u:[['recordKey']]};
 s.fm_event_document = {ops:['list','get','create','delete'],f:{title:{t:'s',m:200},mediaType:{t:'s',m:100},content:{t:'s'}},u:[['fmTaskEventId']],parent:['fmTaskEvent','documents']};
@@ -403,6 +406,7 @@ log_reset() { curl -s -X POST "$BASE/__x/log" >/dev/null; }
 task_row() { db fm_task | jq -c --arg t "$1" '.[] | select(.taskId == $t)'; }
 task_state() { task_row "$1" | jq -r .state; }
 count() { db "$1" | jq length; }
+inbox_has() { db fm_owner_note | jq -r ".[].text" | grep -F -- "$1" >/dev/null; }  # <text>: a central owner note holds it
 seq_of() { sed -n 's/^seq=\([0-9][0-9]*\).*/\1/p' <<<"$OUT" | head -1; }
 must() {  # <label> <expected-rc>: the last ft call exited with the code
   [ "$RC" -eq "$2" ] || { echo "$1: exit $RC, want $2: out=[$OUT] err=[$ERR]"; return 1; }
@@ -549,6 +553,81 @@ use_issue() { issue_body "$1" > "$TMP_ROOT/issue.body"; }
 
 # TR10: a terminal call stores its event and child in one request and prints the seq;
 # a missing template field prints the API's field and stores nothing.
+case_owner_records() {
+  BIN=$1; reset_db
+  local legacy="$TMP_ROOT/legacy-note-home"
+  mkdir -p "$legacy/state/inbox/.requests"
+  printf 'id=old-random-id\nat=2026-01-01T00:00:00Z\nsource=text\nrequest_id=old-request\nannounce_marker=1\n--\nlegacy captured body\n' > "$legacy/state/inbox/old-random-id.note"
+  printf 'old-random-id\n' > "$legacy/state/inbox/.requests/old-request"
+  FM_HOME="$legacy" FM_BACKLOG_HOME=legacy-seed python3 "$BIN/fm-owner-seed.py" "$legacy" "$TMP_ROOT/legacy-backup" >/dev/null || return 1
+  FM_HOME="$legacy" FM_BACKLOG_HOME=legacy-seed "$BIN/fm-inbox.sh" receipts --all-pending > "$TMP_ROOT/legacy-receipts.json" || return 1
+  grep -F 'legacy captured body' "$TMP_ROOT/legacy-receipts.json" >/dev/null || return 1
+  [ -f "$TMP_ROOT/legacy-backup/inbox/old-random-id.note" ] || return 1
+  local configured="$TMP_ROOT/configured-owner-home"
+  mkdir -p "$configured/config/tasks-axi"
+  printf 'backend = "cfw5001"\n[cfw5001]\nhome = "secondmate-probe"\n' > "$configured/config/tasks-axi/.tasks.toml"
+  [ "$(FM_HOME="$configured" "$BIN/fm-task.sh" owner-home)" = secondmate-probe ] || return 1
+  local file="$TMP_ROOT/note-record.json"
+  printf '%s\n' '{"home":"probe","noteId":"probe-note","text":"exact owner words","source":"cli","state":"waiting","at":"2026-01-01T00:00:00Z"}' > "$file"
+  ft owner-record note put --identity probe-note --home probe --file "$file"
+  must 'store owner note' 0 || return 1
+  ft owner-record note list --home probe
+  must 'read owner notes' 0 || return 1
+  [ "$(printf '%s' "$OUT" | jq -r '.[0].text')" = 'exact owner words' ] || return 1
+  jq '.state="handled" | .reply="exact reply"' "$file" > "$file.next"; mv "$file.next" "$file"
+  ft owner-record note put --identity probe-note --home probe --file "$file"
+  must 'handle and reply' 0 || return 1
+  jq '.text="different words"' "$file" > "$file.next"; mv "$file.next" "$file"
+  ft owner-record note put --identity probe-note --home probe --file "$file"
+  must 'refuse conflicting note body' 5 || return 1
+  ft owner-record note get --identity probe-note --home probe
+  must 'read original note' 0 || return 1
+  [ "$(printf '%s' "$OUT" | jq -r '.text + "|" + .state + "|" + .reply')" = 'exact owner words|handled|exact reply' ] || return 1
+  [ "$(db fm_owner_note | jq '[.[]|select(.home=="probe")]|length')" = 1 ] || return 1
+  local home="$TMP_ROOT/central-inbox-home" note_id
+  mkdir -p "$home/state"
+  FM_HOME="$home" "$BIN/fm-inbox.sh" note --json 'note through public CLI' > "$TMP_ROOT/note-result.json" || return 1
+  note_id=$(jq -r .id "$TMP_ROOT/note-result.json")
+  FM_HOME="$home" "$BIN/fm-inbox.sh" reply "$note_id" 'public reply' >/dev/null || return 1
+  FM_HOME="$home" "$BIN/fm-inbox.sh" drain --ack "$note_id" >/dev/null || return 1
+  FM_HOME="$home" "$BIN/fm-inbox.sh" receipts --all-handled --all-replies > "$TMP_ROOT/receipts.json" || return 1
+  db fm_owner_note | jq -e --arg id "$note_id" '.[] | select(.noteId==$id) | .state=="handled" and .reply=="public reply\n"' >/dev/null || return 1
+  printf '%s\n' '{"home":"legacy-home","noteId":"random-legacy","text":"legacy body","source":"cli","state":"waiting","requestId":"legacy-request"}' > "$file"
+  ft owner-record note put --identity random-legacy --home legacy-home --file "$file"
+  must 'seed legacy request identity' 0 || return 1
+  jq '.noteId="deterministic-retry"' "$file" > "$file.next"; mv "$file.next" "$file"
+  ft owner-record note put --identity deterministic-retry --home legacy-home --file "$file"
+  must 'reconcile legacy request identity' 0 || return 1
+  [ "$(printf '%s' "$OUT" | jq -r .noteId)" = random-legacy ] || return 1
+  [ "$(db fm_owner_note | jq '[.[]|select(.home=="legacy-home")]|length')" = 1 ] || return 1
+  local second="$TMP_ROOT/central-inbox-second"
+  mkdir -p "$second/state"
+  FM_HOME="$second" "$BIN/fm-inbox.sh" receipts --all-handled --all-replies > "$TMP_ROOT/second-receipts.json" || return 1
+  grep -F 'public reply' "$TMP_ROOT/second-receipts.json" >/dev/null || return 1
+  FM_HOME="$home" "$BIN/fm-inbox.sh" note --request-id portable-request --json 'same request' > "$TMP_ROOT/first-request.json" || return 1
+  FM_HOME="$second" "$BIN/fm-inbox.sh" note --request-id portable-request --json 'same request' > "$TMP_ROOT/second-request.json" || return 1
+  if FM_HOME="$second" "$BIN/fm-inbox.sh" note --request-id portable-request --json 'changed request' > "$TMP_ROOT/conflicting-request.json" 2>/dev/null; then
+    echo 'conflicting request body was accepted'; return 1
+  fi
+  FM_HOME="$second" "$BIN/fm-inbox.sh" note --request-id a..b --json $'trailing\n\n' >/dev/null || return 1
+  FM_HOME="$second" "$BIN/fm-inbox.sh" note --request-id a..b --json $'trailing\n\n' >/dev/null || return 1
+  [ "$(jq -r .id "$TMP_ROOT/first-request.json")" = "$(jq -r .id "$TMP_ROOT/second-request.json")" ] || return 1
+  printf 'schema=fm-decision-binding.v1\norigin=probe-origin\n' > "$TMP_ROOT/binding.payload"
+  "$BIN/fm-owner-record.sh" hold-write binding probe-source "$TMP_ROOT/binding.payload" || return 1
+  [ "$("$BIN/fm-owner-record.sh" hold-read binding probe-source)" = "$(< "$TMP_ROOT/binding.payload")" ] || return 1
+  "$BIN/fm-owner-record.sh" hold-write binding probe-source /dev/null inactive || return 1
+  [ -z "$("$BIN/fm-owner-record.sh" hold-read binding probe-source)" ] || return 1
+  printf 'keep these exact words\n' > "$TMP_ROOT/posture-words"
+  FM_HOME="$home" bash "$BIN/fm-afk-contract.sh" enter --words-file "$TMP_ROOT/posture-words" >/dev/null || return 1
+  ft owner-record home get --identity main
+  must 'read away posture' 0 || return 1
+  [ "$(printf '%s' "$OUT" | jq -r '.posture + "|" + (.postureWords|rtrimstr("\\n"))')" = 'away|keep these exact words' ] || return 1
+  FM_HOME="$home" bash "$BIN/fm-afk-contract.sh" archive >/dev/null || return 1
+  ft owner-record home get --identity main
+  must 'read attended posture' 0 || return 1
+  [ "$(printf '%s' "$OUT" | jq -r .posture)" = attended ] || return 1
+}
+
 case_terminal() {
   BIN=$1; reset_db
   local badfile docs_before doc_id
@@ -562,6 +641,11 @@ case_terminal() {
     doc_id=$(db fm_task_event | jq -r --argjson seq "$(seq_of)" '.[] | select(.seq == $seq) | .id')
     db fm_event_document | jq -e --arg id "$doc_id" --rawfile content "$badfile" --arg title "$(basename "$badfile")" '.[] | select(.fmTaskEventId == $id) | .content == $content and .title == $title and (.mediaType == "text/markdown" or .mediaType == "text/html")' >/dev/null || { echo 'document differs from input bytes'; return 1; }
     [ "$(posts POST fm_task_event)" = 1 ] && [ "$(posts POST fm_event_document)" = 0 ] || return 1
+    ft document doc-valid --kind 'done'
+    must 'read the attached done report' 0 || return 1
+    [ "$OUT" = "$(< "$badfile")" ] || { echo 'done report readback differs'; return 1; }
+    ft document doc-valid --kind invalid
+    must 'reject an invalid document selector' 2 || return 1
     reset_db
   done
   printf '\377' > "$TMP_ROOT/latin.md"
@@ -2671,7 +2755,7 @@ case_owner_writer() {
     must "question $skill" 0 || return 1
     question=$(db fm_task_event | jq -r --arg skill "$skill" '.[] | select((.body | fromjson | .ask) == $skill) | .seq')
     [ -n "$question" ] || return 1
-    grep -R -F -- "Run the $skill skill on task $t. Reply with: bin/fm-task.sh comment $t --reply-to $question --role firstmate --note <output>" "$FM_HOME/state/inbox" >/dev/null || { echo 'missing skill delivery'; return 1; }
+    inbox_has "Run the $skill skill on task $t. Reply with: bin/fm-task.sh comment $t --reply-to $question --role firstmate --note <output>" || { echo 'missing skill delivery'; return 1; }
     ft comment $t --reply-to "$question" --role firstmate --note 'Skill output'; must 'linked reply' 0 || return 1
     reply_seq=$(seq_of)
     # the printed reply is drawn as Firstmate's on the board, not a worker's
@@ -2682,8 +2766,8 @@ case_owner_writer() {
   must 'owner threaded reply' 0 || return 1
   owner_reply=$(db fm_task_event | jq -r '[.[] | select(.kind == "comment")] | max_by(.seq).seq')
   db fm_task_event | jq -e --argjson s "$owner_reply" --argjson p "$parent" '.[] | select(.seq == $s) | (.body | fromjson | .replyTo) == $p' >/dev/null || return 1
-  grep -R -F "Owner reply to comment $parent on $t (seq $owner_reply): Thread answer" "$FM_HOME/state/inbox" >/dev/null || return 1
-  grep -R -F "Reply with: bin/fm-task.sh comment $t --reply-to $owner_reply --actor firstmate --role firstmate --note <output>" "$FM_HOME/state/inbox" >/dev/null || { echo 'reply command does not answer as firstmate'; return 1; }
+  inbox_has "Owner reply to comment $parent on $t (seq $owner_reply): Thread answer" || return 1
+  inbox_has "Reply with: bin/fm-task.sh comment $t --reply-to $owner_reply --actor firstmate --role firstmate --note <output>" || { echo 'reply command does not answer as firstmate'; return 1; }
   before=$(count fm_task_event)
   ow --action comment --task $t --reply-to "$parent" --note 'Thread answer' --owner u-1 --to firstmate
   must 'owner reply replay' 0 || return 1
@@ -2710,8 +2794,8 @@ case_owner_writer() {
   root=$(db fm_task_event | jq -r '[.[] | select(.kind == "comment")] | max_by(.seq).seq')
   [ "$(task_row $t | jq -r .threadsYourTurn)" = 0 ] || { echo "the owner opened the thread: threadsYourTurn $(task_row $t | jq -r .threadsYourTurn), want 0"; return 1; }
   db fm_task_event | jq -e --argjson s "$root" '.[] | select(.seq == $s) | (.body | fromjson) | .anchor == {quote: "the lane lists each task", prefix: "Observed: ", suffix: " whose pane"} and (has("thread") | not)' >/dev/null || { echo 'anchor not stored'; return 1; }
-  grep -R -F "Owner thread on $t (seq $root) at \"the lane lists each task\": Is a blocked task listed?" "$FM_HOME/state/inbox" >/dev/null || { echo 'missing thread delivery'; return 1; }
-  grep -R -F "Reply with: bin/fm-task.sh comment $t --reply-to $root --actor firstmate --role firstmate --note <output>" "$FM_HOME/state/inbox" >/dev/null || { echo 'thread reply command does not answer as firstmate'; return 1; }
+  inbox_has "Owner thread on $t (seq $root) at \"the lane lists each task\": Is a blocked task listed?" || { echo 'missing thread delivery'; return 1; }
+  inbox_has "Reply with: bin/fm-task.sh comment $t --reply-to $root --actor firstmate --role firstmate --note <output>" || { echo 'thread reply command does not answer as firstmate'; return 1; }
   ft comment $t --reply-to "$root" --role firstmate --note 'Yes, in any state'; must 'thread answer' 0 || return 1
   answer=$(seq_of)
   [ "$(task_row $t | jq -r .threadsYourTurn)" = 1 ] || { echo "the agent answered: threadsYourTurn $(task_row $t | jq -r .threadsYourTurn), want 1"; return 1; }
@@ -2733,7 +2817,7 @@ case_owner_writer() {
   accepted=$(db fm_task_event | jq -r '[.[] | select(.kind == "comment")] | max_by(.seq).seq')
   [ "$(task_row $t | jq -r .threadsYourTurn)" = 0 ] || { echo "the owner accepted it: threadsYourTurn $(task_row $t | jq -r .threadsYourTurn), want 0"; return 1; }
   db fm_task_event | jq -e --argjson p "$proposal" --argjson a "$accepted" --argjson r "$root" '[.[] | select(.seq == $p or .seq == $a)] | sort_by(.seq) | map(.body | fromjson | {thread, outcome, accepted, note}) == [{thread: $r, outcome: "Listed in any state", accepted: null, note: "Proposed outcome"}, {thread: $r, outcome: "Listed in any state", accepted: $p, note: "Accepted: Listed in any state"}]' >/dev/null || { echo "outcome not resolved: $(db fm_task_event | jq -c --argjson a "$accepted" '.[] | select(.seq == $a) | .body')"; return 1; }
-  grep -R -F "Owner accepted the outcome proposed in comment $proposal on $t (seq $accepted); the thread is resolved." "$FM_HOME/state/inbox" >/dev/null || { echo 'missing accept delivery'; return 1; }
+  inbox_has "Owner accepted the outcome proposed in comment $proposal on $t (seq $accepted); the thread is resolved." || { echo 'missing accept delivery'; return 1; }
   before=$(count fm_task_event)
   ft comment $t --outcome 'No thread' --note bad; must 'outcome without reply-to' 2 || return 1
   ft comment $t --reply-to "$question" --outcome 'Not a thread' --note bad; must 'outcome outside a thread' 5 || return 1
@@ -2757,7 +2841,7 @@ case_owner_writer() {
   mark=$(db fm_task_event | jq -r '[.[] | select(.kind == "comment")] | max_by(.seq).seq')
   db fm_event_image | jq -e --arg png "$png" '[.[] | select(.label == "marked area" and .mediaType == "image/png" and .content == $png)] | length == 1' >/dev/null || { echo 'image not stored with its label and bytes'; return 1; }
   cmp -s <(printf '%s' "$png" | base64 -d) "$FM_HOME/data/$t/owner-images/seq-$mark.png" || { echo 'picture file not kept for the worker'; return 1; }
-  grep -R -F "Add the fix proof to this thread with: bin/fm-task.sh comment $t --reply-to $mark --actor firstmate --role firstmate --image <proof.png> --image-label 'fix proof'" "$FM_HOME/state/inbox" >/dev/null || { echo 'missing fix-proof delivery'; return 1; }
+  inbox_has "Add the fix proof to this thread with: bin/fm-task.sh comment $t --reply-to $mark --actor firstmate --role firstmate --image <proof.png> --image-label 'fix proof'" || { echo 'missing fix-proof delivery'; return 1; }
   ow --action comment --task $t --note 'Marked area: badge overlaps' --image-data "$png" --image-label 'marked area' --image-type image/png --owner u-1 --to firstmate
   must 'owner image replay' 0 || return 1
   [ "$(count fm_event_image)" = 1 ] || { echo 'replayed image stored twice'; return 1; }
@@ -2773,7 +2857,7 @@ case_owner_writer() {
   mark=$(db fm_task_event | jq -r '[.[] | select(.kind == "comment")] | max_by(.seq).seq')
   cmp -s <(printf '%s' "$png" | base64 -d) "$TMP_ROOT/owner-writer-data/$t/owner-images/seq-$mark.png" || { echo 'picture file not kept under the data override'; return 1; }
   [ ! -e "$FM_HOME/data/$t/owner-images/seq-$mark.png" ] || { echo 'picture file kept outside the data override'; return 1; }
-  grep -R -F "It carries one image, \"marked area\": $TMP_ROOT/owner-writer-data/$t/owner-images/seq-$mark.png." "$FM_HOME/state/inbox" >/dev/null || { echo 'the delivery does not name the kept file'; return 1; }
+  inbox_has "It carries one image, \"marked area\": $TMP_ROOT/owner-writer-data/$t/owner-images/seq-$mark.png." || { echo 'the delivery does not name the kept file'; return 1; }
   before=$((before + 1))
   ow --action comment --task $t --note x --image-data 'not base64!' --image-label 'marked area' --owner u-1
   must 'owner image not base64' 2 || return 1
@@ -3359,7 +3443,7 @@ case_slice_c() {
   ow --action plan --task "$t" --decision approve --plan-seq "$pseq2" --note 'looks great' --owner u-1
   must 'owner plan approve' 0 || return 1
   task_row "$t" | jq -e --argjson s "$pseq2" '.planSeq == $s and .planDecision == "approve" and (.planDecidedAt | type == "string")' >/dev/null || { echo "owner plan approve failed: $(task_row "$t")"; return 1; }
-  grep -R -F -- "approved the plan of task $t (plan seq $pseq2): looks great" "$FM_HOME/state/inbox" >/dev/null || { echo "missing firstmate inbox note for plan"; return 1; }
+  inbox_has "approved the plan of task $t (plan seq $pseq2): looks great" || { echo "missing firstmate inbox note for plan"; return 1; }
   grep -F -- "steer planner" "$steer_log" >/dev/null || { echo "missing planner steer: $(cat "$steer_log" 2>/dev/null)"; return 1; }
   grep -F -- "looks great" "$steer_log" >/dev/null || { echo "missing planner words: $(cat "$steer_log" 2>/dev/null)"; return 1; }
 
@@ -3891,7 +3975,7 @@ case_pr_record() {
   jq -se 'map(.at) == [50,100]' <<<"$OUT" >/dev/null
 }
 
-CASES=${FM_TASK_CASES:-"pr_record plan_task description_thread describe_rows describe_issue describe_source terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed long_notes status_view verify_view owner_writer workflow gate_internal gate_no_surface stage latest_wait latest_no_note wait carry slice_c model_rules checklist question_round setup_rules backlog_home owner_hold owner_request gate_before_approval handoff_gate delete owner_nav"}
+CASES=${FM_TASK_CASES:-"owner_records pr_record plan_task description_thread describe_rows describe_issue describe_source terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed long_notes status_view verify_view owner_writer workflow gate_internal gate_no_surface stage latest_wait latest_no_note wait carry slice_c model_rules checklist question_round setup_rules backlog_home owner_hold owner_request gate_before_approval handoff_gate delete owner_nav"}
 
 # ---- real command -------------------------------------------------------------------
 
