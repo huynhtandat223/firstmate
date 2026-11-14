@@ -99,7 +99,10 @@ function snapshot() {
 }
 async function detail(row) {
   if (!row || !row.id) fail('document not found');
-  return http('GET',`/${encodeURIComponent(row.id)}`);
+  const body = await http('GET',`/${encodeURIComponent(row.id)}`);
+  const doc = body?.data ?? body;
+  if (typeof doc?.content !== 'string') fail('document service returned no content');
+  return doc;
 }
 function output(value, key = 'result') {
   if (flags.json) { console.log(JSON.stringify(value,null,2)); return; }

@@ -21,7 +21,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
   p=urllib.parse.urlsplit(self.path)
   if p.path=='/api/fm_doc':
    q=urllib.parse.parse_qs(p.query);skip=int(q.get('$skip',['0'])[0]);body={'value':[{k:v for k,v in r.items() if k!='content'} for r in rows[skip:skip+100]]}
-  else:body=next(r for r in rows if r['id']==p.path.rsplit('/',1)[-1])
+  else:body={'success':True,'data':next(r for r in rows if r['id']==p.path.rsplit('/',1)[-1])}
   self.send_response(200);self.end_headers();self.wfile.write(json.dumps(body).encode())
  def do_POST(self):
   row=json.loads(self.rfile.read(int(self.headers['Content-Length'])));row['id']=str(len(rows)+1);rows.append(row)
@@ -31,7 +31,8 @@ PY
 python3 "$TMP/server.py" "$TMP/port" &
 SERVER=$!
 for _ in $(seq 1 100); do [ ! -s "$TMP/port" ] || break; sleep .02; done
-export FM_TASK_BASE_URL="http://127.0.0.1:$(< "$TMP/port")" FM_TASK_TOKEN_FILE="$TMP/token"
+PORT=$(< "$TMP/port")
+export FM_TASK_BASE_URL="http://127.0.0.1:$PORT" FM_TASK_TOKEN_FILE="$TMP/token"
 DOC="$ROOT/bin/fm-doc.sh"
 "$DOC" publish --repo firstmate --root "$TMP/repo" --json > "$TMP/first"
 printf dirty > "$TMP/repo/AGENTS.md"
