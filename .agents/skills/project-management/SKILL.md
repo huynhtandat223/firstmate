@@ -17,8 +17,8 @@ It does not replace `secondmate-provisioning`, which owns project clones inside 
 
 ## Preconditions and registry
 
-Projects live flat under `projects/`, and `data/projects.md` is the private fleet registry.
-Use the registry format and parser contract owned by the header of `bin/fm-project-mode.sh`.
+Projects live flat under `projects/`; `fm_project` on 5001 is the registry and `data/projects.md` is its read cache.
+Use `bin/fm-project.sh` for registry writes and its help for commands; `bin/fm-project-mode.sh` owns posture output compatibility.
 Keep each registry description useful for identifying the project, but keep delivery posture, captain-private state, and detailed project knowledge in their existing designated homes.
 Do not turn the registry into project documentation.
 
@@ -65,7 +65,7 @@ The optional `pr=manual` token marks a `no-mistakes` project whose PR title and 
 ## Add or clone an existing project
 
 Confirm the source URL, local project name, delivery posture, and autonomy posture, stating the resolved default for each rather than asking the captain to invent one.
-Clone into `projects/<name>` and add the registry entry only after the destination is known to be unused.
+Clone into `projects/<name>` only after the destination is known to be unused, then register it with `bin/fm-project.sh add`, including the confirmed posture, origin and default branch.
 A `no-mistakes` or `no-mistakes-prod-only` project must have an `origin` remote and must complete the initialization procedure below, because a conditional policy's product-facing work runs the pipeline while its internal-only work still takes the direct PR.
 A `direct-PR` project needs an `origin` remote but skips no-mistakes initialization.
 A `local-only` project may have no remote and skips no-mistakes initialization.
@@ -102,4 +102,5 @@ First obtain the captain's explicit removal decision, then inspect the current d
 If any dependency or unlanded work exists, stop and report it before changing anything.
 Never issue a raw removal command from Firstmate.
 Once that preflight confirms none of the above and the captain's approval is concrete, AGENTS.md hard rule 1's captain-approved project operation exception authorizes firstmate to remove the clone directly and update its registry entry to match.
-When a clone has already been removed through an approved removal, or the registry is provably stale because no clone exists, remove its registry line so navigation matches reality.
+When a clone has already been removed through an approved removal, mark its registration removed with `bin/fm-project.sh remove`.
+A missing local clone alone does not remove the portable registration: another machine may still use it.

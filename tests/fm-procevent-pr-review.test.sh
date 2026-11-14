@@ -29,6 +29,13 @@ cat > "$TMP_ROOT/fakebin/gh" <<'SH'
 [ "${1:-}" = api ] || exit 2
 if [ -n "${FAKE_GH_FORBID:-}" ]; then : > "$FAKE_GH_DIR/forbidden"; exit 1; fi
 [ -z "${FAKE_GH_FAIL:-}" ] || exit 1
+if [ -f "$FAKE_GH_DIR/retries" ]; then
+  n=$(<"$FAKE_GH_DIR/retries")
+  if [ "$n" -gt 0 ]; then
+    echo "$((n - 1))" > "$FAKE_GH_DIR/retries"
+    exit "${FAKE_GH_FAILURE_STATUS:-1}"
+  fi
+fi
 f="$FAKE_GH_DIR/$(printf '%s' "$2" | tr '/?&=:' '_____')"
 printf '%s\n' "$2" >> "$FAKE_GH_DIR/calls.log"
 [ -f "$f" ] || exit 1
@@ -36,6 +43,7 @@ cat "$f"
 SH
 chmod +x "$TMP_ROOT/fakebin/herdr" "$TMP_ROOT/fakebin/gh"
 export PATH="$TMP_ROOT/fakebin:$PATH"
+export FM_PROCEVENT_GH_RETRY_SECONDS=0 FM_PR_REVIEW_GH="$TMP_ROOT/fakebin/gh"
 
 # ---- lab ------------------------------------------------------------------
 
@@ -66,6 +74,17 @@ SH
   cat > "$LAB/writer.sh" <<SH
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "$LAB/writer.calls"
+if [ "\${1:-}" = pr-round ]; then
+  mkdir -p "$H/data/pr-review"
+  case "\$2" in
+    list) [ ! -s "$H/data/pr-review/ledger.jsonl" ] || cat "$H/data/pr-review/ledger.jsonl" ;;
+    cursor) if [ -s "$H/data/pr-review/state.json" ]; then cat "$H/data/pr-review/state.json"; else echo '{}'; fi ;;
+    put) value=\$(cat "\$4"); grep -Fxq "\$value" "$H/data/pr-review/ledger.jsonl" 2>/dev/null || printf '%s\\n' "\$value" >> "$H/data/pr-review/ledger.jsonl" ;;
+    set-cursor) cp "\$4" "$H/data/pr-review/state.json" ;;
+    *) exit 2 ;;
+  esac
+  exit 0
+fi
 printf 'seq=1 task=\$3 event=ci state=running next=worker\n'
 exit 0
 SH
@@ -110,6 +129,10 @@ fx_pulls() {  # <number:ref:head-seed>...: the open PRs
 fx_compare() {  # <head-seed> [<files-json>]: the merge-base..head diff
   local files=${2:-}
   [ -n "$files" ] || files=$(jq -cn --arg p "$PATCH_A" '[{filename: "a.txt", status: "modified", patch: $p}]')
+  local prior
+  for prior in h1 h1b h2 h3; do
+    gh_put "repos/$REPO/compare/$(sha "$prior")...$(sha "$1")" "$(jq -cn --arg mb "$(sha "$prior")" --argjson files "$files" '{merge_base_commit: {sha: $mb}, commits: [], files: $files}')"
+  done
   gh_put "repos/$REPO/compare/main...$(sha "$1")" "$(jq -cn --arg mb "$(sha mb)" --argjson files "$files" \
     '{merge_base_commit: {sha: $mb}, commits: [{commit: {committer: {date: "2026-10-22T10:00:00Z"}}}], files: $files}')"
 }
@@ -216,6 +239,37 @@ ci_head() {  # <number>: the head the poll last read the PR's checks on
   jq -r --arg k "$REPO#$1" '.ci[$k].head // ""' "$H/data/pr-review/state.json" 2>/dev/null
 }
 
+# Sensitive assertions: stale asks are absent; superseded findings never arrive; discarded
+# rounds leave all three slots available; incremental prompts and labels exclude old code.
+scenario_newest() {
+  new_lab "$1"
+  register_task alpha fm/alpha
+  baseline 7 fm/alpha h0
+  fx_pulls 7:fm/alpha:h1; fx_compare h1
+  cycle; advance 130
+  gh_put "repos/$REPO/pulls/7" "$(jq -cn --arg h "$(sha h2)" '{head:{sha:$h}}')"
+  cycle
+  [ "$(inbox_count)" = 0 ] && [ "$(reader_calls)" = 0 ] || { echo 'sensitive: stale head asked a reviewer'; return 1; }
+  [ "$(ledger_count '.type == "superseded"')" = 1 ] || return 1
+  start_round 7 fm/alpha h2
+  reviewer_answers h2
+  fx_pulls 7:fm/alpha:h3; fx_compare h3
+  cycle
+  [ "$(task_message_count alpha)" = 0 ] || { echo 'sensitive: superseded findings delivered'; return 1; }
+  advance 130; cycle
+  finish_round h3
+  jq -e '.round == 1' <<<"$LAST_RESULT" >/dev/null || { echo 'sensitive: superseded round consumed cap'; return 1; }
+  local files prompt
+  files=$(jq -cn --arg p $'@@ -19 +19 @@\n-old\n+new' '[{filename:"a.txt",status:"modified",patch:$p}]')
+  start_round 7 fm/alpha h4 "$files"
+  prompt=$(cat "$H/data/alpha/reader-prompt-$(sha h4 | cut -c1-8).txt")
+  [[ "$prompt" == *"Review commits $(sha h3)..$(sha h4) only."* ]] || { echo 'sensitive: round 2 lacks incremental range'; return 1; }
+  local before
+  before=$(task_message_count alpha)
+  finish_round h4
+  [ "$(task_message_count alpha)" = "$before" ] || { echo 'sensitive: old finding raised again'; return 1; }
+}
+
 # ---- scenarios: each returns 0 when the behavior holds ------------------------
 
 # P2: rounds 1 to 3 ask both reviewers once per head; the 4th head asks nobody and wakes once;
@@ -316,6 +370,30 @@ scenario_ask() {
   start_round 9 fm/beta k1
   [ "$(tail -1 "$FAKE_READER_LOG")" = 'https://chatgpt.test/project' ] || { echo "new chat url: $(tail -1 "$FAKE_READER_LOG")"; return 1; }
   [ "$(head -1 "$H/data/beta/reader-session.md")" = 'chat: https://chatgpt.test/project' ] || { echo 'chat line not first'; cat "$H/data/beta/reader-session.md"; return 1; }
+}
+
+# Controlled GitHub failures cannot be induced safely on the real service.
+scenario_read_retry() {
+  local failures status
+  for status in 1 0; do
+    for failures in 1 2; do
+      new_lab "$1"
+      fx_pulls 7:fm/alpha:h1
+      echo "$failures" > "$GHD/retries"
+      export FAKE_GH_FAILURE_STATUS=$status
+      cycle
+      if [ "$failures" = 1 ]; then
+        [ "$(ledger_count '.type == "baseline" and .pr == 7')" = 1 ] || { echo 'retry payload did not record the PR'; return 1; }
+        grep -Fxq "repos/$REPO/pulls?state=open&per_page=100" "$GHD/calls.log" || { echo 'stub did not serve the retry'; return 1; }
+        [ ! -s "$H/data/pr-review/last-error" ] || { echo 'retry left an error'; return 1; }
+        [ "$CYCLE_AUTO" != 1 ] || { echo 'recovered read published an error'; return 1; }
+      else
+        grep -Fxq "GitHub could not be read: repos/$REPO/pulls" "$H/data/pr-review/last-error" || return 1
+        jq -e '.kind == "error" and .error != null' <<<"$LAST_RESULT" >/dev/null || return 1
+      fi
+    done
+  done
+  unset FAKE_GH_FAILURE_STATUS
 }
 
 # P5: one failing reviewer never stops the other; each round wakes once; no ask is sent twice.
@@ -431,14 +509,12 @@ scenario_pollfail() {
   export FAKE_GH_FAIL=1
   reviewer_answers h1 || return 1
   advance 60; cycle
-  jq -e '.kind == "round" and .reviewer.status == "answered"' <<<"$LAST_RESULT" >/dev/null || { echo "round not finished while GitHub failed: ${LAST_RESULT:-none}"; return 1; }
+  jq -e '.kind == "error"' <<<"$LAST_RESULT" >/dev/null || { echo 'unverified head must not publish findings'; return 1; }
   cycle
-  jq -e '.kind == "error"' <<<"$LAST_RESULT" >/dev/null || { echo "GitHub failure not announced after the round: ${LAST_RESULT:-none}"; return 1; }
+  [ -z "$LAST_RESULT" ] || return 1
   unset FAKE_GH_FAIL
-  start_round 7 fm/alpha h2
-  export FAKE_GH_FAIL=1
-  advance 1900; cycle
-  jq -e '.kind == "round" and .reviewer.status == "timeout"' <<<"$LAST_RESULT" >/dev/null || { echo "round not timed out while GitHub failed: ${LAST_RESULT:-none}"; return 1; }
+  cycle
+  jq -e '.kind == "round" and .reviewer.status == "answered"' <<<"$LAST_RESULT" >/dev/null || return 1
 }
 
 # A recovery closes the GitHub failures and nothing else: a round still waiting for firstmate stays open.
@@ -687,11 +763,52 @@ scenario_wf3() {
   if grep -q -- "--head $(sha h3) " "$LAB/writer.calls"; then echo 'the replaced head wrote a ci event'; return 1; fi
 }
 
-SCENARIOS=${FM_PR_REVIEW_TEST_SCENARIOS:-rounds scope eof ask failures pollfail recovery disabled reenable readertimeout readerconcurrency rearm summary runner wf1 wf2 wf3}
+scenario_upstreamscope() {
+  new_lab "$1"
+  register_task alpha fm/alpha
+  baseline 7 fm/alpha h0
+  start_round 7 fm/alpha h1
+  finish_round h1
+  fx_pulls 7:fm/alpha:h2
+  fx_compare h2
+  local files
+  files=$(jq -cn --arg p "$PATCH_A" '[{filename: "upstream.txt", status: "modified", patch: $p}, {filename: "a.txt", status: "modified", patch: $p}]')
+  gh_put "repos/$REPO/compare/$(sha h1)...$(sha h2)" "$(jq -cn --arg mb "$(sha h1)" --argjson files "$files" '{merge_base_commit: {sha: $mb}, files: $files}')"
+  cycle
+  advance 130
+  cycle
+  finish_round h2 'FINDING note upstream.txt:10 upstream only | fix: remove it'
+  jq -e '.reviewer.findings[0].label == "out-of-scope (pre-existing)" and .reader.findings[0].label == "in-scope"' <<<"$LAST_RESULT" >/dev/null || { echo 'sensitive: upstream-only line must not be in scope'; return 1; }
+  ! task_text alpha | grep -q 'upstream only' || { echo 'upstream-only finding delivered'; return 1; }
+}
+
+scenario_unverifiedcapture() {
+  new_lab "$1"
+  register_task alpha fm/alpha
+  baseline 7 fm/alpha h0
+  start_round 7 fm/alpha h1
+  reviewer_answers h1
+  advance 60
+  local out result
+  out=$("$BIN/fm-procevent-pr-review.sh" wait) || return 1
+  SEQ=$((SEQ + 1))
+  result="$H/state/procevent-inbox/pr-review.$SEQ.result"
+  mkdir -p "$(dirname "$result")"
+  printf '%s\n' "$out" > "$result"
+  printf 'pr-review\n' > "$H/state/procevent-inbox/pr-review.$SEQ.adapter"
+  export FAKE_GH_FAIL=1
+  "$BIN/fm-procevent-pr-review.sh" autohandle pr-review "$SEQ" "$result" >/dev/null 2>&1 || { echo 'sensitive: unverified capture must not request publication'; return 1; }
+  [ "$(task_message_count alpha)" = 0 ] && [ "$(ledger_count '.type == "round"')" = 0 ] || { echo 'unverified capture was delivered or completed'; return 1; }
+  unset FAKE_GH_FAIL
+  cycle
+  [ "$CYCLE_AUTO" = 0 ] && [ "$(task_message_count alpha)" = 1 ] || { echo 'verified round did not retry'; return 1; }
+}
+
+SCENARIOS=${FM_PR_REVIEW_TEST_SCENARIOS:-upstreamscope unverifiedcapture rounds scope eof ask failures pollfail recovery disabled reenable readertimeout readerconcurrency rearm summary runner wf1 wf2 wf3}
 
 # ---- real adapter -----------------------------------------------------------
 
-for s in $SCENARIOS; do
+for s in read_retry newest $SCENARIOS; do
   out=$(scenario_"$s" "$ROOT/bin" 2>&1) || fail "scenario $s failed on the real adapter: $out"
   pass "pr-review $s"
 done
@@ -714,6 +831,10 @@ mutate() {  # <label> <scenario> <perl-substitution>
   pass "guard '$1' is needed: scenario $2 goes red without it"
 }
 
+mutate 'PR scope intersects incremental scope' upstreamscope \
+  's/&& jq -e .*has\("pr_files"\).* "\$cmpf" >\/dev\/null/\&\& false/'
+mutate 'unverified captures stay quiet' unverifiedcapture \
+  's/# pass retries it\. Retire only this unverified capture to prevent a wake\.[\s\S]*?return \$\?/# pass retries it.\n        return 1/'
 mutate 'the round cap' rounds \
   's/if \[ "\$count" -ge "\$MAX_ROUNDS" \]; then/if false; then/'
 mutate 'a head must settle' rounds \
@@ -755,9 +876,7 @@ mutate 'a deleted file has no head side' eof \
 mutate 'finding fields keep empty parts' scope \
   's/IFS=\$.\\037. read -r kind/IFS=\$\x27\\t\x27 read -r kind/'
 mutate 'off forgets the first-poll marks' reenable \
-  's/state_edit .del\(\.started\) \| del\(\.heads\). *$/:/m'
-mutate 'open rounds finish while GitHub fails' pollfail \
-  's/2\) POLL_FAILED=1 ;; 10\) return 0 ;; esac/2) return 2 ;; 10) return 0 ;; esac/'
+  's/state_edit .del\(\.started\) \| del\(\.heads\).[^\n]*$/:/m'
 mutate 'a recovery closes only error results' recovery \
   's/mark_errors_handled "\$seq"/mark_handled "\$seq"/'
 mutate 'a round that ends a failure episode closes its error results' recovery \

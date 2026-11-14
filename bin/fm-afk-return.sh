@@ -587,7 +587,7 @@ render_return_brief() {  # <evidence-file> <blockers-file> <since-epoch> <drain-
   printf 'Waiting on you:\n'
   count=0
   HELD_READ_FAILED=0
-  HELD_READ_PATH=$(fm_backlog_file "$DATA" 2>/dev/null || printf '%s/backlog.md' "$DATA")
+  HELD_READ_PATH="bin/fm-tasks-axi.sh list --state held (data directory $DATA)"
   if held=$(fm_backlog_row_list "$DATA" --state held --fields hold_kind,hold_reason,hold_until 2>&1); then
     rows=$(printf '%s\n' "$held" | strip_axi_help | grep -v '^count: ' | grep -v '^tasks\[0\]' || true)
     if printf '%s\n' "$held" | grep -q '^count: 0'; then

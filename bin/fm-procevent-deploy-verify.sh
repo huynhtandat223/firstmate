@@ -6,6 +6,7 @@
 #   fm-procevent-deploy-verify.sh replay-skips [--dry-run]
 #   fm-procevent-deploy-verify.sh deploy --dry-run --sha <sha> [--base <sha>]
 #   fm-procevent-deploy-verify.sh ask-rows <task> [--dry-run]
+#   fm-procevent-deploy-verify.sh backfill-deploy <sha>
 #   fm-procevent-deploy-verify.sh wait
 #   fm-procevent-deploy-verify.sh autohandle <source-id> <sequence> <result-file>
 #   fm-procevent-deploy-verify.sh classify <result-file>
@@ -18,16 +19,20 @@
 #              Run it once per home; reconcile keeps the poll alive.
 # wait         The blocking child. It polls the project's main CI runs at most once
 #              per FM_DEPLOY_VERIFY_POLL_SECONDS (default 60), in run order, past the
-#              cursor in data/deploy-verify/state.json. A run whose "Deploy Development
-#              host (5001)" job is green deploys its commits since the last green
-#              deploy. The merged PRs of those commits map to tasks through state/*.meta
+#              cursor in data/deploy-verify/state.json. A completed run whose "Deploy
+#              Development environment" step in job "Deploy Development host (5001)"
+#              succeeded deploys its commits since the last deploy, regardless of the
+#              job conclusion. The deploy time is the step's completed_at.
+#              The merged PRs of those commits map to tasks through state/*.meta
 #              `pr=` and the backlog line's PR URL, and to an issue through the PR's
 #              closing reference or the backlog line's `<repo> #n`. Open task PRs are
 #              also checked for a new head whose issue has `(draft)` acceptance lines.
 #              It prints one fm-deploy-verify-result.v1 JSON when there is an ask, a
-#              skip to record, a first GitHub failure, or a recovery to clear.
-#              A skipped, cancelled or failed deploy asks nothing; the next green
-#              deploy carries its commits.
+#              skip or a deploy to record, a first GitHub failure, or a recovery to clear.
+#              Every successful deploy step is a `deploys` entry of the result (sha, run,
+#              completed), also when all its PRs are skipped or it has no PR at all.
+#              A skipped or failed deploy step asks nothing and is no deploy; the next
+#              successful deploy step carries its commits.
 #              The first poll only sets the cursor to the newest finished run; it never
 #              asks about history.
 # autohandle   Deliver each ask to a Tester: a live Tester for the same task (its
@@ -36,7 +41,9 @@
 #              config/roles/tester.md and config/roles/tester.json and the ask is
 #              written into its brief. Each delivered ask is recorded in
 #              data/deploy-verify/ledger.jsonl, then the cursor advances and the
-#              result is acknowledged. One ask goes out per task per deploy, and a
+#              result is acknowledged. Each deploy of the result is recorded first as one
+#              `deployed` ledger line, unless the ledger has that sha already.
+#              One ask goes out per task per deploy, and a
 #              PR already asked about is never asked again. A refused delivery or an
 #              unreadable GitHub leaves the result unacknowledged, so the runner
 #              publishes one wake; the next poll retries the same asks, and the same
@@ -63,6 +70,13 @@
 #              with `checks <task> --as-deployed <sha> --touched <ids>`.
 # ask-rows     Build and send the rows asks of one task now (see the rows round
 #              below); --dry-run prints them before any env gate and writes nothing.
+# backfill-deploy
+#              Record the `deployed` ledger line of a past deploy, for a deploy the poll
+#              never recorded. <sha> is a full 40-character sha. It reads from GitHub the
+#              CI runs of <sha> on main and writes the line only when a completed run
+#              has a successful deploy step; otherwise it prints `refused: <why>` and
+#              exits 1 with the ledger untouched. A sha the ledger holds already prints
+#              `already recorded` and exits 0, so a second call writes no duplicate.
 # Issues are read only through bin/fm-acceptance.mjs. Visible mode asks for the
 # user-visible scenarios, draft mode for the scenarios on a draft page. Each ask
 # carries `lines` (the scenario ids) and `rows` (the parser's `rows` output: one
@@ -110,7 +124,7 @@
 # wakes firstmate once like a visible skip below, and a refused draft round is only
 # a draft-skip, because the deploy round of the same issue refuses and wakes.
 # silent       Exit 0 when the result needs no firstmate action: no error and every
-#              ask and skip is already in the ledger.
+#              ask, skip and deploy is already in the ledger.
 # self-announcing, relisten
 #              Exit 0: a delivered ask is announced by the Tester inbox itself, and
 #              the runner keeps polling after a fully handled result.
@@ -119,6 +133,9 @@
 #   {type:"ask", round:"deploy"|"draft", key, task, issue, prs, sha, run, lines, rows, touched?, carried?, check?, tester}
 #   {type:"carry", round:"deploy", key, task, prs, sha, carried}
 #   {type:"ask", round:"rows", key, task, issue, prs, sha, head, lines, rows, env, envs, check?, tester}
+#   {type:"deployed", sha, run, completed, at}   one per successful deploy step: the deployed sha, its CI run URL,
+#                                                the step's completed_at and the write time. bin/fm-verify-gate-lib.sh
+#                                                counts a rows-round head as deployed when this line names it.
 #   {type:"hold", round:"rows"|"deploy"|"draft", key, task, sha, envs, held, lease?, cap?}
 #   {type:"release", lease, task, key}
 #   {type:"skip", pr, task, reason:"no-task"|"internal"|"no-issue"|"no-user-visible-line"|"template-refused", detail?}
@@ -143,6 +160,7 @@ LAST_POLL="$DATA/last-poll"
 
 REPO="${FM_DEPLOY_VERIFY_REPO:-huynhtandat223/cfw-modules}"
 JOB="${FM_DEPLOY_VERIFY_JOB:-Deploy Development host (5001)}"
+DEPLOY_STEP="${FM_DEPLOY_VERIFY_DEPLOY_STEP:-Deploy Development environment}"
 WORKFLOW="${FM_DEPLOY_VERIFY_WORKFLOW:-CI}"
 GH="${FM_DEPLOY_VERIFY_GH:-gh}"
 POLL_SECONDS="${FM_DEPLOY_VERIFY_POLL_SECONDS:-60}"
@@ -187,18 +205,39 @@ ledger_pr_final() {  # <pr-url> <task>: asked or carried in a deploy round, or s
 }
 PLAN_IGNORE_LEDGER=0
 
+# shellcheck source=bin/fm-deploy-ledger-lib.sh
+. "$SCRIPT_DIR/fm-deploy-ledger-lib.sh"
+ledger_append() {
+  fm_deploy_ledger_write append "$1" || return 1
+  printf '%s\n' "$1" >> "$LEDGER"
+}
 state_put() {  # <cursor-run> <last-green-sha>
-  jq -cn --argjson r "$1" --arg s "$2" '{cursor_run: $r, last_green_sha: $s}' > "$CURSOR.tmp" \
-    && mv -f "$CURSOR.tmp" "$CURSOR"
+  local value
+  value=$(jq -cn --argjson r "$1" --arg s "$2" '{cursor_run: $r, last_green_sha: $s}') || return 1
+  fm_deploy_ledger_write put-cursor "$value" || return 1
+  printf '%s\n' "$value" > "$CURSOR"
+}
+
+# A field (conclusion, completed_at) of the deploy step of job $JOB in a run's jobs answer; empty when there is none.
+deploy_step_field() {  # <jobs-json> <field>
+  jq -r --arg j "$JOB" --arg s "$DEPLOY_STEP" --arg f "$2" \
+    '[.jobs[] | select(.name == $j)] | first | [.steps[]? | select(.name == $s)] | first | .[$f] // ""' <<<"$1"
+}
+
+# One `deployed` ledger line per deployed sha (bin/fm-verify-gate-lib.sh reads it): a sha the ledger holds is left alone.
+record_deploy() {  # <deploy-json: {sha, run, completed}>
+  # shellcheck disable=SC2016 # jq variables, not shell
+  ledger_test '.type == "deployed" and .sha == $s' --arg s "$(jq -r .sha <<<"$1")" && return 0
+  ledger_append "$(jq -c --argjson at "$(date +%s)" '{type: "deployed", sha, run, completed, at: $at}' <<<"$1")"
 }
 
 # ---- task and issue mapping ------------------------------------------------
 
 # One |-separated row per PR and task: url, task, surface, issue hint, live (1 for a task
 # that still has state/<task>.meta). Live rows come from the endpoint records,
-# finished tasks from the PR URL on their backlog line.
+# finished tasks from the PR URL on their backlog row (bin/fm-tasks-axi.sh rows).
 build_map() {  # <out-file>
-  local f pr task surface backlog
+  local f pr task surface
   {
     for f in "$STATE"/*.meta; do
       [ -f "$f" ] && [ ! -L "$f" ] || continue
@@ -209,19 +248,11 @@ build_map() {  # <out-file>
       surface=$(sed -n 's/^surface=//p' "$f" | head -1)
       printf '%s|%s|%s||1\n' "$pr" "$task" "$surface"
     done
-    backlog="$FM_HOME/data/backlog.md"
-    [ ! -f "$backlog" ] || awk -v repo="$REPO" -v short="${REPO##*/}" '
-      /^- \[.\] / && /\(kind: ship\)/ {
-        line = $0; sub(/^- \[.\] /, "", line)
-        task = line; sub(/ .*/, "", task)
-        hint = ""
-        if (match($0, short " #[0-9]+")) hint = substr($0, RSTART + length(short) + 2, RLENGTH - length(short) - 2)
-        rest = $0
-        while (match(rest, "https://github.com/" repo "/pull/[0-9]+")) {
-          printf "%s|%s||%s|0\n", substr(rest, RSTART, RLENGTH), task, hint
-          rest = substr(rest, RSTART + RLENGTH)
-        }
-      }' "$backlog"
+    FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-tasks-axi.sh" rows --kind ship --fields links 2>/dev/null \
+      | jq -r --arg repo "$REPO" --arg short "${REPO##*/}" '
+        .[] | .id as $task | ((((.title // "") | capture($short + " #(?<n>[0-9]+)")?) | .n) // null) as $hint
+        | ("\(.title // "") \(.links // "")" | scan("https://github.com/" + $repo + "/pull/[0-9]+"))
+        | "\(.)|\($task)||\($hint // "")|0"' || true
   } | awk -F'|' '
     { k = $1 FS $2; seen[k] = 1; if ($3 != "") s[k] = $3; if ($4 != "") h[k] = $4; if ($5 == 1) l[k] = 1 }
     END { for (k in seen) { split(k, a, FS); printf "%s|%s|%s|%s|%d\n", a[1], a[2], s[k], h[k], l[k] } }' \
@@ -271,6 +302,10 @@ read_acceptance() {  # <visible|draft> <issue-body>
 
 ASKS='[]'
 SKIPS='[]'
+DEPLOYS='[]'
+add_deploy() {  # <sha> <run-url> <completed-at>
+  DEPLOYS=$(jq -c --arg s "$1" --arg r "$2" --arg c "$3" '. + [{sha: $s, run: $r, completed: $c}]' <<<"$DEPLOYS")
+}
 add_ask() { ASKS=$(jq -c --argjson a "$1" '. + [$a]' <<<"$ASKS"); }
 add_skip() {  # <pr> <task> <reason> <sha> [issue] [detail]
   SKIPS=$(jq -c --arg pr "$1" --arg t "$2" --arg r "$3" --arg s "$4" --arg i "${5:-}" --arg d "${6:-}" \
@@ -293,8 +328,19 @@ acceptance_url() (
   # shellcheck source=bin/fm-task-shadow-config-lib.sh
   . "$SCRIPT_DIR/fm-task-shadow-config-lib.sh"
   fm_task_shadow_config "$CONFIG/task-shadow"
-  case "$1" in task:*) printf '%s/#firstmate.board?view=board&task=%s\n' "${FM_TASK_BASE_URL:-http://127.0.0.1:5001}" "${1#task:}" ;; *) printf 'https://github.com/%s/issues/%s\n' "$REPO" "$1" ;; esac
+  case "$1" in task:*) printf '%s/#firstmate.board?view=board&task=%s\n' "${FM_TASK_BASE_URL:-http://127.0.0.1:5001}" "${1#task:}" ;; https://github.com/*) printf '%s\n' "$1" ;; *) printf 'https://github.com/%s/issues/%s\n' "$REPO" "$1" ;; esac
 )
+
+recorded_acceptance() {  # <task> <pr-body> <hint>
+  local source
+  source=$(sed -n 's/^issue: //p' "$FM_HOME/data/$1/verify.md" 2>/dev/null | tail -n 1)
+  case "$source" in
+    task:*) printf '%s\n' "$source" ;;
+    https://github.com/*/*/issues/[0-9]*)
+      if [[ "$source" == "https://github.com/$REPO/issues/"* ]]; then printf '%s\n' "${source##*/}"; else printf '%s\n' "$source"; fi ;;
+    *) resolve_issue "$2" "$3" ;;
+  esac
+}
 
 acceptance_body_json() {
   case "$1" in
@@ -303,6 +349,7 @@ acceptance_body_json() {
       content=$(task_writer document "${1#task:}") || return 1
       jq -cn --arg body "$content" '{body:$body}'
       ;;
+    https://github.com/*/*/issues/[0-9]*) gh_read "repos/${1#https://github.com/}" ;;
     *) gh_read "repos/$REPO/issues/$1" ;;
   esac
 }
@@ -353,7 +400,7 @@ plan_deploy() {  # <base-sha> <sha> <run-url> <completed-at> <workdir>
     fi
     while IFS='|' read -r _ task surface hint _; do
       ledger_pr_final "$url" "$task" && continue
-      issue=$(resolve_issue "$body" "$hint")
+      issue=$(recorded_acceptance "$task" "$body" "$hint")
       if [ -z "$issue" ] && printf '%s\n' "$body" | grep -qE '^Task: '; then issue="task:$task"; fi
       printf '%s|%s|%s|%s|%s\n' "$task" "$surface" "$url" "$issue" "$(pr_touched "$body")" >> "$w/rows.psv"
     done < <(awk -F'|' -v p="$url" '$1 == p' "$w/map.psv")
@@ -416,7 +463,7 @@ plan_drafts() {  # <workdir>
       continue
     fi
     body=$(jq -r '.body // ""' <<<"$pr")
-    issue=$(resolve_issue "$body" "$hint")
+    issue=$(recorded_acceptance "$task" "$body" "$hint")
     if [ -z "$issue" ] && printf '%s\n' "$body" | grep -qE '^Task: '; then issue="task:$task"; fi
     if [ -z "$issue" ]; then
       ledger_append "$(jq -cn --arg k "$key" '{type: "draft-skip", key: $k, reason: "no-issue"}')"
@@ -452,7 +499,7 @@ plan_drafts() {  # <workdir>
 # explicit head, without the rows already asked on that head, and without a held ask until its hold is old enough.
 # Returns 1 with READ_ERROR_FILE set when the record or GitHub cannot be read.
 plan_rows_task() {  # <task>
-  local task=$1 json issue_url repo n issue_json head keys key rows lines held_at now
+  local task=$1 json issue_url repo n ref issue_json head keys key rows lines held_at now description
   json=$(task_writer checks "$task" 2>&1)
   # shellcheck disable=SC2181 # the status of the assignment above
   if [ "$?" -ne 0 ] || ! jq -e '.rows | type == "array"' <<<"$json" >/dev/null 2>&1; then
@@ -461,16 +508,33 @@ plan_rows_task() {  # <task>
   fi
   jq -e 'any(.rows[]; .surface == "user-visible" and .status == "pending" and .nextActor == "tester" and .head != null)' <<<"$json" >/dev/null || return 0
   issue_url=$(jq -r '.issueUrl // empty' <<<"$json")
+  if [ "$issue_url" = "$task" ]; then
+    if description=$(task_writer document "$task" 2>&1); then
+      :
+    elif [ "$?" -eq 5 ] && [ "$description" = 'fm-task: task has no Description event' ]; then
+      description=''
+    else
+      printf 'the task Description of %s could not be read: %s\n' "$task" "$description" > "$READ_ERROR_FILE"
+      return 1
+    fi
+    if printf '%s\n' "$description" | node "$ACCEPTANCE" parse - 2>/dev/null | jq -e '.scenarios | length > 0' >/dev/null; then
+      issue_url="task:$task"
+    else
+      issue_url=''
+    fi
+  fi
   [ -n "$issue_url" ] || issue_url=$(sed -n 's/^issue: //p' "$FM_HOME/data/$task/verify.md" | tail -n 1)
-  if [ -z "$issue_url" ] || [[ "$issue_url" == *'#firstmate.board?'*'task='* ]]; then
-    issue_url=$(acceptance_url "task:$task")
-    n="task:$task"
+  if [ -z "$issue_url" ] || [[ "$issue_url" == task:* || "$issue_url" == *'#firstmate.board?'*'task='* ]]; then
+    case "$issue_url" in task:*) n=$issue_url ;; *) n="task:$task" ;; esac
+    issue_url=$(acceptance_url "$n")
+    ref=$(issue_ref "$n")
     issue_json=$(acceptance_body_json "$n") || return 1
   else
     case "$issue_url" in https://github.com/*/*/issues/[0-9]*) ;; *) return 0 ;; esac
     repo=${issue_url#https://github.com/}
     repo=${repo%/issues/*}
     n=${issue_url##*/}
+    ref="${repo##*/}#$n"
     issue_json=$(gh_read "repos/$repo/issues/$n") || return 1
   fi
   read_acceptance visible "$(jq -r '.body // ""' <<<"$issue_json")"
@@ -490,7 +554,7 @@ plan_rows_task() {  # <task>
     # shellcheck disable=SC2016 # jq variables, not shell
     held_at=$([ ! -f "$LEDGER" ] || jq -Rr --arg k "$key" 'fromjson? | select(.type == "hold" and .key == $k and (.lease | not) and (.cap | not)) | .at' "$LEDGER" | tail -n 1)
     [ -z "$held_at" ] || [ $((now - held_at)) -ge "${FM_DEPLOY_VERIFY_HOLD_SECONDS:-600}" ] || continue
-    add_ask "$(jq -cn --arg key "$key" --arg task "$task" --arg issue "${repo##*/}#$n" --arg issue_url "$issue_url" --arg head "$head" \
+    add_ask "$(jq -cn --arg key "$key" --arg task "$task" --arg issue "$ref" --arg issue_url "$issue_url" --arg head "$head" \
       --argjson rows "$rows" --argjson lines "$lines" --argjson envs "$ISSUE_ENVS" --argjson arrival "$now" \
       '{round: "rows", key: $key, task: $task, issue: $issue, issue_url: $issue_url, prs: [], sha: $head, head: $head, run: null,
         lines: $lines, rows: $rows, env: ($envs | with_entries(select(.key as $id | $lines | index($id)))), arrival: $arrival}')"
@@ -557,6 +621,7 @@ poll_once() {
   local w runs baseline run_id sha status run_url completed jobs conclusion cursor_run base
   ASKS='[]'
   SKIPS='[]'
+  DEPLOYS='[]'
   CURSOR_RUN=
   CURSOR_SHA=
   w=$(mktemp -d "${TMPDIR:-/tmp}/fm-deploy-verify.XXXXXX") || return 2
@@ -566,7 +631,11 @@ poll_once() {
   if [ ! -s "$CURSOR" ]; then
     # First poll: start after the newest finished run, never backfill history.
     baseline=$(jq -c '[.[] | select(.status == "completed")] | last // empty' <<<"$runs")
-    [ -z "$baseline" ] || state_put "$(jq -r .id <<<"$baseline")" "$(jq -r .head_sha <<<"$baseline")"
+    if [ -n "$baseline" ] && ! state_put "$(jq -r .id <<<"$baseline")" "$(jq -r .head_sha <<<"$baseline")"; then
+      printf 'cannot commit deployment cursor to Dev 5001\n' > "$READ_ERROR_FILE"
+      rm -rf "$w"
+      return 2
+    fi
     rm -rf "$w"
     return 1
   fi
@@ -581,9 +650,10 @@ poll_once() {
     sha=$(jq -r .head_sha <<<"$run")
     run_url=$(jq -r .html_url <<<"$run")
     jobs=$(gh_read "repos/$REPO/actions/runs/$run_id/jobs?per_page=100") || { rm -rf "$w"; return 2; }
-    conclusion=$(jq -r --arg j "$JOB" '[.jobs[] | select(.name == $j)] | first | .conclusion // ""' <<<"$jobs")
+    conclusion=$(deploy_step_field "$jobs" conclusion)
     if [ "$conclusion" = success ]; then
-      completed=$(jq -r --arg j "$JOB" '[.jobs[] | select(.name == $j)] | first | .completed_at' <<<"$jobs")
+      completed=$(deploy_step_field "$jobs" completed_at)
+      add_deploy "$sha" "$run_url" "$completed"
       plan_deploy "$base" "$sha" "$run_url" "$completed" "$w" || { rm -rf "$w"; return 2; }
       CURSOR_RUN=$run_id
       CURSOR_SHA=$sha
@@ -595,15 +665,19 @@ poll_once() {
       CURSOR_RUN=$run_id
     fi
   done < <(jq -c --argjson c "$cursor_run" '.[] | select(.id > $c)' <<<"$runs")
-  if [ "$ASKS" = '[]' ] && [ "$SKIPS" = '[]' ]; then
+  if [ "$ASKS" = '[]' ] && [ "$SKIPS" = '[]' ] && [ "$DEPLOYS" = '[]' ]; then
     [ "$CURSOR_RUN" = "$cursor_run" ] && [ "$CURSOR_SHA" = "$(jq -r '.last_green_sha // ""' "$CURSOR")" ] \
-      || state_put "$CURSOR_RUN" "$CURSOR_SHA"
+      || state_put "$CURSOR_RUN" "$CURSOR_SHA" || {
+        printf 'cannot commit deployment cursor to Dev 5001\n' > "$READ_ERROR_FILE"
+        rm -rf "$w"
+        return 2
+      }
   fi
   plan_drafts "$w" || { rm -rf "$w"; return 2; }
   release_landed_leases
   plan_rows || { rm -rf "$w"; return 2; }
   rm -rf "$w"
-  [ "$ASKS" != '[]' ] || [ "$SKIPS" != '[]' ]
+  [ "$ASKS" != '[]' ] || [ "$SKIPS" != '[]' ] || [ "$DEPLOYS" != '[]' ]
 }
 
 # Replay only historical skips contained in the deployed history. Do not use
@@ -629,7 +703,7 @@ cmd_replay_skips() {
     comparison=$(gh_read "repos/$REPO/compare/$merged...$sha") || { rc=1; break; }
     jq -e '.status == "ahead" or .status == "identical"' <<<"$comparison" >/dev/null || continue
     hint=$(awk -F'|' -v p="$pr" -v t="$task" '$1 == p && $2 == t {print $4; exit}' "$w/map.psv")
-    issue=$(resolve_issue "$(jq -r '.body // ""' <<<"$body")" "$hint")
+    issue=$(recorded_acceptance "$task" "$(jq -r '.body // ""' <<<"$body")" "$hint")
     if [ -z "$issue" ] && jq -er '.body // ""' <<<"$body" | grep -qE '^Task: '; then issue="task:$task"; fi
     printf '%s|%s|%s\n' "$task" "$pr" "$issue" >> "$w/rows"
   done < <(jq -sc 'unique_by([.task,.pr])[] | select(.type == "skip" and (.reason == "no-user-visible-line" or .reason == "template-refused"))' "$LEDGER")
@@ -665,11 +739,11 @@ cmd_replay_skips() {
 # ---- wait ------------------------------------------------------------------
 
 emit_result() {  # <error-or-empty> <recovered 0|1>
-  jq -cn --arg error "$1" --argjson recovered "$2" --argjson asks "$ASKS" --argjson skips "$SKIPS" \
+  jq -cn --arg error "$1" --argjson recovered "$2" --argjson asks "$ASKS" --argjson skips "$SKIPS" --argjson deploys "$DEPLOYS" \
     --arg run "$CURSOR_RUN" --arg sha "$CURSOR_SHA" '
-    {schema: "fm-deploy-verify-result.v1", asks: $asks, skips: $skips, recovered: ($recovered == 1),
+    {schema: "fm-deploy-verify-result.v1", asks: $asks, skips: $skips, deploys: $deploys, recovered: ($recovered == 1),
      error: (if $error == "" then null else $error end),
-     cursor: (if $run == "" or ($asks | length) + ($skips | length) == 0 then null else {cursor_run: ($run | tonumber), last_green_sha: $sha} end)}'
+     cursor: (if $run == "" or ($asks | length) + ($skips | length) + ($deploys | length) == 0 then null else {cursor_run: ($run | tonumber), last_green_sha: $sha} end)}'
 }
 
 cmd_wait() {
@@ -680,6 +754,8 @@ cmd_wait() {
   while :; do
     throttle
     date +%s > "$LAST_POLL"
+    fm_deploy_ledger_snapshot "$LEDGER" || return 1
+    fm_deploy_ledger_call cursor > "$CURSOR" || return 1
     poll_once
     rc=$?
     previous=
@@ -697,6 +773,7 @@ cmd_wait() {
           printf '%s\n' "$READ_ERROR" > "$LAST_ERROR"
           ASKS='[]'
           SKIPS='[]'
+          DEPLOYS='[]'
           emit_result "$READ_ERROR" 0
           return 0
         fi
@@ -705,6 +782,7 @@ cmd_wait() {
         if [ -n "$previous" ]; then
           ASKS='[]'
           SKIPS='[]'
+          DEPLOYS='[]'
           emit_result '' 1
           return 0
         fi
@@ -795,6 +873,7 @@ hold_for_cap() {  # <ask-json>
 }
 
 # Fill a scaffolded brief's two subsections from files, one section at a time.
+# The spec replaces the scaffold's {FIRSTMATE_SPEC} placeholder line.
 fill_brief() {  # <brief> <intent-file> <spec-file>
   local brief=$1 intent=$2 spec=$3 tmp
   tmp="$brief.fill"
@@ -802,9 +881,15 @@ fill_brief() {  # <brief> <intent-file> <spec-file>
     function emit(file,    line) { while ((getline line < file) > 0) print line; close(file) }
     /^## Captain.s intent$/ { print; print ""; emit(intent); skip = 1; next }
     /^## Firstmate spec$/ { skip = 0; print; print ""; emit(spec); next }
+    /^\{FIRSTMATE_SPEC\}$/ { next }
     skip { next }
     { print }
   ' "$brief" > "$tmp" && mv -f "$tmp" "$brief"
+}
+
+# The ask JSON a filled brief carries under `### The ask`, or nothing.
+brief_ask() {  # <brief>
+  awk '/^### The ask$/{f=1;next} f && /^```json$/{j=1;next} j && /^```$/{exit} j{print}' "$1"
 }
 
 # Spawn a new Tester scout for an ask and write the ask into its brief. Returns 1 with DELIVER_ERROR
@@ -812,7 +897,7 @@ fill_brief() {  # <brief> <intent-file> <spec-file>
 spawn_tester() {  # <ask-json> <content-json>
   local ask=$1 content=$2 id task sha issue_url role_md role_json harness model effort
   local tester_home record brief evidence intent spec
-  local -a args=() sargs=()
+  local -a args=()
   id=$TESTER_ID
   task=$(jq -r .task <<<"$ask")
   sha=$(jq -r '.head // .sha' <<<"$ask")
@@ -848,11 +933,17 @@ spawn_tester() {  # <ask-json> <content-json>
     record="$tester_home/data/verify/$task.md"
     [ -n "$tester_home" ] && [ -f "$record" ] && args+=( --also-write "$record" )
   fi
+  brief="$FM_HOME/data/$id/brief.md"
+  # A retry after a refused spawn finds the brief it already filled; the same ask
+  # reuses it, because fm-brief.sh never overwrites a brief.
+  if [ -f "$brief" ] && [ "$(brief_ask "$brief")" = "$content" ]; then
+    spawn_tester_launch "$id" "$harness" "$model" "$effort"
+    return
+  fi
   if ! FM_HOME=$FM_HOME "$BRIEF_CMD" "${args[@]}" >/dev/null 2>&1; then
     DELIVER_ERROR="Tester ask not delivered: the Tester brief could not be scaffolded"
     return 1
   fi
-  brief="$FM_HOME/data/$id/brief.md"
   intent=$(mktemp "${TMPDIR:-/tmp}/fm-tester-intent.XXXXXX") || return 1
   spec=$(mktemp "${TMPDIR:-/tmp}/fm-tester-spec.XXXXXX") || { rm -f "$intent"; return 1; }
   printf 'Verify %s on %s for %s.\nThe ask below names every scenario and width to check; record each result and its evidence.\n' \
@@ -868,7 +959,14 @@ spawn_tester() {  # <ask-json> <content-json>
     return 1
   fi
   rm -f "$intent" "$spec"
-  sargs=( "$id" "$FM_ROOT" --scout --harness "$harness" )
+  spawn_tester_launch "$id" "$harness" "$model" "$effort"
+}
+
+# Launch the Tester scout of a filled brief. A Tester carries no plan, so it
+# passes the dispatch plan gate on the gate's own `verify` exemption.
+spawn_tester_launch() {  # <id> <harness> <model> <effort>
+  local id=$1 harness=$2 model=$3 effort=$4
+  local -a sargs=( "$id" "$FM_ROOT" --scout --plan-exempt verify --harness "$harness" )
   [ -z "$model" ] || sargs+=( --model "$model" )
   [ -z "$effort" ] || sargs+=( --effort "$effort" )
   if ! FM_HOME=$FM_HOME "$SPAWN_CMD" "${sargs[@]}" >/dev/null 2>&1; then
@@ -900,7 +998,7 @@ record_rows() {  # <ask-json>
   local -a head=()
   task=$(jq -r .task <<<"$ask")
   key="deploy-verify:$(jq -r .key <<<"$ask")"
-  note="deploy $(jq -r .round <<<"$ask") at $(jq -r .sha <<<"$ask"): verify ask sent ($(jq -r .issue <<<"$ask"))"
+  note="deploy $(jq -r .round <<<"$ask") head $(jq -r .sha <<<"$ask") run $(jq -r '.run // "none"' <<<"$ask"): verify ask sent ($(jq -r .issue <<<"$ask"))"
   [ "$(jq -r .round <<<"$ask")" != deploy ] || head=(--head "$(jq -r .sha <<<"$ask")")
   [ "${#head[@]}" -eq 0 ] || ! jq -e 'has("touched")' <<<"$ask" >/dev/null || head+=(--touched "$(jq -r .touched <<<"$ask")")
   if ! err=$(
@@ -1134,7 +1232,7 @@ deliver_ask() {  # <ask-json>
 }
 
 cmd_autohandle() {  # <source-id> <sequence> <result-file>
-  local sid=${1:-} seq=${2:-} result=${3:-} ask failed=0 held=0 reason='' previous='' pr task skip
+  local sid=${1:-} seq=${2:-} result=${3:-} ask failed=0 held=0 reason='' previous='' pr task skip deploy_json
   [ "$sid" = "$SOURCE_ID" ] && [ -f "$result" ] || return 1
   case "$seq" in ''|*[!0-9]*) return 1 ;; esac
   jq -e '.schema == "fm-deploy-verify-result.v1"' "$result" >/dev/null 2>&1 || return 1
@@ -1143,6 +1241,14 @@ cmd_autohandle() {  # <source-id> <sequence> <result-file>
   mkdir -p "$DATA"
   # This receipt belongs to this result only, never to a historical ledger hold.
   rm -f "$result.holds"
+  while IFS= read -r deploy_json; do
+    [ -n "$deploy_json" ] || continue
+    # An unwritable ledger fails the result like a refused delivery: the cursor stays and the result stays unacknowledged.
+    if ! record_deploy "$deploy_json"; then
+      failed=1
+      [ -n "$reason" ] || reason="the deployed line of $(jq -r .sha <<<"$deploy_json") could not be written to $LEDGER"
+    fi
+  done < <(jq -c '.deploys[]?' "$result")
   while IFS= read -r skip; do
     [ -n "$skip" ] || continue
     pr=$(jq -r .pr <<<"$skip")
@@ -1150,7 +1256,6 @@ cmd_autohandle() {  # <source-id> <sequence> <result-file>
     ledger_pr_final "$pr" "$task" && continue
     ledger_append "$(jq -c --argjson at "$(date +%s)" '{type: "skip", pr, task, reason, at: $at} + (if .detail then {detail} else {} end)' <<<"$skip")"
   done < <(jq -c '.skips[]' "$result")
-  reason=
   while IFS= read -r ask; do
     [ -n "$ask" ] || continue
     ledger_has_key "$(jq -r .key <<<"$ask")" && continue
@@ -1173,7 +1278,7 @@ cmd_autohandle() {  # <source-id> <sequence> <result-file>
   fi
   # A held ask is planned again next poll, so the cursor waits for it.
   if [ "$held" -eq 0 ] && jq -e '.cursor != null' "$result" >/dev/null 2>&1; then
-    state_put "$(jq -r .cursor.cursor_run "$result")" "$(jq -r .cursor.last_green_sha "$result")"
+    state_put "$(jq -r .cursor.cursor_run "$result")" "$(jq -r .cursor.last_green_sha "$result")" || return 1
   fi
   rm -f "$LAST_ERROR"
   attention_skip "$result" && return 1
@@ -1181,7 +1286,7 @@ cmd_autohandle() {  # <source-id> <sequence> <result-file>
 }
 
 cmd_silent() {  # <result-file>
-  local result=${1:-} ask pr task
+  local result=${1:-} ask pr task deploy_sha
   attention_skip "$result" && return 1
   jq -e '.schema == "fm-deploy-verify-result.v1" and .error == null' "$result" >/dev/null 2>&1 || return 1
   while IFS= read -r ask; do
@@ -1193,6 +1298,10 @@ cmd_silent() {  # <result-file>
   while IFS='|' read -r pr task; do
     ledger_pr_final "$pr" "$task" || return 1
   done < <(jq -r '.skips[] | [.pr, .task] | join("|")' "$result")
+  while IFS= read -r deploy_sha; do
+    # shellcheck disable=SC2016 # jq variables, not shell
+    ledger_test '.type == "deployed" and .sha == $s' --arg s "$deploy_sha" || return 1
+  done < <(jq -r '.deploys[]?.sha' "$result")
 }
 
 cmd_classify() {  # <result-file>
@@ -1264,14 +1373,63 @@ cmd_ask_rows() {  # <task> [--dry-run]
   return "$rc"
 }
 
+# Record the `deployed` line of a past deploy of <sha>, only after GitHub shows a completed run of it on main whose deploy
+# step succeeded (the test poll_once applies). Exit 0: recorded, or already in the ledger. Exit 1: refused, nothing written.
+cmd_backfill_deploy() {  # <sha>
+  local sha=${1:-} runs run run_id jobs completed
+  [ "$#" -eq 1 ] && [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || die 'usage: backfill-deploy <40-character sha>'
+  command -v jq >/dev/null 2>&1 || die 'jq is required'
+  mkdir -p "$DATA"
+  # shellcheck disable=SC2016 # jq variables, not shell
+  if ledger_test '.type == "deployed" and .sha == $s' --arg s "$sha"; then
+    printf 'already recorded: %s\n' "$sha"
+    return 0
+  fi
+  if ! runs=$(gh_read "repos/$REPO/actions/runs?head_sha=$sha&branch=main&event=push&per_page=30"); then
+    printf 'refused: %s\n' "$(cat "$READ_ERROR_FILE" 2>/dev/null)" >&2
+    return 1
+  fi
+  while IFS= read -r run; do
+    [ -n "$run" ] || continue
+    run_id=$(jq -r .id <<<"$run")
+    if ! jobs=$(gh_read "repos/$REPO/actions/runs/$run_id/jobs?per_page=100"); then
+      printf 'refused: %s\n' "$(cat "$READ_ERROR_FILE" 2>/dev/null)" >&2
+      return 1
+    fi
+    [ "$(deploy_step_field "$jobs" conclusion)" = success ] || continue
+    completed=$(deploy_step_field "$jobs" completed_at)
+    if ! record_deploy "$(jq -cn --arg s "$sha" --arg r "$(jq -r .html_url <<<"$run")" --arg c "$completed" '{sha: $s, run: $r, completed: $c}')"; then
+      printf 'refused: the deployed line of %s could not be written to %s\n' "$sha" "$LEDGER" >&2
+      return 1
+    fi
+    printf 'recorded: %s run %s completed %s\n' "$sha" "$(jq -r .html_url <<<"$run")" "$completed"
+    return 0
+  done < <(jq -c --arg wf "$WORKFLOW" --arg s "$sha" '[.workflow_runs[] | select(.name == $wf and .head_sha == $s and .status == "completed")] | sort_by(.id) | .[]' <<<"$runs")
+  printf 'refused: no completed %s run of %s on main has a successful "%s" step in job "%s" (%s)\n' "$WORKFLOW" "$sha" "$DEPLOY_STEP" "$JOB" "$REPO" >&2
+  return 1
+}
+
 cmd_arm() {
   "$SCRIPT_DIR/fm-procevent.sh" register deploy-verify "$SOURCE_ID" -- "$SCRIPT_DIR/fm-procevent-deploy-verify.sh" wait
 }
+
+# Each invocation reads shared authority anew; jq operates only on this disposable snapshot.
+case "${1:-}" in
+  replay-skips|deploy|ask-rows|backfill-deploy|wait|autohandle)
+    DEPLOY_SNAPSHOT=$(mktemp -d) || exit 1
+    trap 'rm -rf "$DEPLOY_SNAPSHOT"' EXIT
+    LEDGER="$DEPLOY_SNAPSHOT/ledger.jsonl"
+    CURSOR="$DEPLOY_SNAPSHOT/state.json"
+    fm_deploy_ledger_snapshot "$LEDGER" || exit 1
+    fm_deploy_ledger_call cursor > "$CURSOR" || exit 1
+    ;;
+esac
 
 case "${1:-}" in
   replay-skips) shift; cmd_replay_skips "$@" ;;
   deploy) shift; cmd_deploy "$@" ;;
   ask-rows) shift; cmd_ask_rows "$@" ;;
+  backfill-deploy) shift; cmd_backfill_deploy "$@" ;;
   arm) shift; cmd_arm "$@" ;;
   wait) shift; cmd_wait "$@" ;;
   autohandle) shift; [ "$#" -eq 3 ] || die 'usage: autohandle <source-id> <sequence> <result-file>'; cmd_autohandle "$@" ;;
@@ -1279,5 +1437,5 @@ case "${1:-}" in
   silent) shift; cmd_silent "$@" ;;
   terminal) exit 1 ;;
   self-announcing|relisten) exit 0 ;;
-  *) echo 'error: expected replay-skips, deploy, ask-rows, arm, wait, autohandle, classify, silent, terminal, self-announcing or relisten' >&2; exit 2 ;;
+  *) echo 'error: expected replay-skips, deploy, ask-rows, backfill-deploy, arm, wait, autohandle, classify, silent, terminal, self-announcing or relisten' >&2; exit 2 ;;
 esac

@@ -15,12 +15,14 @@
 #   CLAUDE.md and AGENTS.md itself, as data.
 #   --surface <user-visible|internal> is an optional ship-only input recorded as
 #   surface=<value> in state/<id>.meta; absent means internal, except that a ship
-#   spawn into cfw-modules refuses a missing --surface. A user-visible spawn also
-#   writes data/<id>/verify.md with "surface: user-visible" and "issue: <url>" (the
-#   issue the backlog item links), plus "record: rows" while config/task-shadow is on
-#   for a task in the repository deploy-verify watches (FM_DEPLOY_VERIFY_REPO),
-#   and refuses when it finds no issue; bin/fm-verify-gate-lib.sh
-#   owns what the task must prove before its backlog item moves to Done.
+#   spawn into cfw-modules refuses a missing --surface. A new user-visible spawn
+#   takes acceptance only from the task's own Description (task:<id>) and writes
+#   data/<id>/verify.md with "surface: user-visible" and "issue: task:<id>", plus
+#   "record: rows" while config/task-shadow is on for the deploy-verify repository
+#   (FM_DEPLOY_VERIFY_REPO), and refuses naming bin/fm-task.sh describe when the
+#   Description has none; an existing data/<id>/verify.md keeps working unchanged.
+#   bin/fm-verify-gate-lib.sh owns what the task must prove before its backlog
+#   item moves to Done.
 #   --mode and --yolo are this task's delivery contract, REQUIRED for every ship
 #   spawn and refused on --scout and --secondmate spawns. Firstmate resolves both
 #   per task at intake (AGENTS.md section 7); data/projects.md holds the captain's
@@ -84,6 +86,10 @@
 #        fm-spawn.sh <task-id> --relaunch [--harness <name>] [--model <name>] [--effort <level>]
 #   --plan-exception <words> records captain words to bypass the dispatch plan gate
 #   on a fresh single ship or scout only (not relaunch or persistent launches).
+#   --plan-exempt <name> skips the same gate for a spawn that carries no plan;
+#   bin/fm-plan-gate-lib.sh's fm_plan_gate_exemption owns the names and what each
+#   covers. Only while config/dispatch-plan-gate is present does the spawn record
+#   its line in the backlog body and plan_exempt=; without the gate it changes nothing.
 #   --allow-third-spec <words> records captain words that let a fresh single ship
 #   start while two specs are already in flight; it is never firstmate's own call.
 #   --relaunch launches a replacement agent for an EXISTING task into that
@@ -824,6 +830,9 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 PROJECTS="${FM_PROJECTS_OVERRIDE:-$FM_HOME/projects}"
 CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
+# shellcheck source=bin/fm-home-lease-lib.sh
+. "$SCRIPT_DIR/fm-home-lease-lib.sh"
+fm_home_lease_require || exit 1
 # shellcheck source=bin/fm-config-inherit-lib.sh
 . "$SCRIPT_DIR/fm-config-inherit-lib.sh"
 # shellcheck source=bin/fm-exclude-tools-lib.sh
@@ -1042,6 +1051,9 @@ WORKDIR_SET=0
 RELAUNCH=0
 PLAN_EXCEPTION=
 PLAN_EXCEPTION_SET=0
+PLAN_EXEMPT=
+PLAN_EXEMPT_SET=0
+PLAN_EXEMPT_APPLIED=0
 ALLOW_THIRD_SPEC=
 ALLOW_THIRD_SPEC_SET=0
 PLAN_SPEC=
@@ -1108,6 +1120,10 @@ for a in "$@"; do
       PLAN_EXCEPTION=$a
       PLAN_EXCEPTION_SET=1
       ;;
+    plan-exempt)
+      PLAN_EXEMPT=$a
+      PLAN_EXEMPT_SET=1
+      ;;
     allow-third-spec)
       ALLOW_THIRD_SPEC=$a
       ALLOW_THIRD_SPEC_SET=1
@@ -1142,6 +1158,7 @@ for a in "$@"; do
     SUB_HOME_MARKER=.fm-assistance-home
     ;;
   --plan-exception) want_value=plan-exception ;;
+  --plan-exempt) want_value=plan-exempt ;;
   --allow-third-spec) want_value=allow-third-spec ;;
   --relaunch) RELAUNCH=1 ;;
   --herdr-resume-lock-wait) HERDR_RESUME_LOCK_WAIT=1 ;;
@@ -1286,6 +1303,19 @@ esac
 if [ "$PLAN_EXCEPTION_SET" = 1 ]; then
   if [ -z "${PLAN_EXCEPTION//[[:space:]]/}" ] || [ "$RELAUNCH" = 1 ] || [ "$KIND" = secondmate ] || [[ ${POS[0]:-} = *=* ]]; then
     echo 'error: --plan-exception requires nonempty captain words on a fresh single ship or scout; not a batch, --relaunch, --secondmate or --assistance' >&2
+    exit 1
+  fi
+fi
+
+if [ "$PLAN_EXEMPT_SET" = 1 ]; then
+  if [ "$PLAN_EXCEPTION_SET" = 1 ] || [ "$RELAUNCH" = 1 ] || [ "$KIND" = secondmate ] || [[ ${POS[0]:-} = *=* ]]; then
+    echo 'error: --plan-exempt is for a fresh single ship or scout without --plan-exception; not a batch, --relaunch, --secondmate or --assistance' >&2
+    exit 1
+  fi
+  # shellcheck source=bin/fm-plan-gate-lib.sh
+  . "$SCRIPT_DIR/fm-plan-gate-lib.sh"
+  if ! fm_plan_gate_exemption "$PLAN_EXEMPT" "$KIND" "${POS[0]:-}" "$DATA/${POS[0]:-}/brief.md"; then
+    echo "error: --plan-exempt: $FM_PLAN_GATE_REASON" >&2
     exit 1
   fi
 fi
@@ -1942,6 +1972,16 @@ spawn_abort_cleanup() {
       (cd "$PROJ_ABS" && treehouse return --force "$WT") >/dev/null 2>&1 \
         || echo "warning: could not return the leased worktree $WT for $ID; run 'treehouse return --force $WT' from $PROJ_ABS" >&2
     fi
+  fi
+  # The worker slot claimed for this launch (bin/fm-home-lease-lib.sh) goes back only when no worker can be running
+  # from it: the launch command was never sent, or its endpoint is confirmed closed. Whether a task record exists
+  # decides nothing - a rollback removes the record of a worker that may run, and a failed relaunch keeps the record
+  # of one that never started. The give-back runs while this task's spawn lock is still held, so a concurrent retry
+  # of the same task cannot have its own claim removed.
+  if [ "$status" -ne 0 ] && [ "${SPAWN_HOME_LEASE_CLAIMED:-0}" = 1 ] &&
+    { [ "$SPAWN_LAUNCH_SENT" = 0 ] || [ "$SPAWN_ENDPOINT_CLOSED" = 1 ]; }; then
+    SPAWN_HOME_LEASE_CLAIMED=0
+    fm_home_lease_release_worker "$ID" || echo "warning: could not give back the worker slot claimed for $ID" >&2
   fi
   if [ "$SPAWN_TASK_LOCK_HELD" = 1 ]; then
     SPAWN_TASK_LOCK_HELD=0
@@ -3141,7 +3181,7 @@ launch_template() {
   # effort inside the model reference as `<model>(<effort>)`, so the effort
   # axis rides `__MODELFLAG__` after mapping to the nearest compatible
   # level in the installed model's selectable set.
-  polytoken) printf '%s' 'for _fmv in $(env | cut -d= -f1 | grep -E '\''^(ORCA_|FM_)'\''); do case $_fmv in FM_TASK_ID|FM_TASK_INBOX|FM_ZELLIJ_SESSION) ;; *) unset $_fmv ;; esac; done; env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT -u FM_PI_HARNESS -u FM_OMP_HARNESS -u GEMINI_CLI -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u ATLASSIAN_AGENT_TYPE -u ROVODEV_CLI -u AGENT __POLYTOKENBIN__ --config-dir __POLYTOKENCONFIG__ new --sessions-dir __POLYTOKENSESSIONS__ --facet firstmate-worker --facets-dir __POLYTOKENFACETS__ __MODELFLAG__--prompt "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
+  polytoken) printf '%s' 'for _fmv in $(env | cut -d= -f1 | grep -E '\''^(ORCA_|FM_)'\''); do case $_fmv in FM_TASK_ID|FM_TASK_INBOX|FM_TASK_COMMAND|FM_ZELLIJ_SESSION) ;; *) unset $_fmv ;; esac; done; env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT -u FM_PI_HARNESS -u FM_OMP_HARNESS -u GEMINI_CLI -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u ATLASSIAN_AGENT_TYPE -u ROVODEV_CLI -u AGENT __POLYTOKENBIN__ --config-dir __POLYTOKENCONFIG__ new --sessions-dir __POLYTOKENSESSIONS__ --facet firstmate-worker --facets-dir __POLYTOKENFACETS__ __MODELFLAG__--prompt "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
   # Command Code receives the typed launch envelope after -- as its initial
   # message. --yolo bypasses permission prompts, --trust skips the folder-trust
   # prompt of a fresh worktree, and --skip-onboarding skips taste onboarding.
@@ -4926,9 +4966,19 @@ if [ "$RELAUNCH" != 1 ] && [ "$KIND" != secondmate ] && { [ -e "$CONFIG/dispatch
       exit 1
     fi
     printf 'plan gate: EXCEPTION "%s"\n' "$PLAN_EXCEPTION"
+  elif [ "$PLAN_EXEMPT_SET" = 1 ]; then
+    if ! fm_backlog_body_append_line "$DATA" "$ID" "$FM_PLAN_GATE_EXEMPTION"; then
+      echo "error: plan gate: cannot record exemption $PLAN_EXEMPT ($FM_BACKLOG_TRANSITION_ERROR)" >&2
+      exit 1
+    fi
+    PLAN_EXEMPT_APPLIED=1
+    printf 'plan gate: EXEMPT %s\n' "$PLAN_EXEMPT"
   else
-    plan_reason='no linked GitHub issue'
-    plan_links=$(printf '%s\n' "$FM_BACKLOG_ROW_LINKS" | grep -oE 'doc:https://github[.]com/[^[:space:]," ]+' || true)
+    plan_reason='task plan is not approved'
+    plan_links="doc:$ID"
+    legacy_plan_links=$(printf '%s\n' "$FM_BACKLOG_ROW_LINKS" | grep -oE 'doc:https://github[.]com/[^[:space:]," ]+' || true)
+    plan_links="$plan_links
+$legacy_plan_links"
     while IFS= read -r plan_link; do
       [ -n "$plan_link" ] || continue
       plan_url=${plan_link#doc:}
@@ -4937,6 +4987,10 @@ if [ "$RELAUNCH" != 1 ] && [ "$KIND" != secondmate ] && { [ -e "$CONFIG/dispatch
         break
       fi
       plan_reason="$FM_PLAN_GATE_VERDICT: $FM_PLAN_GATE_REASON; bin/fm-plan-approve.sh $plan_url"
+      if [ "$plan_url" = "$ID" ] && [ "${FM_PLAN_GATE_VERDICT:-error}" != missing ]; then
+        # An existing native plan owns approval; an older issue cannot override it.
+        break
+      fi
     done <<< "$plan_links"
     if [ -z "$PLAN_ISSUE" ]; then
       plan_title=$FM_BACKLOG_ROW_TITLE
@@ -4988,15 +5042,26 @@ if [ "$RELAUNCH" != 1 ] && [ "$KIND" = ship ] && [ -n "$PLAN_ISSUE" ]; then
   fi
 fi
 
-# A user-visible ship task starts firstmate's verification record with the issue its
-# backlog item links (bin/fm-verify-gate-lib.sh): the plan gate's approved issue, else the
-# first linked GitHub issue. No issue means the done gate could never pass, so refuse now.
+# A new user-visible ship takes acceptance only from its own task Description
+# (task:<id>); an existing verify.md keeps working unchanged.
 VERIFY_ISSUE=
 if [ "$RELAUNCH" != 1 ] && [ "$KIND" = ship ] && [ "$SURFACE" = user-visible ]; then
-  VERIFY_ISSUE=$PLAN_ISSUE
-  [ -n "$VERIFY_ISSUE" ] || VERIFY_ISSUE=$(printf '%s\n' "$FM_BACKLOG_ROW_LINKS" | grep -oE 'doc:https://github[.]com/[^[:space:]," ]+/issues/[0-9]+' | head -n 1 | sed 's/^doc://' || true)
+  if [ -e "$DATA/$ID/verify.md" ]; then
+    VERIFY_ISSUE=$(sed -n 's/^issue: //p' "$DATA/$ID/verify.md" | tail -n 1)
+  elif VERIFY_ROWS=$(
+    . "$SCRIPT_DIR/fm-task-shadow-config-lib.sh"
+    fm_task_shadow_config "$CONFIG/task-shadow"
+    node "$SCRIPT_DIR/fm-acceptance.mjs" rows "task:$ID" --strict 2>/dev/null
+  ) && [ -n "$VERIFY_ROWS" ]; then
+    VERIFY_ISSUE="task:$ID"
+  fi
   if [ -z "$VERIFY_ISSUE" ]; then
-    echo "error: $ID is user-visible, so its verification record names the issue its backlog item links; link it with bin/fm-tasks-axi.sh update $ID --title \"<current title> <issue url>\" or spawn with --surface internal" >&2
+    echo "error: $ID is user-visible: write acceptance with bin/fm-task.sh describe $ID --document <file.md>, or spawn with --surface internal" >&2
+    exit 1
+  fi
+  declared_source=$(awk '/^# Acceptance$/{section=1;next} section && /^# /{exit} section{print}' "$BRIEF" | grep -oE 'task:[A-Za-z0-9][A-Za-z0-9._-]*|https://[A-Za-z0-9.-]+/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/issues/[0-9]+' | head -1 || true)
+  if [ -n "$declared_source" ] && [ "$declared_source" != "$VERIFY_ISSUE" ]; then
+    echo "error: brief acceptance $declared_source differs from verification source $VERIFY_ISSUE; align the acceptance source before spawning" >&2
     exit 1
   fi
 fi
@@ -5012,6 +5077,9 @@ if [ -e "$STATE/$ID.backlog-close" ] || [ -L "$STATE/$ID.backlog-close" ]; then
 fi
 
 W="fm-$ID"
+# With config/home-lease, count this worker on the host record before any endpoint exists (bin/fm-home-lease-lib.sh).
+fm_home_lease_claim_worker "$ID" || exit 1
+SPAWN_HOME_LEASE_CLAIMED=1
 if [ "$RELAUNCH" -eq 1 ]; then
   # A secondmate's home already resolved WT above through the same validation a
   # fresh secondmate spawn uses; every other kind takes the recorded worktree.
@@ -7307,6 +7375,7 @@ preserve_relaunch_meta() {
   [ -z "$PLAN_SPEC" ] || echo "plan_spec=$PLAN_SPEC"
   [ "$ALLOW_THIRD_SPEC_SET" != 1 ] || printf 'spec_limit_override=%s\n' "$(printf '%s' "$ALLOW_THIRD_SPEC" | base64 | tr -d '\n')"
   [ "$PLAN_EXCEPTION_SET" != 1 ] || printf 'plan_exception=%s\n' "$(printf '%s' "$PLAN_EXCEPTION" | base64 | tr -d '\n')"
+  [ "$PLAN_EXEMPT_APPLIED" != 1 ] || echo "plan_exempt=$PLAN_EXEMPT"
   echo "worktree=$WT"
   echo "project=$PROJ_ABS"
   echo "harness=$HARNESS"
@@ -7769,7 +7838,7 @@ fi
 # "$FM_TASK_INBOX" instead of a path that grows with the home's depth. Like the
 # kill switch below it is an export statement, so it survives a compound raw
 # launch and the launch-env-allowlist `env -i` wrapper.
-LAUNCH="export FM_TASK_INBOX=$(shell_quote "$STATE_REAL/$ID.inbox"); $LAUNCH"
+LAUNCH="export FM_TASK_COMMAND=$(shell_quote "$FM_ROOT/bin/fm-task.sh"); export FM_TASK_INBOX=$(shell_quote "$STATE_REAL/$ID.inbox"); $LAUNCH"
 LAUNCH="export COMPACT_ADVISER_DISABLE=1; $LAUNCH"
 # Per-task browser session: one chrome-devtools-axi session per worker, so no
 # two agents share a bridge.pid file and each browser dies with its task.
@@ -8261,6 +8330,8 @@ SPAWN_ACCOUNT=
 [ ! -e "$CONFIG/fleet-ledger" ] || [ "$RELAUNCH" -eq 1 ] || FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_CONFIG_OVERRIDE=$CONFIG "$SCRIPT_DIR/fm-fleet-ledger.sh" dispatched "$ID" "$SPAWN_REPORTED_KIND" "${PROJ_ABS##*/}" "$HARNESS" "$MODEL" || true
 # Opt-in task record shadow (bin/fm-task-shadow.sh): the fresh task is written to the record too; off costs one file test.
 [ ! -e "$CONFIG/task-shadow" ] || [ "$RELAUNCH" -eq 1 ] || FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_CONFIG_OVERRIDE=$CONFIG FM_DATA_OVERRIDE=$DATA "$SCRIPT_DIR/fm-task-shadow.sh" dispatched "$ID" "$SPAWN_REPORTED_KIND" "${PROJ_ABS##*/}" "$HARNESS" || true
+# The task's current workflow state records this incarnation's runtime (plan v2 D1); a relaunch re-points it.
+[ ! -e "$CONFIG/task-shadow" ] || FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_CONFIG_OVERRIDE=$CONFIG FM_DATA_OVERRIDE=$DATA "$SCRIPT_DIR/fm-task-shadow.sh" step-start "$ID" "$SPAWN_GEN" "$HARNESS" "${MODEL:-}" "${EFFORT:-}" "${WORKER_ACCOUNT_DECLARED:-}" || true
 # Opt-in Herdr project groups (docs/herdr-backend.md "Project groups") tag the
 # new endpoint now rather than at the next watcher poll; off costs one file test.
 [ ! -e "$CONFIG/herdr-project-groups" ] || [ "$BACKEND" != herdr ] || FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_CONFIG_OVERRIDE=$CONFIG "$SCRIPT_DIR/fm-herdr-groups.sh" sync "$ID" || true

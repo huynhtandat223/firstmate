@@ -3,6 +3,10 @@
 set -u
 . "$(dirname "${BASH_SOURCE[0]}")/fixtures.sh"
 TMP_ROOT=$(fm_test_tmproot fm-spawn-plan-gate)
+# Legacy cases explicitly prove a missing native Description, not API failure.
+printf '#!/usr/bin/env bash\necho "fm-task: task has no Description event" >&2\nexit 5\n' > "$TMP_ROOT/task-reader"
+chmod +x "$TMP_ROOT/task-reader"
+export FM_PLAN_GATE_TASK_WRITER="$TMP_ROOT/task-reader"
 # Each pane reports a test-owned isolated copy; successful launches must persist
 # approval evidence, while refusals must occur before any terminal is created.
 new_case() {
@@ -77,6 +81,77 @@ printf '%s' "$body" | grep -F 'Plan exception (captain)' >/dev/null || fail 'G7 
 expect 'plan gate: EXCEPTION "skip the plan for this task"'
 [ ! -s "$FM_FAKE_GH_PLAN_DIR/calls" ] || fail 'exception read GitHub'
 pass 'exception skips GitHub'
+
+# A deploy-verify Tester carries no plan: the gate's verify exemption launches it
+# with no Description and no GitHub read, and records the exemption. Its brief holds
+# the adapter's ask for the task and sha its id names.
+tester=verify-alpha-1234567
+tester_brief() {  # <id> <task>: a Tester brief whose ask names <task> on sha 1234567...
+  fm_test_spawn_brief "$home" "$1" "Verify $2."
+  printf '\n### The ask\n\n```json\n%s\n```\n' \
+    "$(jq -cn --arg t "$2" '{schema: "fm-tester-verify.v1", round: "deploy", task: $t, sha: "1234567abcdef1234567abcdef1234567abcdef1", head: null}')" >> "$home/data/$1/brief.md"
+}
+for label in verify-gated verify-exempt verify-exempt-nogate verify-exempt-ship verify-exempt-name verify-exempt-loose verify-exempt-noask verify-exempt-otherask verify-exempt-unknown; do
+  new_case "$label" ''
+  tester_brief "$tester" alpha
+  tasks-axi add "$tester" 'Verify alpha' --kind scout --file "$home/data/backlog.md" >/dev/null
+  case "$label" in
+    verify-gated) args=("$tester" "$home/projects/demo" --scout) ;;
+    verify-exempt) args=("$tester" "$home/projects/demo" --scout --plan-exempt verify) ;;
+    verify-exempt-nogate)
+      # A home without the gate, on the manual backlog, launches its Tester as before.
+      rm "$home/config/dispatch-plan-gate"
+      printf 'manual\n' > "$home/config/backlog-backend"
+      args=("$tester" "$home/projects/demo" --scout --plan-exempt verify)
+      ;;
+    verify-exempt-ship) args=(gate "$home/projects/demo" --mode direct-PR --yolo off --plan-exempt verify) ;;
+    verify-exempt-name) args=(gate "$home/projects/demo" --scout --plan-exempt verify) ;;
+    verify-exempt-loose)
+      tester_brief verify-foo alpha
+      tasks-axi add verify-foo 'Not a Tester' --kind scout --file "$home/data/backlog.md" >/dev/null
+      args=(verify-foo "$home/projects/demo" --scout --plan-exempt verify)
+      ;;
+    verify-exempt-noask)
+      fm_test_spawn_brief "$home" "$tester"
+      args=("$tester" "$home/projects/demo" --scout --plan-exempt verify)
+      ;;
+    verify-exempt-otherask)
+      tester_brief "$tester" beta
+      args=("$tester" "$home/projects/demo" --scout --plan-exempt verify)
+      ;;
+    verify-exempt-unknown) args=("$tester" "$home/projects/demo" --scout --plan-exempt other) ;;
+  esac
+  out=$(fm_test_run_spawn "$home" "$home/pane" "$fakebin" "${args[@]}" 2>&1)
+  status=$?
+  case "$label" in
+    verify-gated)
+      [ "$status" != 0 ] || fail 'a Tester scout without the exemption passed the gate'
+      expect 'plan gate:'
+      ;;
+    verify-exempt)
+      [ "$status" = 0 ] || fail "verify exemption launch failed: $out"
+      expect 'plan gate: EXEMPT verify'
+      assert_grep 'plan_exempt=verify' "$home/state/$tester.meta" 'verify exemption missing from the task record'
+      tasks-axi show "$tester" --full --file "$home/data/backlog.md" | grep -F 'Plan exemption (verify)' >/dev/null || fail 'verify exemption missing from the backlog body'
+      [ ! -s "$FM_FAKE_GH_PLAN_DIR/calls" ] || fail 'verify exemption read GitHub'
+      ;;
+    verify-exempt-nogate)
+      [ "$status" = 0 ] || fail "verify exemption without the gate failed: $out"
+      printf '%s\n' "$out" | grep -F 'plan gate:' >/dev/null && fail "verify exemption without the gate entered the gate: $out"
+      [ -e "$home/state/$tester.meta" ] || fail 'verify exemption without the gate wrote no task record'
+      grep -q '^plan_exempt=' "$home/state/$tester.meta" && fail 'verify exemption without the gate recorded an exemption'
+      ;;
+    *)
+      [ "$status" != 0 ] || fail "$label accepted the exemption"
+      expect '--plan-exempt'
+      ;;
+  esac
+  if [ "$label" != verify-exempt ] && [ "$label" != verify-exempt-nogate ]; then
+    [ ! -e "$home/state/$tester.meta" ] && [ ! -e "$home/state/gate.meta" ] && [ ! -e "$home/state/verify-foo.meta" ] || fail "$label wrote meta"
+    [ ! -e "$fakebin/.spawn-window" ] || fail "$label created endpoint"
+  fi
+  pass "$label at spawn boundary"
+done
 label=approve
 new_case approve "$url"
 export GH_HOST=enterprise.example.test

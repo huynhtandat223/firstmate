@@ -18,12 +18,16 @@
 # through bin/fm-hold-reason-lib.sh, which owns the field-only decoding contract.
 # Decoded reasons use quoted strings so embedded line breaks remain intact.
 #
-# While config/task-shadow is on, every other command (all but show, view,
-# list, ready, the dashboard and --help) is followed by the task record's
-# backlog view sync, fm_backlog_view_sync in bin/fm-backlog-transition-lib.sh:
-# the record takes the rows the command changed and the file is rendered from
-# it. The hold, unhold, start, done and reopen state writes of
-# bin/fm-task-shadow.sh run first. Neither changes the exit status.
+# `rows [list flags]` is firstmate's own read: the same `list` table as one JSON
+# array of objects (hold reasons decoded, a missing scalar "-" or missing list
+# "none" as null, text fields kept as written, and the full
+# title and body of a row `list` cut, read with `show <id> --full`). Scripts that
+# need task fields read the backlog through it rather than parsing a backlog file.
+#
+# While config/task-shadow is on, a landed `hold` or `start` is followed by
+# bin/fm-task-shadow.sh's `held` or `started` lifecycle write; it never changes
+# the exit status. The backlog itself is not mirrored: under the cfw5001
+# backend tasks-axi writes the Dev 5001 rows and no backlog file.
 #
 # Why it exists: a bare `tasks-axi` resolves the tracked `.tasks.toml` paths
 # against its working directory, so from the code root it forks the queue
@@ -174,6 +178,45 @@ DATA=$(cd "$DATA" && pwd -P) || fail "cannot resolve backlog data directory $DAT
 
 cd "$FM_BACKLOG_AXI_ROOT" || fail "cannot enter the backlog root $FM_BACKLOG_AXI_ROOT"
 case "${1:-}" in
+  rows)
+    # `rows [list flags]`: the `list` table as one JSON array of objects, hold reasons decoded, missing values as
+    # null. `list` cuts a long title or body; for such a row the full text comes from `show <id> --full`, so a
+    # reader never sees a cut value. The one structured backlog read for scripts.
+    set -o pipefail
+    listed=$(tasks-axi list "${ARGS[@]:1}" | fm_hold_reason_decode_stream | jq -Rn '
+      def cell: if startswith("\"") then fromjson else . end;
+      def cut: test("\n\\.\\.\\. \\(truncated, [0-9]+ chars total");
+      # tasks-axi prints a missing list field (links, deps, blocked_by) as `none` and a missing scalar as `-`; title
+      # and body are text and keep any literal value.
+      def missing($f): if ($f | IN("links", "deps", "blocked_by")) then . == "none"
+                       elif ($f | IN("title", "body")) then false else . == "-" end;
+      reduce inputs as $line ({fields: null, rows: []};
+        if ($line | test("^tasks\\[[0-9]+\\]\\{")) then
+          .fields = ($line | capture("\\{(?<f>[^}]*)\\}").f | split(","))
+        elif .fields != null and ($line | startswith("  ")) then
+          .fields as $f
+          | ([$line | ltrimstr("  ") | scan("\"(?:[^\"\\\\]|\\\\.)*\"|[^,]+") | cell]) as $c
+          | .rows += [reduce range(0; $f | length) as $i ({};
+              .[$f[$i]] = ($c[$i] | if missing($f[$i]) then null else . end))
+              | ._cut = [to_entries[] | select((.value | type) == "string" and (.value | cut)) | .key]]
+        else .fields = null end)
+      | .rows') || exit $?
+    full=
+    for cut_id in $(printf '%s' "$listed" | jq -r '.[] | select(._cut | length > 0) | .id'); do
+      one=$(tasks-axi show "$cut_id" --full | fm_hold_reason_decode_stream | jq -Rn --arg id "$cut_id" '
+        reduce inputs as $l ({};
+          if ($l | test("^  (title|body): ")) then
+            ($l | capture("^  (?<k>title|body): (?<v>.*)$")) as $m
+            | .[$m.k] = ($m.v | if startswith("\"") then fromjson else . end)
+          else . end) | {($id): .}' | jq -c .) || exit $?
+      full=$full$one$'\n'
+    done
+    # Through stdin, not argv: a full body can pass the argument size limit.
+    printf '%s\n%s' "$listed" "$full" | jq -s '
+      .[0] as $rows | (.[1:] | add // {}) as $full
+      | $rows | map(. as $r | reduce ($r._cut[]) as $k ($r; .[$k] = ($full[$r.id][$k] // .[$k])) | del(._cut))'
+    exit $?
+    ;;
   show|view|list)
     set -o pipefail
     tasks-axi ${ARGS[@]+"${ARGS[@]}"} | fm_hold_reason_decode_stream
@@ -195,10 +238,7 @@ if [ -e "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}/task-shadow" ]; then
         done
         FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task-shadow.sh" held "$id" "$kind" "$reason" >/dev/null 2>&1 || true ;;
       start) FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task-shadow.sh" started "$id" "$(date +%s)-$$-${RANDOM}" >/dev/null 2>&1 || true ;;
-      unhold) FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task-shadow.sh" backlog unhold "$id" >/dev/null 2>&1 || true ;;
-      done|reopen) FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task-shadow.sh" backlog "$1" "$id" >/dev/null 2>&1 || true ;;
     esac
   esac
 fi
-fm_backlog_view_sync "$FM_BACKLOG_AXI_FILE"
 exit 0

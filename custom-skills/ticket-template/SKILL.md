@@ -1,8 +1,8 @@
 ---
 name: ticket-template
 description: >-
-  Apply when to-tickets or to-spec writes a GitHub issue body.
-  Owns the issue sections, scenario fields, stable ids, and verification row form.
+  Apply when to-tickets or to-spec writes a GitHub issue body, or when creating or updating a task Description.
+  Owns the issue sections, slice scenario scope, scenario fields, stable ids, and verification row form.
 user-invocable: false
 metadata:
   internal: true
@@ -10,7 +10,7 @@ metadata:
 
 # Ticket template
 
-Use the selected to-tickets or to-spec procedure to crystallize the work; apply this template when writing its issue body.
+Use the selected to-tickets or to-spec procedure to crystallize the work; apply this template when writing its issue body or creating or updating a task Description.
 This firstmate-owned skill owns the body format, including for specs.
 Keep the vendored files under `custom-skills/matt/` unchanged.
 
@@ -59,18 +59,34 @@ Done when every user-visible scenario × width passes in the Tester's record on 
 
 Use the Definition of done paragraph above unchanged.
 Context and Requirements name file:line change points; refresh stale references through a logged change.
-A spec also carries its rollout acceptance lines in `## Scenarios` with the same shape.
-The verify state belongs in the Tester's record and firstmate's `approved:` line, displayed by the board, rather than in the issue body.
+The verify state belongs in the task record or Tester's record and firstmate's approval, displayed by the board, rather than in the issue body or task Description.
 
 ## Scenario rules
 
 Place the ID immediately after the checkbox.
-Each ID matches `[A-Z]+[0-9]+`, is unique within its issue, and is never reused after a logged change.
+Each ID matches `[A-Z]+[0-9]+`, is unique within its issue or task Description, and is never reused after a logged change.
 Keep removed scenario IDs retired.
+Keep a slice's `## Scenarios` to the exact scenarios its plan assigns to that slice, state the reason on any added regression scenario, and leave integration and rollout scenarios on the parent release rather than copying the parent's acceptance list into the slice.
 Write all eight fields in the order shown for every scenario.
 For `surface: user-visible`, supply a page and widths other than `-`.
 For a scenario with no widths, use `widths: -`.
 Name the visible controls by role and label, or use `controls: -` where none apply.
+
+## One pull request and the Solution
+
+Scope each task to one pull request; a second pull request is its own subtask.
+Every task also gets a Solution document, separate from its Description, with exactly these three `## ` headings.
+
+```markdown
+## How it is used
+
+## How it is built
+
+## How it is tested
+```
+
+Attach it with `bin/fm-task.sh plan <task> --document solution.md --document-title Solution [--image PATH --image-label L]...`.
+On a ship task, whatever its surface, write it and have the owner approve it on the task's Solution tab before implementation starts.
 
 ## Verification record rows
 
@@ -86,6 +102,7 @@ verified: tester <epoch> head=<sha>
 
 ## Body check
 
-Before filing, check all seven headings and their order, every scenario's eight fields, ID validity and uniqueness, and the page and widths of each user-visible scenario.
+Before filing or saving a task Description, check all seven headings and their order, every scenario's eight fields, ID validity and uniqueness, and the page and widths of each user-visible scenario.
+Verify the scenario mapping against the plan: a slice holds only the scenarios its plan gives it, any added regression states its reason, and integration and rollout scenarios stay on the parent release.
 For a logged change, check the retired IDs and refreshed file:line references too.
 Keep parser implementation and rewrites of existing issues outside template application unless separately assigned.

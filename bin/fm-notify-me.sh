@@ -10,6 +10,8 @@
 #   FM_NOTIFY_PRODUCER (decision token selector, default firstmate).
 # Tokens: ~/.local/share/cfw-scripts-private/notify-NAME.token; regular private
 #   files only (no group/other permissions). Tokens never enter command arguments.
+# post without --action posts kind notice (a system alert: no choices, never a question); with
+#   --action it posts kind notification, a question whose decision 'decision ID' reads.
 # post stdout: notification UUID (201 or UNIQUE_KEY_CONFLICT 409).
 # decision stdout: compact JSON decision record, or nothing when not yet decided.
 # Exit: 0 success, 1 transport/API/credential error, 2 invalid arguments.
@@ -87,7 +89,9 @@ if [[ $command == post ]]; then
   [[ -n $recipient ]] || error "set FM_NOTIFY_RECIPIENT or configure \$FM_HOME/config/notify-recipient" 2
   jq -cn --arg recipient "$recipient" --arg dedupe "$dedupe" --arg title "$title" \
     --arg body "$body" --arg severity "$severity" --arg link "$link" --argjson actions "$actions" \
-    '{recipient:$recipient,kind:"notification",dedupeKey:$dedupe,title:$title,body:$body,severity:$severity,actions:$actions} + (if $link=="" then {} else {link:$link} end)' > "$work/payload"
+    '{recipient:$recipient,dedupeKey:$dedupe,title:$title,body:$body,severity:$severity}
+      + (if $actions==[] then {kind:"notice"} else {kind:"notification",actions:$actions} end)
+      + (if $link=="" then {} else {link:$link} end)' > "$work/payload"
   status=$(request POST "$base/api/notification") || error 'notification request could not complete; retry with the same dedupe key'
   case "$status" in
     201) result=$(jq -er '.id // .data.id' "$work/response") || error 'create response omitted notification id' ;;

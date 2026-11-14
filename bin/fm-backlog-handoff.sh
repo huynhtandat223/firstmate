@@ -98,6 +98,14 @@ MAIN_BACKLOG="$DATA/backlog.md"
 # shellcheck source=bin/fm-pending-reply-lib.sh
 . "$SCRIPT_DIR/fm-pending-reply-lib.sh"
 
+# The move edits <data>/backlog.md through the markdown backend. A cfw5001 home keeps its backlog in Dev 5001 rows and
+# has no such file: refuse until a secondmate handoff plan for cfw5001 exists.
+HOME_BACKEND=$(fm_tasks_axi_backend "$(dirname "$DATA")" 2>/dev/null || printf 'markdown\n')
+if [ "$HOME_BACKEND" = cfw5001 ]; then
+  echo "error: this home's backlog backend is cfw5001; secondmate handoff moves only a markdown backlog" >&2
+  exit 2
+fi
+
 RECEIVER_WAKE_MESSAGE='New routed work is in your backlog. Run bin/fm-session-start.sh now, then act on the routed task.'
 
 ACTIVE_HANDOFF_LOCK=

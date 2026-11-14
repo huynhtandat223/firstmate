@@ -5533,7 +5533,7 @@ bg_job_stale_wakes() {  # <state> -> count of stale wakes queued for the parked 
 
 # CI's stock macOS Bash lane sets FM_TEST_ONLY to run just the bash-3.2
 # churn-deferral regression. The rest of this file is not a 3.2 snapshot suite.
-if [ -n "${FM_TEST_ONLY:-}" ]; then
+if [ -n "${FM_TEST_ONLY:-}" ] && declare -F "$FM_TEST_ONLY" >/dev/null; then
   "$FM_TEST_ONLY"
   exit 0
 fi
@@ -6116,7 +6116,11 @@ test_turn_end_that_must_not_be_pinged_wakes_at_once_with_the_pane_tail() {
   for sample in 'You have hit your usage limit. It resets at 3pm.' \
     'Codex error: The usage limit has been reached' \
     '[429] usage limit exceeded for this key' \
-    'Request failed: rate limit, retry later'
+    'Request failed: rate limit, retry later' \
+    'Error: rate limit exceeded' \
+    "$(<"$ROOT/tests/fixtures/quota-stop/agy.txt")" \
+    "$(<"$ROOT/tests/fixtures/quota-stop/opencode.txt")" \
+    "$(<"$ROOT/tests/fixtures/quota-stop/pi.txt")"
   do
     dir=$(tc_case tc-quota ship); state="$dir/state"
     tc_pane "$dir" "$sample"

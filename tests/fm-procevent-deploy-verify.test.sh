@@ -14,6 +14,8 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 TMP_ROOT=$(fm_test_tmproot fm-deploy-verify)
+FM_DEPLOY_LEDGER_TASK="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/deploy-ledger-fixture.sh"
+export FM_DEPLOY_LEDGER_TASK
 export FM_PROCEVENT_CLAIM_ROOT="$TMP_ROOT/claims"
 unset FM_ROOT_OVERRIDE FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_CONFIG_OVERRIDE FM_PROJECTS_OVERRIDE
 REPO=huynhtandat223/cfw-modules
@@ -27,6 +29,13 @@ cat > "$TMP_ROOT/fakebin/gh" <<'SH'
 # Serves the recorded answer for `gh api <path>`; a missing file is a failed read.
 [ "${1:-}" = api ] || exit 2
 [ -z "${FAKE_GH_FAIL:-}" ] || exit 1
+if [ -f "$FAKE_GH_DIR/retries" ]; then
+  n=$(<"$FAKE_GH_DIR/retries")
+  if [ "$n" -gt 0 ]; then
+    echo "$((n - 1))" > "$FAKE_GH_DIR/retries"
+    exit "${FAKE_GH_FAILURE_STATUS:-1}"
+  fi
+fi
 f="$FAKE_GH_DIR/$(printf '%s' "$2" | tr '/?&=:' '_____')"
 printf '%s\n' "$2" >> "$FAKE_GH_DIR/calls.log"
 [ -f "$f" ] || exit 1
@@ -34,6 +43,7 @@ cat "$f"
 SH
 chmod +x "$TMP_ROOT/fakebin/herdr" "$TMP_ROOT/fakebin/gh"
 export PATH="$TMP_ROOT/fakebin:$PATH"
+export FM_PROCEVENT_GH_RETRY_SECONDS=0 FM_DEPLOY_VERIFY_GH="$TMP_ROOT/fakebin/gh"
 
 # ---- lab ------------------------------------------------------------------
 
@@ -45,13 +55,14 @@ new_lab() {  # <bin-dir>: a firstmate home with a Tester role and fake spawn, ta
   BIN=$1
   SEQ=0
   mkdir -p "$H"/{state,data,config/roles} "$TH/data/pending-mentions" "$GHD"
-  : > "$H/data/backlog.md"
+  printf '## In flight\n\n## Queued\n\n## Done\n' > "$H/data/backlog.md"  # backlog_task appends under Done
   register_tester
   cat > "$LAB/spawn" <<SH
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "$LAB/spawn.calls"
 id=\$1
 [ ! -f "$H/state/\$id.meta" ] || exit 1
+[ ! -e "$LAB/spawn-fail" ] || exit 1
 printf 'kind=scout\n' > "$H/state/\$id.meta"
 if [ -f "$LAB/claim-race" ]; then
   printf 'kind=ship\n' > "$H/state/racer.meta"
@@ -98,9 +109,9 @@ fx_runs() {  # <id:status:conclusion:sha-seed>...
   done
   gh_put "repos/$REPO/actions/runs?branch=main&event=push&per_page=30" "$(jq -c '{workflow_runs: .}' <<<"$json")"
 }
-fx_jobs() {  # <run-id> <conclusion>
+fx_jobs() {  # <run-id> <job-conclusion> [deploy-step-conclusion]
   gh_put "repos/$REPO/actions/runs/$1/jobs?per_page=100" \
-    "{\"jobs\":[{\"name\":\"Build\",\"conclusion\":\"success\"},{\"name\":\"Deploy Development host (5001)\",\"conclusion\":\"$2\",\"completed_at\":\"2026-10-20T14:30:20Z\"}]}"
+    "{\"jobs\":[{\"name\":\"Build\",\"conclusion\":\"success\"},{\"name\":\"Deploy Development host (5001)\",\"conclusion\":\"$2\",\"completed_at\":\"2026-10-20T14:30:20Z\",\"steps\":[{\"name\":\"Deploy Development environment\",\"conclusion\":\"${3:-$2}\",\"completed_at\":\"2026-10-20T14:29:00Z\"}]}]}"
 }
 fx_compare() {  # <base-seed> <head-seed> <commit-seed>...
   local base=$1 head=$2 c json='[]'
@@ -250,28 +261,29 @@ scenario_skips() {
   done
 }
 
-# A skipped, cancelled or failed deploy asks nothing; the next green deploy
-# carries the commits of every run since the last green one.
+# Failed or skipped deploy steps ask nothing even when their job succeeds.
+# A successful step deploys even when a later step cancels its job.
 scenario_not_deployed() {
   new_lab "$1"
   backlog_task alpha 31 500; backlog_task beta 32 600
   fx_issue 500 A1:user-visible; fx_issue 600 A1:user-visible
-  fx_runs "1:completed:success:s0" "2:completed:cancelled:s1" "3:completed:success:s2"
-  fx_jobs 2 skipped; fx_jobs 3 success
-  fx_compare s0 s2 c1 c2
+  fx_runs "1:completed:success:s0" "2:completed:success:s1" "3:completed:success:s2" "4:completed:cancelled:s3"
+  fx_jobs 2 success skipped; fx_jobs 3 success failure; fx_jobs 4 cancelled success
+  fx_compare s0 s3 c1 c2
   fx_commit_prs c1 31:500; fx_commit_prs c2 32:600
-  # The cancelled run's own commit must never be asked on its own.
-  fx_compare s0 s1 c1
+  # Each unsuccessful step would produce an observable ask if accepted.
+  fx_compare s0 s1 c1; fx_compare s0 s2 c1
   set_cursor 1 s0
   cycle
   [ "$CYCLE_AUTO" = 0 ] || { echo "autohandle=$CYCLE_AUTO"; return 1; }
   [ "$(ledger_count '.type == "ask"')" = 2 ] || { echo "asks: $(ledger_count '.type == "ask"')"; return 1; }
-  [ "$(ledger_count ".type == \"ask\" and .sha == \"$(sha s2)\"")" = 2 ] || { echo 'asks do not name the green deploy'; return 1; }
+  [ "$(ledger_count ".type == \"ask\" and .sha == \"$(sha s3)\" ")" = 2 ] || { echo 'asks do not name the successful step head and time'; return 1; }
+  jq -e '.asks | all(.arrival == 1792506540)' <<<"$LAST_RESULT" >/dev/null || { echo 'deploy time is not the step completion'; return 1; }
   # A run still in progress holds the cursor.
-  fx_runs "1:completed:success:s0" "2:completed:cancelled:s1" "3:completed:success:s2" "4:in_progress::s3"
-  fx_jobs 4 in_progress
+  fx_runs "4:completed:cancelled:s3" "5:in_progress::s4"
+  fx_jobs 5 in_progress
   cycle
-  [ "$(jq -r .cursor_run "$H/data/deploy-verify/state.json")" = 3 ] || { echo 'cursor moved past a run in progress'; return 1; }
+  [ "$(jq -r .cursor_run "$H/data/deploy-verify/state.json")" = 4 ] || { echo 'cursor moved past a run in progress'; return 1; }
 }
 
 # Draft round: each new head of a task PR whose issue has (draft) lines gets one
@@ -311,6 +323,113 @@ scenario_draft() {
   [ "$(spawn_count)" = 1 ] || { echo 'a closed PR was asked'; return 1; }
 }
 
+# Every successful deploy step is one `deployed` ledger line (its sha, its CI run and the step's completion time),
+# also when every PR of the deploy is skipped and when the deploy has no PR at all, so the verify gate learns the head
+# deployed. A skipped deploy step is no deploy. The same result handled twice (a retried delivery) leaves one line per
+# sha, a deploy-only result carries the cursor and is silent once recorded, and one not recorded is not silent.
+scenario_deployed_lines() {
+  new_lab "$1"
+  live_task inner 21 internal
+  fx_pr 21 closed h0 800
+  fx_runs "1:completed:success:s0" "2:completed:success:s1" "3:completed:success:s2" "4:completed:success:s3"
+  fx_jobs 2 success; fx_jobs 3 success skipped; fx_jobs 4 success
+  fx_compare s0 s1 c1; fx_commit_prs c1 21:800
+  fx_compare s1 s3
+  set_cursor 1 s0
+  cycle
+  [ "$CYCLE_AUTO" = 0 ] || { echo "autohandle=$CYCLE_AUTO"; return 1; }
+  [ "$(ledger_count '.type == "skip" and .reason == "internal"')" = 1 ] || { echo 'the internal PR is not skipped'; return 1; }
+  [ "$(ledger_count ".type == \"deployed\" and .sha == \"$(sha s1)\" and .run == \"https://example.test/runs/2\" and .completed == \"2026-10-20T14:29:00Z\" and (.at | type) == \"number\"")" = 1 ] \
+    || { echo "a deploy whose PRs were all skipped is not one deployed line: $(ledger)"; return 1; }
+  # The same result handled again records nothing twice.
+  "$BIN/fm-procevent-deploy-verify.sh" autohandle deploy-verify 1 "$H/state/procevent-inbox/deploy-verify.1.result" >/dev/null 2>&1
+  [ "$(ledger_count '.type == "deployed"')" = 1 ] || { echo "a repeated result recorded a deploy twice: $(ledger_count '.type == "deployed"')"; return 1; }
+  # A deploy with no PR at all is a result of its own; the skipped step of run 3 is no deploy.
+  cycle
+  [ "$CYCLE_AUTO" = 0 ] || { echo "a deploy-only result was not handled: $CYCLE_AUTO"; return 1; }
+  [ "$(jq -r .cursor_run "$H/data/deploy-verify/state.json")" = 4 ] || { echo 'a deploy-only result did not advance the cursor'; return 1; }
+  [ "$(ledger_count ".type == \"deployed\" and .sha == \"$(sha s3)\"")" = 1 ] || { echo "a deploy with no PR is not recorded: $(ledger)"; return 1; }
+  [ "$(ledger_count ".type == \"deployed\" and .sha == \"$(sha s2)\"")" = 0 ] || { echo 'a skipped deploy step was recorded as a deploy'; return 1; }
+  [ "$(ledger_count '.type == "deployed"')" = 2 ] || { echo "deployed lines: $(ledger_count '.type == "deployed"')"; return 1; }
+  "$BIN/fm-procevent-deploy-verify.sh" silent "$H/state/procevent-inbox/deploy-verify.$SEQ.result" || { echo 'a recorded deploy-only result is not silent'; return 1; }
+  jq -cn --arg s "$(sha s9)" '{schema: "fm-deploy-verify-result.v1", asks: [], skips: [], deploys: [{sha: $s, run: "r", completed: "c"}], recovered: false, error: null, cursor: null}' \
+    > "$H/state/procevent-inbox/unrecorded.result"
+  ! "$BIN/fm-procevent-deploy-verify.sh" silent "$H/state/procevent-inbox/unrecorded.result" || { echo 'a deploy not in the ledger is silent'; return 1; }
+}
+
+# `backfill-deploy <sha>` records the deployed line of a past deploy only after GitHub shows a completed run of that sha
+# on main whose deploy step succeeded: a run still in progress, a failed or skipped step, another workflow, a run of
+# another sha, no run, an unreadable GitHub and a short sha each refuse and write nothing; a later successful run of
+# the sha is recorded; a sha already in the ledger is reported and written once.
+fx_sha_runs() {  # <seed> <id:status:workflow[:head-seed]>...
+  local seed=$1 spec json='[]' id status name other
+  shift
+  for spec in "$@"; do
+    IFS=: read -r id status name other <<<"$spec"
+    json=$(jq -c --argjson id "$id" --arg st "$status" --arg n "$name" --arg h "$(sha "${other:-$seed}")" \
+      '. + [{id: $id, name: $n, status: $st, head_sha: $h, html_url: ("https://example.test/runs/" + ($id | tostring))}]' <<<"$json")
+  done
+  gh_put "repos/$REPO/actions/runs?head_sha=$(sha "$seed")&branch=main&event=push&per_page=30" "$(jq -c '{workflow_runs: .}' <<<"$json")"
+}
+backfill() {  # <sha-seed or sha>: runs the verb, leaves BF_OUT and BF_RC
+  BF_OUT=$("$BIN/fm-procevent-deploy-verify.sh" backfill-deploy "$1" 2>&1)
+  BF_RC=$?
+}
+scenario_backfill_deploy() {
+  new_lab "$1"
+  local seed
+  fx_sha_runs b1 "7:completed:CI"; fx_jobs 7 success
+  backfill "$(sha b1)"
+  [ "$BF_RC" = 0 ] && [[ "$BF_OUT" == "recorded: $(sha b1)"* ]] || { echo "a completed run with a successful step is not recorded: rc=$BF_RC $BF_OUT"; return 1; }
+  [ "$(ledger_count ".type == \"deployed\" and .sha == \"$(sha b1)\" and .run == \"https://example.test/runs/7\" and .completed == \"2026-10-20T14:29:00Z\" and (.at | type) == \"number\"")" = 1 ] \
+    || { echo "the backfilled line is wrong: $(ledger)"; return 1; }
+  backfill "$(sha b1)"
+  [ "$BF_RC" = 0 ] && [[ "$BF_OUT" == "already recorded: $(sha b1)"* ]] || { echo "a recorded sha is not reported: rc=$BF_RC $BF_OUT"; return 1; }
+  [ "$(ledger_count '.type == "deployed"')" = 1 ] || { echo 'a second backfill wrote a duplicate'; return 1; }
+  # Each of these shas has the run the verb needs except one thing.
+  fx_sha_runs b2 "8:in_progress:CI"; fx_jobs 8 success
+  fx_sha_runs b3 "9:completed:CI"; fx_jobs 9 success failure
+  fx_sha_runs b4 "10:completed:CI"; fx_jobs 10 success skipped
+  fx_sha_runs b5 "11:completed:Other"; fx_jobs 11 success
+  fx_sha_runs b6 "12:completed:CI:other"; fx_jobs 12 success
+  fx_sha_runs b7
+  for seed in b2 b3 b4 b5 b6 b7 b8; do
+    backfill "$(sha $seed)"   # b8 has no recorded answer: GitHub cannot be read
+    [ "$BF_RC" = 1 ] && [[ "$BF_OUT" == refused:* ]] || { echo "$seed is not refused: rc=$BF_RC $BF_OUT"; return 1; }
+  done
+  backfill abc123
+  [ "$BF_RC" = 2 ] || { echo "a short sha is not a usage error: rc=$BF_RC $BF_OUT"; return 1; }
+  [ "$(ledger_count '.type == "deployed"')" = 1 ] || { echo "a refusal wrote a line: $(ledger)"; return 1; }
+  # A failed run and a later successful run of the same sha: the successful one is recorded.
+  fx_sha_runs b9 "13:completed:CI" "14:completed:CI"; fx_jobs 13 success failure; fx_jobs 14 success
+  backfill "$(sha b9)"
+  [ "$BF_RC" = 0 ] && [ "$(ledger_count ".type == \"deployed\" and .sha == \"$(sha b9)\" and .run == \"https://example.test/runs/14\"")" = 1 ] \
+    || { echo "a later successful run is not recorded: rc=$BF_RC $BF_OUT $(ledger)"; return 1; }
+}
+
+# A deployed line that cannot be written is a failure, never a success: autohandle leaves the deploy-only result
+# unacknowledged and the cursor where it was, so the next poll plans the deploy again and records it once the ledger
+# is writable; backfill-deploy refuses and does not say recorded. (The ledger path is a directory: no append can land.)
+scenario_deployed_unwritable() {
+  new_lab "$1"
+  fx_runs "1:completed:success:s0" "2:completed:success:s1"
+  fx_jobs 2 success
+  fx_compare s0 s1
+  set_cursor 1 s0
+  mkdir -p "$H/data/deploy-verify/ledger.jsonl"
+  cycle
+  [ "$CYCLE_AUTO" != 0 ] || { echo 'a deploy that could not be recorded was acknowledged'; return 1; }
+  [ "$(jq -r .cursor_run "$H/data/deploy-verify/state.json")" = 1 ] || { echo 'the cursor moved past a deploy that was not recorded'; return 1; }
+  fx_sha_runs b1 "7:completed:CI"; fx_jobs 7 success
+  backfill "$(sha b1)"
+  [ "$BF_RC" = 1 ] && [[ "$BF_OUT" == *"refused: the deployed line"* && "$BF_OUT" != *"recorded: "* ]] || { echo "backfill reported success with no line written: rc=$BF_RC $BF_OUT"; return 1; }
+  rmdir "$H/data/deploy-verify/ledger.jsonl"
+  cycle
+  [ "$CYCLE_AUTO" = 0 ] || { echo "the retry was not handled: $CYCLE_AUTO"; return 1; }
+  [ "$(jq -r .cursor_run "$H/data/deploy-verify/state.json")" = 2 ] || { echo 'the retry did not advance the cursor'; return 1; }
+  [ "$(ledger_count ".type == \"deployed\" and .sha == \"$(sha s1)\"")" = 1 ] || { echo "the retry did not record the deploy: $(ledger)"; return 1; }
+}
+
 # A new Tester is spawned as a scout `verify-<task>-<sha7>`: the backlog item is
 # filed, the role pin names the harness, the ask is written into the brief, and the
 # brief may write the evidence directory and, before T5, the task's Tester record.
@@ -329,7 +448,7 @@ scenario_spawn_brief() {
   [ "$id" = "verify-alpha-$(sha s2 | cut -c1-7)" ] || { echo "tester id: $id"; return 1; }
   [ -f "$H/state/$id.meta" ] || { echo 'the spawn left no task record'; return 1; }
   [ -d "$H/data/verify/alpha/$id" ] || { echo 'no evidence directory'; return 1; }
-  grep -qx -- "verify-alpha-$(sha s2 | cut -c1-7) $ROOT --scout --harness claude --model claude-sonnet --effort high" "$LAB/spawn.calls" \
+  grep -qx -- "verify-alpha-$(sha s2 | cut -c1-7) $ROOT --scout --plan-exempt verify --harness claude --model claude-sonnet --effort high" "$LAB/spawn.calls" \
     || { echo "spawn args: $(cat "$LAB/spawn.calls")"; return 1; }
   grep -q -- "add $id Verify alpha on $(sha s2) for https://github.com/$REPO/issues/500 --kind scout" "$LAB/tasks.calls" \
     || { echo "no backlog item: $(cat "$LAB/tasks.calls")"; return 1; }
@@ -340,6 +459,7 @@ scenario_spawn_brief() {
   jq -e --arg sha "$(sha s2)" '.schema == "fm-tester-verify.v1" and .round == "deploy" and .task == "alpha" and .issue == "cfw-modules#500" and .sha == $sha and (.prs == ["'"$RURL"'/pull/51"]) and .run == "https://example.test/runs/2"' <<<"$content" >/dev/null \
     || { echo "ask content: $content"; return 1; }
   grep -q 'Check each row and record its evidence.' "$brief" || { echo 'the Tester template did not reach the brief'; return 1; }
+  ! grep -q '{FIRSTMATE_SPEC}' "$brief" || { echo 'the filled brief keeps the spec placeholder'; return 1; }
   # A pre-T5 task's Tester record also joins the write paths when the old home names it.
   new_lab "$1"
   backlog_task alpha 52 501
@@ -356,6 +476,33 @@ scenario_spawn_brief() {
   id=$(ledger | jq -r 'select(.type == "ask" and .task == "alpha") | .tester')
   grep -q -- "$TH/data/verify/alpha.md" "$H/data/$id/brief.md" \
     || { echo "the pre-T5 record is not writable: $(cat "$H/data/$id/brief.md")"; return 1; }
+}
+
+# Controlled GitHub failures cannot be induced safely on the real service.
+scenario_read_retry() {
+  local failures status
+  for status in 1 0; do
+    for failures in 1 2; do
+      new_lab "$1"
+      fx_runs "1:completed:success:s0" "2:completed:success:s2"
+      fx_jobs 2 success
+      fx_compare s0 s2
+      set_cursor 1 s0
+      echo "$failures" > "$GHD/retries"
+      export FAKE_GH_FAILURE_STATUS=$status
+      cycle
+      if [ "$failures" = 1 ]; then
+        [ "$(jq -r .cursor_run "$H/data/deploy-verify/state.json")" = 2 ] || { echo 'retry payload did not advance the cursor'; return 1; }
+        grep -Fxq "repos/$REPO/actions/runs?branch=main&event=push&per_page=30" "$GHD/calls.log" || { echo 'stub did not serve the retry'; return 1; }
+        [ ! -s "$H/data/deploy-verify/last-error" ] || { echo 'retry left an error'; return 1; }
+        [ "$CYCLE_AUTO" != 1 ] || { echo 'recovered read published an error'; return 1; }
+      else
+        grep -Fxq "GitHub could not be read: repos/$REPO/actions/runs" "$H/data/deploy-verify/last-error" || return 1
+        jq -e '.error != null' "$H/state/procevent-inbox/deploy-verify.$SEQ.result" >/dev/null || return 1
+      fi
+    done
+  done
+  unset FAKE_GH_FAILURE_STATUS
 }
 
 # An undeliverable ask and an unreadable GitHub each leave one result for the
@@ -402,6 +549,30 @@ scenario_failures() {
   cycle
   [ -e "$H/state/procevent-inbox/deploy-verify.$SEQ.handled" ] || { echo 'the GitHub failure result stayed open after recovery'; return 1; }
   [ ! -e "$H/data/deploy-verify/last-error" ] || { echo 'the failure reason was not cleared'; return 1; }
+}
+
+# A refused spawn leaves its filled brief; the next poll reuses that brief for the
+# same ask, spawns the Tester, records the ask and clears the failure.
+scenario_retry_brief() {
+  new_lab "$1"
+  backlog_task alpha 65 500
+  fx_issue 500 A1:user-visible
+  fx_runs "1:completed:success:s0" "2:completed:success:s2"
+  fx_jobs 2 success
+  fx_compare s0 s2 c1
+  fx_commit_prs c1 65:500
+  set_cursor 1 s0
+  touch "$LAB/spawn-fail"
+  cycle
+  [ "$CYCLE_AUTO" = 1 ] || { echo "refused spawn autohandle=$CYCLE_AUTO"; return 1; }
+  grep -q 'the Tester spawn was refused' "$H/data/deploy-verify/last-error" || { echo "last-error: $(cat "$H/data/deploy-verify/last-error" 2>/dev/null)"; return 1; }
+  rm "$LAB/spawn-fail"
+  cycle
+  [ "$CYCLE_AUTO" = 0 ] || { echo "retry autohandle=$CYCLE_AUTO: $(cat "$H/data/deploy-verify/last-error" 2>/dev/null)"; return 1; }
+  [ "$(ledger_count '.type == "ask" and .task == "alpha"')" = 1 ] || { echo "asks after retry: $(ledger)"; return 1; }
+  [ "$(spawn_count)" = 2 ] || { echo "spawn calls: $(spawn_count)"; return 1; }
+  [ ! -s "$H/data/deploy-verify/last-error" ] || { echo "the failure stayed: $(cat "$H/data/deploy-verify/last-error")"; return 1; }
+  [ "$(asked | jq -s length)" = 1 ] || { echo "the brief holds $(asked | jq -s length) asks"; return 1; }
 }
 
 # The real runner: a delivered ask wakes nobody, an undeliverable one wakes once.
@@ -698,7 +869,7 @@ scenario_rows_record() {
   [ "$CYCLE_AUTO" = 0 ] || { echo "the retry: autohandle=$CYCLE_AUTO"; return 1; }
   [ "$(sed -n 1p "$LAB/writer.calls")" = "rows alpha https://github.com/$REPO/issues/500 --surface user-visible --key deploy-verify:$(ledger | jq -r 'select(.task == "alpha") | .key'):rows --actor deploy-verify --role system" ] \
     || { echo "the rows were not written first: $(cat "$LAB/writer.calls" 2>&1)"; return 1; }
-  grep -q "^event alpha deploy --note deploy deploy at $(sha s2): verify ask sent (cfw-modules#500) --head $(sha s2) --touched all --key deploy-verify:[^ ]*:deploy --actor deploy-verify --role system$" "$LAB/writer.calls" \
+  grep -q "^event alpha deploy --note deploy deploy head $(sha s2) run https://example.test/runs/2: verify ask sent (cfw-modules#500) --head $(sha s2) --touched all --key deploy-verify:[^ ]*:deploy --actor deploy-verify --role system$" "$LAB/writer.calls" \
     || { echo "the rows task deploy event names no head, or a PR with no Scenarios touched line did not touch all: $(cat "$LAB/writer.calls")"; return 1; }
   [ "$(grep -c '^event alpha deploy' "$LAB/writer.calls")" = 1 ] || { echo "the deploy event was written twice: $(cat "$LAB/writer.calls")"; return 1; }
   ! grep -q '^rows beta' "$LAB/writer.calls" || { echo "a task begun before T5 got check rows: $(cat "$LAB/writer.calls")"; return 1; }
@@ -817,6 +988,10 @@ scenario_rows_ask() {
   fx_issue_raw 500 "$(tpl_issue_body "$(tpl_scenario_env A1 'Dev 5001; DMS env `company`' 1440; tpl_scenario_env A2 'Dev 5001' 1440,390; tpl_scenario_env A3 'Dev 5001' 1440)")"
   # A1@1440 and A2@1440 are pending for the Tester on head h1; A3 is pending with no head (a rows call); A2@390 passed
   printf '{"task":"alpha","state":"running","nextActor":"worker","issueUrl":"https://github.com/%s/issues/500","head":null,"rows":[{"key":"A1@1440","scenarioId":"A1","width":"1440","surface":"user-visible","status":"pending","nextActor":"tester","head":"%s","carried":false,"due":true},{"key":"A2@1440","scenarioId":"A2","width":"1440","surface":"user-visible","status":"pending","nextActor":"tester","head":"%s","carried":false,"due":true},{"key":"A2@390","scenarioId":"A2","width":"390","surface":"user-visible","status":"pass","nextActor":"firstmate","head":"%s","carried":false,"due":false},{"key":"A3@1440","scenarioId":"A3","width":"1440","surface":"user-visible","status":"pending","nextActor":"tester","head":null,"carried":false,"due":true}]}\n' "$REPO" "$(sha h1)" "$(sha h1)" "$(sha h1)" > "$LAB/checks.json"
+  # Missing Description is a rule refusal, not a successful empty document read.
+  printf '\nif [ "$1" = document ]; then echo "fm-task: task has no Description event" >&2; exit 5; fi\n' >> "$LAB/writer"
+  # Legacy records stored the bare task id despite issue-backed acceptance.
+  jq '.issueUrl = "alpha"' "$LAB/checks.json" > "$LAB/checks.next" && mv "$LAB/checks.next" "$LAB/checks.json"
   printf '3.5\n' > "$LAB/ram"
   printf '# company: the admin PC that runs Titan\nram-read=cat %s/ram\nfloor-gb=6\nrecover=echo ran >> %s/recover.log; echo 4 > %s/ram\nnever-touch=Titan.exe, vsdbg\n' "$LAB" "$LAB" "$LAB" > "$H/config/env/company"
   fx_runs "1:completed:success:s0"
@@ -860,6 +1035,27 @@ scenario_rows_ask() {
   if [ "$(asked | wc -l | tr -d ' ')" != 2 ] || ! asked | jq -e 'select(.round == "rows" and .lines == ["A3"]) | [.rows[] | split(" | ")[0]] == ["- A3@1440"]' >/dev/null; then
     echo "a new row on the same head: $(asked)"; return 1
   fi
+}
+
+# A task whose acceptance is its own task record (`issue: task:<id>`) gets the same rows ask: one ask for the rows
+# pending for the Tester on an explicit head, its issue the task id and its issue URL the board link.
+scenario_rows_ask_task() {
+  new_lab "$1"
+  tpl_issue_body "$(tpl_scenario_env V1 'Dev 5001' 1440; tpl_scenario_env V2 'Dev 5001' 1440)" > "$LAB/description"
+  printf '#!/usr/bin/env bash\ncase "$1" in document) cat "%s/description" ;; checks) cat "%s/checks.json" ;; esac\n' "$LAB" "$LAB" > "$LAB/writer"
+  chmod +x "$LAB/writer"
+  : > "$H/config/task-shadow"
+  printf 'kind=ship\n' > "$H/state/alpha.meta"
+  mkdir -p "$H/data/alpha"
+  printf 'surface: user-visible\nissue: task:alpha\nrecord: rows\n' > "$H/data/alpha/verify.md"
+  printf '{"task":"alpha","state":"running","nextActor":"worker","issueUrl":"alpha","head":null,"rows":[{"key":"V1@1440","scenarioId":"V1","width":"1440","surface":"user-visible","status":"pending","nextActor":"tester","head":"%s","carried":false,"due":true},{"key":"V2@1440","scenarioId":"V2","width":"1440","surface":"user-visible","status":"pending","nextActor":"tester","head":"%s","carried":false,"due":true}]}\n' "$(sha h1)" "$(sha h1)" > "$LAB/checks.json"
+  export FM_TASK_SHADOW_WRITER="$LAB/writer"
+  local dry
+  dry=$("$BIN/fm-procevent-deploy-verify.sh" ask-rows alpha --dry-run 2>&1)
+  unset FM_TASK_SHADOW_WRITER
+  jq -e --arg h "$(sha h1)" '.round == "rows" and .sha == $h and .issue == "alpha" and (.issue_url | contains("task=alpha"))
+    and ([.rows[] | split(" | ")[0]] == ["- V1@1440", "- V2@1440"])' <<<"$dry" >/dev/null 2>&1 \
+    || { echo "task rows ask: $dry"; return 1; }
 }
 
 # HG5 (firstmate#176 G5): the rows ask of an env with a config/env/<name> file claims `env:<name>` for the Tester
@@ -1110,6 +1306,8 @@ scenario_cap() {
 scenario_task_native() {
   new_lab "$1"
   backlog_task alpha 11 ''
+  mkdir -p "$H/data/alpha"
+  printf 'surface: user-visible\nissue: task:alpha\n' > "$H/data/alpha/verify.md"
   : > "$H/config/task-shadow"
   issue_body V1:user-visible > "$LAB/description"
   printf '#!/usr/bin/env bash\ncase "$1" in document) cat "%s/description" ;; checks) echo "{\\"rows\\":[]}" ;; esac\n' "$LAB" > "$LAB/writer"
@@ -1118,7 +1316,7 @@ scenario_task_native() {
   fx_runs '1:completed:success:s0' '2:completed:success:s2'
   fx_jobs 2 success
   fx_compare s0 s2 c1
-  gh_put "repos/$REPO/commits/$(sha c1)/pulls" "$(jq -cn --arg u "$RURL/pull/11" '[{html_url:$u, merged_at:"2026-10-20T14:00:00Z",base:{ref:"main"},body:"Task: alpha"}]')"
+  gh_put "repos/$REPO/commits/$(sha c1)/pulls" "$(jq -cn --arg u "$RURL/pull/11" '[{html_url:$u, merged_at:"2026-10-20T14:00:00Z",base:{ref:"main"},body:"No issue or task marker"}]')"
   set_cursor 1 s0
   cycle
   unset FM_TASK_SHADOW_WRITER
@@ -1127,7 +1325,7 @@ scenario_task_native() {
 
 run_scenarios() {  # <bin-dir>
   local s rc=0
-  for s in ledger skips not_deployed draft spawn_brief failures runner live_tester cap skip_catchup rows refused replay replay_refused shadow rows_record carry rows_ask rows_lease rows_lease_two rows_lease_failed_send; do
+  for s in ledger skips not_deployed deployed_lines backfill_deploy deployed_unwritable draft spawn_brief retry_brief failures runner live_tester cap skip_catchup rows refused replay replay_refused shadow rows_record carry rows_ask rows_lease rows_lease_two rows_lease_failed_send; do
     out=$(scenario_"$s" "$1" 2>&1) || { printf 'scenario %s: %s\n' "$s" "$out"; rc=1; }
   done
   return $rc
@@ -1135,7 +1333,7 @@ run_scenarios() {  # <bin-dir>
 
 # ---- real adapter -----------------------------------------------------------
 
-for s in task_native ledger skips not_deployed draft spawn_brief failures runner live_tester cap skip_catchup rows refused replay replay_refused shadow rows_record carry rows_ask rows_lease rows_lease_two rows_lease_failed_send; do
+for s in read_retry task_native ledger skips not_deployed deployed_lines backfill_deploy deployed_unwritable draft spawn_brief retry_brief failures runner live_tester cap skip_catchup rows refused replay replay_refused shadow rows_record carry rows_ask rows_ask_task rows_lease rows_lease_two rows_lease_failed_send; do
   out=$(scenario_"$s" "$ROOT/bin" 2>&1) || fail "scenario $s failed on the real adapter: $out"
   pass "deploy-verify $s"
 done
@@ -1214,8 +1412,40 @@ mutate 'internal tasks are skipped' skips \
   's/if \[ "\$surface" = internal \]; then\n      while/if false; then\n      while/'
 mutate 'issues with no user-visible line are skipped' skips \
   's/if \[ -z "\$lines" \]; then\n      while/if false; then\n      while/'
-mutate 'only a green deploy job asks' not_deployed \
+mutate 'the job conclusion cannot replace the deploy step conclusion' not_deployed \
+  's/\[\.steps\[\]\? \| select\(\.name == \$s\)\] \| first \| \.\[\$f\]/.[\$f]/'
+mutate 'only a successful deploy step asks' not_deployed \
   's/if \[ "\$conclusion" = success \]; then/if true; then/'
+mutate 'a successful deploy step is recorded' deployed_lines \
+  's/if ! record_deploy "\$deploy_json"; then/if false; then/'
+mutate 'a deploy with no PR is a result of its own' deployed_lines \
+  's/ \|\| \[ "\$DEPLOYS" != .\[\]. \]\n\}/\n}/'
+mutate 'a skipped deploy step is no deploy' deployed_lines \
+  's/if \[ "\$conclusion" = success \]; then/if true; then/'
+mutate 'a sha in the ledger is not recorded again' deployed_lines \
+  's/  ledger_test .\.type == "deployed" and \.sha == \$s. --arg s "\$\(jq -r \.sha <<<"\$1"\)" && return 0\n//'
+mutate 'a deploy-only result carries the cursor' deployed_lines \
+  's/ \+ \(\$deploys \| length\) == 0/ == 0/'
+mutate 'a result is silent only when its deploys are recorded' deployed_lines \
+  's/    ledger_test .\.type == "deployed" and \.sha == \$s. --arg s "\$deploy_sha" \|\| return 1\n//'
+mutate 'backfill needs a completed run' backfill_deploy \
+  's/ and \.status == "completed"\)\]/)]/'
+mutate 'backfill needs a successful deploy step' backfill_deploy \
+  's/\[ "\$\(deploy_step_field "\$jobs" conclusion\)" = success \] \|\| continue/:/'
+mutate 'backfill reads the runs of the sha itself' backfill_deploy \
+  's/ and \.head_sha == \$s and / and /'
+mutate 'backfill reads the CI workflow' backfill_deploy \
+  's/select\(\.name == \$wf and /select(/'
+mutate 'backfill goes on to a later run of the sha' backfill_deploy \
+  's/\[ "\$\(deploy_step_field "\$jobs" conclusion\)" = success \] \|\| continue/[ "\$(deploy_step_field "\$jobs" conclusion)" = success ] || break/'
+mutate 'backfill reports a recorded sha' backfill_deploy \
+  's/  if ledger_test .\.type == "deployed" and \.sha == \$s. --arg s "\$sha"; then/  if false; then/'
+mutate 'backfill needs a full sha' backfill_deploy \
+  's/\[\[ "\$sha" =~ \^\[0-9a-f\]\{40\}\$ \]\]/true/'
+mutate 'an unwritable ledger fails the autohandled deploy' deployed_unwritable \
+  's/if ! record_deploy "\$deploy_json"; then/if ! { record_deploy "\$deploy_json" || true; }; then/'
+mutate 'an unwritable ledger refuses the backfill' deployed_unwritable \
+  's/if ! record_deploy "\$\(jq -cn ([^\n]*)\)"; then/if ! { record_deploy "\$(jq -cn $1)" || true; }; then/'
 mutate 'a run in progress holds the cursor' not_deployed \
   's/\[ "\$status" = completed \] \|\| break/:/'
 mutate 'draft asks once per head' draft \
@@ -1318,6 +1548,12 @@ mutate 'a missing role refuses the spawn' failures \
   's/if \[ ! -f "\$role_md" \] \|\| \[ ! -f "\$role_json" \]; then/if false; then/; s/if \[ -z "\$harness" \]; then/if false; then/'
 mutate 'the spawn brief carries the ask' spawn_brief \
   's/fill_brief "\$brief" "\$intent" "\$spec"/true/'
+mutate 'the Tester spawn passes the plan gate on its verify exemption' spawn_brief \
+  's/ --scout --plan-exempt verify --harness/ --scout --harness/'
+mutate 'the filled brief drops the spec placeholder' spawn_brief \
+  's/^[^\n]*FIRSTMATE_SPEC[^\n]*\{ next \}\n//m'
+mutate 'a retry reuses the filled brief of the same ask' retry_brief \
+  's/if \[ -f "\$brief" \] && \[ "\$\(brief_ask "\$brief"\)" = "\$content" \]; then/if false; then/'
 mutate 'the spawn names the evidence directory' spawn_brief \
   's/args=\( "\$id" firstmate --scout --also-write "\$evidence" \)/args=( "$id" firstmate --scout )/'
 mutate 'legacy cap holds do not require a task record' cap \
@@ -1332,6 +1568,6 @@ mutate 'a claimed-race retry finds its live Tester' rows_lease \
   's/id=\$\(tester_id_for_ask "\$2"\)/id=missing/'
 mutate 'a used closed Tester id gets a suffix' live_tester \
   's/if ! ledger_test '\''.type == "ask" and .tester == \$id'\'' --arg id "\$id"/if true/'
-mutate 'task-native deployment needs a task fallback' task_native \
-  's/issue="task:\$task"/issue=""/g'
+mutate 'task-native deployment honors the recorded source' task_native \
+  's/issue=\$\(recorded_acceptance[^\n]*/issue=""/g'
 pass 'every guarded behavior has a red mutation proof'

@@ -235,7 +235,7 @@ check_due() {
 
 evaluate_budget() {
   local report line reason valid=yes budget='' total='' status='' exception=''
-  if ! report=$(FM_HOME="$FM_HOME" FM_CONFIG_OVERRIDE="$CONFIG_DIR" FM_DATA_OVERRIDE="$DATA_DIR" \
+  if ! report=$(FM_HOME="$FM_HOME" FM_CONFIG_OVERRIDE="$CONFIG_DIR" FM_DATA_OVERRIDE="$DATA_DIR" FM_MEMORY_SYNC=skip \
     "$BUDGET_BIN" report 2>&1); then
     reason=${report##*startup-memory-budget: }
     append_finding "startup memory budget unavailable owner=bin/fm-startup-memory-budget.sh reason=${reason//$'\n'/ }"

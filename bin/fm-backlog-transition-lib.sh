@@ -29,9 +29,10 @@
 #
 # ADDRESSING. Every call runs from the configured data directory's parent so
 # that home's `.tasks.toml` supplies the adapter selection, done_keep, and the
-# archive path. A markdown backlog also passes `--file <data>/backlog.md` so the
-# change lands in the home that owns the task regardless of the caller's working
-# directory. A configured non-markdown adapter is addressed by that root alone,
+# archive path; a home config under that parent's config/tasks-axi/ takes the
+# tracked file's place (bin/fm-tasks-axi-lib.sh fm_tasks_axi_workdir). A
+# markdown backlog also passes `--file <data>/backlog.md` so the change lands
+# in the home that owns the task regardless of the caller's working directory. A configured non-markdown adapter is addressed by that root alone,
 # because `--file` would override the adapter's own workspace path. The parent of
 # the data directory is the addressing root rather than FM_HOME, so a home whose
 # data directory is relocated keeps its backlog and its archive together. A root
@@ -223,7 +224,8 @@ fm_backlog_authorized_root() {  # <authorized-data-dir>
 # Any adapter selection or exemption derived from a home's `.tasks.toml` is only
 # as safe as that file, so validate it before reading it.
 fm_backlog_config_present() {  # <root> <authorized-root>
-  local root=$1 authorized_root=$2 tasks_config="$1/.tasks.toml"
+  local root=$1 authorized_root=$2 tasks_config
+  tasks_config="$(fm_tasks_axi_workdir "$1")/.tasks.toml"
   if [ -e "$tasks_config" ] || [ -L "$tasks_config" ]; then
     # Leave a dangling config symlink for the backend resolver to diagnose as
     # unreadable; reject an existing special file through the home-bound
@@ -282,7 +284,7 @@ fm_backlog_tasks_axi_addressing() {  # <data-dir>
     FM_BACKLOG_TRANSITION_ERROR=$backend
     return 2
   }
-  FM_BACKLOG_AXI_ROOT=$root
+  FM_BACKLOG_AXI_ROOT=$(fm_tasks_axi_workdir "$root")
   if [ "$backend" = markdown ]; then
     FM_BACKLOG_AXI_FILE=$(fm_backlog_file "$data") || return 1
   fi
@@ -484,45 +486,6 @@ fm_backlog_row_probe() {  # <data-dir> <id>
   return 0
 }
 
-# Opt-in task record shadow (bin/fm-task-shadow.sh): a landed done, reopen, hold or unhold reaches the record too. The
-# hook never fails the transition; off costs one file test. Arguments: <verb> <id> <data-dir> [the verb's flags].
-fm_backlog_shadow() {
-  local verb=$1 id=$2 data=$3 kind='' reason='' previous='' arg
-  local config=${FM_CONFIG_OVERRIDE:-${FM_HOME:-}/config}
-  shift 3
-  [ -e "$config/task-shadow" ] || return 0
-  case "$verb" in done|reopen|hold|unhold) ;; *) return 0 ;; esac
-  for arg in "$@"; do
-    case "$previous" in --kind) kind=$arg ;; --reason) reason=$arg ;; esac
-    previous=$arg
-  done
-  FM_DATA_OVERRIDE=$data "$(dirname "${BASH_SOURCE[0]}")/fm-task-shadow.sh" backlog "$verb" "$id" "$kind" "$reason" >/dev/null 2>&1 || true
-}
-
-# Task record backlog view (T7): after a landed tasks-axi mutation of a markdown backlog, `bin/fm-task.sh backlog sync`
-# writes every row the file changed to the record and renders the file from the record. On while config/task-shadow is
-# on, with that file's writer settings. It never fails the caller: a sync that does not finish within
-# FM_TASK_VIEW_TIMEOUT seconds (default 120, the wait for the lock included) leaves the file as tasks-axi wrote it, and
-# the next sync absorbs it. The writer serializes the syncs and row calls of one file (fm-task.sh --help). Each
-# run is one line in <state>/task-shadow.log. FM_TASK_VIEW_WRITER, else FM_TASK_SHADOW_WRITER, replaces bin/fm-task.sh, so a
-# caller that replaces the record writer replaces it here too (the tests use stand-ins).
-fm_backlog_view_sync() {  # <backlog-file>
-  local file=$1 config=${FM_CONFIG_OVERRIDE:-${FM_HOME:-}/config} lib out rc state
-  [ -n "$file" ] && [ -e "$config/task-shadow" ] || return 0
-  lib=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-  state=${FM_STATE_OVERRIDE:-${FM_HOME:-$(dirname "$lib")}/state}
-  out=$(
-    # shellcheck source=bin/fm-task-shadow-config-lib.sh
-    . "$lib/fm-task-shadow-config-lib.sh"
-    fm_task_shadow_config "$config/task-shadow"
-    fm_run_timed "${FM_TASK_VIEW_TIMEOUT:-120}" "${FM_TASK_VIEW_WRITER:-${FM_TASK_SHADOW_WRITER:-$lib/fm-task.sh}}" backlog sync --file "$file" --actor backlog-view 2>&1 </dev/null
-  )
-  rc=$?
-  mkdir -p "$state" 2>/dev/null
-  printf '%s - backlog-view sync rc=%s %s\n' "$(date +%s)" "$rc" "$(printf '%s' "$out" | tail -n 1 | cut -c1-160)" >> "$state/task-shadow.log" 2>/dev/null
-  return 0
-}
-
 # Run one tasks-axi mutation against <home>'s backlog, capturing its first
 # output line in FM_BACKLOG_TRANSITION_ERROR on failure. The home boundary is
 # authorized through fm_backlog_source_present first; fm_backlog_tasks_axi owns
@@ -548,8 +511,6 @@ fm_backlog_mutate() {  # <data-dir> <verb> <id> [flag...]
   fi
   command_status=$?
   if [ "$command_status" -eq 0 ]; then
-    fm_backlog_shadow "$verb" "$id" "$data" "$@"
-    fm_backlog_view_sync "$FM_BACKLOG_AXI_FILE"
     return 0
   fi
   FM_BACKLOG_TRANSITION_ERROR=$(printf '%s\n' "$out" | sed -n '1p')
@@ -730,6 +691,45 @@ fm_backlog_verify_items_decode() {  # <encoded-items>
     print $out;'
 }
 
+# The stored hold reason of a verify-pending row: "verification pending: <items>" in the
+# fm-hold-v1 form, cut to whole items so it fits the smallest hold-reason field a backend
+# stores (Dev 5001's fm_task.backlog_hold_reason holds 2000 characters, and a longer value
+# refuses the row write). A cut list ends with "and N more"; bin/fm-verify-close.sh prints
+# every item. The argument holds one item per line, since an item's text can hold "; ".
+fm_backlog_verify_reason() {  # <id> <items>
+  local text
+  text=$(printf '%s' "$2" | perl -e '
+    use strict; use warnings;
+    my ($id) = @ARGV;
+    my $in = do { local $/; <STDIN> };
+    # 1491 raw bytes encode to 2000 characters with the fm-hold-v1: prefix; keep a margin.
+    my $limit = 1400;
+    my $head = "verification pending: ";
+    my @items = grep { length } split /\n/, $in;
+    # A pending-close record written before items went one per line holds them "; "-joined, and an
+    # item may itself hold "; ", so its pieces are cut points, not a count: the tail names no number.
+    my $legacy = @items == 1 && $items[0] =~ /; /;
+    @items = split /; /, $items[0] if $legacy;
+    my $more_of = sub { $legacy ? "more" : "$_[0] more" };
+    my $out = $head . join("; ", @items);
+    if (length($out) > $limit) {
+      my $kept = $head;
+      my $n = 0;
+      for my $item (@items) {
+        my $rest = @items - $n - 1;
+        my $tail = $rest ? "; and " . $more_of->($rest) . " (bin/fm-verify-close.sh $id lists all)" : "";
+        my $next = $kept . ($n ? "; " : "") . $item;
+        last if length($next . $tail) > $limit;
+        $kept = $next;
+        $n++;
+      }
+      my $more = @items - $n;
+      $out = $kept . ($n ? "; and " : "and ") . $more_of->($more) . " (bin/fm-verify-close.sh $id lists all)";
+    }
+    print $out;' "$1") || return 1
+  fm_hold_reason_encode "$text"
+}
+
 # data/<id>/verify-pending: written when teardown chooses verification pending, removed when the
 # row is closed (a normal teardown close, bin/fm-verify-close.sh, or an answer to a captain call
 # whose record is complete).
@@ -766,12 +766,14 @@ fm_backlog_verify_marker_remove() {  # <data-dir> <id>
 # captain call keeps that hold and gains a body line instead: the captain's call wins, as it
 # does for a plain retain.
 fm_backlog_verify_pending() {  # <data-dir> <id> <encoded-items> [flag...]
-  local data=$1 id=$2 encoded=$3 items
+  local data=$1 id=$2 encoded=$3 items joined
   shift 3
   if ! items=$(fm_backlog_verify_items_decode "$encoded"); then
     FM_BACKLOG_TRANSITION_ERROR="the missing verification items of $id could not be decoded"
     return 1
   fi
+  # The record holds one item per line; people read them joined.
+  joined=$(printf '%s\n' "$items" | awk 'NF { printf "%s%s", sep, $0; sep = "; " }')
   if ! fm_backlog_row_probe "$data" "$id"; then
     FM_BACKLOG_TRANSITION_ERROR=$FM_BACKLOG_ROW_ERROR
     return 1
@@ -782,11 +784,11 @@ fm_backlog_verify_pending() {  # <data-dir> <id> <encoded-items> [flag...]
   # Hold before the reopen inside retain, so the row is never Queued and unheld: tasks-axi keeps
   # a hold across reopen.
   if [ "$FM_BACKLOG_ROW_HOLD_KIND" != captain ]; then
-    fm_backlog_mutate "$data" hold "$id" --reason "$(fm_hold_reason_encode "verification pending: $items")" --kind external || return 1
+    fm_backlog_mutate "$data" hold "$id" --reason "$(fm_backlog_verify_reason "$id" "$items")" --kind external || return 1
   fi
   fm_backlog_retain "$data" "$id" "$@" || return 1
   if [ "$FM_BACKLOG_ROW_HOLD_KIND" = captain ]; then
-    fm_backlog_body_append_line "$data" "$id" "Verification pending: $items"
+    fm_backlog_body_append_line "$data" "$id" "Verification pending: $joined"
   fi
 }
 

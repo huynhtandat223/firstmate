@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # fm-task-shadow.sh - write one state change to the task record, in shadow (spec huynhtandat223/cfw-modules#1675, T3).
 #
-# The old sources stay authoritative: the backlog, state/<id>.meta, the status files and the steering inbox. A state
-# script that changes one of them calls this hook right after its own change succeeded, and the hook writes the same
+# The old sources stay authoritative: state/<id>.meta, the status files and the steering inbox. The backlog is no longer
+# mirrored here: under the cfw5001 tasks-axi backend it lives in the same Dev 5001 rows, and title_of and hold_event
+# read a title, a kind and a hold-set occurrence through bin/fm-tasks-axi.sh show. A state
+# script that changes one of the old sources calls this hook right after its own change succeeded, and the hook writes the same
 # change to the record through bin/fm-task.sh. The hook never changes the script's result: it exits 0 whatever the
 # writer answers, and it logs each writer call to state/task-shadow.log (epoch, task, hook event, writer command, exit code).
 #
@@ -15,16 +17,21 @@
 #   fm-task-shadow.sh status <config> <state>/<task>.status          the last status line          (the worker's status command)
 #   fm-task-shadow.sh cleaned-up <task>                              a comment event               (bin/fm-teardown.sh)
 #   fm-task-shadow.sh verified <task>                                a comment event               (bin/fm-verify-close.sh)
-#   fm-task-shadow.sh held <task> <hold-kind> <reason>               ask (captain) or block        (bin/fm-captain-hold.sh hold)
+#   fm-task-shadow.sh held <task> <hold-kind> <reason>               block (captain: transient)     (bin/fm-captain-hold.sh hold)
 #   fm-task-shadow.sh answered <task> <released|closed>              unblock or approve            (bin/fm-captain-hold.sh answer)
 #   fm-task-shadow.sh deploy-verify <task> <sha> <round> <issue>     a deploy event                (bin/fm-procevent-deploy-verify.sh)
-#   fm-task-shadow.sh backlog <verb> <task> [<hold-kind> <reason>]   done | reopen | hold | unhold (bin/fm-backlog-transition-lib.sh;
-#                                                                    a captain hold is left to bin/fm-captain-hold.sh)
+#   fm-task-shadow.sh merged <task> <pr-url>                         a pr event with --merged      (bin/fm-merge-outcome-lib.sh)
+#   fm-task-shadow.sh step-start <task> <generation> <harness> [<model> [<effort> [<account>]]]   (an empty model keeps the setup's)
+#                                                                    step start: the current workflow state runs (bin/fm-spawn.sh,
+#                                                                    a relaunch too); queued, merge and done have no worker and
+#                                                                    the writer refuses it, which is logged like any refusal
+#   fm-task-shadow.sh step-end <task> <generation> <reason>          step end, when a state runs     (bin/fm-teardown.sh, fm-control.sh exit)
 #
 # Status line to writer command: working -> heartbeat (after unblock and start when the record holds the task blocked);
-# done -> done (the line is the summary; the other template fields read "-"); needs-decision -> ask with the options
-# "Decide now" and "Decide later"; blocked and paused -> block transient (paused keeps its "until"); failed -> block failure;
-# resolved -> unblock. A writer rule refusal (a transition the record does not allow) is logged and left to the reconciler.
+# done -> done (the line is the summary; the other template fields read "-"); needs-decision -> heartbeat with the line as a
+# note (a comment event when the record refuses the heartbeat), never an ask; blocked and paused -> block transient (paused
+# keeps its "until"); failed -> block failure; resolved -> unblock. A captain hold -> block transient to firstmate, never an
+# ask, and a captain hold the record already holds as an ask is left as it is; an external hold -> block external. A writer rule refusal (a transition the record does not allow) is logged and left to the reconciler.
 #
 # A task begun after T5 ('record: rows' in data/<task>/verify.md, bin/fm-verify-gate-lib.sh) is verified on check rows,
 # which bin/fm-procevent-deploy-verify.sh writes itself before its ask: a verification-pending hold leaves such a task
@@ -68,8 +75,11 @@ WRITER=${FM_TASK_SHADOW_WRITER:-$SCRIPT_DIR/fm-task.sh}
 TIMEOUT=${FM_TASK_SHADOW_TIMEOUT:-30}
 LOG="$STATE/task-shadow.log"
 TASK=${1:-}
-[ "$EVENT" != backlog ] || TASK=${2:-}
 case "$TASK" in ''|.*|*[!A-Za-z0-9._-]*) exit 0 ;; esac
+
+# Assistances are sessions, not tasks. All producers (including relaunch and cleanup)
+# cross this boundary while the task meta still exists; never mirror their events.
+if grep -qx 'kind=assistance' "$STATE/$TASK.meta" 2>/dev/null; then exit 0; fi
 
 short() { printf '%s' "$1" | cksum | awk '{ printf "%x", $1 }'; }  # a short stable digest for a key
 oneline() { printf '%s' "$1" | tr '\n\r\t' '   ' | sed 's/  */ /g; s/^ //; s/ $//'; }
@@ -90,12 +100,16 @@ w() {
   return "$rc"
 }
 
+# The task's title and kind come from the backlog through bin/fm-tasks-axi.sh show; the backlog file is never read.
+backlog_field() {  # <field>: one top-level field of `fm-tasks-axi.sh show <task>`, empty when absent
+  FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-tasks-axi.sh" show "$TASK" --full 2>/dev/null \
+    | sed -n "s/^  $1: //p" | head -1 | jq -Rr 'if startswith("\"") then fromjson else . end | if . == "-" then "" else . end'
+}
+
 title_of() {
-  local row
-  row=$(grep -m1 -- "^- \[.\] $TASK - " "$DATA/backlog.md" 2>/dev/null) || { printf '%s' "$TASK"; return; }
-  row=${row#*" - "}
-  row=$(printf '%s' "$row" | sed -E 's# https?://.*##; s# \((repo|kind|since|hold|hold-kind|hold-until|merged|done)\b.*##')
-  printf '%s' "$(cut_to "$row" 300)"
+  local title
+  title=$(backlog_field title | sed -E 's# https?://.*##')
+  printf '%s' "$(cut_to "${title:-$TASK}" 300)"
 }
 
 rows_task() { grep -qx 'record: rows' "$DATA/$TASK/verify.md" 2>/dev/null; }
@@ -154,7 +168,9 @@ status_event() {
       [ -z "$url" ] || pr=(--pr-url "$url")
       w "status-$key" "done" "$TASK" --summary "$text" --changed-files - --verification - --residual-risk - ${pr[@]+"${pr[@]}"} ;;
     needs-decision)
-      w "status-$key" ask "$TASK" --question "$text" --option 'Decide now' --option 'Decide later' --recommendation - --why 'a needs-decision status line' ;;
+      # a note, never an ask: the owner's questions are written by the producer that has one, not by this hook
+      w "status-$key" heartbeat "$TASK" --note "needs-decision: $text" \
+        || w "status-$key-comment" event "$TASK" comment --note "needs-decision: $text" ;;
     blocked)
       w "status-$key" block transient "$TASK" --reason "$text" --next-actor firstmate ;;
     paused)
@@ -183,16 +199,14 @@ hold_event() {  # <hold-kind> <reason>: make the record capable of taking this o
   # Captain hold-set is the source transition identity, not a whole-file mtime.
   occurrence=${3:-}
   if [ -z "$occurrence" ]; then
-    occurrence=$(awk -v id="$TASK" '
-      /^- \[[ x]\] / { active=($3 == id) }
-      active && /Captain hold set:/ { sub(/^.*Captain hold set: /, ""); print; exit }
-    ' "$DATA/backlog.md" 2>/dev/null)
+    occurrence=$(FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-tasks-axi.sh" show "$TASK" --full 2>/dev/null \
+      | grep -o 'Captain hold set: [^"\\]*' | head -1 | sed 's/^Captain hold set: //')
     [ -n "$occurrence" ] || occurrence=legacy
   fi
   key=$(short "$kind|$reason|$occurrence")
   current=$("$WRITER" show "$TASK" --json 2>/dev/null) || current=''
   if [ -z "$current" ]; then
-    w "hold-$key-create" create "$TASK" --title "$(title_of)" --kind "$(record_kind "$(grep -m1 -- "^- \[.\] $TASK - " "$DATA/backlog.md" 2>/dev/null | sed -n 's/.*(kind: \([^)]*\)).*/\1/p')")" || return 0
+    w "hold-$key-create" create "$TASK" --title "$(title_of)" --kind "$(record_kind "$(backlog_field kind)")" || return 0
     current='{"state":"triage"}'
   fi
   current=$(printf '%s' "$current" | jq -r '.state // "running"' 2>/dev/null) || current=running
@@ -200,11 +214,15 @@ hold_event() {  # <hold-kind> <reason>: make the record capable of taking this o
     local prior
     prior=$("$WRITER" show "$TASK" --json 2>/dev/null)
     local mapped_kind=transient mapped_actor=firstmate
-    case "$kind" in captain) mapped_kind=needs-decision; mapped_actor=owner ;; external) mapped_kind=external ;; esac
-    if [ "$(printf '%s' "$prior" | jq -r '.blockReason')" = "$reason" ] \
-      && [ "$(printf '%s' "$prior" | jq -r '.blockKind')" = "$mapped_kind" ] \
-      && [ "$(printf '%s' "$prior" | jq -r '.nextActor')" = "$mapped_actor" ]; then
-      return 0
+    case "$kind" in external) mapped_kind=external ;; esac
+    if [ "$(printf '%s' "$prior" | jq -r '.blockReason')" = "$reason" ]; then
+      local held_kind held_actor
+      held_kind=$(printf '%s' "$prior" | jq -r '.blockKind')
+      held_actor=$(printf '%s' "$prior" | jq -r '.nextActor')
+      [ "$held_kind/$held_actor" != "$mapped_kind/$mapped_actor" ] || return 0
+      # A captain hold already mirrored as an ask (needs-decision, owner) stays as it is until firstmate migrates it: a
+      # new block would reuse that ask's key, the writer would replay the ask, and the unblock above would leave the task running.
+      [ "$kind" != captain ] || [ "$held_kind/$held_actor" != needs-decision/owner ] || return 0
     fi
   fi
   if [ "$current" = review ] && rows_task && printf '%s' "$reason" | grep -qi 'verification pending'; then
@@ -225,8 +243,6 @@ hold_event() {  # <hold-kind> <reason>: make the record capable of taking this o
     return 0
   fi
   case "$kind" in
-    captain)
-      w "hold-$key" ask "$TASK" --question "$reason" --option 'Decide now' --option 'Decide later' --recommendation - --why 'a captain hold' --next-actor owner ;;
     external)
       w "hold-$key" block external "$TASK" --reason "$reason" --next-actor firstmate ;;
     *)
@@ -249,20 +265,42 @@ case "$EVENT" in
   held) hold_event "${2:-hold}" "${3:-}" "${4:-}" ;;
   answered)
     case "${2:-}" in
-      released) w answered-released unblock "$TASK" || w answered-released-comment event "$TASK" comment --note 'captain hold released' ;;
+      released)
+        # keyed by the record's last event, so the release of a later hold on the same task is a new write, not a replay
+        cycle=$("$WRITER" show "$TASK" --json 2>/dev/null </dev/null | jq -r '.lastSeq // 0' 2>/dev/null) || cycle=0
+        w "answered-released-${cycle:-0}" unblock "$TASK" || w "answered-released-comment-${cycle:-0}" event "$TASK" comment --note 'captain hold released'
+        ;;
       *) close_task answered ;;
     esac
     ;;
   deploy-verify)
     w "deploy-$(short "${2:-}|${3:-}")" event "$TASK" deploy --note "deploy ${3:-} at ${2:-}: verify ask sent (${4:-})"
     ;;
-  backlog)
-    case "${1:-}" in
-      done) close_task backlog-done ;;
-      reopen) w backlog-reopen reopen "$TASK" --reason 'backlog row reopened' ;;
-      hold) [ "${3:-}" = captain ] || hold_event "${3:-hold}" "${4:-}" ;;
-      unhold) w backlog-unhold unblock "$TASK" || w backlog-unhold-comment event "$TASK" comment --note 'backlog hold lifted' ;;
-    esac
+  merged)
+    # the note says merged too, so a wait that clears on the merge clears on this event
+    PR_RECORD=$("$SCRIPT_DIR/fm-task.sh" pr-record "$TASK") || exit 1
+    PR_AUTHORITY=$(jq -r 'if .authorityPhase == "accepted" then (.mergeAuthority // empty) else empty end' <<<"$PR_RECORD")
+    PR_HEAD=$(jq -r '.prHead // empty' <<<"$PR_RECORD")
+    PR_ARGS=(event "$TASK" pr --merged --pr-url "${2:-}" --note "merged ${2:-}")
+    # Authority is carried only through the dedicated receipt-checked operation.
+    if [ -n "$PR_AUTHORITY" ] && [ -n "$PR_HEAD" ] && [ -f "$STATE/$TASK.merge-receipt" ]; then
+      "$SCRIPT_DIR/fm-task.sh" merge-authority "$TASK" --pr-url "${2:-}" --head "$PR_HEAD" \
+        --merge-authority "$PR_AUTHORITY" --phase accepted --merged --receipt "$STATE/$TASK.merge-receipt" \
+        --key "shadow:$TASK:merged-authority-$(short "${2:-}|$PR_HEAD")" >/dev/null || exit 1
+    fi
+    [ -z "$PR_HEAD" ] || PR_ARGS+=(--head "$PR_HEAD")
+    if [ -z "$PR_AUTHORITY" ] || [ ! -f "$STATE/$TASK.merge-receipt" ]; then
+      w "merged-$(short "${2:-}")" "${PR_ARGS[@]}" || exit 1
+    fi
+    # The pending receipt is a local safety check, not the authority record.
+    [ ! -f "$STATE/$TASK.merge-receipt" ] || rm -f "$STATE/$TASK.merge-receipt"
+    ;;
+  step-start)
+    # a spawn on the harness default model names none: the writer keeps the setup's model for the state
+    w "step-start-${2:-none}" step "$TASK" start --generation "${2:-}" --harness "${3:-}" ${4:+--model "$4"} ${5:+--effort "$5"} ${6:+--account "$6"}
+    ;;
+  step-end)
+    w "step-end-${2:-none}-$(short "${3:-}")" step "$TASK" end --generation "${2:-}" --reason "${3:-cleanup}"
     ;;
 esac
 exit 0

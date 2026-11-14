@@ -247,6 +247,7 @@ export function digest(parsed) {
 
 function readIssueBody(source) {
   if (source === '-') return fs.readFileSync(0, 'utf8');
+  if (source.startsWith('task:')) source = source.slice(5);
   if (/^https?:\/\//.test(source) && source.includes('task=')) {
     const url = new URL(source);
     source = new URLSearchParams(url.hash.split('?')[1] || url.search).get('task') || source;
@@ -270,7 +271,7 @@ function readIssueBody(source) {
 
 function main(argv) {
   const [command, source, ...flags] = argv;
-  const usage = 'usage: fm-acceptance.mjs parse <issue-url|-> [--strict] | rows <issue-url|-> [--surface user-visible|all] [--draft] [--strict] | digest <issue-url|-> [--strict]';
+  const usage = 'usage: fm-acceptance.mjs parse <task:id|task-id|board-url|issue-url|-> [--strict] | rows <source> [--surface user-visible|all] [--draft] [--strict] | digest <source> [--strict]';
   if (!['parse', 'rows', 'digest'].includes(command) || !source) {
     process.stderr.write(`${usage}\n`);
     return 2;

@@ -126,7 +126,11 @@
 # --surface <user-visible|internal> is an optional ship-only input; absent means
 # internal and leaves the brief unchanged. user-visible adds the done-gate wording
 # that bin/fm-dod-lib.sh owns (record: bin/fm-verify-gate-lib.sh).
-# --issue <issue-url> is an optional ship-only input, the task's issue as
+# Ship briefs name the task's Solution document, the `bin/fm-task.sh plan` call that
+# attaches it, and that the owner approves it before implementation starts, whatever the
+# surface; a scout brief names none. A ship brief whose mode opens a pull request says one
+# task has one.
+# --issue <source> is an optional ship-only acceptance input: task:<id> or
 # https://<host>/<owner>/<repo>/issues/<n>. It adds an `# Acceptance` section that
 # names the issue and the command `bin/fm-acceptance.mjs rows <issue-url> --surface all` (every scenario, internal ones too), so the
 # worker reads the scenario list from the one parser and the brief carries no list
@@ -354,8 +358,12 @@ if [ "$CHECK" -eq 1 ]; then
     CHECK_CONFIG="${FM_CONFIG_OVERRIDE:-${FM_HOME:-$FM_ROOT}/config}"
     CHECK_STATE="${FM_STATE_OVERRIDE:-${FM_HOME:-$FM_ROOT}/state}"
     # The linked issue is the one the `# Acceptance` section names, not the first URL anywhere.
-    CHECK_ISSUE=$(fm_brief_heading_body "$CHECK_BRIEF" "# Acceptance" | grep -oE 'https://[A-Za-z0-9.-]+/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/issues/[0-9]+' | head -1 || true)
+    CHECK_ISSUE=$(fm_brief_heading_body "$CHECK_BRIEF" "# Acceptance" | grep -oE 'task:[A-Za-z0-9][A-Za-z0-9._-]*|https://[A-Za-z0-9.-]+/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/issues/[0-9]+' | head -1 || true)
     if [ -n "$CHECK_ISSUE" ]; then
+      if [[ "$CHECK_ISSUE" == task:* ]]; then
+        . "$SCRIPT_DIR/fm-task-shadow-config-lib.sh"
+        fm_task_shadow_config "$CONFIG/task-shadow"
+      fi
       if CHECK_ROWS=$("${FM_ACCEPTANCE_BIN:-$SCRIPT_DIR/fm-acceptance.mjs}" rows "$CHECK_ISSUE" --surface all 2>&1); then
         CHECK_TEXT="$CHECK_TEXT $CHECK_ROWS"
       elif [ "$(fm_enforce_mode "$CHECK_CONFIG" herdr-lab-brief)" = block ]; then
@@ -401,8 +409,8 @@ if [ "$KIND" = ship ]; then
     *) echo "error: --surface must be user-visible or internal (got '$SURFACE')" >&2; exit 1 ;;
   esac
   [ "$SURFACE_SET" -eq 0 ] || [ -n "$SURFACE" ] || { echo "error: --surface requires a non-empty value" >&2; exit 1; }
-  if [ "$ISSUE_SET" -eq 1 ] && ! [[ "$ISSUE_URL" =~ ^https://[A-Za-z0-9.-]+/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/issues/[0-9]+$ ]]; then
-    echo "error: --issue must be https://<host>/<owner>/<repo>/issues/<n> (got '$ISSUE_URL')" >&2
+  if [ "$ISSUE_SET" -eq 1 ] && ! [[ "$ISSUE_URL" =~ ^https://[A-Za-z0-9.-]+/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/issues/[0-9]+$ || "$ISSUE_URL" =~ ^task:[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+    echo "error: --issue must be https://<host>/<owner>/<repo>/issues/<n> or task:<id> (got '$ISSUE_URL')" >&2
     exit 1
   fi
 elif [ "$ISSUE_SET" -eq 1 ]; then
@@ -614,7 +622,8 @@ INBOX_DIR=$(shell_quote "$STATE/$ID.inbox")
 # so waiting still spends no turns.
 IFS= read -r -d '' INBOX_SECTION <<EOF || true
 # Firstmate instruction inbox
-Firstmate steers you through durable message files in $INBOX_DIR.
+Firstmate stores steers on 5001. When an instruction arrives, run \`'$FM_ROOT/bin/fm-task.sh' steers $ID\`: it prints unread messages and marks them read. Act on each returned message in order.
+If 5001 is unavailable or this launch has no task record, use the local cache in $INBOX_DIR.
 When a terminal message says an instruction is waiting there - and at any natural checkpoint when you are unsure - list them with \`find $INBOX_DIR -maxdepth 1 -name '*.msg' 2>/dev/null | sort -V\`, read the complete contents of each record (including its final line even when it is not newline-terminated) and act on each message in numeric order, then acknowledge each handled message by moving it: \`mv $INBOX_DIR/NNN.msg $INBOX_DIR/handled/\`.
 Prefer the format-aware \`fm_task_inbox_body\` reader from \`bin/fm-task-inbox-lib.sh\` when it is available. If you read manually, a header line \`body-terminator=1\` means the writer added exactly one synthetic final newline to terminate the record file; that marked newline is not part of the logical message body, so remove only it and preserve any intentional trailing newlines. Legacy records without that marker may end without a newline; read them through the file end.
 The move IS the acknowledgement: without it firstmate rings again and eventually treats you as stuck. An empty or absent inbox needs no action.
@@ -809,8 +818,9 @@ fi
 
 REQUIRED_SKILLS_SECTION=$(printf '%s\n' \
   '# Required skills and instructions' \
+  'While the owner chats with you in your pane, ask each decision he owes through agent-ask, with images when a picture decides it, rather than as a question in the pane.' \
   "Load $FM_ROOT/custom-skills/policy/SKILL.md once, then follow its trigger routing for this role." \
-  "Before verifying behavior or claiming completion, load $FM_ROOT/custom-skills/classical-testing/SKILL.md.")
+  "Before implementation or test selection, and before verifying behavior or claiming completion, load $FM_ROOT/custom-skills/classical-testing/SKILL.md.")
 if [ -f "$HOME/.agents/skills/writing-for-agents/SKILL.md" ]; then
   REQUIRED_SKILLS_SECTION=$(printf '%s\n%s' "$REQUIRED_SKILLS_SECTION" \
     "Before changing an agent-facing document, load $HOME/.agents/skills/writing-for-agents/SKILL.md.")
@@ -886,6 +896,21 @@ else
   SETUP_BASE="You are in a disposable git worktree of $REPO, at a detached HEAD on a clean default branch."
 fi
 
+# The owner's task rules for a ship task, where the worker reads its task-record commands: it carries a Solution document
+# (custom-skills/ticket-template/SKILL.md owns its form), every ship waits for the owner's approval of it, and a ship
+# that opens a pull request opens one. A scout brief holds none of them: a scout's deliverable is its report, and a
+# Tester verify run (bin/fm-procevent-deploy-verify.sh) and every probe is a scout, whose Solution would only ask the
+# owner to approve it. A Planner's plan already reaches the record through `plan`.
+SOLUTION_FILE="$DATA/$ID/solution.md"
+TASK_RULES="Solution: every task has one document with exactly the headings \`## How it is used\`, \`## How it is built\`, \`## How it is tested\`.
+While \`$FM_ROOT/bin/fm-task.sh show $ID\` prints \`planSeq=-\` the task has none: write it to \`$SOLUTION_FILE\` before you implement, and attach it with \`$FM_ROOT/bin/fm-task.sh plan $ID --document $SOLUTION_FILE --document-title Solution [--image PATH --image-label L]...\`.
+A new \`plan\` replaces the Solution and its approval.
+The owner approves the Solution on the task's Solution tab before implementation starts, so implement only once \`show\` prints \`planDecision=approve\`."
+if [ "$KIND" = ship ] && [ "$MODE" != local-only ]; then
+  TASK_RULES="$TASK_RULES
+One task has one pull request; a second pull request is its own subtask, which firstmate files."
+fi
+
 if [ "$KIND" = scout ]; then
 SCOUT_WRITE_PATHS='the report and the status file below'
 if [ "${#ALSO_WRITE[@]}" -gt 0 ]; then
@@ -943,6 +968,7 @@ $WAIT_BLOCK$INBOX_SECTION
 
 # Definition of done
 Write your findings to \`$DATA/$ID/report.md\`.
+Open every owner-facing report with a short Vietnamese summary that fits within one 390px-wide screen; put the detailed evidence after it, in English if useful.
 The report must stand alone: what you did, what you found, the evidence (commands run, output, file:line references), and what you recommend.
 $LAVISH_LINE
 Before reporting done, read and follow \`$FM_ROOT/.agents/skills/captain-hold-lifecycle/SKILL.md\` and pass its shared completion gate for the report and any visual review.
@@ -980,6 +1006,16 @@ RULE1=$(fm_ship_rule_one "$MODE" "$ID" "$BRANCH" "$FORGE" "$BASE_BRANCH") || exi
 DOD=$(fm_dod_block "$MODE" "$ID" "$BRANCH" "$FORGE" "$BASE_BRANCH" "$UPSTREAM_CONSENT" "$PR_TEXT" "$SURFACE") || exit 1
 
 ACCEPTANCE_SECTION=
+if [ "$ISSUE_SET" -eq 0 ] && [ "$SURFACE" = user-visible ]; then
+  if TASK_ACCEPTANCE=$(
+    . "$SCRIPT_DIR/fm-task-shadow-config-lib.sh"
+    fm_task_shadow_config "$CONFIG/task-shadow"
+    node "$SCRIPT_DIR/fm-acceptance.mjs" rows "task:$ID" --strict 2>/dev/null
+  ) && [ -n "$TASK_ACCEPTANCE" ]; then
+    ISSUE_URL="task:$ID"
+    ISSUE_SET=1
+  fi
+fi
 if [ "$ISSUE_SET" -eq 1 ]; then
   ACCEPTANCE_SECTION="# Acceptance
 The acceptance for this task is the scenarios of $ISSUE_URL.
@@ -1010,6 +1046,7 @@ If the top-level path is the primary checkout or not the worktree you were launc
 Terminal call: end each worker turn with exactly one \`$FM_ROOT/bin/fm-task.sh done|ask|block $ID\` and its template fields from \`--help\`.
 When the task asks for an HTML explanation, attach that file to done with \`--document <explanation.html>\` and optional \`--document-title <title>\`.
 Read \`$FM_ROOT/bin/fm-task.sh resume $ID\` first when starting or resuming this task; name its state in the terminal call's note.
+$TASK_RULES
 Use \`$FM_ROOT/bin/fm-task.sh heartbeat $ID --note <activity>\` for activity, not a turn end.
 The terminal call also writes your status line.
 $RULE1

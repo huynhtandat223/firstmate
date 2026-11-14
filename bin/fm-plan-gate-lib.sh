@@ -22,8 +22,35 @@ fm_plan_gate_read() {
   fm_run_timed "${FM_PLAN_GATE_TIMEOUT_SECS:-20}" gh api "$@" --hostname github.com
 }
 
+fm_plan_gate_task() (
+  . "$FM_PLAN_GATE_ROOT/bin/fm-task-shadow-config-lib.sh"
+  fm_task_shadow_config "${FM_CONFIG_OVERRIDE:-${FM_HOME:-$FM_PLAN_GATE_ROOT}/config}/task-shadow"
+  "${FM_PLAN_GATE_TASK_WRITER:-$FM_PLAN_GATE_ROOT/bin/fm-task.sh}" "$@"
+)
+
 fm_plan_gate_issue() {  # <issue-url> [--any-state]; a closed issue still yields its spec
   local any_state=${2:-}
+  FM_PLAN_GATE_VERDICT=error
+  if [[ $1 != https://github.com/*/issues/* ]]; then
+    FM_PLAN_GATE_TASK=$1
+    if [[ $1 == *task=* ]]; then FM_PLAN_GATE_TASK=${1##*task=}; FM_PLAN_GATE_TASK=${FM_PLAN_GATE_TASK%%&*}; fi
+    local description_error
+    if ! description_error=$(fm_plan_gate_task document "$FM_PLAN_GATE_TASK" 2>&1); then
+      FM_PLAN_GATE_BODY=
+      FM_PLAN_GATE_VERDICT=error
+      case "$description_error" in
+        *'task has no Description event'*) FM_PLAN_GATE_VERDICT=missing ;;
+      esac
+      FM_PLAN_GATE_REASON="task Description read failed: $description_error"
+      return 1
+    fi
+    FM_PLAN_GATE_BODY=$description_error
+    FM_PLAN_GATE_HASH=$(printf '%s' "$FM_PLAN_GATE_BODY" | shasum -a 256 | cut -d' ' -f1)
+    FM_PLAN_GATE_ISSUE_REPO=tasks
+    FM_PLAN_GATE_ISSUE_NUMBER=$FM_PLAN_GATE_TASK
+    return 0
+  fi
+  FM_PLAN_GATE_TASK=
   FM_PLAN_GATE_VERDICT=error
   FM_PLAN_GATE_REASON='GitHub issue read error'
   fm_plan_gate_url "$1" || { FM_PLAN_GATE_VERDICT=not-issue; FM_PLAN_GATE_REASON='not a GitHub issue URL'; return 1; }
@@ -47,8 +74,48 @@ fm_plan_gate_issue() {  # <issue-url> [--any-state]; a closed issue still yields
   FM_PLAN_GATE_HASH=$(printf '%s' "$issue" | jq -j '.body // ""' | shasum -a 256 | cut -d' ' -f1)
 }
 
+# A plan exemption names a spawn that carries no plan, so no approval applies.
+# `verify` covers only a deploy-verify Tester: a scout whose id is verify-<task>-<sha7>,
+# with the adapter's optional -<n> suffix for a reused id, and whose brief holds the
+# adapter's fm-tester-verify.v1 ask for that same task and sha under `### The ask`.
+# The check stops a scout whose own instructions are not a verify ask; like
+# --plan-exception, it does not stop a caller who writes such an ask by hand.
+# On success FM_PLAN_GATE_EXEMPTION holds the backlog line the spawn records.
+fm_plan_gate_exemption() {  # <name> <kind> <task-id> <brief>
+  local ask
+  FM_PLAN_GATE_EXEMPTION=
+  case "$1" in
+    verify)
+      if [ "$2" != scout ] || ! [[ $3 =~ ^verify-.+-[0-9a-f]{7}(-[0-9]+)?$ ]]; then
+        FM_PLAN_GATE_REASON='the verify exemption covers only a verify-<task>-<sha7>[-<n>] scout'
+        return 1
+      fi
+      ask=$(awk '/^### The ask$/{f=1;next} f && /^```json$/{j=1;next} j && /^```$/{exit} j{print}' "${4:-/dev/null}" 2>/dev/null)
+      # shellcheck disable=SC2016 # jq variables
+      if ! jq -e --arg id "$3" '.schema == "fm-tester-verify.v1"
+          and (.task | type == "string") and ((.head // .sha) | type == "string")
+          and ("verify-\(.task)-\((.head // .sha)[0:7])") as $base
+          | ($id == $base or ($id | startswith($base + "-")))' <<<"$ask" >/dev/null 2>&1; then
+        FM_PLAN_GATE_REASON="the verify exemption needs the brief's deploy-verify ask for the same task and sha ($4)"
+        return 1
+      fi
+      FM_PLAN_GATE_EXEMPTION='Plan exemption (verify): a deploy-verify Tester checks delivered work and carries no plan'
+      ;;
+    *)
+      FM_PLAN_GATE_REASON="unknown plan exemption '$1'; known: verify"
+      return 1
+      ;;
+  esac
+}
+
 fm_plan_gate_check() {
   fm_plan_gate_issue "$1" || return 1
+  if [ -n "${FM_PLAN_GATE_TASK:-}" ]; then
+    fm_plan_gate_task plan-check "$FM_PLAN_GATE_TASK" >/dev/null || { FM_PLAN_GATE_VERDICT=unapproved; FM_PLAN_GATE_REASON='task plan unapproved or changed'; return 1; }
+    FM_PLAN_GATE_VERDICT=approved
+    FM_PLAN_GATE_REASON=approved
+    return 0
+  fi
   local comments marker
   comments=$(fm_plan_gate_read "$FM_PLAN_GATE_PATH/comments" --paginate 2>&1) || {
     FM_PLAN_GATE_VERDICT=error
@@ -101,6 +168,10 @@ fm_plan_gate_spec_of_body() {  # <repo> <number> <body>; prints the canonical sp
 }
 
 fm_plan_gate_spec() {  # <issue-url> | reads the body fm_plan_gate_issue fetched; sets FM_PLAN_GATE_SPEC
+  if [ -n "${FM_PLAN_GATE_TASK:-}" ]; then
+    FM_PLAN_GATE_SPEC=$(fm_plan_gate_task plan-spec "$FM_PLAN_GATE_TASK") || return 1
+    return 0
+  fi
   [ -n "${FM_PLAN_GATE_ISSUE_REPO:-}" ] && [ -n "${FM_PLAN_GATE_ISSUE_NUMBER:-}" ] || return 1
   FM_PLAN_GATE_SPEC=$(fm_plan_gate_spec_of_body "$FM_PLAN_GATE_ISSUE_REPO" "$FM_PLAN_GATE_ISSUE_NUMBER" "${FM_PLAN_GATE_BODY:-}")
   [ -n "$FM_PLAN_GATE_SPEC" ]
@@ -124,6 +195,7 @@ fm_plan_gate_repos() {  # <approved-issue-repo>; prints each counted repository 
 
 fm_plan_gate_one_per_repo() {  # <approved-issue-repo> <spec-url>; refuses a split spec, prints one line per repository
   local approved_repo=$1 spec=$2 repo list number body spec_of status=0 spec_repo spec_number
+  [ "$approved_repo" != tasks ] || return 0
   [ -n "$approved_repo" ] && [ -n "$spec" ] || return 1
   spec_repo=$(printf '%s' "$spec" | sed 's#^https://github.com/##; s#/issues/.*$##')
   spec_number=${spec##*/}

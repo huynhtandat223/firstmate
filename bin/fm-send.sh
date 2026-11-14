@@ -1217,6 +1217,8 @@ else
       echo "error: steer not sent to $INBOX_TASK_ID: its inbox record could not be written under $STATE/$INBOX_TASK_ID.inbox" >&2
       exit 1
     fi
+    # The inbox writer publishes before exposing its cache; failed publication
+    # is retried under the same key by the watcher's inbox reconciliation.
     # The steer is firstmate acting on this task, so a wait it owed is answered
     # (bin/fm-firstmate-wait-lib.sh).
     fm_firstmate_wait_ack "$STATE" "$INBOX_TASK_ID"

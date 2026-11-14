@@ -13,7 +13,8 @@
 #   LAST_POLL          the file holding the epoch of the last poll
 #   POLL_SECONDS       the least time between two polls
 #
-# gh_read <api-path>            the answer on stdout; a failure leaves its reason in READ_ERROR_FILE
+# FM_PROCEVENT_GH_RETRY_SECONDS overrides the 5-second pause before the one read retry.
+# gh_read <api-path>            the answer on stdout; two failures leave a reason in READ_ERROR_FILE
 # ledger_test <jq-expr> [args]  exit 0 when any ledger line matches the jq boolean expression
 # ledger_append <json>          add one ledger line
 # throttle                      sleep until POLL_SECONDS have passed since the last poll
@@ -35,8 +36,11 @@
 gh_read() {
   local out
   if ! out=$("$GH" api "$1" 2>/dev/null) || [ -z "$out" ]; then
-    printf 'GitHub could not be read: %s\n' "${1%%\?*}" > "$READ_ERROR_FILE"
-    return 1
+    sleep "${FM_PROCEVENT_GH_RETRY_SECONDS:-5}"
+    if ! out=$("$GH" api "$1" 2>/dev/null) || [ -z "$out" ]; then
+      printf 'GitHub could not be read: %s\n' "${1%%\?*}" > "$READ_ERROR_FILE"
+      return 1
+    fi
   fi
   printf '%s\n' "$out"
 }

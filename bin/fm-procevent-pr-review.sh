@@ -40,7 +40,10 @@
 #              of kind "cap". A Reviewer report that comes after its timeout returns one more
 #              result of kind "late". An unreadable GitHub returns one result of kind "error";
 #              the same reason stays quiet until a poll succeeds, then a "recovery" result.
-#              Rounds already open still finish and time out while GitHub cannot be read.
+#              An unverifiable head stays pending until GitHub can be read again.
+#              Before each ask and delivery the current PR head is checked. Replaced rounds are
+#              recorded as superseded, deliver nothing, and do not count toward max_rounds.
+#              After the first completed round, the reader and scope labels use last-reviewed-head..head.
 #              A reader run that passes reader.timeout_seconds (default 1500) is stopped and its
 #              status is "failed: timeout".
 # The Reviewer's report is data/reviews/<record basename without .json>.md in its home (the
@@ -108,8 +111,6 @@ FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 DATA="$FM_HOME/data/pr-review"
-LEDGER="$DATA/ledger.jsonl"
-CURSOR="$DATA/state.json"
 OPEN="$DATA/open"
 LAST_ERROR="$DATA/last-error"
 LAST_POLL="$DATA/last-poll"
@@ -175,11 +176,34 @@ load_config() {
 
 # ---- state and ledger queries ----------------------------------------------
 
-state_json() { if [ -s "$CURSOR" ]; then cat "$CURSOR"; else echo '{}'; fi; }
+state_json() { "$TASK_WRITER" pr-round cursor; }
+
+# Override only this source's ledger, not the shared ask library's other consumers.
+ledger_test() {
+  local filter=$1 history
+  shift
+  history=$("$TASK_WRITER" pr-round list) || return 2
+  jq -se "$@" "any(.[]; $filter)" <<<"$history" >/dev/null
+}
+ledger_append() {
+  local tmp
+  tmp=$(mktemp "$DATA/.round.XXXXXX") || return 1
+  printf '%s\n' "$1" > "$tmp"
+  "$TASK_WRITER" pr-round put --file "$tmp"
+  local status=$?
+  rm -f "$tmp"
+  return "$status"
+}
 state_edit() {  # <jq-filter> [jq args...]
   local filter=$1
   shift
-  state_json | jq -c "$@" "$filter" > "$CURSOR.tmp" && mv -f "$CURSOR.tmp" "$CURSOR"
+  local tmp source status
+  source=$(state_json) || return 1
+  tmp=$(mktemp "$DATA/.cursor.XXXXXX") || return 1
+  jq -c "$@" "$filter" <<<"$source" > "$tmp" && "$TASK_WRITER" pr-round set-cursor --file "$tmp"
+  status=$?
+  rm -f "$tmp"
+  return "$status"
 }
 
 key_of() { printf '%s-%s-%s\n' "${1//\//_}" "$2" "${3:0:12}"; }  # <repo> <pr> <head>
@@ -193,9 +217,9 @@ ledger_pr_has() {  # <type> <repo> <pr>
 }
 round_count() {  # <repo> <pr>: finished rounds in the ledger plus rounds still open
   local done_n=0 open_n=0 f
-  if [ -s "$LEDGER" ]; then
-        done_n=$(jq -sc --arg r "$1" --argjson n "$2" '[.[] | select(.type == "round" and .repo == $r and .pr == $n)] | length' "$LEDGER")
-  fi
+  local history
+  history=$("$TASK_WRITER" pr-round list) || return 1
+  done_n=$(jq -sc --arg r "$1" --argjson n "$2" '[.[] | select(.type == "round" and .repo == $r and .pr == $n)] | length' <<<"$history")
   for f in "$OPEN"/*.round.json; do
     [ -f "$f" ] || continue
         jq -e --arg r "$1" --argjson n "$2" '.repo == $r and .pr == $n' "$f" >/dev/null 2>&1 && open_n=$((open_n + 1))
@@ -432,15 +456,15 @@ extract_rows() {
 
 # Label one located finding against the stored merge-base..head diff.
 label_for() {  # <compare-file> <path> <first-line> <last-line>
-  local cmpf=$1 path=${2#./} ls=$3 le=$4 kind patch
+  local cmpf=$1 path=${2#./} ls=$3 le=$4 kind patch field=${5:-files}
   { [ -n "$path" ] && [ -n "$ls" ]; } || { echo unlocated; return 0; }
   [ -f "$cmpf" ] || { echo unchecked; return 0; }
-    kind=$(jq -r --arg p "$path" '[.files[] | select(.filename == $p)] | first // null | if . == null then "none" elif .patch == null then "nopatch" else "patch" end' "$cmpf")
+    kind=$(jq -r --arg p "$path" --arg field "$field" '[.[$field][] | select(.filename == $p)] | first // null | if . == null then "none" elif .patch == null then "nopatch" else "patch" end' "$cmpf")
   case "$kind" in
     none) echo "$LABEL_OUT" ;;
     nopatch) echo unchecked ;;
     *)
-            patch=$(jq -r --arg p "$path" '[.files[] | select(.filename == $p)] | first | .patch' "$cmpf")
+            patch=$(jq -r --arg p "$path" --arg field "$field" '[.[$field][] | select(.filename == $p)] | first | .patch' "$cmpf")
       if printf '%s\n' "$patch" | awk -v a="$ls" -v b="$le" '
         BEGIN { if (b + 0 < a + 0) { t = a; a = b; b = t } }
         # A hunk that ends in a deletion ends the file: anchor it to the last line the head still has.
@@ -476,6 +500,9 @@ scan_findings() {  # <text-file> <compare-file>
     case "$kind" in
       F)
         label=$(label_for "$cmpf" "$path" "$ls" "$le")
+        if [ "$label" = "$LABEL_IN" ] && jq -e 'has("pr_files")' "$cmpf" >/dev/null; then
+          label=$(label_for "$cmpf" "$path" "$ls" "$le" pr_files)
+        fi
         findings=$(jq -c --arg sev "$sev" --arg path "$path" --arg ls "$ls" --arg le "$le" --arg text "$rest" --arg src "$src" --arg label "$label" \
           '. + [{severity: $sev, path: (if $path == "" then null else $path end), line: (if $ls == "" then null else ($ls | tonumber) end),
                  line_end: (if $le == "" then null else ($le | tonumber) end), text: $text, source: $src, label: $label}]' <<<"$findings")
@@ -489,13 +516,14 @@ scan_findings() {  # <text-file> <compare-file>
 
 # ---- the ask text ------------------------------------------------------------
 
-reader_prompt() {  # <pr-url> <head> <merge-base> <round>
+reader_prompt() {  # <pr-url> <head> <review-base> <round>
   cat <<EOF
 Review $1 at head $2 (round $4).
-Merge base: $3
-Review merge-base..head only.
+Review base: $3
+Review commits $3..$2 only. Do not review earlier commits or re-raise findings fixed by these commits.
 
 $SCOPE_RULE
+For this round, further restrict findings to lines changed in $3..$2.
 
 Report one line per finding, in exactly this form:
 $FINDING_FORMAT
@@ -514,8 +542,18 @@ reviewer_content() {  # <task> <pr-url> <head> <merge-base> <round>
 # Exit 2: GitHub could not be read (READ_ERROR_FILE says what).
 start_round() {  # <repo> <pr> <pr-url> <task> <head> <base-ref> <round>
   local repo=$1 n=$2 url=$3 task=$4 head=$5 base=$6 round=$7 cmp merge_base committed started key f content record
-  cmp=$(gh_read "repos/$repo/compare/$base...$head") || return 2
-  merge_base=$(jq -r '.merge_base_commit.sha // empty' <<<"$cmp")
+  local review_base previous pr_cmp
+  review_base=$base
+  local history
+  history=$("$TASK_WRITER" pr-round list) || return 2
+  previous=$(jq -rs --arg r "$repo" --argjson n "$n" '[.[] | select(.type == "round" and .repo == $r and .pr == $n)] | last | .head // empty' <<<"$history")
+  [ -z "$previous" ] || review_base=$previous
+  cmp=$(gh_read "repos/$repo/compare/$review_base...$head") || return 2
+  pr_cmp=$cmp
+  if [ "$review_base" != "$base" ]; then
+    pr_cmp=$(gh_read "repos/$repo/compare/$base...$head") || return 2
+  fi
+  merge_base=$(jq -r '.merge_base_commit.sha // empty' <<<"$pr_cmp")
   if [ -z "$merge_base" ]; then
     printf 'GitHub could not be read: repos/%s/compare (no merge base)\n' "$repo" > "$READ_ERROR_FILE"
     return 2
@@ -526,8 +564,9 @@ start_round() {  # <repo> <pr> <pr-url> <task> <head> <base-ref> <round>
   key=$(key_of "$repo" "$n" "$head")
   f="$OPEN/$key.round.json"
   mkdir -p "$OPEN" "$FM_HOME/data/$task"
-  jq -c '{files: [.files[]? | {filename, status, patch: (.patch // null)}]}' <<<"$cmp" > "$OPEN/$key.compare.json"
-  reader_prompt "$url" "$head" "$merge_base" "$round" > "$FM_HOME/data/$task/reader-prompt-${head:0:8}.txt"
+  jq -c --argjson pr "$pr_cmp" '{files: [.files[]? | {filename, status, patch: (.patch // null)}], pr_files: $pr.files}' <<<"$cmp" > "$OPEN/$key.compare.json"
+  [ "$review_base" != "$base" ] || review_base=$merge_base
+  reader_prompt "$url" "$head" "$review_base" "$round" > "$FM_HOME/data/$task/reader-prompt-${head:0:8}.txt"
   jq -cn --arg repo "$repo" --argjson pr "$n" --arg url "$url" --arg task "$task" --arg head "$head" --arg mb "$merge_base" \
     --argjson round "$round" --argjson started "$started" --argjson committed "$committed" --arg a "$ASSISTANCE" \
     '{repo: $repo, pr: $pr, pr_url: $url, task: $task, head: $head, merge_base: $mb, round: $round, started: $started, committed: $committed,
@@ -536,11 +575,30 @@ start_round() {  # <repo> <pr> <pr-url> <task> <head> <base-ref> <round>
   content=$(reviewer_content "$task" "$url" "$head" "$merge_base" "$round")
   record=$(jq -cn --arg id "pr-review:$task:$n:${head:0:12}" --argjson at "$started" --arg c "$content" \
     '{schema: "fm-assistance-mentions.v1", messages: [{id: $id, arrival: $at, content: $c}]}')
+  if ! current_round "$f"; then
+    [ ! -f "$f" ] || { rm -f "$f" "$OPEN/$key.compare.json"; return 2; }
+    return 0
+  fi
   if deliver_record Reviewer "$ASSISTANCE" "$record"; then
     open_update "$f" '.reviewer.record = $b' --arg b "$DELIVER_BASE"
   else
     open_update "$f" '.reviewer.status = $s' --arg s "failed: ${DELIVER_ERROR#*ask not delivered: }"
   fi
+}
+
+# A moved head invalidates the entire round, including findings already captured. A failed
+# read leaves it pending and never authorizes an ask or delivery.
+current_round() {  # <round-or-result-file>
+  local f=$1 repo n head current key
+  repo=$(jq -r .repo "$f"); n=$(jq -r .pr "$f"); head=$(jq -r .head "$f")
+  current=$(gh_read "repos/$repo/pulls/$n") || return 1
+  [ -n "$(jq -r '.head.sha // empty' <<<"$current")" ] || return 1
+  [ "$(jq -r '.head.sha // empty' <<<"$current")" != "$head" ] || return 0
+  ledger_test '.type == "superseded" and .repo == $r and .pr == $n and .head == $h' --arg r "$repo" --argjson n "$n" --arg h "$head" \
+    || ledger_append "$(jq -c --argjson at "$(now)" '{type: "superseded", repo, pr, head, round, at: $at, delivered: false}' "$f")"
+  key=$(key_of "$repo" "$n" "$head")
+  rm -f "$OPEN/$key.round.json" "$OPEN/$key.compare.json"
+  return 1
 }
 
 # ---- the two reviewers -------------------------------------------------------
@@ -602,6 +660,7 @@ run_reader() {  # <open-file>
   elif [ -z "$chat" ]; then
     reason='failed: no chat in reader-session.md and no reader.project_url'
   else
+    current_round "$f" || return 0
     rm -f "$answer"
     outf=$(mktemp "${TMPDIR:-/tmp}/fm-pr-review-reader.XXXXXX") || return 1
     run_with_timeout "$READER_TIMEOUT" "$outf" "$READER_CMD" "$chat" "$prompt" "$answer"
@@ -731,13 +790,14 @@ poll_late() {
     base=$(jq -r .reviewer.record <<<"$row")
     report=$(reviewer_report "$base") || continue
     repo=$(jq -r .repo <<<"$row"); n=$(jq -r .pr <<<"$row"); head=$(jq -r .head <<<"$row")
+    ledger_test '.type == "superseded" and .repo == $r and .pr == $n and .head == $h' --arg r "$repo" --argjson n "$n" --arg h "$head" && continue
     scan=$(scan_findings "$report" "$OPEN/$(key_of "$repo" "$n" "$head").compare.json")
     EMIT=$(jq -c --arg r "$report" --argjson s "$scan" \
       '{schema: "fm-pr-review-result.v1", kind: "late", error: null, recovered: false, repo, pr, task, head, round,
         reviewer: {status: "answered", record: .reviewer.record, report: $r, findings: $s.findings, pre_existing: $s.pre_existing, labels: $s.labels}}' <<<"$row")
     return 10
-  done < <([ -s "$LEDGER" ] && jq -c -s '. as $all | .[] | select(.type == "round" and .reviewer.status == "timeout")
-    | select(. as $r | $all | any(.[]; .type == "late" and .repo == $r.repo and .pr == $r.pr and .head == $r.head) | not)' "$LEDGER")
+  done < <("$TASK_WRITER" pr-round list | jq -c -s '. as $all | .[] | select(.type == "round" and .reviewer.status == "timeout")
+    | select(. as $r | $all | any(.[]; .type == "late" and .repo == $r.repo and .pr == $r.pr and .head == $r.head) | not)')
   return 0
 }
 
@@ -749,10 +809,14 @@ pass() {
   local -a reader_pids=()
   EMIT=
   POLL_FAILED=0
+  for f in "$OPEN"/*.round.json; do
+    [ -f "$f" ] || continue
+    current_round "$f" || { [ ! -f "$f" ] || POLL_FAILED=1; }
+  done
   poll_prs
   rc=$?
   case "$rc" in 2) POLL_FAILED=1 ;; 10) return 0 ;; esac
-  # Rounds already open finish and time out even when GitHub cannot be read.
+  # Never ask or publish findings while the current head cannot be verified.
   # Each round's reader opens its own tab and bridge session, so every pending
   # round is asked in this pass, at most READER_JOBS at once.
   for f in "$OPEN"/*.round.json; do
@@ -770,6 +834,7 @@ pass() {
   done
   for f in "$OPEN"/*.round.json; do
     [ -f "$f" ] || continue
+    current_round "$f" || { [ ! -f "$f" ] || POLL_FAILED=1; continue; }
     check_reviewer "$f"
     if [ "$(jq -r .reviewer.status "$f")" != pending ] && [ "$(jq -r .reader.status "$f")" != pending ]; then
       EMIT=$(jq -c '{schema: "fm-pr-review-result.v1", kind: "round", error: null, recovered: false} + .' "$f")
@@ -796,12 +861,16 @@ rearm_source() {
 }
 
 cmd_wait() {
+  mkdir -p "$DATA" "$OPEN" || return 1
+  # Read the authoritative store before starting any review side effects.
+  "$TASK_WRITER" pr-round cursor >/dev/null || return 1
+  "$TASK_WRITER" pr-round list >/dev/null || return 1
   local rc previous
   command -v jq >/dev/null 2>&1 || die 'jq is required'
   while :; do
     if ! load_config; then
       # Off forgets the first-poll marks: heads pushed meanwhile get a fresh baseline when it is on again.
-      [ ! -s "$CURSOR" ] || state_edit 'del(.started) | del(.heads)'
+      state_edit 'del(.started) | del(.heads)' || return 1
       [ "${FM_PR_REVIEW_ONCE:-0}" != 1 ] || return 1
       sleep "${FM_PR_REVIEW_IDLE_SECONDS:-60}"
       continue
@@ -866,6 +935,8 @@ mark_errors_handled() {  # <sequence>
 }
 
 cmd_autohandle() {  # <source-id> <sequence> <result-file>
+  "$TASK_WRITER" pr-round cursor >/dev/null || return 1
+  "$TASK_WRITER" pr-round list >/dev/null || return 1
   local sid=${1:-} seq=${2:-} result=${3:-} kind key repo n head task delivered=0 retained
   [ "$sid" = "$SOURCE_ID" ] && [ -f "$result" ] || return 1
   case "$seq" in ''|*[!0-9]*) return 1 ;; esac
@@ -877,7 +948,18 @@ cmd_autohandle() {  # <source-id> <sequence> <result-file>
   # A round whose in-scope findings reach a live worker's inbox wakes nobody: the worker is the one that
   # changes the code, so firstmate hears about that round at the worker's done instead.
   case "$kind" in
-    round|late) deliver_round "$result" "$task" && delivered=1 ;;
+    round|late)
+      if ! current_round "$result"; then
+        if ledger_test '.type == "superseded" and .repo == $r and .pr == $n and .head == $h' --arg r "$repo" --argjson n "$n" --arg h "$head"; then
+          "$SCRIPT_DIR/fm-procevent.sh" handled "$SOURCE_ID" "$seq" >/dev/null 2>&1
+          return $?
+        fi
+        # The open round (or timeout ledger entry) is unchanged, so the next
+        # pass retries it. Retire only this unverified capture to prevent a wake.
+        "$SCRIPT_DIR/fm-procevent.sh" handled "$SOURCE_ID" "$seq" >/dev/null 2>&1
+        return $?
+      fi
+      deliver_round "$result" "$task" && delivered=1 ;;
   esac
   case "$kind" in
     recovery)
@@ -892,7 +974,10 @@ cmd_autohandle() {  # <source-id> <sequence> <result-file>
         || ledger_append "$(jq -c --argjson at "$(now)" --argjson delivered "$delivered" --argjson retained "$retained" '{type: "round", repo, pr, task, head, round, at: $at, committed,
              delivered: ($delivered == 1), retained: $retained,
              reviewer: {record: .reviewer.record, status: .reviewer.status, report: .reviewer.report, at: .reviewer.at, labels: .reviewer.labels},
-             reader: {status: .reader.status, answer: .reader.answer, at: .reader.at, labels: .reader.labels}}' "$result")"
+             reader: {status: .reader.status, answer: .reader.answer, at: .reader.at, labels: .reader.labels}}' "$result")" || return 1
+      local timeline
+      timeline=$(jq -r --argjson delivered "$delivered" '"PR review round \(.round)\nHead: \(.head)\nReviewers: Reviewer (\(.reviewer.status)), reader (\(.reader.status))\nFindings delivered: \($delivered == 1)\n" + ([.reviewer.findings[]?, .reader.findings[]?] | map(select(.label == "in-scope") | .source) | join("\n"))' "$result") || return 1
+      "$TASK_WRITER" comment "$task" --key "pr-review-timeline:$task:$head:$(jq -r .round "$result")" --note "$timeline" >/dev/null || return 1
       key=$(key_of "$repo" "$n" "$head")
       rm -f "$OPEN/$key.round.json"
       [ "$(jq -r .reviewer.status "$result")" = timeout ] || rm -f "$OPEN/$key.compare.json"
@@ -931,7 +1016,9 @@ cmd_summary() {
   if [ "${1:-}" = --since ]; then
     since=$(jq -rn --arg d "${2:-}" '$d | fromdateiso8601' 2>/dev/null) || die 'summary --since needs a UTC time such as 2026-10-22T06:00:00Z'
   fi
-  [ -s "$LEDGER" ] || { echo 'no rounds recorded'; return 0; }
+  local history
+  history=$("$TASK_WRITER" pr-round list) || return 1
+  [ -n "$history" ] || { echo 'no rounds recorded'; return 0; }
   jq -rs --argjson since "$since" '
     def cnt($rs; $who; $l): [$rs[] | (.[$who].labels // {})[$l] // 0] | add // 0;
     def times($rs; $who): [$rs[] | select(.[$who].at != null and .committed != null) | "\(.[$who].at - .committed)s"] | join("/");
@@ -949,7 +1036,7 @@ cmd_summary() {
     | . as $g | [$g[] | select(.type == "round")] as $rs | [$g[] | select(.type == "cap")] as $caps
     | "PR https://github.com/\($g[0].repo)/pull/\($g[0].pr) (task \($rs[0].task // "?")): \($rs | length) rounds",
       part($rs; "reviewer"), part($rs; "reader"),
-      (if ($caps | length) > 0 then "  round cap reached: \($caps | length)" else empty end)' "$LEDGER"
+      (if ($caps | length) > 0 then "  round cap reached: \($caps | length)" else empty end)' <<<"$history"
 }
 
 cmd_arm() {

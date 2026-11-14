@@ -71,7 +71,7 @@ Treat `data/captain.md` as the domain-local record of captain preferences, optio
 
 ## 3. Session start (run once at every session start)
 
-- Run `bin/fm-session-start.sh` exactly once at session start.
+- Run `bin/fm-session-start.sh` exactly once at session start, unless a diagnostic line explicitly asks for a rerun.
 - Its header is the single owner of composed commands, ordering, and digest contents.
 - `bin/fm-supervision-instructions.sh` renders the emitted supervision block from `docs/supervision-protocols/`.
 - Do not reimplement it by separately running its lock, bootstrap, initial wake-drain, or deferred-network components.
@@ -97,6 +97,7 @@ Load `session-start-recovery` when the digest reports unfinished checks, actiona
 
 `docs/configuration.md` owns dispatch-profile and runtime-backend schemas, `bin/fm-harness.sh` owns static resolution, and `bin/fm-spawn.sh` owns launch flags and fail-closed validation.
 When dispatch profiles exist, consult them at every crewmate or scout intake and pass the resolved concrete profile required by `fm-spawn`.
+When `bin/fm-task.sh rules` lists any model rule, those rules replace dispatch profiles: build each new task's setup with `bin/fm-task.sh setup <task> --from-rules --states <states>`, re-read `bin/fm-task.sh rules --state <state> --repo <repo> --task <task>` at each spawn to skip a rule switched off since, and resolve equal ranks as a matched profile array; an exit 5 from either means the task now waits on the owner's question.
 Routing precedence is an explicit per-task captain override, then the best-fit configured rule, then the configured default, then the static crewmate harness.
 Firstmate alone resolves a matched profile array: begin with `quota-axi`'s default TOON at that intake, using the skill's narrow TOON-then-`--json` fallback only for genuine ambiguity, evaluate every configured candidate against that current output, and choose under the skill's `preferred_provider` procedure with inspectable `spendPriority` as the one quota-perspective ranker after its eligibility, reasoning-class, and runway-feasibility gates.
 Account for every candidate with the catalog evidence, provider relationship, applicable quota and authentication facts, remaining uncertainty, fit and reasoning class, and the spendPriority and runway evidence used in selection; never omit a candidate, guess, fall back silently, or call the result quota-informed without them.
@@ -254,7 +255,7 @@ Load `validation-supervision` when a ship starts or already has an active no-mis
 
 ### PR ready, landing, and teardown
 
-Load `ship-landing` when a ship reports a PR or ready branch, when deciding or monitoring landing, and before task cleanup.
+Load `ship-landing` when a ship reports a PR or ready branch, reports an applied runtime-data change, or a Tester result arrives, when deciding or monitoring landing, and before task cleanup.
 
 ### Scout outcome and promotion
 
@@ -395,6 +396,9 @@ Fill `## Firstmate spec` (`{FIRSTMATE_SPEC}`) with only the build instructions t
 `bin/fm-dod-lib.sh` owns intent authoring without added speaker labels or direct address, its provenance markers, what a no-mistakes worker may pass as `--intent`, and the string's self-sufficiency rule.
 Keep additions task-specific rather than repeating lifecycle instructions, and alter generated sections only when the task genuinely differs from the standard shape.
 
+When a brief implements a multi-slice plan, it names the plan item and the scenarios it takes.
+Seed, config and cutover work stays in that plan with a responsible task, and the release is complete when every required plan item has evidence.
+
 Every ship brief must retain the worktree-isolation assertion and stop if launched in the primary checkout.
 If a ship task touches firstmate's shared tracked material, explicitly require `firstmate-coding-guidelines` before editing.
 If a task will drive Herdr lifecycle behavior, scaffold with `--herdr-lab`; if that need appears after an unguarded scaffold, stop and regenerate rather than adding commands by hand.
@@ -407,7 +411,7 @@ The scaffold is a safety contract, not a suggestion.
 ## 12. Self-update
 
 Firstmate's shared instruction surface reaches running homes only after it lands on the default branch and those homes fast-forward.
-Only `AGENTS.md`, `bin/`, and `.agents/skills/` are loaded by a running firstmate; public `skills/` is an installer-facing surface.
+Only `AGENTS.md`, `bin/`, `.agents/skills/`, and `custom-skills/` are loaded by running Firstmate agents; public `skills/` is an installer-facing surface.
 When the captain invokes `/updatefirstmate` or asks to update firstmate, load the `/updatefirstmate` skill.
 The skill owns the guarded fleet update and restart procedure; it never touches anything under `projects/`.
 

@@ -1368,8 +1368,31 @@ EOF
   pass "a cwd .tasks.toml for another backend does not redirect a markdown handoff"
 }
 
+# Under the cfw5001 backend data/backlog.md is a render of the Dev 5001 rows, so a markdown move would change the
+# render and not the backlog: the handoff refuses (exit 2) and leaves both backlogs as they are.
+test_cfw5001_home_refuses_handoff() {
+  local home="$TMP_ROOT/cfw5001-main" sub="$TMP_ROOT/cfw5001-sub" out rc before
+  setup_homes "$home" "$sub"
+  cat > "$home/data/backlog.md" <<'EOF'
+## Queued
+- [ ] cfw-item - stays on the cfw5001 home (repo: alpha)
+
+## Done
+EOF
+  printf 'backend = "cfw5001"\n\n[markdown]\npath = "data/backlog.md"\n\n[cfw5001]\nhome = "main"\n' > "$home/.tasks.toml"
+  before=$(cat "$home/data/backlog.md")
+  rc=0
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-backlog-handoff.sh" design cfw-item 2>&1) || rc=$?
+  assert_equals 2 "$rc" "a cfw5001 home did not refuse the handoff: $out"
+  assert_contains "$out" "backlog backend is cfw5001" "the refusal does not name the backend"
+  assert_equals "$before" "$(cat "$home/data/backlog.md")" "the refused handoff changed the main backlog"
+  assert_no_grep 'cfw-item' "$sub/data/backlog.md" "the refused handoff reached the secondmate backlog"
+  pass "a cfw5001 home refuses a secondmate handoff and moves nothing"
+}
+
 test_handoff_wakes_live_local_receiver
 test_cwd_tasks_toml_does_not_redirect_handoff
+test_cfw5001_home_refuses_handoff
 test_failed_wake_retries_when_the_item_is_already_present
 test_known_receiver_failure_remains_retryable_after_grace
 test_known_failure_restores_retry_after_reconciliation_race

@@ -58,6 +58,8 @@
 # acknowledgement, announcement, and any recorded reply. Default bounds omit
 # rather than implying the first page is everything; omitted[] names the
 # surface and how to reveal it, the same convention as fm-bearings-snapshot.sh.
+# The output is one object, so the waiting-note count is `jq '.pending | length'`;
+# `jq length` counts the object's eight top-level keys, not notes.
 # `reply` is how the primary publishes its actual answer against a note id.
 # Each reply is stamped with a durable per-home sequence, so the receipts cursor
 # is a strict total order and two replies recorded in the same second are both
@@ -122,7 +124,9 @@ FM_ROOT="$(cd "$SELF_DIR/.." && pwd)"
 FM_HOME="${FM_HOME:-$FM_ROOT}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
-INBOX="$STATE/inbox"
+INBOX="$STATE/owner-note-spool"
+FM_BACKLOG_HOME=$("$SELF_DIR/fm-task.sh" owner-home)
+export FM_BACKLOG_HOME
 
 CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 
@@ -365,6 +369,8 @@ announce_note() {  # <id> <summary>
 finish_note_result() {  # <outcome> <id> <request-id> <json> <strict-exit> <summary>
   local outcome=$1 id=$2 request_id=$3 json=$4 strict=$5 summary=$6
   local announced=0 acknowledged=0 path="$INBOX/$id.note" rc=0
+  # Persist before the wake so another machine can read the announced identity.
+  owner_notes_sync push || printf 'fm-inbox: capture pending upload in %s\n' "$INBOX" >&2
   announce_note "$id" "$summary" || rc=$?
   case "$rc" in
     0) announced=1 ;;
@@ -419,6 +425,7 @@ publish_from_reservation() {  # <request-id> <source> <body> <extra>
     write_note_file "$tmp" "$id" "$source" "$body" "$extra" "$request_id"
     mv "$tmp" "$INBOX/$id.note"
   fi
+  [ "$(read_note_body "$(note_path "$id")"; printf x)" = "$(printf '%s' "$body"; case "$body" in *$'\n') ;; *) printf '\n';; esac; printf x)" ] || die "request id $request_id already has different text"
   printf '%s\n' "$id"
 }
 
@@ -444,7 +451,7 @@ queue_note() {
     fi
     tmp=$(mktemp "$INBOX/.staging-XXXXXX")
     staging_name=$(basename "$tmp")
-    id="$(date +%s)-${staging_name#.staging-}"
+    id=$(printf '%s\n%s' "${FM_BACKLOG_HOME:-main}" "$request_id" | sha256sum | cut -c1-48)
     write_note_file "$tmp" "$id" "$source" "$body" "$extra" "$request_id"
     if ! claim_request_id "$request_id" "$id"; then
       rm -f "$tmp"
@@ -495,7 +502,7 @@ cmd_note() {
   else
     body="$*"
   fi
-  queue_note text "$body" "" "$request_id" "$json"
+  queue_note cli "$body" "" "$request_id" "$json"
 }
 
 cmd_announce() {
@@ -588,6 +595,11 @@ next_reply_seq() {
 }
 
 cmd_reply() {
+  # The active home serializes reply writers; the assertion is opt-in until
+  # home-lease is enabled. Readback conflict detection remains in the writer.
+  # shellcheck source=bin/fm-home-lease-lib.sh
+  . "$SELF_DIR/fm-home-lease-lib.sh"
+  fm_home_lease_require || die "reply requires this machine to hold the home lease"
   local json=0 id body path staging seq
   if [ "${1:-}" = "--json" ]; then
     json=1
@@ -732,6 +744,7 @@ def list_notes(folder):
             "body": body,
             "path": str(path),
         })
+    notes.sort(key=lambda note: (note.get("at") or "", note["id"]), reverse=True)
     return notes
 
 # The cursor is the reply sequence, a strict total order in creation order.
@@ -1047,13 +1060,10 @@ cmd_status() {
   printf 'time     %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   printf 'inbox    %s note(s) waiting for firstmate\n' "$pending"
 
-  if [ -f "$DATA/backlog.md" ]; then
-    printf '\n--- in flight ---\n'
-    awk '/^## In flight/{f=1;next} /^## /{f=0} f && /^- \[/{print}' \
-      "$DATA/backlog.md" | sed 's/^- \[ \] /  /' | cut -c1-150
-  else
-    printf '\n(no backlog at %s)\n' "$DATA/backlog.md"
-  fi
+  printf '\n--- in flight ---\n'
+  FM_HOME="$FM_HOME" FM_DATA_OVERRIDE="$DATA" "$SELF_DIR/fm-tasks-axi.sh" rows --state in_flight 2>/dev/null \
+    | jq -r '.[] | "  \(.id) - \(.title)"' | cut -c1-150 \
+    || printf '(backlog unreadable: bin/fm-tasks-axi.sh rows failed)\n'
 
   local any=0
   for m in "$STATE"/*.meta; do
@@ -1132,6 +1142,29 @@ cmd_drain() {
   cmd_list
   printf '\nAck with: fm-inbox.sh drain --ack <id>...\n'
 }
+
+# Refresh portable records before invoking the existing CLI contract. Pending
+# local writes replay before refresh so an outage cannot discard captured text.
+owner_notes_sync() {
+  local pending="$STATE/.owner-posture-pending.json"
+  if [ -f "$pending" ]; then
+    if "$SELF_DIR/fm-task.sh" owner-record home put --identity "${FM_BACKLOG_HOME:-main}" --file "$pending" >/dev/null; then
+      rm -f "$pending"
+    fi
+  fi
+  python3 "$SELF_DIR/fm-owner-notes.py" "$1" "$INBOX" "${FM_BACKLOG_HOME:-main}" "$SELF_DIR/fm-task.sh"
+}
+case "${1:-}" in
+  note|say|announce|reply|receipts|list|drain)
+    if ! owner_notes_sync push || ! owner_notes_sync pull; then
+      case "${1:-}" in
+        note|say) printf 'fm-inbox: 5001 unavailable; capture stays in the local spool until retry\n' >&2 ;;
+        *) die "5001 owner records unavailable; retry when reachable" ;;
+      esac
+    fi
+    trap 'owner_notes_sync push || printf "fm-inbox: owner-note writes pending in %s\n" "$INBOX" >&2' EXIT
+    ;;
+esac
 
 # ---------------------------------------------------------------- dispatch
 

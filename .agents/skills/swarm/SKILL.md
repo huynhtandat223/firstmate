@@ -19,7 +19,8 @@ Before launching anything, write one entry per phase in that note (Frame, Fan ou
 2. Choose the shape: partition into slices, race several workers on identical briefs, or mix both.
    For a race or mixed shape, declare `first pass`, `rank all` or `best-of` in the backlog note before spawning.
 3. Read the usage meters before fan-out and record each reading in the backlog note: the Claude status line (5 h and week) of every Claude account a worker may use, and the 9router quota (the "Model quota truth" paragraph in `data/5001-ops/README.md`).
-4. Pick each worker's harness, model and effort from `data/captain.md` "Workers and models", never Fable or `cx/gpt-6-astra`.
+4. Pick each worker's harness, model and effort from the model rules table returned by `bin/fm-task.sh rules`; use `data/captain.md` "Workers and models" only while that table is empty.
+   Never pick Fable or `cx/gpt-6-astra`.
    For a model race, name each arm's model up front.
 5. A slice is a worker started by `bin/fm-spawn.sh` in its own worktree, with `--scout` when it writes no PR.
    It is briefed through `bin/fm-brief.sh` and reports in `data/<id>/report.md` plus a `done:` line.

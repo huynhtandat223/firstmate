@@ -48,7 +48,7 @@
 #                       detected primary harness.
 #   5. read-once contract - the do-not-re-read contract covering every source
 #                       represented by the two digests below.
-#   6. fleet digest   - a compact data/backlog.md identity/metadata listing,
+#   6. fleet digest   - a compact backlog identity/metadata listing,
 #                       every state/*.meta, a bounded state/*.status tail,
 #                       the away posture (state/.afk-contract and the legacy
 #                       state/.afk daemon flag), and a cheap per-task
@@ -174,9 +174,7 @@
 # stay out of the startup digest; the same never-bound-a-blocked-row and
 # held-summary rules apply, recognized there from the title line's own
 # hold/blocked-by markers.
-# Full bodies are targeted follow-up only: `bin/fm-tasks-axi.sh show <id> --full` when
-# compatible tasks-axi is available, or `data/backlog.md` when the file body is
-# truly needed.
+# Full bodies are targeted follow-up only: `bin/fm-tasks-axi.sh show <id> --full`.
 #
 # STATUS TAILS: FM_SESSION_START_STATUS_TAIL bounds how many lines each task's
 # tail prints, and bin/fm-line-cap-lib.sh bounds how long each of those lines
@@ -454,9 +452,8 @@ print_file_or_absent() {
 # named path, after every symlink is resolved, must be a regular file inside
 # this home.
 HANDOFF_PRINT_MAX_BYTES=40000
-print_captain_context() {
+print_start_handoff() {
   local start_line rel resolved home_real size
-  print_file_or_absent "$DATA/captain.md" "data/captain.md"
   if [ -f "$DATA/captain.md" ] && [ -s "$DATA/captain.md" ]; then
     start_line=$(grep -m1 -F 'Start here' "$DATA/captain.md" 2>/dev/null || true)
     # shellcheck disable=SC2016 # the backticks are literal sed text
@@ -483,11 +480,16 @@ print_captain_context() {
       fi
     fi
   fi
+}
+
+print_captain_context() {
+  print_file_or_absent "$DATA/captain.md" "data/captain.md"
+  print_start_handoff
   print_file_or_absent "$DATA/captain-shared.md" "data/captain-shared.md (shared, main-authoritative, read-only in secondmate homes)"
 }
 
 print_backlog_pointer() {
-  printf 'Full task bodies remain available on demand: bin/fm-tasks-axi.sh show <id> --full when compatible tasks-axi is available, or data/backlog.md.\n'
+  printf 'Full task bodies remain available on demand: bin/fm-tasks-axi.sh show <id> --full.\n'
 }
 
 # Held items are a count per hold kind, plus in full only the ones this turn can
@@ -716,55 +718,56 @@ print_ready_queued_bounded() {
   '
 }
 
+# The backlog is read only through bin/fm-tasks-axi.sh, which addresses this home's configured tasks-axi backend.
+axi() { FM_HOME="$FM_HOME" FM_DATA_OVERRIDE="$DATA" FM_CONFIG_OVERRIDE="$CONFIG" "$SCRIPT_DIR/fm-tasks-axi.sh" "$@"; }
+
 print_backlog_tasks_axi_compact() {
-  local path=$1 in_flight held held_view blocked ready err
-  if ! in_flight=$(tasks-axi list --file "$path" --state in_flight --fields "$BACKLOG_FIELDS" 2>&1); then
+  local in_flight held held_view blocked ready err
+  if ! in_flight=$(axi list --state in_flight --fields "$BACKLOG_FIELDS" 2>&1); then
     err=$in_flight
-  elif ! held=$(tasks-axi list --file "$path" --state held --fields "$HELD_FIELDS" 2>&1); then
+  elif ! held=$(axi list --state held --fields "$HELD_FIELDS" 2>&1); then
     err=$held
-  elif ! blocked=$(tasks-axi list --file "$path" --state queued --blocked --fields "$BACKLOG_FIELDS" 2>&1); then
+  elif ! blocked=$(axi list --state queued --blocked --fields "$BACKLOG_FIELDS" 2>&1); then
     err=$blocked
-  elif ! ready=$(tasks-axi ready --file "$path" 2>&1); then
+  elif ! ready=$(axi ready 2>&1); then
     err=$ready
   else
     printf 'compact backlog listing (tasks-axi; done rows omitted; every in-flight and blocked row shown in full; held rows counted per hold kind, with the due or changed ones in full; ready queued bounded to %s; task bodies omitted)\n' \
       "$QUEUED_LIMIT"
     printf '\nin flight:\n'
-    printf '%s\n' "$in_flight" | fm_hold_reason_decode_stream | strip_axi_help
+    printf '%s\n' "$in_flight" | strip_axi_help
     printf '\n'
-    held_view=$(printf '%s\n' "$held" | fm_hold_reason_decode_stream | strip_axi_help \
+    held_view=$(printf '%s\n' "$held" | strip_axi_help \
       | held_summarize toon 'bin/fm-tasks-axi.sh list --state held')
     emit_held_view "$held_view"
     printf '\nblocked queued:\n'
-    printf '%s\n' "$blocked" | fm_hold_reason_decode_stream | strip_axi_help
+    printf '%s\n' "$blocked" | strip_axi_help
     printf '\nready queued (dispatchable now):\n'
     print_ready_queued_bounded "$ready"
     return 0
   fi
-  printf 'tasks-axi compact listing failed; falling back to title-line rendering.\n'
+  printf 'tasks-axi compact listing failed:\n'
   printf '%s\n' "$err"
-  print_backlog_manual_compact "$path" "fallback"
 }
 
 print_backlog_compact() {
   local path=$1 label=$2
   subsection "$label"
-  if [ -f "$path" ]; then
+  if fm_backlog_backend_manual "$CONFIG"; then
+    # config/backlog-backend `manual`: firstmate edits the backlog file by hand, so it is read as that file.
     if [ -s "$path" ]; then
-      if fm_tasks_axi_backend_available "$CONFIG"; then
-        print_backlog_tasks_axi_compact "$path"
-      elif fm_backlog_backend_manual "$CONFIG"; then
-        print_backlog_manual_compact "$path" "manual backend"
-      else
-        print_backlog_manual_compact "$path" "tasks-axi unavailable or incompatible"
-      fi
-      print_backlog_pointer
+      print_backlog_manual_compact "$path" "manual backend"
     else
-      printf '(present, empty)\n'
+      printf 'ABSENT or empty\n'
     fi
+    printf 'Full task bodies remain available on demand in data/backlog.md (manual backend).\n'
+    return 0
+  elif fm_tasks_axi_backend_available "$CONFIG"; then
+    print_backlog_tasks_axi_compact
   else
-    printf 'ABSENT\n'
+    printf 'tasks-axi unavailable or incompatible; run bin/fm-bootstrap.sh for the install command\n'
   fi
+  print_backlog_pointer
 }
 
 print_status_tail() {
@@ -918,6 +921,24 @@ if [ "$LOCK_RC" -ne 0 ]; then
     printf '%s\n' "$BAR"
   }
 fi
+# A home with config/memory-home reads memory from 5001.  The captain context above printed the
+# last synchronized cache; only a session that verified the lock refreshes it (bounded to 5 s),
+# and a refresh that wrote captain.md or captain-shared.md prints the new text under this subsection.
+if [ -f "$CONFIG/memory-home" ]; then
+  subsection "MEMORY (5001)"
+  if [ "$READ_ONLY" -eq 0 ]; then
+    MEMORY_SYNC_LINE=$(FM_HOME="$FM_HOME" FM_CONFIG_OVERRIDE="$CONFIG" "$SCRIPT_DIR/fm-memory.sh" sync --data "$DATA" 2>/dev/null || true)
+    printf '%s\n' "${MEMORY_SYNC_LINE:-memory_source=unknown reason=sync produced no output}"
+    case "$MEMORY_SYNC_LINE" in
+      *' written='*)
+        case ",${MEMORY_SYNC_LINE##* written=}," in *,captain.md,*) print_file_or_absent "$DATA/captain.md" "data/captain.md (refreshed from 5001)"; print_start_handoff ;; esac
+        case ",${MEMORY_SYNC_LINE##* written=}," in *,captain-shared.md,*) print_file_or_absent "$DATA/captain-shared.md" "data/captain-shared.md (refreshed from 5001)" ;; esac
+        ;;
+    esac
+  else
+    printf 'memory_source=cache reason=read-only session, cache not refreshed\n'
+  fi
+fi
 REBUILDING_SESSION_PID=$(fm_harness_ancestry_pid 2>/dev/null || true)
 print_agents_refresh_if_required "$REBUILDING_SESSION_PID"
 
@@ -931,6 +952,45 @@ FM_HOME="$FM_HOME" FM_CONFIG_OVERRIDE="$CONFIG" "$SCRIPT_DIR/fm-role.sh" report 
   || printf 'fm-role: unknown (bin/fm-role.sh report failed)\n'
 
 if [ "$READ_ONLY" -eq 0 ]; then
+  # A home with config/material-home syncs its portable config, roles and private skills with 5001 in a bounded
+  # background worker, so network time never delays the digest; the MATERIAL section below reports it without waiting.
+  # One worker per home at a time: the lock directory names its pid, and a later start reports instead of racing it.
+  MATERIAL_STATE=none
+  MATERIAL_OUT="$STATE/.material-sync.out"
+  MATERIAL_LOCK="$STATE/.material-sync.lock"
+  MATERIAL_TIMEOUT="${FM_MATERIAL_SYNC_TIMEOUT:-60}"
+  if [ "$REEMIT" -eq 0 ] && [ -f "$CONFIG/material-home" ]; then
+    mkdir -p "$STATE" 2>/dev/null || true
+    material_lock_stale() {
+      local pid
+      pid=$(cat "$MATERIAL_LOCK/pid" 2>/dev/null || true)
+      if [ -n "$pid" ]; then ! kill -0 "$pid" 2>/dev/null; return; fi
+      [ -n "$(find "$MATERIAL_LOCK" -maxdepth 0 -mmin "+$(( (MATERIAL_TIMEOUT / 60) + 2 ))" 2>/dev/null)" ]
+    }
+    MATERIAL_TOOK=0
+    if mkdir "$MATERIAL_LOCK" 2>/dev/null; then MATERIAL_TOOK=1
+    elif material_lock_stale; then
+      rm -rf "$MATERIAL_LOCK" 2>/dev/null || true
+      ! mkdir "$MATERIAL_LOCK" 2>/dev/null || MATERIAL_TOOK=1
+    fi
+    if [ "$MATERIAL_TOOK" -eq 1 ]; then
+      MATERIAL_STATE=started
+      MATERIAL_MARK="$STATE/.material-sync.start"
+      : > "$MATERIAL_MARK"
+      MATERIAL_HOME=$(head -n1 "$CONFIG/material-home" 2>/dev/null || true)
+      MATERIAL_TMP=$(mktemp "$STATE/.material-sync.XXXXXX" 2>/dev/null || printf '%s' "$STATE/.material-sync.$$")
+      (
+        trap 'rm -rf "$MATERIAL_LOCK" "$MATERIAL_TMP" 2>/dev/null || true' EXIT
+        printf '%s\n' "$BASHPID" > "$MATERIAL_LOCK/pid" 2>/dev/null || true
+        FM_HOME="$FM_HOME" fm_run_timed "$MATERIAL_TIMEOUT" "$SCRIPT_DIR/fm-doc.sh" sync > "$MATERIAL_TMP" 2>&1 \
+          || printf 'material_source=cache home=%s reason="sync did not finish in time"\n' "$MATERIAL_HOME" >> "$MATERIAL_TMP"
+        mv -f "$MATERIAL_TMP" "$MATERIAL_OUT" 2>/dev/null || true
+      ) >/dev/null 2>&1 &
+      disown "$!" 2>/dev/null || true
+    else
+      MATERIAL_STATE=running
+    fi
+  fi
   if [ "$REEMIT" -eq 0 ]; then
     rm -f "$COMPLETION_FILE" 2>/dev/null || true
   fi
@@ -1102,11 +1162,11 @@ cat <<'EOF'
 This digest prints in full: data/captain.md and data/captain-shared.md, plus the
 handoff its Start here line names (capped at 40000 bytes), all at the top, right
 after the head,
-then every state/*.meta, a compact data/backlog.md listing,
+then every state/*.meta, a compact backlog listing (bin/fm-tasks-axi.sh),
 a bounded tail of every state/*.status,
 data/projects.md, data/secondmates.md, and data/learnings.md.
 Do NOT re-read any of them after reading this digest, and do NOT bulk-read
-data/backlog.md or state/*.status: re-reading everything defeats the entire
+the backlog or state/*.status: re-reading everything defeats the entire
 point of this command.
 
 Go to a source directly only when:
@@ -1115,7 +1175,7 @@ Go to a source directly only when:
   - an individual full status log is needed for older wake-event history, or a
     status line was capped and its tail matters (each task's full log path is
     printed with its tail),
-  - a full task body is needed (bin/fm-tasks-axi.sh show <id> --full, or data/backlog.md),
+  - a full task body is needed (bin/fm-tasks-axi.sh show <id> --full),
   - the backlog listing disclosed omitted queued items and this turn needs them,
   - the handoff printed a "handoff cut at 40000 bytes" marker (then read the
     rest of that handoff file from the byte where it was cut),
@@ -1132,7 +1192,7 @@ EOF
 # truncated tail must never take.
 stage fleet-state
 section "FLEET STATE"
-print_backlog_compact "$DATA/backlog.md" "data/backlog.md"
+print_backlog_compact "$DATA/backlog.md" "backlog (bin/fm-tasks-axi.sh)"
 
 subsection "Work under way (state/*.meta)"
 META_FOUND=0
@@ -1252,6 +1312,19 @@ if [ "$READ_ONLY" -eq 1 ]; then
   printf 'has no action they would gate. The session holding the lock runs them.\n'
 else
   "$SCRIPT_DIR/fm-startup-network.sh" harvest --pid $$ 2>&1 || true
+fi
+
+# The portable-material sync started at step 1 is read here without waiting. A report that finished before this digest
+# is printed as is; while a worker still runs, the last finished report is printed beside the pending line, so a
+# conflict that landed after an earlier digest is seen by the next session.
+if [ "${MATERIAL_STATE:-none}" != none ]; then
+  subsection "MATERIAL"
+  if [ "$MATERIAL_STATE" = started ] && [ -s "$MATERIAL_OUT" ] && [ "$MATERIAL_OUT" -nt "$MATERIAL_MARK" ]; then
+    cat "$MATERIAL_OUT"
+  else
+    printf 'material_source=pending home=%s (bounded background sync %s; result lands in state/.material-sync.out)\n' "$(head -n1 "$CONFIG/material-home" 2>/dev/null)" "$([ "$MATERIAL_STATE" = running ] && echo 'from an earlier start still running' || echo 'running')"
+    if [ -s "$MATERIAL_OUT" ]; then printf 'last finished report:\n'; sed 's/^/  /' "$MATERIAL_OUT"; fi
+  fi
 fi
 
 # --- 8. context digest -----------------------------------------------------

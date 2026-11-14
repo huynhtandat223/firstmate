@@ -1,0 +1,8 @@
+⚠ Individual quota reached. Please upgrade your subscription to increase your
+limits. Resets in 163h23m19s.
+Error ID: 7079b4bd-a839-42ad-ac3e-0113477faf9c-434
+
+ How's the CLI experience so far? Help us improve:
+ [1] Good  [2] Fine  [3] Bad  [0] Skip
+
+? for shortcuts                                                Gemini 4 Argon · high

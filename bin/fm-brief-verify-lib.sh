@@ -90,8 +90,11 @@ fm_brief_verify_check() {  # <task-id> <brief-file>
   issue=$(printf '%s\n' "$section" | grep -oE "$FM_BRIEF_VERIFY_CFW_ISSUE" | head -1) || true
   if [ -z "$issue" ]; then
     # New task-native acceptance is explicit in the Acceptance section.
-    printf '%s\n' "$section" | grep -Eq '^Task: [^[:space:]]+$' || return 0
-    issue=$task
+    issue=$(printf '%s\n' "$section" | grep -oE 'task:[A-Za-z0-9][A-Za-z0-9._-]*' | head -1) || true
+    if [ -z "$issue" ]; then
+      printf '%s\n' "$section" | grep -Eq '^Task: [^[:space:]]+$' || return 0
+      issue=$task
+    fi
   fi
   unread="the brief for $task names $issue, whose scenarios could not be read (fm-acceptance.mjs parse failed, printed nothing or reported problems), so the verify-cfw run cannot be checked; retry"
   if ! command -v node >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
@@ -100,7 +103,7 @@ fm_brief_verify_check() {  # <task-id> <brief-file>
   fi
   parse_rc=0
   json=$(
-    if [ "$issue" = "$task" ]; then
+    if [ "$issue" = "$task" ] || [[ "$issue" == task:* ]]; then
       # shellcheck source=bin/fm-task-shadow-config-lib.sh
       . "$root/bin/fm-task-shadow-config-lib.sh"
       fm_task_shadow_config "$config/task-shadow"

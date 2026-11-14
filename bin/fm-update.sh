@@ -104,6 +104,15 @@ if [ "$FF_STATUS" = "updated" ]; then
   FM_HOME="$FM_HOME" FM_ROOT_OVERRIDE="$FM_ROOT" "$SCRIPT_DIR/fm-procevent-when.sh" rebind-all || true
 fi
 
+# Retry shared publication even when this pass found the repository current.
+case "$FF_STATUS" in
+  updated|current)
+    if ! "$SCRIPT_DIR/fm-doc.sh" publish --repo firstmate --root "$FM_ROOT"; then
+      echo "firstmate: document publication pending; retry self-update" >&2
+    fi
+    ;;
+esac
+
 # --- secondmates -----------------------------------------------------------
 # Every live secondmate this pass leaves on origin's tip is restarted, whether it
 # advanced or was already there. The header above owns why the git diff does not

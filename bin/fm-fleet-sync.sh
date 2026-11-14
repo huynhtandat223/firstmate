@@ -416,6 +416,7 @@ sync_project() {
     else
       echo "$label: already current"
     fi
+    publish_shared_docs
     return 0
   fi
   if ! git -C "$PROJ" merge-base --is-ancestor "$DEFAULT" "$BASE"; then
@@ -444,7 +445,19 @@ sync_project() {
   else
     echo "$label: synced $before..$after"
   fi
+  publish_shared_docs
   return 0
+}
+
+# Publication is retryable: never undo a successful git synchronization.
+publish_shared_docs() {
+  case "$(basename "$PROJ")" in
+    firstmate|pi-harness)
+      if ! "$SCRIPT_DIR/fm-doc.sh" publish --repo "$(basename "$PROJ")" --root "$PROJ"; then
+        echo "$label: document publication pending; retry fleet sync" >&2
+      fi
+      ;;
+  esac
 }
 
 if [ $# -eq 1 ]; then
@@ -452,6 +465,7 @@ if [ $# -eq 1 ]; then
   exit 0
 fi
 
+"$SCRIPT_DIR/fm-project.sh" refresh >/dev/null || true
 [ -d "$PROJECTS" ] || exit 0
 for proj in "$PROJECTS"/*; do
   [ -e "$proj" ] || continue

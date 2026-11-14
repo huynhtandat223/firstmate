@@ -173,6 +173,9 @@ test_surface_is_recorded_in_meta() {
   id=settle-surface-visible-z5
   rec=$(make_settle_case settle-surface-visible "$id" 0)
   read_settle_record "$rec"
+  # An existing verification record keeps launching; a new spawn would need Description acceptance.
+  mkdir -p "$HOME_DIR/data/$id"
+  printf 'surface: user-visible\nissue: https://github.com/o/r/issues/9\n' > "$HOME_DIR/data/$id/verify.md"
   out=$(run_settle_spawn "$id" --surface user-visible)
   expect_code 0 "$?" "spawn with --surface user-visible should succeed"$'\n'"$out"
   assert_grep 'surface=user-visible' "$HOME_DIR/state/$id.meta" "meta did not record surface=user-visible"

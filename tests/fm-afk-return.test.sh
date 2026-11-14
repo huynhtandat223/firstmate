@@ -804,7 +804,7 @@ SH
     | jq -e '.gates | any(.id == "(return-catchup)" and (.title | startswith("catch-up retained:")))' >/dev/null \
     || fail "Bearings did not carry the blockerless catch-up retention reason"
   waiting=$(printf '%s\n' "$out" | awk '/^Waiting on you:/{show=1} /^Tried and failed, or could not be fixed:/{show=0} show')
-  assert_contains "$waiting" "held listing unavailable: $dir/home/data/backlog.md: synthetic held backlog failure; catch-up stays gated" "the failed held listing was not disclosed"
+  assert_contains "$waiting" "held listing unavailable: bin/fm-tasks-axi.sh list --state held (data directory $dir/home/data): synthetic held backlog failure; catch-up stays gated" "the failed held listing was not disclosed"
   assert_not_contains "$waiting" '(nothing)' "an unavailable held set was also reported as empty"
   out=$(run_return "$dir" check) || fail "catch-up did not clear after the held-set reader recovered: $out"
   assert_contains "$out" 'catch-up clear' "the recovered held-set reader did not clear catch-up"

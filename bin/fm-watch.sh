@@ -265,6 +265,8 @@ WATCH_HOME_EXISTED=0
 . "$SCRIPT_DIR/fm-pending-reply-lib.sh"
 # shellcheck source=bin/fm-busy-lib.sh
 . "$SCRIPT_DIR/fm-busy-lib.sh"
+# shellcheck source=bin/fm-task-shadow-config-lib.sh
+. "$SCRIPT_DIR/fm-task-shadow-config-lib.sh"
 # Steering-inbox loss detection: bin/fm-task-inbox-lib.sh owns the record,
 # doorbell, re-ring ladder, and unavailable-endpoint contracts; this watcher
 # supplies their live endpoint and busy checks plus wake emission
@@ -3155,7 +3157,7 @@ TURNEND_COMMITS=''
 # The one list of quota and limit texts, matched on the ANSI-stripped pane tail.
 # Each pattern has one test sample in tests/fm-watch-triage.test.sh.
 turnend_quota_text() {  # <plain pane tail>
-  printf '%s\n' "$1" | grep -qiE 'hit your (usage )?limit|usage limit has been reached|\[429\][^[:alnum:]]*usage limit|rate limit'
+  fm_busy_stop_text "$1" >/dev/null
 }
 
 # The fixed ping text. It names the task's status file and the verbs with their
@@ -4308,6 +4310,11 @@ resurface_after_downtime() {
   wake "check: rearm-resurface"
 }
 
+# The task record writer; FM_TASK_SHADOW_WRITER replaces bin/fm-task.sh (the tests use a fake), as in bin/fm-task-shadow.sh.
+TASK_RECORD_WRITER=${FM_TASK_SHADOW_WRITER:-$SCRIPT_DIR/fm-task.sh}
+# Each card's live dot (the step liveness) is written by bin/fm-task-step-loop.sh, which runs beside this watcher and
+# outlives its cycles; bin/fm-watch-arm.sh starts it.
+
 while :; do
   # Scope delivery to this home's direct task records, never another home's events.
   task_delivery_processed=0
@@ -4318,7 +4325,9 @@ while :; do
     TASK_DELIVERY_LAST=$task_id
     task_delivery_processed=1
     task_consumer="firstmate-${FM_HOME##*/}"
-    fm_run_timed 2 env FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-task.sh" deliver "$task_id" --consumer "$task_consumer" >/dev/null 2>&1 || true
+    # the writer settings the flag file carries (FM_TASK_BASE_URL, FM_TASK_AUTH, FM_TASK_TOKEN_FILE), as the hook reads them
+    [ ! -e "$CONFIG/task-shadow" ] || fm_task_shadow_config "$CONFIG/task-shadow"
+    fm_run_timed 2 env FM_HOME="$FM_HOME" "$TASK_RECORD_WRITER" deliver "$task_id" --consumer "$task_consumer" >/dev/null 2>&1 || true
     # One task per pass bounds API work independently of fleet size.
     break
   done
@@ -4773,6 +4782,16 @@ EOF
     fi
     watcher_capture "$(window_backend "$w")" "$w" 40 "$(window_label "$w")" || continue
     tail40=$WATCHER_CAPTURE
+    stop_text=$(fm_busy_stop_text "$tail40") || stop_text=
+    if [ -n "$stop_text" ]; then
+      if [ "$(cat "$STATE/.quota-$key" 2>/dev/null || true)" != "$stop_text" ]; then
+        fm_wake_append check "$task" "check: worker stopped: $task: $stop_text" || exit 1
+        printf '%s' "$stop_text" > "$STATE/.quota-$key"
+        wake "check: worker stopped: $task: $stop_text"
+      fi
+      continue
+    fi
+    rm -f "$STATE/.quota-$key"
     # The matcher is already defined in this shell. It reads the capture this
     # poll already takes, and a miss drops a name the away daemon saved.
     dialog=$(fm_composer_blocking_dialog "$tail40") || dialog=

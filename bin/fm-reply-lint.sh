@@ -7,8 +7,9 @@
 # reads the turn that just ended and names the broken rule. bin/fm-reply-lint.mjs
 # owns the checks and the fix text each one prints:
 #   english  no Vietnamese letter and 20+ Latin letters in the reply
-#   question a `?` in the last 400 characters and no agent-ask call in the turn
-#   notes    captain notes wait in state/inbox/
+#   question a sentence ending in `?` near the end (code, links, quotes left out)
+#            whose paragraph links no Needs you card (?q=), and no agent-ask call
+#   notes    captain notes wait in state/owner-note-spool/
 #   unread   data/captain.md was not read since the last SessionStart
 #
 # Switches (config/, bin/fm-enforce-lib.sh owns the log-only rule):
@@ -17,6 +18,9 @@
 #   config/enforce-reply-lint  `block` makes a hit block the turn end (exit 2 and
 #                           the message on stderr). Anything else, or no file,
 #                           only appends the hit to state/enforce-reply-lint.log.
+#   config/enforce-reply-lint-<code>  `block` makes a hit of that one check block
+#                           (for example enforce-reply-lint-question: an owner
+#                           question not put on Needs you), the others log only.
 #
 # Once per user turn: a block is remembered in state/.reply-lint-blocked.<session_id>
 # by the uuid of the user prompt that started the turn (line 2) and the uuid of
@@ -95,7 +99,7 @@ TRANSCRIPT=$(printf '%s' "$PAYLOAD" | jq -r '.transcript_path // empty' 2>/dev/n
 STOP_ACTIVE=$(printf '%s' "$PAYLOAD" | jq -r '.stop_hook_active // false' 2>/dev/null) || STOP_ACTIVE=false
 LAST_TEXT=$(printf '%s' "$PAYLOAD" | jq -r '.last_assistant_message // empty' 2>/dev/null) || LAST_TEXT=
 
-ARGS=(--transcript "$TRANSCRIPT" --last --language "$LANGUAGE" --inbox-dir "$STATE/inbox" --home "$FM_HOME")
+ARGS=(--transcript "$TRANSCRIPT" --last --language "$LANGUAGE" --inbox-dir "$STATE/owner-note-spool" --home "$FM_HOME")
 [ -z "$LAST_TEXT" ] || ARGS+=(--last-text "$LAST_TEXT")
 RESULT=$(node "$CORE" "${ARGS[@]}" 2>/dev/null) || exit 0
 [ -n "$RESULT" ] || exit 0
@@ -128,11 +132,15 @@ MODE=$(fm_enforce_mode "$CONFIG" reply-lint)
 MESSAGE=
 while IFS="$TAB" read -r _uuid code text; do
   [ -n "$code" ] || continue
-  fm_enforce_log "$STATE" reply-lint "$([ "$MODE" = block ] && echo block || echo would-block)" "$code" "$text"
-  MESSAGE="${MESSAGE}reply lint [$code] $text"$'\n'
+  # A check blocks when every check does, or when its own switch says block.
+  if [ "$MODE" = block ] || [ "$(fm_enforce_mode "$CONFIG" "reply-lint-$code")" = block ]; then
+    fm_enforce_log "$STATE" reply-lint block "$code" "$text"
+    MESSAGE="${MESSAGE}reply lint [$code] $text"$'\n'
+  else
+    fm_enforce_log "$STATE" reply-lint would-block "$code" "$text"
+  fi
 done <<< "$FINDINGS"
 
-[ "$MODE" = block ] || exit 0
 [ -n "$MESSAGE" ] || exit 0
 # Write the record whole or not at all: a torn file would read as another reply's uuid.
 if mkdir -p "$STATE" 2>/dev/null && printf '%s\n%s\n' "$STOP_UUID" "$TURN" > "$BLOCKED_FILE.tmp.$$" 2>/dev/null \

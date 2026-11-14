@@ -27,7 +27,7 @@
 # digest, or carried from an earlier deployed head that no later PR names (printed on stderr with that head), and an
 # approved event newer than the last row (bin/fm-task-lib.mjs owns that read). Line 1, the issue line
 # and the deployed head below are checked as for any task; the writer runs with the settings of config/task-shadow.
-# FM_VERIFY_GATE_TASK replaces bin/fm-task.sh (the tests use a stand-in).
+# FM_VERIFY_GATE_TASK replaces bin/fm-task.sh and FM_VERIFY_GATE_GH replaces gh (the tests use stand-ins).
 # The Tester home is home= in <state>/tester.meta, or FM_TESTER_HOME. A relative evidence
 # path resolves against that home. A row in state `retired` is allowed only for a scenario id
 # the issue no longer has (not for one width of an id it still has); a row for an issue scenario that is not user-visible is ignored.
@@ -40,8 +40,10 @@
 #   - the Tester's acceptance= equals `fm-acceptance.mjs digest <issue>`: the digest of the full
 #     scenarios as they read now, so a scenario edited in any field after the Tester read it
 #     is verified again,
-#   - the Tester's head= equals the sha of the newest deploy-round or replay ask for the task
-#     in <data-dir>/deploy-verify/ledger.jsonl (a missing ask refuses), or, for a task whose PR is
+#   - the Tester's head= equals the task's deployed head in <data-dir>/deploy-verify/ledger.jsonl (the
+#     newest by GitHub ancestry of the deployed heads of its deploy-round and rows-round asks:
+#     fm_verify_gate_ledger_shas; a head is deployed when a deploy-round ask or a `deployed` line names
+#     it, and no ask on a deployed head refuses), or, for a task whose PR is
 #     not in the repo deploy-verify watches, the 'deployed: <sha>' line of firstmate's record, and
 #   - 'approved: firstmate' is newer than the Tester's verified epoch.
 # <base-dir> is the firstmate home: <base-dir>/state is the state directory
@@ -49,13 +51,25 @@
 
 FM_VERIFY_GATE_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
-# The sha of the newest ask the deploy-verify ledger holds for a task: a deploy round or a
-# replay (both are round=deploy), never a draft round. Prints nothing when there is none.
-fm_verify_gate_ledger_sha() {  # <ledger> <task-id>
-  [ -f "$1" ] || return 0
+# The deployed heads the deploy-verify ledger holds for a task, one per line in the order the task first asked on
+# them: the shas of the task's own deploy-round and rows-round asks that a deploy-round ask of any task names (a
+# deploy round or a replay, both round=deploy) or that a `deployed` line names (deploy-verify writes one per
+# successful deploy step, also when every PR of the deploy was skipped, and `backfill-deploy` writes one for a past
+# deploy; both only for a green deploy step), so a draft or rows ask alone never proves a deploy. Prints nothing when
+# no ask of the task names a deployed head.
+fm_verify_gate_ledger_shas() (  # <legacy-ledger-path> <task-id>; path retained for caller compatibility
+  local snapshot
+  . "$FM_VERIFY_GATE_DIR/fm-deploy-ledger-lib.sh"
+  snapshot=$(mktemp) || return 1
+  trap 'rm -f "$snapshot"' EXIT
+  fm_deploy_ledger_snapshot "$snapshot" || return 1
   # shellcheck disable=SC2016 # jq variables, not shell
-  jq -Rr --arg t "$2" 'fromjson? | select(.type == "ask" and .round == "deploy" and .task == $t) | .sha' "$1" | tail -n 1
-}
+  jq -Rnr --arg t "$2" '
+    [inputs | fromjson?] as $l
+    | [$l[] | select((.type == "ask" and .round == "deploy") or .type == "deployed") | .sha] as $deployed
+    | [$l[] | select(.type == "ask" and (.round == "deploy" or .round == "rows") and .task == $t) | .sha | select(IN($deployed[]))]
+    | reduce .[] as $s ([]; if index([$s]) then . else . + [$s] end) | .[]' "$snapshot"
+)
 
 # A record's value for `<key>: ` (the last such line).
 fm_verify_gate_field() {  # <file> <key>
@@ -63,18 +77,14 @@ fm_verify_gate_field() {  # <file> <key>
 }
 
 # Whether the task has a PR in <repo>, read the way bin/fm-procevent-deploy-verify.sh build_map
-# maps a task: the endpoint record's pr=, else a PR URL on the task's own backlog line.
+# maps a task: the endpoint record's pr=, else a PR URL on the task's own backlog row.
 fm_verify_gate_task_in_repo() {  # <state-dir> <data-dir> <task-id> <repo>
   local pr
   pr=$(sed -n 's/^pr=//p' "$1/$3.meta" 2>/dev/null | head -n 1)
   case "$pr" in "https://github.com/$4/pull/"[0-9]*) return 0 ;; esac
-  [ -f "$2/backlog.md" ] || return 1
-  awk -v repo="$4" -v task="$3" '
-    /^- \[.\] / && /\(kind: ship\)/ {
-      line = $0; sub(/^- \[.\] /, "", line); t = line; sub(/ .*/, "", t)
-      if (t == task && match($0, "https://github.com/" repo "/pull/[0-9]+")) found = 1
-    }
-    END { exit !found }' "$2/backlog.md"
+  FM_DATA_OVERRIDE="$2" "$(dirname "${BASH_SOURCE[0]}")/fm-tasks-axi.sh" rows --kind ship --fields links 2>/dev/null \
+    | jq -e --arg task "$3" --arg repo "$4" \
+    '[.[] | select(.id == $task and ("\(.title // "") \(.links // "")" | test("https://github.com/" + $repo + "/pull/[0-9]+")))] | length > 0' >/dev/null
 }
 
 # Prints one problem and marks the running fm_verify_gate_problems (its local $bad) as failed.
@@ -83,15 +93,24 @@ fm_verify_gate_say() {
   bad=1
 }
 
-# One evidence value: says the problem for row <rid> when it is not an existing path or URL.
+# One evidence value: says the problem for row <rid> when it is not an existing path, URL, or event reference.
 fm_verify_gate_evidence_problem() {  # <rid> <evidence> <base-dir>
   case "$2" in
     http://?*|https://?*) ;;
+    event:*)
+      fm_verify_gate_say "$1 evidence reference requires the task-record gate: $2" ;;
     ''|-) fm_verify_gate_say "$1 is pass without evidence" ;;
     /*) [ -e "$2" ] || fm_verify_gate_say "$1 evidence path does not exist: $2" ;;
     *) [ -e "$3/$2" ] || fm_verify_gate_say "$1 evidence path does not exist: $2" ;;
   esac
 }
+
+# Parse acceptance using this home's configured task API without leaking settings to callers.
+fm_verify_gate_acceptance() (
+  . "$FM_VERIFY_GATE_DIR/fm-task-shadow-config-lib.sh"
+  fm_task_shadow_config "${FM_CONFIG_OVERRIDE:-$base/config}/task-shadow"
+  node "$FM_VERIFY_GATE_DIR/fm-acceptance.mjs" "$@"
+)
 
 # The scenario line of a record row `- <id>@<width> | <line> | <state> | evidence: <x>`, trimmed.
 fm_verify_gate_row_text() {  # <row>
@@ -105,41 +124,57 @@ fm_verify_gate_row_text() {  # <row>
 }
 
 # The deployed head, into the running fm_verify_gate_problems' $want_sha (a problem when there is none). deploy-verify
-# maps a task by its PR, so a task whose PR is in the repo it watches (FM_DEPLOY_VERIFY_REPO) has the newest ask of the
-# task in the ledger as its head, and a missing ask is a refusal; a task with a PR elsewhere has no ask, so it is
-# firstmate's own deployed: line. The issue's repo plays no part.
+# maps a task by its PR, so a task whose PR is in the repo it watches (FM_DEPLOY_VERIFY_REPO) has the newest of its
+# deployed heads in the ledger as its head (newest by GitHub ancestry when there are two or more; a compare that
+# cannot be read, or heads not in one line of history, is a refusal), and a missing ask is a refusal; a task with a
+# PR elsewhere has no ask, so it is firstmate's own deployed: line. The issue's repo plays no part.
 fm_verify_gate_deployed_head() {
-  local repo
+  local repo heads head status
   repo=${FM_DEPLOY_VERIFY_REPO:-huynhtandat223/cfw-modules}
   if fm_verify_gate_task_in_repo "$state" "$data" "$id" "$repo"; then
-    want_sha=$(fm_verify_gate_ledger_sha "$ledger" "$id")
-    [ -n "$want_sha" ] || fm_verify_gate_say "no deploy ask for $id in $ledger; its PR is in $repo, which deploy-verify watches, so a deployed: line does not stand in for it"
+    if ! heads=$(FM_HOME="$base" FM_CONFIG_OVERRIDE="${FM_CONFIG_OVERRIDE:-$base/config}" fm_verify_gate_ledger_shas "$ledger" "$id"); then
+      fm_verify_gate_say "cannot read deployed heads for $id from Dev 5001"
+      return 0
+    fi
+    want_sha=$(printf '%s\n' "$heads" | sed -n 1p)
+    [ -n "$want_sha" ] || { fm_verify_gate_say "no deploy ask for $id in $ledger; its PR is in $repo, which deploy-verify watches, so a deployed: line does not stand in for it"; return 0; }
+    # Two or more deployed heads: the newest is the one the others are ancestors of on GitHub, since each deploy of
+    # main contains the deploys before it. The ledger order cannot say it: a held ask keeps the cursor behind a
+    # delivered deploy, and a later replay then asks on that older head.
+    for head in $(printf '%s\n' "$heads" | sed 1d); do
+      if ! status=$("${FM_VERIFY_GATE_GH:-gh}" api "repos/$repo/compare/$want_sha...$head" --jq .status 2>/dev/null); then
+        fm_verify_gate_say "cannot order the deployed heads of $id: the GitHub compare $want_sha...$head in $repo cannot be read"
+        want_sha=
+        return 0
+      fi
+      case "$status" in
+        ahead) want_sha=$head ;;
+        behind|identical) ;;
+        *)
+          fm_verify_gate_say "cannot order the deployed heads of $id: $want_sha and $head are not in one line of $repo history (compare status '${status:-none}')"
+          want_sha=
+          return 0 ;;
+      esac
+    done
   else
     want_sha=$(fm_verify_gate_field "$file" deployed)
     [ -n "$want_sha" ] || fm_verify_gate_say "no deployed head for $id: its PR is not in $repo, the repo deploy-verify watches, so $file needs a 'deployed: <sha>' line"
   fi
 }
 
-# The rows path for a task begun after T5: firstmate's line 1 and issue line, the deployed head, then the task record's
-# own read. Each reason the record gives is one problem; a record that cannot be read is one problem naming why.
-fm_verify_gate_rows() {
-  local first issue want_sha out err rc config
-  first=$(sed -n '1p' "$file")
-  [ "$first" = 'surface: user-visible' ] || fm_verify_gate_say "line 1 of $file must be 'surface: user-visible' (found '$first')"
-  issue=$(fm_verify_gate_field "$file" issue)
-  issue=${issue:-$id}
-  fm_verify_gate_deployed_head
-  [ -n "$want_sha" ] || return 0
-  config=${FM_CONFIG_OVERRIDE:-$base/config}
-  err=$(mktemp "${TMPDIR:-/tmp}/fm-verify-gate.XXXXXX") || { fm_verify_gate_say "the task record cannot be read: no temporary file"; return 0; }
+# The task record's own read of the acceptance for <issue> on <head>: prints each reason the record is not complete, one
+# per line, and returns 1 when there is any (a record that cannot be read is one problem naming why). A carried pass (a
+# pass on an earlier deployed head that no later PR names) is no problem: it goes to stderr with its head.
+fm_verify_gate_record() {  # <task-id> <issue> <head> <config-dir> <tester-home|empty> [touched, for the read before approval]
+  local id=$1 issue=$2 want_sha=$3 config=$4 tester_home=$5 before=${6:-} out err rc bad=0
+  err=$(mktemp "${TMPDIR:-/tmp}/fm-verify-gate.XXXXXX") || { echo "the task record cannot be read: no temporary file"; return 1; }
   rc=0
   out=$(
     # shellcheck source=bin/fm-task-shadow-config-lib.sh
     . "$FM_VERIFY_GATE_DIR/fm-task-shadow-config-lib.sh"
     fm_task_shadow_config "$config/task-shadow"
-    "${FM_VERIFY_GATE_TASK:-$FM_VERIFY_GATE_DIR/fm-task.sh}" gate "$id" --issue "$issue" --head "$want_sha" ${tester_home:+--evidence-root "$tester_home"} 2>"$err" </dev/null
+    "${FM_VERIFY_GATE_TASK:-$FM_VERIFY_GATE_DIR/fm-task.sh}" gate "$id" --issue "$issue" --head "$want_sha" ${tester_home:+--evidence-root "$tester_home"} ${before:+--before-approval --touched "$before"} 2>"$err" </dev/null
   ) || rc=$?
-  # a carried pass (a pass on an earlier deployed head that no later PR names) is no problem: it goes to stderr with its head
   printf '%s\n' "$out" | grep ' carried: pass on head ' >&2 || :
   out=$(printf '%s\n' "$out" | grep -v ' carried: pass on head ' || :)
   if [ "$rc" -eq 5 ] && [ -n "$out" ]; then
@@ -149,6 +184,21 @@ fm_verify_gate_rows() {
     fm_verify_gate_say "the task record cannot be read: $(sed -n '1p' "$err")"
   fi
   rm -f "$err"
+  return "$bad"
+}
+
+# The rows path for a task begun after T5: firstmate's line 1 and issue line, the deployed head, then the task record's
+# own read. Each reason the record gives is one problem; a record that cannot be read is one problem naming why.
+fm_verify_gate_rows() {
+  local first issue want_sha config
+  first=$(sed -n '1p' "$file")
+  [ "$first" = 'surface: user-visible' ] || fm_verify_gate_say "line 1 of $file must be 'surface: user-visible' (found '$first')"
+  issue=$(fm_verify_gate_field "$file" issue)
+  issue=${issue:-$id}
+  fm_verify_gate_deployed_head
+  [ -n "$want_sha" ] || return 0
+  config=${FM_CONFIG_OVERRIDE:-$base/config}
+  fm_verify_gate_record "$id" "$issue" "$want_sha" "$config" "$tester_home" || bad=1
 }
 
 fm_verify_gate_problems() {  # <data-dir> <task-id> <base-dir>
@@ -234,9 +284,9 @@ fm_verify_gate_problems() {  # <data-dir> <task-id> <base-dir>
       return 1
     fi
     rc=0
-    rows=$(node "$FM_VERIFY_GATE_DIR/fm-acceptance.mjs" rows "$issue" 2>/dev/null) || rc=$?
+    rows=$(fm_verify_gate_acceptance rows "$issue" 2>/dev/null) || rc=$?
     if [ "$rc" -ne 0 ]; then
-      parse=$(node "$FM_VERIFY_GATE_DIR/fm-acceptance.mjs" parse "$issue" 2>&1) || true
+      parse=$(fm_verify_gate_acceptance parse "$issue" 2>&1) || true
       if printf '%s' "$parse" | jq -e '.problems | length > 0' >/dev/null 2>&1; then
         printf '%s' "$parse" | jq -r --arg i "$issue" '.problems[] | "issue \($i) cannot be read: \(.)"'
       else
@@ -245,11 +295,11 @@ fm_verify_gate_problems() {  # <data-dir> <task-id> <base-dir>
       return 1
     fi
     [ -n "$rows" ] || fm_verify_gate_say "issue $issue has no user-visible scenario row"
-    cur_acc=$(node "$FM_VERIFY_GATE_DIR/fm-acceptance.mjs" digest "$issue" 2>/dev/null) || cur_acc=
+    cur_acc=$(fm_verify_gate_acceptance digest "$issue" 2>/dev/null) || cur_acc=
     if [ -n "$v_acc" ] && [ "$v_acc" != "$cur_acc" ]; then
       fm_verify_gate_say "Tester acceptance $v_acc is not the issue's current digest $cur_acc"
     fi
-    all_rows=$(node "$FM_VERIFY_GATE_DIR/fm-acceptance.mjs" rows "$issue" --surface all 2>/dev/null) || all_rows=$rows
+    all_rows=$(fm_verify_gate_acceptance rows "$issue" --surface all 2>/dev/null) || all_rows=$rows
     while IFS= read -r line; do
       [ -n "$line" ] || continue
       expected="$expected$(printf '%s' "${line#- }" | awk -F' [|] ' '{print $1}')"$'\n'

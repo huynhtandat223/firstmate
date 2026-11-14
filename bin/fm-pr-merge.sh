@@ -1452,13 +1452,32 @@ require_current_away_authority() {
     echo "error: --allow-no-pipeline is attended-only; while the away-posture record exists a GitLab merge requires a successful head pipeline" >&2
     return 2
   fi
+  # The initial authority check precedes PR metadata publication. Later checks
+  # run immediately before the irreversible forge request with validated metadata.
+  if [ "${FM_PR_METADATA_RECORDED:-0}" = 1 ]; then
+    local receipt_device receipt_tmp
+    receipt_device=$(fm_pr_file_device "$STATE") || return 1
+    fm_pr_regular_destination_on_device_or_absent "$STATE/$ID.merge-receipt" "$receipt_device" || return 1
+    receipt_tmp=$(mktemp "$STATE/.merge-receipt.XXXXXX") || return 1
+    ( umask 077
+      jq -cn --arg task "$ID" --arg url "$URL" --arg head "$FM_PR_MERGE_HEAD" --arg authority "$FM_PR_MERGE_AUTHORITY" \
+        '{task:$task,prUrl:$url,head:$head,authority:$authority}' > "$receipt_tmp"
+    ) || { rm -f "$receipt_tmp"; return 1; }
+    # shellcheck disable=SC2015 # Any failed validation or publication uses the same cleanup.
+    chmod 0600 "$receipt_tmp" \
+      && fm_pr_private_file_valid "$receipt_tmp" 600 "$receipt_device" \
+      && fm_pr_regular_destination_on_device_or_absent "$STATE/$ID.merge-receipt" "$receipt_device" \
+      && mv -f -- "$receipt_tmp" "$STATE/$ID.merge-receipt" || { rm -f "$receipt_tmp"; return 1; }
+    FM_PR_AUTHORITY_PHASE=pending fm_merge_authority_persist "$STATE" "$ID" "$META" \
+      "$PROVIDER" "$PR_HOST" "$PR_PATH" "$PR_NUMBER" "$FM_PR_MERGE_AUTHORITY" || return 1
+  fi
 }
 
 persist_accepted_merge_authority() {
   local status=0
   MERGE_META_LOCK=$(fm_meta_lock_path "$META") || return 1
   fm_lock_acquire_wait "$MERGE_META_LOCK" || return 1
-  fm_merge_authority_persist "$STATE" "$ID" "$META" \
+  FM_PR_AUTHORITY_PHASE=accepted fm_merge_authority_persist "$STATE" "$ID" "$META" \
     "$PROVIDER" "$PR_HOST" "$PR_PATH" "$PR_NUMBER" "$FM_PR_MERGE_AUTHORITY" \
     || status=1
   fm_lock_release "$MERGE_META_LOCK" || status=1
@@ -1665,6 +1684,7 @@ require_current_away_authority || away_status=$?
 [ "$away_status" -eq 0 ] || exit "$away_status"
 require_recorded_pr_identity || exit 1
 record_pr_metadata || exit 1
+FM_PR_METADATA_RECORDED=1
 require_released_captain_hold || exit 1
 
 # Accepted confused-agent-grade limitation, as in bin/fm-lease-lib.sh, not an

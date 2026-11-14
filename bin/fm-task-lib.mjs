@@ -3,7 +3,8 @@
 // bin/fm-task.sh runs this file. The record is ten API Builder tables on Dev 5001
 // (docs/fm-task-contract/definitions.json in cfw-modules): fm_task, fm_task_event, the event
 // children fm_event_done / fm_event_question / fm_event_block / fm_event_image, fm_task_check,
-// fm_owner_check, fm_task_link and fm_task_delivery. This file adds no table and no grant.
+// fm_owner_check, fm_task_link and fm_task_delivery. This file adds no table. Only `delete`
+// needs a grant of its own: the DELETE operation on those task tables for the writer account.
 //
 // Usage: fm-task.sh <command> [<positional>...] [--flag value ...]
 //   A <task> comes from the first positional (the second for `block`), --task, or FM_TASK_ID.
@@ -11,17 +12,46 @@
 //            [--surface user-visible|internal] [--after PARENT]...
 //   import   <task> --title T --kind K --state S --assignee A --next-actor N [--repo R] [--issue U] [--pr-url U] [--surface S]
 //            [--block-kind K --block-reason R] [--until ISO] [--since ISO]   the backfill: a task at the state an old source holds, once
-//   assign   <task> --to ASSIGNEE            triage|todo|ready -> ready (todo while a parent is open)
+//   assign   <task> --to ASSIGNEE            triage|todo|ready -> ready (todo while a dependency block's parent is open)
 //   reassign <task> --to ASSIGNEE --reason WHY  changes only assignee; refused from done and archived
 //   start    <task>                          ready -> running
+//   setup    <task> --file JSON [--by firstmate|owner]   {"steps":[{state,harness,model,effort,fallbacks:[{harness,model,effort}]}]}
+//            or --from-rules --states implement,merge,... [--repo R] [--account A] [--at ISO]: each state's first `rules`
+//            candidate with the rest as fallbacks (source rule, ruleIds); a state with none stops the task as `rules --task` does:
+//            the states the task needs, in workflow order (plan implement testing merge verify; Merge has no model).
+//            Writes one fm_task_step row per state; a pending state left out becomes skipped. Once a state has
+//            started, the list of states is fixed (exit 5 otherwise); a state that has run keeps the runtime it ran
+//            with, and only pending states take a new harness, model, effort and fallbacks. Refused while a start-request
+//            is open (that request runs the setup it was asked on).
+//   move     <task> --to STATE               queued -> the first setup state -> the next one; testing|verify -> implement
+//            on a failed check row; a state outside the setup is refused (exit 5). The running attempt of the state
+//            left behind ends with the move. Done comes only through approve, which ends a running step and skips a
+//            state that never started; reopen returns to the last state that ran and lets the skipped states wait again.
+//            A ship task, whatever its surface, moves to implement, a retry too, only while its current plan (its
+//            Solution) is approved; with no plan or another decision it is refused (exit 5): write the Solution with
+//            `plan`, and the owner approves it on the task's Solution tab.
+//   step     <task> start --harness H [--model M] [--effort E] [--account A] [--generation G]   the current state runs;
+//            without --model (a harness default) the setup's model and effort for the state stand
+//   step     <task> alive|dead [--generation G]   on a change only     step <task> end --reason R [--generation G]
+//            G is the spawn_gen of state/<task>.meta; a report from an older incarnation is refused (exit 5).
 //   heartbeat <task> [--note N]              running (today's `working:`)
 //   done     <task> --summary --changed-files --verification --residual-risk [--rows JSON]
 //            [--pr-url U] [--head H] [--next-actor tester|firstmate]       running -> review
-//            [--document FILE] [--document-title TITLE] attaches one documents child in the same request.
+//            [--document FILE] [--document-title TITLE] attaches one documents child in the same request
+//            (required when task kind is scout or plan; refused exit 5 otherwise).
 //            Document: UTF-8 .md/.markdown or .html/.htm, 1 byte to 2 MiB; one-line title 1..200
 //            characters (default file name). Invalid files/options exit 2 before any API write.
+//   plan     <task> --document FILE [--document-title T] [--note N] [--image PATH --image-label L]...
+//            attaches a plan document and sets planSeq = seq, planDecision = null, planDecidedAt = null (default role
+//            planner); each --image is stored as an image child of the plan event, with the limits of comment's images
+//   plan-decision <task> --decision approve|changes --plan-seq N [--note WHY]
+//            sets planDecision and planDecidedAt (refused exit 5 when N !== task.planSeq or task has no plan)
 //   ask      <task> --question Q --option O (2 to 6 times) --recommendation R --why W
 //            [--document D] [--next-actor firstmate|owner]                  running -> blocked (needs-decision)
+//            --next-actor owner also asks from blocked while every open call is an owner question (a round), and leaves
+//            blockRepeats as it was; each owner question waits on its own answer
+//   answer   <task> --question SEQ [--option O] [--note N]   one open question of the task (role owner by default):
+//            event answered; the last answer moves blocked -> ready, next actor worker (todo while a dependency block's parent is open)
 //   block    <kind> <task> --reason R --next-actor A [--until ISO] [--on PARENT]
 //            kind: transient|dependency|external|credential|failure; running -> blocked,
 //            a dependency waits in todo on --on PARENT; a third block of one kind goes to triage.
@@ -30,57 +60,122 @@
 //            An unreadable forge never refuses, because blocking is what a worker needs then.
 //   unblock  <task>                          blocked|triage -> ready
 //   approve  <task>                          review -> done (refused while a check row is pending or failed, and
-//            on a task with a deploy event until its user-visible rows pass on a deployed head)
+//            on a task with a deploy event until its user-visible rows pass on a deployed head; deletes any
+//            fm_event_video rows of the task after replacing video check evidence with its Tester screenshot, and
+//            writes a comment "N video(s) deleted after Verify"); --check runs the same refusals and writes nothing
+//            but the checklist items the record already proves, printing `approve ready task=<id> state=<state>`
 //   changes  <task> --note WHY               review -> ready
 //   reopen   <task> --reason WHY             done -> ready, next actor firstmate; archived stays final
 //   archive  <task>                          triage|todo|ready|blocked|review|done -> archived
+//   delete   <task>... --reason WHY          any state but running, with no live worker and a PR that is not open or
+//            unreadable; deletes the task row, its events and their children, its steps, checks, owner items, deliveries,
+//            links on either side, then dismisses its undismissed notifications after deleting the task row and removes
+//            the owner's picture files of the task (data/<task>/owner-images). There is no backup, and one
+//            refusal or failure does not stop the other ids. A new event written after the checks refuse the id.
+//            --assistance-record-only removes an obsolete assistance row even while its pane runs; requires both
+//            the row and state/<id>.meta to have kind assistance. It never changes or stops the session, and it
+//            keeps the owner's picture files, which the live session may not have read yet: a delete without the
+//            flag removes them once the session ended, and is refused while its worker is alive or unreadable.
+//   home     <task> --home H                 sets the backlog home of a task that has none (any state but archived);
+//            the same home again is a no-op, another home is refused: a task belongs to one board
+//   owner-record home|note|hold list|get|put [--home H] [--kind binding|reconcile]
+//            [--identity ID] [--file JSON] reads or writes portable owner records; JSON output for shell bridges
+//   document <task> [--kind description|done] prints the latest matching event document (default description)
 //   describe <task> --document FILE.md [--document-title T]              any state; default title Description
+//            A task that holds no scenario check row yet gets them from this Description, as `rows <task>` writes them;
+//            a task that holds one keeps its rows (`rows` is the re-sync). Only a task whose issue is none, its own id,
+//            task:<its id> or a board link naming it is seeded; any other issue (an external http(s) issue, another task's
+//            task:<id> or board link) stays the source of its rows: describe seeds none, and `rows <task> <issue>` seeds
+//            them. There, and for a Description that sync refuses (no scenarios, a parser refusal), the Description is
+//            stored all the same, and describe prints `rows not seeded: <why>` and exits 0.
+//   materials <task>                     read latest 12 links and 6 images (base64 bytes) from 5001
 //   thread   <task> [--since SEQ]                                       full comments, oldest first
-//   comment  <task> --note T [--image PATH --image-label L]... [--ask why|how|wait-what] [--reply-to SEQ]
-//            any state; reply-to must name a comment of this task
-//   event    <task> <kind> [--note N] [--pr-url U] [--head H]   kinds: steer comment pr deploy ci protocol_violation
-//            divergence; --head on deploy (the deployed head, which user-visible passes count on from then) or on ci
-//            (the head the CI result read); no other kind takes it
+//   comment  <task> [--note T] [--image PATH --image-label L]... [--video PATH --video-label L]...
+//            [--ask why|how|wait-what] [--reply-to SEQ]                 any state; reply-to must name a comment of this task
+//            [--anchor-quote Q [--anchor-prefix P] [--anchor-suffix S]]   opens a thread at the quoted passage (not with
+//            --reply-to); a reply joins the thread of the comment it answers and stores it as `thread`
+//            [--outcome LINE]   with --reply-to inside a thread: proposes the line the thread resolved with
+//            [--accept]         with --reply-to naming a proposal, role owner: resolves the thread with its outcome
+//                               (note optional); any later comment in the thread reopens it
+//   event    <task> <kind> [--note N] [--pr-url U] [--head H] [--url U] [--merged] kinds: steer comment pr deploy ci
+//            protocol_violation divergence link; --head on deploy (the deployed head), ci (the checked head) or pr
+//            (the recorded PR head); --merge-authority away|attended only on pr; --url on link; --merged on pr (the pull request merged:
+//            the event body holds merged: true); no other kind takes them
+//   event    <task> close-request|start-request [--note N]   the owner's Done or Start on the board (next actor
+//            firstmate; refused on a done or archived task, start-request also on a running one, and while a request of
+//            the same kind is still open). Each stays open until
+//            firstmate's bin/fm-owner-request.sh writes its result: closed (only on a done task) or close-refused, and
+//            started (the start transition) or start-refused; a refused result needs --note with the refusal text and
+//            sets next actor owner. A result with no open request of its kind is refused (exit 5).
+//   pr-record <task>                     JSON: recorded PR URL, head, authority and merged flag
+//   pr-round list|cursor                JSONL history or JSON cursor from 5001
+//   pr-round put|set-cursor --file JSON  preserve a ledger payload once, or replace the review cursor
+//   requests <task> [--json]                 read only: the open owner requests, oldest first; a start-request carries
+//            the setup step it runs (the current workflow state's step, or the first one while queued); --json adds
+//            `answered`, the seq of each request kind's newest result (0 when none)
 //   event    <task> wait --next-actor tester|owner|merge|ci --clears-on rows|answer|merge|ci --note WHY [--rows ID@W,...]
 //            a declared wait (G1); `ask --next-actor owner` (answer) and `done --pr-url` (rows on the Tester, else merge)
 //            write one too. Its status line is `paused [at=E] [key=wait-<seq>]: waiting on <actor>: WHY (clears on X)`; the
-//            clearing event (the asked rows each with a newer result that is not pending, an unblocked event, a pr event whose
-//            note says merged, a ci event, or an approved or archived event) adds `resolved` with that key, in the home
-//            holding the line. `wait --next-actor ci --clears-on ci` is how a worker waits for its PR's checks: the
-//            pr-review source writes the ci event for the current head, green or failed, and delivers a failure to the inbox.
+//            clearing event (the asked rows each with a newer result that is not pending, an unblocked event, a pr event given
+//            --merged or whose note says merged, a ci event, or an approved or archived event) adds `resolved` with that
+//            key, in the home holding the line. `wait --next-actor ci --clears-on ci` is how a worker waits for its PR's
+//            checks: the pr-review source writes the ci event for the current head, green or failed, and delivers a failure
+//            to the inbox.
 //            deploy --touched none|all|ID,...: the scenarios the deployed PRs name (`Scenarios touched:`); a user-visible pass
 //            on an earlier deployed head carries to later deployed heads while no later deploy names its id (all, or no
 //            flag, names every id). approve, routing and gate accept a carried pass; gate prints each with its head.
 //   checks   <task> [--as-deployed HEAD [--touched IDS]]   read only: JSON of the open rows with their newest values,
 //            `carried`, and `due` (the Tester checks it on the head); --as-deployed reads as if HEAD were deployed next
-//   link     <parent> <child>                the child waits in todo while the parent is open
-//   rows     <task> <issue-url> [--surface all|user-visible]   one check row per scenario x width from
+//   link     <parent> <child>                parent and child (hierarchy only: the child keeps its state and can start)
+//   rows     <task> [task:<id>|issue-url] [--surface all|user-visible]   defaults to the task Description; one check row per scenario x width from
 //            fm-acceptance.mjs; user-visible adds, resets and retires the Tester's rows only
-//   check    <task> <id>@<width> pass|fail|pending [--evidence E] [--head H] [--next-actor A]
-//            (--status S is the same as the result word); next actor firstmate on a pass, worker on a fail;
-//            with --role owner a pass or fail also sets the row's owner item (status, decidedAt, note = --evidence)
+//   check    <task> <id>@<width> pass|fail|pending [--evidence E | --evidence-image PATH [--evidence-label L]]
+//            [--head H] [--next-actor A] (--status S is the same as the result word); next actor firstmate on a pass,
+//            worker on a fail; --evidence-image writes a comment event with the image first and records
+//            evidence = event:<seq>#image:1; with --role owner a pass or fail also sets the row's owner item
+//            (status, decidedAt, note = --evidence)
 //   owner-check <task> <id>@<width> --page-title --url --steps --data --expected   (sets next actor owner;
 //            a row that has an item needs --url and --steps again; a re-sent --key never writes the item twice)
-//   gate     <task> --issue URL --head SHA [--evidence-root DIR]   read only: prints each reason the task is not
+//   checklist <task> apply | off <item> --reason R | on <item> [--reason R]
+//            the task kind's checklist (TEMPLATES): one check row cl:<item>@- per item, surface checklist, written on
+//            create and by apply for a task created earlier (apply adds only the missing items). plan and scout: plan,
+//            mockup, decision, tester (off: "Plan task: Tester verifies the ship slices it files"); a user-visible ship:
+//            ci, mockup, tester, deploy; other kinds have none. off (only a cl: row, reason required, kept in evidence)
+//            closes an item; on sets it pending again. After every write a pending item passes by itself when the record
+//            holds its evidence, which names the event: plan a plan event or a done document (event:<seq>#document);
+//            mockup a comment image labelled mockup (event:<seq>#image:<n>); decision the owner's approval of the
+//            current plan or the owner's unblock after the newest owner question (event:<seq>); ci the green ci event
+//            for the head of the newest done call (or of the newest ci result when that done has none); a passed ci or decision item goes pending again when its evidence no
+//            longer holds (a new head, a new plan, the owner's changes, a new open question); tester every
+//            user-visible row pass (event:<seq> of the newest check); deploy the newest deploy with a head and every
+//            user-visible row pass on it. An automatic write is refused when the row changed after it was read, so an
+//            owner's off or on wins. rows and gate skip cl: rows; approve refuses an open one like any open row.
+//   gate     <task> [--issue task:<id>|URL] --head SHA [--evidence-root DIR] [--before-approval [--touched IDS]]   defaults to the task Description; read only: prints each reason the task is not
 //            complete (exit 5): a user-visible row of the issue not pass on the deployed head with its current
-//            digest and evidence, or no approved event newer than the last row event (bin/fm-verify-gate-lib.sh)
+//            digest and evidence, or no approved event newer than the last row event (bin/fm-verify-gate-lib.sh);
+//            --before-approval skips both approved checks and reads the rows as if a deploy event of --head were recorded next
 //   turn-end <task> --turn TOKEN             check a durable turn generation; heartbeat is not terminal
+//   rules    [--state plan|implement|testing|merge|verify [--repo R] [--account A] [--at ISO] [--task T]] [--json]
+//            read only: the owner's model rules (fm_model_rule), every rule without --state; with --state the
+//            candidates now in rank order: enabled, in --hours at --at (local time, default now), account null or
+//            --account, and fitting --repo (a repo some rule of that state names in its scope uses only those rules,
+//            any other repo the rules with no scope). With --task and no candidate, the task stops with the owner
+//            question "Không còn model cho <State>" (once while it is open) and the call exits 5.
+//   rule     add --state S --harness H --model M --rank N [--effort E] [--account A] [--hours 17-07,sat,sun]
+//            [--scope REPO,...] [--enabled true|false] [--warning W] [--note WHY]   |   rule set <id> [the same flags]
+//            |   rule delete <id>     writes fm_model_rule, then a `rules` event on task fm-model-rules (created
+//            on first use in backlog home system); a re-sent --key writes nothing again
+//   steers   <task> [--peek]                  print unread steers, then mark each read; --peek reads only
+//   read-mark <task> --key steer:<task>:<record>  mark one handled steer in fm_task_delivery (consumer read:<task>)
 //   deliver  <task> --consumer NAME           claim each event in fm_task_delivery, then append a wake
-//            FM_HOME is required; delivery is scoped to this task, never a whole foreign fleet.
+//            FM_HOME is required; delivery is scoped to this task, never a whole foreign fleet. The first call only
+//            sets the baseline, except that an open owner request is delivered all the same; an owner request's wake
+//            reads `owner request <seq>: <task> <kind> - run bin/fm-owner-request.sh <task> --seq <seq>`.
 //            A crash between claim and queue append requires operator reconciliation (no duplicate claim).
 //            a row that has an item needs all five template fields again; a re-sent --key never writes the item twice)
-//   row      <task> --section S --row-file F --notes-file F [--file BACKLOG] | --gone   one backlog row, verbatim: the
-//            header after the checkbox (one line, starting "<task> - "), the lines under it (each ending in a newline)
-//            and its section, in the view of BACKLOG (default as for backlog below), which is then synced with that
-//            row taken from the record; --gone takes it out of that view. Text over one event body goes in a documents child.
-//   backlog  sync|render [--file BACKLOG] [--out F] [--absorb-only]   the backlog view (T7): sync writes every row the
-//            file holds differently to the record (a task the record lacks is imported first), then renders the file
-//            from the record (--absorb-only leaves the file); render prints or writes (--out) the view only. BACKLOG defaults to FM_DATA_OVERRIDE, else
-//            $FM_HOME/data, /backlog.md. Line 1 names the record; the checkbox is [x] in Done; in a section the rows
-//            follow the event that put them there, In flight and Done newest first, other sections oldest first. A
-//            line outside a row other than a blank one refuses the sync (exit 5) after the import, file unchanged.
-//            The record is shared by every home: a view holds and changes only the rows its own file wrote. A sync and
-//            a row call of one file each hold an exclusive lock on <file>.view-lock (perl's flock) while they run.
+//   deploy-ledger list|cursor|append|put-cursor|seed [--file FILE] [--repo OWNER/REPO]
+//            append-only deploy history on 5001; list emits ordered JSONL, cursor emits the latest cursor JSON.
+//            append accepts one complete record; seed accepts JSONL and verifies readback; put-cursor accepts cursor JSON.
 //   show     <task> [--json]   list [--state S] [--actor A] [--json]   resume <task>   reproject <task> | --all
 //            reproject --all folds every task row again (the board card's step fields too) and prints each repair.
 // Every write takes --key K (the idempotency key; a re-send returns the first event), --actor NAME
@@ -99,7 +194,7 @@
 // events that are really before it). Each event body is JSON {"v":1,"note":...,"set":{...}} and `set` holds
 // the task fields the event changes. fm_task is the projection: the fold of every `set` in seq order. After
 // each event the writer folds again and patches the row; `reproject` does the same on demand and creates a
-// missing row. Tasks start in triage (todo while a parent is open); the state of each command is the table
+// missing row. Tasks start in triage, a subtask too (create --after); the state of each command is the table
 // below.
 //
 // Exit codes: 0 done; 2 usage or configuration; 3 the API did not answer (an event whose answer was lost is
@@ -119,7 +214,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { attr, hermes, holdText } from './fm-task-sources-lib.mjs';
 
@@ -133,7 +228,14 @@ const ACTORS = ['worker', 'tester', 'firstmate', 'owner'];
 const ROLES = ['worker', 'firstmate', 'tester', 'planner', 'owner', 'assistance', 'system'];
 const BLOCK_KINDS = ['transient', 'dependency', 'external', 'credential', 'failure'];
 const CHECK_STATUSES = ['pending', 'pass', 'fail'];
-const FREE_KINDS = ['steer', 'comment', 'pr', 'deploy', 'ci', 'protocol_violation', 'divergence'];
+// A checklist row (cl:<item>) also takes `off`, with its reason in evidence; `check` never writes it.
+const CHECKLIST_PREFIX = 'cl:';
+const FREE_KINDS = ['steer', 'comment', 'pr', 'deploy', 'ci', 'protocol_violation', 'divergence', 'link',
+  'close-request', 'start-request', 'closed', 'close-refused', 'start-refused'];
+// The owner's board requests (task-checklist-template T5) and the result kinds that answer each: firstmate's
+// bin/fm-owner-request.sh writes one of them; `started` is the start transition the spawn writes.
+const REQUEST_RESULTS = { 'close-request': ['closed', 'close-refused'], 'start-request': ['started', 'start-refused'] };
+const RESULT_REQUEST = { closed: 'close-request', 'close-refused': 'close-request', 'start-refused': 'start-request' };
 const WAIT_ACTORS = ['tester', 'owner', 'merge', 'ci'];
 const WAIT_CLEARS = ['rows', 'answer', 'merge', 'ci'];
 const CLOSED = ['done', 'archived'];
@@ -156,19 +258,30 @@ const TRANSITIONS = {
 };
 
 // the fm_task columns the projection holds, with the lengths the API enforces on them
-const LIMITS = { title: 300, repo: 200, kind: 32, state: 32, assignee: 64, nextActor: 32, blockKind: 32, blockReason: 2000, issueUrl: 2048, prUrl: 2048, surface: 32, section: 32 };
+const LIMITS = { title: 300, repo: 200, kind: 32, state: 32, assignee: 64, nextActor: 32, blockKind: 32, blockReason: 2000, issueUrl: 2048, prUrl: 2048, surface: 32, section: 32, planDecision: 16 };
 const PROJECTED = ['acceptanceDigest', 'title', 'repo', 'kind', 'state', 'assignee', 'nextActor', 'blockKind', 'blockReason', 'blockRepeats', 'issueUrl', 'prUrl', 'surface', 'holdUntil', 'row', 'notes', 'section', 'lastSeq',
-  'stage', 'stageSince', 'lastEventAt', 'lastNote', 'reviewer'];
-// The board card's step (cfw-modules#1678 change 199): the writer owns the rule and the page only reads it.
+  'stage', 'stageSince', 'lastEventAt', 'lastNote', 'reviewer', 'planSeq', 'planDecision', 'planDecidedAt',
+  'workflowState', 'workflowSince', 'stepHarness', 'stepModel', 'stepEffort', 'stepAlive', 'setupBy', 'setupAt',
+  // the backlog columns the cfw5001 tasks-axi backend writes in each row event's set (tasks-axi src/backends/cfw5001-transport.ts BACKLOG_COLUMNS)
+  'backlogHome', 'backlogKind', 'backlogHoldReason', 'backlogHoldKind', 'backlogHoldUntil', 'backlogPriority', 'backlogDeps', 'backlogSince',
+  'backlogClosed', 'backlogSeq', 'backlogPublicFollowup',
+  // the board card's Your-turn count of comment threads (cfw-modules feedback threads T3); needs fm_task.threadsYourTurn published
+  'threadsYourTurn'];
+// The board card's step (cfw-modules#1678 change 199): the writer owns the rule and the page only reads it. The live
+// page still reads it; plan v2 D1 retires it once the board reads workflowState.
 const STEP_OF_STATE = { triage: 'queued', todo: 'queued', ready: 'queued', done: 'passed' };
+// The workflow states (plan v2 D1), in order; a task's setup names the ones it needs between queued and done.
+const WORKFLOW_STATES = ['queued', 'plan', 'implement', 'testing', 'merge', 'verify', 'done'];
 const REVIEWER_KINDS = ['check', 'owner-check', 'approved', 'changes'];
-const DATE_FIELDS = ['holdUntil', 'stageSince', 'lastEventAt'];
+const DATE_FIELDS = ['holdUntil', 'stageSince', 'lastEventAt', 'planDecidedAt', 'workflowSince', 'setupAt'];
 // the backlog row's text: kept in the record verbatim, too long and multi-line for `show`'s field=value lines
 const ROW_TEXT = ['row', 'notes'];
 const TASK_ID = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
 const MAX_ATTEMPTS = 300;
 const IMAGE_TYPES = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp' };
 const MAX_IMAGE = 2 * 1024 * 1024;
+const VIDEO_TYPES = { '.mp4': 'video/mp4', '.webm': 'video/webm' };
+const MAX_VIDEO = 20 * 1024 * 1024;
 
 class Fail extends Error {
   constructor(code, message, extra = {}) {
@@ -207,7 +320,7 @@ async function http(method, pathname, body) {
   if (body !== undefined) headers['content-type'] = 'application/json';
   let res;
   try {
-    res = await fetch(base + pathname, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(20000) });
+    res = await fetch(base + pathname, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(60000) });
   } catch (error) {
     const why = error?.cause?.code || error?.cause?.message || error?.message || 'no answer';
     throw new Fail(3, `${method} ${pathname}: no answer from ${base} (${why})`, { network: true });
@@ -238,11 +351,12 @@ const ok = (res, what) => {
 const unwrap = (json) => (json && typeof json === 'object' && 'data' in json && 'success' in json ? json.data : json);
 const lit = (value) => `'${String(value).replaceAll("'", "''")}'`;
 
-async function listAll(table, { filter, orderby = 'id', limit = Infinity } = {}) {
+async function listAll(table, { filter, orderby = 'id', limit = Infinity, select } = {}) {
   const out = [];
   for (let skip = 0; out.length < limit; skip += 100) {
     const query = [`$top=100`, `$skip=${skip}`, `$orderby=${encodeURIComponent(orderby)}`];
     if (filter) query.push(`$filter=${encodeURIComponent(filter)}`);
+    if (select) query.push(`$select=${encodeURIComponent(select)}`);
     const page = ok(await http('GET', `/api/${table}?${query.join('&')}`), `list ${table}`).value || [];
     out.push(...page);
     if (page.length < 100) break;
@@ -265,6 +379,9 @@ async function taskEvents(taskId) {
   }
   return events;
 }
+// The raw event rows, without resolving note documents: a delete must still work after an earlier partial run removed a
+// note document, and a missing note is not a reason to keep the remaining rows forever.
+const rawTaskEvents = (taskId) => listAll('fm_task_event', { filter: `taskId eq ${lit(taskId)}`, orderby: 'seq' });
 const eventByKey = (key) => firstRow('fm_task_event', `idempotencyKey eq ${lit(key)}`);
 const taskRow = (taskId) => firstRow('fm_task', `taskId eq ${lit(taskId)}`);
 const checkRows = (taskId) => listAll('fm_task_check', { filter: `taskId eq ${lit(taskId)}`, orderby: 'scenarioId' });
@@ -280,13 +397,22 @@ function bodyOf(event) {
 }
 
 // The fold of every event's `set`; null while the task has no `created` event.
+// A created task starts in workflow state queued; setup, move, step, approve and reopen set workflowState,
+// workflowSince and the card's step fields (stepHarness, stepModel, stepEffort, stepAlive) in their own `set`.
 // The step follows the state: done is passed; review is dev once a deploy follows the newest done, else pr; running is
 // pr once a pr event follows the newest started or changes, else working; triage, todo and ready are queued; blocked
-// (and archived) keep the step they had. stageSince is the time of the event that set the step. lastEventAt and
-// lastNote come from the newest real event: a backlog view `row` event is not one. A machine record is not a note
-// either, so it leaves lastNote as it was: an import's source stamp (`{"source","sha256"}` under a `backfill:<task>:`
-// key, fm-task-backfill-lib.mjs) and a reconcile divergence (`{"field","oldSource","record"}` under a `reconcile:<task>:`
-// key, fm-task-reconcile-lib.mjs). The same JSON in a real comment is a note.
+// (and archived) keep the step they had. stageSince is the time of the event that set the step. lastEventAt comes from
+// the newest real event: a backlog view `row` event is not one. lastNote is the newest real event's note; an event with
+// no note leaves it as it was. A machine record is not a note either, so it leaves lastNote as it was: an import's source
+// stamp (`{"source","sha256"}` under a `backfill:<task>:` key, fm-task-backfill-lib.mjs) and a reconcile divergence
+// (`{"field","oldSource","record"}` under a `reconcile:<task>:` key, fm-task-reconcile-lib.mjs). The same JSON in a real
+// comment is a note. Nor is the wait a command writes after its own event (waitOn, which done --pr-url,
+// ask --next-actor owner and the no-model stop call: its note the PR or the question), so the caller's --note stays.
+// waitOn marks that wait `followUp: true` in its body. A wait written before the mark is one when its key is an earlier
+// event's key plus `:wait` and that event wrote one: a done holding a prUrl, or a needs-decision to the owner. A wait
+// the caller writes itself is a note, under any key.
+const wroteWait = (event) => (event?.kind === 'done' && Boolean(bodyOf(event).set?.prUrl)) || (event?.kind === 'needs-decision' && bodyOf(event).set?.nextActor === 'owner');
+const isFollowUpWait = (event, byKey) => event.kind === 'wait' && (bodyOf(event).followUp === true || (/:wait$/.test(event.idempotencyKey ?? '') && wroteWait(byKey.get(event.idempotencyKey.slice(0, -5)))));
 const MACHINE_RECORDS = { backfill: 'sha256,source', reconcile: 'field,oldSource,record' };
 const isMachineRecord = (event, note) => {
   const [prefix, taskId] = String(event.idempotencyKey ?? '').split(':');
@@ -302,6 +428,7 @@ function fold(events) {
   let task = null;
   let deployed = false;
   let pullRequest = false;
+  const byKey = new Map();
   for (const event of [...events].sort((a, b) => a.seq - b.seq)) {
     const set = { ...(bodyOf(event).set || {}), ...(event.rowText || {}) };
     if (event.kind === 'created' && !task) task = { taskId: event.taskId };
@@ -311,14 +438,16 @@ function fold(events) {
     if (event.kind === 'started' || event.kind === 'changes') pullRequest = false;
     if (event.kind === 'pr') pullRequest = true;
     task = { ...task, ...set, lastSeq: event.seq };
+    if (event.kind === 'created' && !task.workflowState) Object.assign(task, { workflowState: 'queued', workflowSince: event.createdAt ?? null });
     const stage = STEP_OF_STATE[task.state] ?? (task.state === 'review' ? (deployed ? 'dev' : 'pr')
       : task.state === 'running' ? (pullRequest ? 'pr' : 'working') : task.stage ?? 'queued');
     if (stage !== task.stage) Object.assign(task, { stage, stageSince: event.createdAt ?? null });
-    if (event.kind !== 'row') {
+    if (event.kind !== 'row' && event.kind !== 'checklist') {
       const note = String(bodyOf(event).note ?? '');
       task.lastEventAt = event.createdAt ?? null;
-      if (!isMachineRecord(event, note)) task.lastNote = note.slice(0, 300) || null;
+      if (note && !isMachineRecord(event, note) && !isFollowUpWait(event, byKey)) task.lastNote = note.slice(0, 300);
     }
+    byKey.set(event.idempotencyKey, event);
     if (REVIEWER_KINDS.includes(event.kind)) task.reviewer = event.actor ?? null;
   }
   if (!task) return null;
@@ -371,6 +500,11 @@ async function project(taskId) {
 // ---- arguments --------------------------------------------------------------------------------------------
 const COMMON = { actor: 's', role: 's', key: 's', note: 's', task: 's', json: 'b' };
 const SPECS = {
+  'owner-home': { pos: [], flags: {} },
+  'deploy-ledger': { pos: ['action'], flags: { file: 's', repo: 's' } },
+  setup: { pos: ['task'], flags: { file: 's', by: 's', 'from-rules': 'b', states: 's', repo: 's', account: 's', at: 's' } },
+  move: { pos: ['task'], flags: { to: 's' } },
+  step: { pos: ['task', 'action'], flags: { harness: 's', model: 's', effort: 's', account: 's', reason: 's', generation: 's' } },
   create: { pos: ['task'], flags: { title: 's', kind: 's', repo: 's', issue: 's', surface: 's', after: 'm' } },
   import: { pos: ['task'], flags: { title: 's', kind: 's', repo: 's', state: 's', assignee: 's', 'next-actor': 's', 'block-kind': 's', 'block-reason': 's', issue: 's', 'pr-url': 's', surface: 's', until: 's', since: 's' } },
   assign: { pos: ['task'], flags: { to: 's' } },
@@ -380,19 +514,27 @@ const SPECS = {
   ask: { pos: ['task'], flags: { question: 's', option: 'm', recommendation: 's', why: 's', document: 's', 'next-actor': 's', image: 'm', 'image-label': 'm' } },
   block: { pos: ['kind', 'task'], flags: { reason: 's', 'next-actor': 's', until: 's', on: 's', image: 'm', 'image-label': 'm' } },
   unblock: { pos: ['task'], flags: {} },
-  approve: { pos: ['task'], flags: {} },
+  approve: { pos: ['task'], flags: { check: 'b' } },
   changes: { pos: ['task'], flags: {} },
   reopen: { pos: ['task'], flags: { reason: 's' } },
   reassign: { pos: ['task'], flags: { to: 's', reason: 's' } },
   archive: { pos: ['task'], flags: {} },
+  delete: { pos: [], rest: 'tasks', flags: { reason: 's', 'assistance-record-only': 'b' } },
+  home: { pos: ['task'], flags: { home: 's' } },
   describe: { pos: ['task'], flags: { document: 's', 'document-title': 's' } },
+  plan: { pos: ['task'], flags: { document: 's', 'document-title': 's', image: 'm', 'image-label': 'm' } },
+  'plan-decision': { pos: ['task'], flags: { decision: 's', 'plan-seq': 's' } },
+  materials: { pos: ['task'], flags: {} },
   thread: { pos: ['task'], flags: { since: 's' } },
-  comment: { pos: ['task'], flags: { image: 'm', 'image-label': 'm', ask: 's', 'reply-to': 's' } },
-  event: { pos: ['task', 'kind'], flags: { 'pr-url': 's', head: 's', touched: 's', 'next-actor': 's', 'clears-on': 's', rows: 's' } },
+  comment: { pos: ['task'], flags: { material: 's', image: 'm', 'image-label': 'm', video: 'm', 'video-label': 'm', ask: 's', 'reply-to': 's', 'anchor-quote': 's', 'anchor-prefix': 's', 'anchor-suffix': 's', outcome: 's', accept: 'b' } },
+  'merge-authority': { pos: ['task'], flags: { 'pr-url': 's', head: 's', 'merge-authority': 's', receipt: 's', phase: 's', merged: 'b' } },
+  'pr-record': { pos: ['task'], flags: {} },
+  'pr-round': { pos: ['action'], flags: { file: 's' } },
+  event: { pos: ['task', 'kind'], flags: { 'pr-url': 's', head: 's', touched: 's', 'next-actor': 's', 'clears-on': 's', rows: 's', url: 's', merged: 'b', 'merge-authority': 's', receipt: 's' } },
   checks: { pos: ['task'], flags: { 'as-deployed': 's', touched: 's' } },
   link: { pos: ['parent', 'child'], flags: {} },
   rows: { pos: ['task', 'issue'], flags: { surface: 's' } },
-  check: { pos: ['task', 'target', 'status'], flags: { status: 's', evidence: 's', head: 's', 'next-actor': 's' } },
+  check: { pos: ['task', 'target', 'status'], flags: { status: 's', evidence: 's', 'evidence-image': 's', 'evidence-label': 's', head: 's', 'next-actor': 's' } },
   'owner-check': { pos: ['task', 'target'], flags: { 'page-title': 's', url: 's', steps: 's', data: 's', expected: 's' } },
   show: { pos: ['task'], flags: {} },
   list: { pos: [], flags: { state: 's', actor: 's' } },
@@ -400,10 +542,20 @@ const SPECS = {
   reproject: { pos: ['task'], flags: { all: 'b' } },
   'turn-end': { pos: ['task'], flags: { turn: 's' } },
   deliver: { pos: ['task'], flags: { consumer: 's' } },
-  document: { pos: ['task'], flags: {} },
-  gate: { pos: ['task'], flags: { issue: 's', head: 's', 'evidence-root': 's' } },
-  row: { pos: ['task'], flags: { section: 's', 'row-file': 's', 'notes-file': 's', gone: 'b', file: 's' } },
-  backlog: { pos: ['action'], flags: { file: 's', out: 's', 'absorb-only': 'b' } },
+  requests: { pos: ['task'], flags: {} },
+  steers: { pos: ['task'], flags: { peek: 'b' } },
+  'read-mark': { pos: ['task'], flags: {} },
+  inbox: { pos: ['task'], flags: { action: 's', target: 's', home: 's' } },
+  document: { pos: ['task'], flags: { kind: 's' } },
+  'owner-record': { pos: ['table', 'action'], flags: { file: 's', home: 's', identity: 's', kind: 's' } },
+  'plan-approve': { pos: ['task'], flags: {} },
+  'plan-check': { pos: ['task'], flags: {} },
+  'plan-spec': { pos: ['task'], flags: {} },
+  gate: { pos: ['task'], flags: { issue: 's', head: 's', 'evidence-root': 's', 'before-approval': 'b', touched: 's' } },
+  rules: { pos: [], flags: { state: 's', repo: 's', at: 's', account: 's' } },
+  answer: { pos: ['task'], flags: { question: 's', option: 's' } },
+  rule: { pos: ['action', 'id'], flags: { state: 's', harness: 's', model: 's', effort: 's', rank: 's', account: 's', hours: 's', scope: 's', enabled: 's', warning: 's' } },
+  checklist: { pos: ['task', 'verb', 'item'], flags: { reason: 's' } },
 };
 
 function parseArgs(command, argv) {
@@ -434,10 +586,11 @@ function parseArgs(command, argv) {
     if (type === 'm') (given[name] ||= []).push(value);
     else given[name] = value;
   }
-  if (positional.length > spec.pos.length) throw usage(`unexpected argument ${positional[spec.pos.length]} for ${command}`);
+  if (positional.length > spec.pos.length && !spec.rest) throw usage(`unexpected argument ${positional[spec.pos.length]} for ${command}`);
   spec.pos.forEach((name, i) => {
     if (positional[i] !== undefined) pos[name] = positional[i];
   });
+  if (spec.rest) pos[spec.rest] = positional.slice(spec.pos.length);
   return { pos, flags: given };
 }
 
@@ -490,14 +643,16 @@ async function append(taskId, who, build) {
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     const high = await highestSeq();
     const events = await taskEvents(taskId);
-    const spec = await build({ task: fold(events), events });
+    const spec = await build({ task: fold(events), events, seq: high + 1 });
     checkSet(spec.set || {});
     if (spec.note && JSON.stringify({ v: 1, note: spec.note, set: spec.set || {}, ...spec.extra }).length > 8000 - EVENT_STAGE_BUDGET) {
       spec.children = { ...spec.children, documents: [...(spec.children?.documents || []), { title: 'Event note', mediaType: 'text/plain', content: spec.note }] };
       spec.note = '';
       spec.extra = { ...spec.extra, noteDocument: true };
     }
-    const body = { seq: high + 1, taskId, kind: spec.kind, actorRole: who.role, actor: who.actor, body: wireBody(spec), idempotencyKey: who.key };
+    const body = { seq: high + 1, taskId, kind: spec.kind, actorRole: who.role, actor: who.actor, body: wireBody(spec), idempotencyKey: who.key,
+      ...(spec.kind === 'pr' && spec.extra?.prHead ? { prHead: spec.extra.prHead } : {}),
+      ...(spec.kind === 'pr' && spec.extra?.mergeAuthority ? { mergeAuthority: spec.extra.mergeAuthority } : {}) };
     const stage = fold([...events, body])?.stage;
     body.body = wireBody({ ...spec, extra: { ...spec.extra, stage } });
     Object.assign(body, spec.children || {});
@@ -536,7 +691,11 @@ function guard(command, task) {
   }
 }
 
+// The open parents a task waits on. A parent link alone is hierarchy and gates nothing (the board's Jira-style parent and
+// child); a task waits only while it holds a dependency block (`block dependency --on PARENT`), on its open parents.
 async function openParents(taskId) {
+  const task = fold(await taskEvents(taskId));
+  if (task?.blockKind !== 'dependency') return [];
   const links = await listAll('fm_task_link', { filter: `childTaskId eq ${lit(taskId)}`, orderby: 'parentTaskId' });
   const open = [];
   for (const link of links) {
@@ -575,7 +734,7 @@ async function release(parentId, who) {
     if (!child || child.state !== 'todo' || (await openParents(link.childTaskId)).length) continue;
     await append(link.childTaskId, { ...who, key: `${who.key}:release:${link.childTaskId}` }, async ({ task }) => {
       if (task.state !== 'todo') throw rule('already released');
-      return { kind: 'promoted', note: `parent ${parentId} is closed`, set: { state: 'ready', nextActor: task.assignee && task.assignee !== '-' ? 'worker' : 'firstmate' } };
+      return { kind: 'promoted', note: `parent ${parentId} is closed`, set: { state: 'ready', nextActor: task.assignee && task.assignee !== '-' ? 'worker' : 'firstmate', blockKind: null, blockReason: null } };
     }).catch((error) => {
       if (!(error instanceof Fail && error.code === 5)) throw error;
     });
@@ -604,6 +763,25 @@ function imagesOf(args) {
   });
 }
 const withImages = (children, images) => (images.length ? { ...children, images } : children);
+
+function videosOf(args) {
+  const paths = args.flags.video || [];
+  const labels = args.flags['video-label'] || [];
+  if (paths.length !== labels.length) throw usage('give one --video-label for each --video');
+  return paths.map((file, i) => {
+    const mediaType = VIDEO_TYPES[path.extname(file).toLowerCase()];
+    if (!mediaType) throw rule(`${file}: a video is an mp4 or webm file`);
+    let data;
+    try {
+      data = fs.readFileSync(file);
+    } catch {
+      throw rule(`${file}: cannot read the video`);
+    }
+    if (!data.length || data.length > MAX_VIDEO) throw rule(`${file}: a video is 1 byte to 20 MiB`);
+    return { label: labels[i], mediaType, size: data.length, content: data.toString('base64') };
+  });
+}
+const withVideos = (children, videos) => (videos.length ? { ...children, videos } : children);
 
 const surfaceActor = (surface) => (surface === 'user-visible' ? 'tester' : 'worker');
 const rowKey = (row) => `${row.scenarioId}@${row.width}`;
@@ -642,11 +820,22 @@ async function write(taskId, who, build, after, wait) {
   const result = await append(taskId, who, build);
   let projected;
   try {
+    const stepWrites = bodyOf(result.event).stepWrites;
+    if (Array.isArray(stepWrites)) {
+      // a replayed or late event writes only the fields of a state that no newer event has written since
+      const later = (await taskEvents(taskId)).filter(e => e.seq > result.event.seq).flatMap(e => bodyOf(e).stepWrites ?? []);
+      for (const step of stepWrites) {
+        const taken = new Set(later.filter(l => l.state === step.state).flatMap(l => Object.keys(l)));
+        const fields = Object.fromEntries(Object.entries(step).filter(([k]) => k === 'state' || !taken.has(k)));
+        if (Object.keys(fields).length > 1) await saveStep(taskId, fields);
+      }
+    }
     projected = await project(taskId);
     if (after) {
       await after(result);
       projected = await project(taskId);
     }
+    if (await syncChecklist(taskId)) projected = await project(taskId);
   } catch (error) {
     if (error instanceof Fail) {
       out(`seq=${result.event.seq} task=${taskId} event=${result.event.kind} (stored; the follow-up write failed)`);
@@ -692,14 +881,17 @@ const statusFile = (taskId) => path.join(process.env.FM_STATE_OVERRIDE || path.j
 
 // A declared wait (G1): `event <task> wait`, which the Tester ask builder, `ask --next-actor owner` and `done --pr-url`
 // also write. The status view writes it as a paused line keyed wait-<seq>; the record event that clears it is the asked
-// rows each holding a newer result that is not pending (rows), an unblocked event (answer), a `pr` event whose note says
-// merged (merge), or for any of them an approved or archived event.
+// rows each holding a newer result that is not pending (rows), an unblocked event (answer), a `pr` event given --merged
+// or whose note says merged (merge), or for any of them an approved or archived event.
 function clearingEvent(wait, events) {
   const { clearsOn, rows = [] } = bodyOf(wait).wait || {};
   const later = events.filter((e) => e.seq > wait.seq);
   const closing = later.find((e) => e.kind === 'approved' || e.kind === 'archived');
-  if (clearsOn === 'answer') return later.find((e) => e.kind === 'unblocked') ?? closing;
-  if (clearsOn === 'merge') return later.find((e) => e.kind === 'pr' && /\bmerged\b/i.test(bodyOf(e).note ?? '')) ?? closing;
+  if (clearsOn === 'answer') {
+    const { question } = bodyOf(wait).wait || {};
+    return later.find((e) => e.kind === 'unblocked' || (e.kind === 'answered' && (question ? bodyOf(e).answer?.question === question : bodyOf(e).set?.state !== undefined))) ?? closing;
+  }
+  if (clearsOn === 'merge') return later.find((e) => e.kind === 'pr' && (bodyOf(e).merged === true || /\bmerged\b/i.test(bodyOf(e).note ?? ''))) ?? closing;
   // The pr-review source writes one ci event for the PR's current head once its checks finish, green or failed,
   // so the delivered CI result is that event whatever head the worker was waiting on.
   if (clearsOn === 'ci') {
@@ -751,12 +943,12 @@ async function waitView(taskId, known) {
   }
 }
 
-// Append a wait for a task, keyed on the call that asks for it, and write its paused line.
-async function waitOn(taskId, who, { actor, clearsOn, note, rows = [] }) {
+// Append a wait for a task, keyed on the call that asks for it and marked followUp, and write its paused line.
+async function waitOn(taskId, who, { actor, clearsOn, note, rows = [], question }) {
   const result = await append(taskId, { ...who, key: `${who.key}:wait` }, async ({ task }) => {
     if (!task) throw rule('no such task');
     if (CLOSED.includes(task.state)) throw rule(`wait is refused: ${taskId} is ${task.state}`);
-    return { kind: 'wait', note, extra: { wait: { actor, clearsOn, rows } } };
+    return { kind: 'wait', note, extra: { followUp: true, wait: { actor, clearsOn, rows, ...(question ? { question } : {}) } } };
   });
   await statusView(result.event);
   return result;
@@ -794,6 +986,190 @@ async function verifyView(event) {
 // ---- commands ---------------------------------------------------------------------------------------------
 const noteOf = (args) => args.flags.note ?? '';
 
+const stepRows = (taskId) => listAll('fm_task_step', { filter: `taskId eq ${lit(taskId)}`, orderby: 'position' });
+const stepProjection = (step) => ({ stepHarness: step?.harness ?? null, stepModel: step?.model ?? null, stepEffort: step?.effort ?? null, stepAlive: step?.alive ?? null });
+async function saveStep(taskId, step) {
+  const old = await firstRow('fm_task_step', `taskId eq ${lit(taskId)} and state eq ${lit(step.state)}`);
+  return ok(await http(old ? 'PATCH' : 'POST', old ? `/api/fm_task_step/${old.id}` : '/api/fm_task_step', { taskId, ...step }), 'write step');
+}
+// A setup built from the owner's model rules (plan v2 D2): each state's first candidate now is its runtime and the rest
+// are its fallbacks, in rank order; Merge has no model. A state with no candidate stops the task with the owner question.
+async function stepsFromRules(taskId, f, who) {
+  const states = String(f.states ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+  if (!states.length) throw usage('setup --from-rules needs --states implement,merge,...');
+  const task = fold(await taskEvents(taskId));
+  if (!task) throw rule('setup requires an open task');
+  const repo = f.repo ?? task.repo ?? undefined;
+  const at = f.at === undefined ? new Date() : new Date(isoOf(f.at, '--at'));
+  const rows = await listAll('fm_model_rule', { orderby: 'id' });
+  const steps = [];
+  for (const state of states) {
+    if (state === 'merge') {
+      steps.push({ state });
+      continue;
+    }
+    const { pool, live } = ruleCandidates(rows, { state: oneOf(RULE_STATES, state, 'state'), repo, account: f.account, at });
+    if (!live.length) {
+      await stopForNoModel(taskId, { state, repo, at, pool }, { ...who, key: `${who.key}:no-model:${state}` });
+      throw rule(`no ${state} rule can run for ${repo ?? 'every repo'} now; ${taskId} waits on the owner`);
+    }
+    const [first, ...rest] = live;
+    const ids = [];
+    for (const r of live) if ([...ids, r.id].join(',').length <= 500) ids.push(r.id);
+    steps.push({ state, harness: first.harness, model: first.model, effort: first.effort ?? undefined, source: 'rule', ruleIds: ids.join(','),
+      fallbacks: rest.map((r) => ({ harness: r.harness, model: r.model, ...(r.effort ? { effort: r.effort } : {}) })) });
+  }
+  return steps;
+}
+
+async function cmdSetup(args) {
+  const taskId = taskIdOf(args);
+  const fromRules = args.flags['from-rules'] === true;
+  if (fromRules === Boolean(args.flags.file)) throw usage('setup needs --file or --from-rules, not both');
+  const by = oneOf(['firstmate', 'owner'], args.flags.by ?? 'firstmate', 'setup by');
+  let input;
+  if (fromRules) input = { steps: await stepsFromRules(taskId, args.flags, identity(args, 'firstmate')) };
+  else {
+    try { input = JSON.parse(fs.readFileSync(args.flags.file, 'utf8')); } catch { throw usage('setup file must contain JSON'); }
+  }
+  const steps = Array.isArray(input) ? input : input.steps;
+  if (!Array.isArray(steps) || !steps.length) throw usage('setup needs a nonempty steps array');
+  let position = -1;
+  const normalized = steps.map((s, index) => {
+    const p = WORKFLOW_STATES.indexOf(s.state);
+    if (p <= position || p < 1 || p > 5) throw rule('setup states must be unique and in workflow order');
+    position = p;
+    if (s.state !== 'merge' && (!s.harness || !s.model)) throw usage(`${s.state} needs harness and model`);
+    if (s.fallbacks !== undefined && !Array.isArray(s.fallbacks)) throw usage('fallbacks must be an array');
+    for (const candidate of s.fallbacks ?? []) {
+      if (!candidate || typeof candidate.harness !== 'string' || !candidate.harness.trim() || typeof candidate.model !== 'string' || !candidate.model.trim()) throw usage('each fallback needs harness and model');
+    }
+    return { state: s.state, position: index, harness: s.state === 'merge' ? null : s.harness, model: s.state === 'merge' ? null : s.model, effort: s.state === 'merge' ? null : s.effort ?? null, fallbacks: JSON.stringify(s.fallbacks ?? []), source: s.source === 'rule' ? 'rule' : by, ruleIds: s.ruleIds ?? null };
+  });
+  return write(taskId, identity(args, 'firstmate'), async ({ task, events }) => {
+    if (!task || CLOSED.includes(task.state)) throw rule('setup requires an open task');
+    // an open start-request runs the setup it was asked on; a setup written before its answer would change that launch
+    const pending = openRequests(events).find((e) => e.kind === 'start-request');
+    if (pending) throw rule(`setup is refused: start-request ${pending.seq} is still open on ${taskId}`);
+    const old = await stepRows(taskId);
+    if (old.some(s => !['pending', 'skipped'].includes(s.status))) {
+      const active = old.filter(s => s.status !== 'skipped');
+      if (active.length !== normalized.length || active.some((s, i) => s.state !== normalized[i].state)) throw rule('a started setup keeps its states; only pending states take new runtimes');
+    }
+    // a state that has run keeps the runtime it ran with (it may be a fallback); only pending states take the new one
+    const ran = (state) => old.some(o => o.state === state && !['pending', 'skipped'].includes(o.status));
+    const removed = old.filter(s => !normalized.some(n => n.state === s.state));
+    const stepWrites = [...normalized.map(s => ran(s.state) ? { state: s.state, position: s.position }
+      : { ...s, ...(old.some(o => o.state === s.state && o.status !== 'skipped') ? {} : { status: 'pending', attempt: 0, endReason: null }) }),
+    ...removed.map(s => ({ state: s.state, status: 'skipped' }))];
+    // the card shows the current state's runtime: a setup edit of that state before it starts shows at once
+    const current = normalized.find(s => s.state === task.workflowState);
+    const card = current && !ran(current.state) ? stepProjection(current) : {};
+    return { kind: 'setup', extra: { stepWrites }, set: { setupBy: by, setupAt: new Date().toISOString(), ...card }, children: { documents: [{ title: 'Setup', mediaType: 'application/json', content: JSON.stringify(normalized) }] } };
+  });
+}
+async function cmdMove(args) {
+  const taskId = taskIdOf(args);
+  const to = oneOf(WORKFLOW_STATES, args.flags.to, 'workflow state');
+  return write(taskId, identity(args, 'firstmate'), async ({ task }) => {
+    if (!task || CLOSED.includes(task.state)) throw rule('move requires an open task');
+    const steps = (await stepRows(taskId)).filter(s => s.status !== 'skipped');
+    const index = steps.findIndex(s => s.state === task.workflowState);
+    const target = steps.find(s => s.state === to);
+    const next = task.workflowState === 'queued' ? steps[0] : steps[index + 1];
+    const retry = ['testing', 'verify'].includes(task.workflowState) && to === 'implement' && (await checkRows(taskId)).some(r => r.status === 'fail');
+    if (!target || (next?.state !== to && !retry)) throw rule('move must follow setup; Done requires approve');
+    // The Solution gate: the owner's approval of the current plan opens Implement on a ship task, whatever its surface. A
+    // retry passes the same gate, so a plan replaced after its approval waits for the owner again.
+    if (to === 'implement' && task.kind === 'ship' && task.planDecision !== 'approve') {
+      const solution = !task.planSeq ? 'has no Solution' : task.planDecision === 'changes' ? 'has a Solution the owner asked to change' : 'has a Solution the owner has not approved yet';
+      throw rule(`move to implement is refused: ${taskId} is a ship task and ${solution}. Write the Solution with fm-task.sh plan ${taskId} --document solution.md; the owner approves it on the task's Solution tab.`);
+    }
+    // the state left behind stops running: its attempt ends with the move
+    const now = new Date().toISOString();
+    const left = steps.find(s => s.state === task.workflowState && s.status === 'running');
+    const stepWrites = left ? [{ state: left.state, status: 'done', alive: 'dead', endedAt: now, endReason: `moved to ${to}` }] : [];
+    return { kind: 'moved', extra: { stepWrites }, set: { workflowState: to, workflowSince: now, ...stepProjection(target) } };
+  });
+}
+// The spawn generation that started the running attempt of a state: the newest step event that set it running.
+const startGeneration = (events, state) => {
+  const starts = events.filter(e => e.kind === 'step' && bodyOf(e).stepWrites?.some(s => s.state === state && s.status === 'running'));
+  return starts.length ? bodyOf(starts.at(-1)).generation ?? null : null;
+};
+// step start, alive, dead and end. A --generation names the spawn incarnation that reports (state/<task>.meta spawn_gen):
+// a report from another incarnation than the one that started the running attempt is refused, so a late watcher pass of
+// a replaced worker cannot overwrite its successor. A start from a new incarnation while the state runs (a relaunch)
+// re-points the running attempt to the new runtime without counting another attempt; the same incarnation again is
+// unchanged. alive, dead and end on a state that is not running, and an unchanged liveness, write nothing.
+async function cmdStep(args) {
+  const taskId = taskIdOf(args);
+  const action = oneOf(['start', 'alive', 'dead', 'end'], args.pos.action, 'step action');
+  const generation = args.flags.generation ?? null;
+  const who = identity(args, 'firstmate');
+  if (action === 'start' && !args.flags.harness) throw usage('step start needs --harness');
+  if (action === 'end' && !args.flags.reason) throw usage('step end needs --reason');
+  // the decision on the record as it is now; the write repeats it against the events really before it
+  const decide = async (task, events) => {
+    if (!task) throw rule('no such task');
+    const current = (await stepRows(taskId)).find(s => s.state === task.workflowState && s.status !== 'skipped');
+    if (!current) throw rule(`current workflow state ${task.workflowState ?? 'none'} has no setup step`);
+    const started = startGeneration(events, current.state);
+    const now = new Date().toISOString();
+    if (action === 'start') {
+      if (current.state === 'merge') throw rule('Merge has no worker model');
+      // a spawn on the harness default names no model: the configured step's model and effort stand
+      const runtime = { harness: args.flags.harness, model: args.flags.model || current.model, effort: args.flags.effort || current.effort || null, account: args.flags.account || null };
+      if (!runtime.model) throw usage('step start needs --model: the setup names no model for this state');
+      if (current.status !== 'running') return { current, patch: { ...runtime, status: 'running', alive: 'alive', attempt: current.attempt + 1, startedAt: now, lastHeartbeatAt: now, endedAt: null, endReason: null } };
+      if (!generation || !started) throw rule('end the running step before starting another attempt');
+      if (generation === started) return { current, unchanged: true };
+      return { current, patch: { ...runtime, status: 'running', alive: 'alive', lastHeartbeatAt: now } };
+    }
+    if (current.status !== 'running') return { current, unchanged: true };
+    if (generation && started && generation !== started) throw rule(`step generation ${generation} is stale: the running attempt started at ${started}`);
+    if (action === 'end') return { current, patch: { status: args.flags.reason === 'failed' ? 'failed' : 'done', alive: 'dead', endedAt: now, endReason: args.flags.reason } };
+    if (current.alive === action) return { current, unchanged: true };
+    return { current, patch: { alive: action } };
+  };
+  const before = await taskEvents(taskId);
+  const first = await decide(fold(before), before);
+  if (first.unchanged) return out(`step ${taskId}: unchanged`);
+  if (['alive', 'dead'].includes(action)) who.key = args.flags.key ?? `step-live:${taskId}:${first.current.state}:${first.current.attempt}:${generation ?? '-'}:${action}:${fold(before).lastSeq}`;
+  return write(taskId, who, async ({ task, events }) => {
+    const { current, patch, unchanged } = await decide(task, events);
+    if (unchanged) throw rule('the step changed meanwhile; nothing to write');
+    return { kind: 'step', note: args.flags.reason ?? action, extra: { generation, stepWrites: [{ state: current.state, ...patch }] }, set: stepProjection({ ...current, ...patch }) };
+  });
+}
+
+// The backlog home a task made in this firstmate home belongs to, as tasks-axi reads it (bin/fm-tasks-axi-lib.sh
+// fm_tasks_axi_workdir): the home's config/tasks-axi/.tasks.toml, else its own .tasks.toml. Under the cfw5001 backend it is
+// [cfw5001] home, `main` when unset; under any other backend the task has none. The board reads tasks of one backlog home,
+// so a task created without it is not on any board.
+function backlogHomeOf() {
+  const root = process.env.FM_HOME || path.dirname(HERE);
+  const local = path.join(root, 'config', 'tasks-axi', '.tasks.toml');
+  const file = fs.existsSync(local) ? local : path.join(root, '.tasks.toml');
+  if (!fs.existsSync(file)) return null;
+  let backend = null;
+  let home = null;
+  let section = '';
+  for (const line of fs.readFileSync(file, 'utf8').split('\n')) {
+    const head = line.match(/^\s*\[([^\]]+)\]\s*(#.*)?$/);
+    if (head) { section = head[1].trim(); continue; }
+    const pair = line.match(/^\s*([A-Za-z0-9_-]+)\s*=\s*"([^"]*)"\s*(#.*)?$/);
+    if (!pair) continue;
+    if (section === '' && pair[1] === 'backend') backend = pair[2];
+    if (section === 'cfw5001' && pair[1] === 'home') home = pair[2];
+  }
+  if ((process.env.TASKS_AXI_BACKEND || backend) !== 'cfw5001') return null;
+  return home || 'main';
+}
+
+// The created row's backlog home, when this firstmate home has one.
+const homeSet = () => { const home = backlogHomeOf(); return home ? { backlogHome: home } : {}; };
+
 async function cmdCreate(args) {
   const taskId = taskIdOf(args);
   const who = identity(args, 'firstmate');
@@ -814,20 +1190,22 @@ async function cmdCreate(args) {
     who,
     async ({ task: existing }) => {
       if (existing) throw rule(`task ${taskId} already exists`);
-      let waiting = false;
+      // A subtask starts in triage like any task, and belongs to its first parent's board.
+      let home = homeSet();
       for (const parent of parents) {
         const p = fold(await taskEvents(parent));
         if (!p) throw rule(`parent ${parent} does not exist`);
-        if (!CLOSED.includes(p.state)) waiting = true;
+        if (parent === parents[0] && p.backlogHome) home = { backlogHome: p.backlogHome };
       }
       return {
         kind: 'created',
         note: noteOf(args),
-        set: { title: f.title, repo: f.repo ?? null, kind, state: waiting ? 'todo' : 'triage', assignee: '-', nextActor: 'firstmate', blockKind: null, blockReason: null, blockRepeats: 0, issueUrl: f.issue ?? null, prUrl: null, surface, holdUntil: null },
+        set: { title: f.title, repo: f.repo ?? null, kind, state: 'triage', assignee: '-', nextActor: 'firstmate', blockKind: null, blockReason: null, blockRepeats: 0, issueUrl: f.issue ?? null, prUrl: null, surface, holdUntil: null, ...home },
       };
     },
     async () => {
       for (const parent of parents) await ensureLink(parent, taskId);
+      await applyChecklist(taskId);
     },
   );
   return task;
@@ -852,7 +1230,7 @@ async function cmdImport(args) {
     return {
       kind: 'created',
       note: `imported${f.since ? ` (open since ${f.since})` : ''}`,
-      set: { title: f.title, repo: f.repo ?? null, kind, state, assignee: f.assignee ?? '-', nextActor, blockKind, blockReason: f['block-reason'] ?? null, blockRepeats: 0, issueUrl: f.issue ?? null, prUrl: f['pr-url'] ?? null, surface, holdUntil: until },
+      set: { title: f.title, repo: f.repo ?? null, kind, state, assignee: f.assignee ?? '-', nextActor, blockKind, blockReason: f['block-reason'] ?? null, blockRepeats: 0, issueUrl: f.issue ?? null, prUrl: f['pr-url'] ?? null, surface, holdUntil: until, ...homeSet() },
     };
   }).catch((error) => {
     if (error instanceof Fail && error.code === 5 && /already present/.test(error.message)) {
@@ -874,7 +1252,8 @@ function simple(command, kind, setFor, { needNote = false } = {}) {
       who,
       async ({ task }) => {
         guard(command, task);
-        return { kind, note: noteOf(args), set: await setFor(task, args, taskId) };
+        const { stepWrites, ...set } = await setFor(task, args, taskId);
+        return { kind, note: noteOf(args), set, ...(stepWrites?.length ? { extra: { stepWrites } } : {}) };
       },
       ['approve', 'archive'].includes(command) ? () => release(taskId, who) : undefined,
     );
@@ -896,20 +1275,235 @@ const cmdStart = simple('start', 'started', async (task, args, taskId) => {
   if (parents.length) throw rule(`start is refused while the task waits on open parents: ${parents.join(', ')}`);
   return { state: 'running', nextActor: 'worker', holdUntil: null };
 });
-const cmdHeartbeat = simple('heartbeat', 'heartbeat', async () => ({}));
+const cmdHeartbeat = simple('heartbeat', 'heartbeat', async (task, args, taskId) => {
+  const step = (await stepRows(taskId)).find(s => s.state === task.workflowState && s.status === 'running');
+  if (step) await saveStep(taskId, { state: step.state, lastHeartbeatAt: new Date().toISOString() });
+  return {};
+});
 const cmdUnblock = simple('unblock', 'unblocked', async (task, args, taskId) => {
   const waiting = (await openParents(taskId)).length > 0;
-  const set = { state: waiting ? 'todo' : 'ready', nextActor: 'worker', holdUntil: null, blockReason: null };
-  if (task.state === 'triage') Object.assign(set, { blockKind: null, blockRepeats: 0 });
+  // blockKind clears with the block; the repeat count keeps its streak in the events (streakKind).
+  const set = { state: waiting ? 'todo' : 'ready', nextActor: 'worker', holdUntil: null, blockReason: null, blockKind: null };
+  if (task.state === 'triage') Object.assign(set, { blockRepeats: 0 });
   return set;
 });
 const cmdChanges = simple('changes', 'changes', async () => ({ state: 'ready', nextActor: 'worker' }), { needNote: true });
 const cmdReopen = async (args) => {
   if (!args.flags.reason?.trim()) throw usage('reopen needs --reason');
   args.flags.note = args.flags.reason;
-  return simple('reopen', 'reopened', async () => ({state: 'ready', nextActor: 'firstmate', blockKind: null, blockReason: null, blockRepeats: 0, holdUntil: null}))(args);
+  // the workflow returns to the last state that ran, and the states approve skipped wait again
+  return simple('reopen', 'reopened', async (task, a, taskId) => {
+    const steps = await stepRows(taskId);
+    // the state that ran last in event order: after testing sends the task back, implement ran after testing
+    const lastRan = (await taskEvents(taskId)).filter(e => e.kind === 'step').flatMap(e => bodyOf(e).stepWrites ?? [])
+      .filter(w => w.status === 'running').at(-1)?.state;
+    const last = steps.find(s => s.state === lastRan);
+    const stepWrites = steps.filter(s => s.status === 'skipped' && s.endReason === 'approved').map(s => ({ state: s.state, status: 'pending', endReason: null }));
+    return { state: 'ready', nextActor: 'firstmate', blockKind: null, blockReason: null, blockRepeats: 0, holdUntil: null,
+      ...(task.workflowState === 'done' ? { workflowState: last?.state ?? 'queued', workflowSince: new Date().toISOString(), ...stepProjection(last) } : {}), stepWrites };
+  })(args);
 };
+// home: the backfill for a task written before create and import set the backlog home; the board reads one home.
+async function cmdHome(args) {
+  const taskId = taskIdOf(args);
+  const home = args.flags.home;
+  if (!home || !/^[A-Za-z0-9._-]{1,128}$/.test(home)) throw usage('home needs --home with a valid backlog home');
+  const who = identity(args, 'firstmate');
+  const check = (task) => {
+    if (!task) throw rule(`no such task ${taskId}`);
+    if (task.state === 'archived') throw rule(`home is refused: ${taskId} is archived`);
+    if (task.backlogHome && task.backlogHome !== home) throw rule(`home is refused: ${taskId} is already in home ${task.backlogHome}`);
+    return task.backlogHome === home;
+  };
+  if (check(fold(await taskEvents(taskId)))) {
+    out(`task=${taskId} home=${home} (already)`);
+    return null;
+  }
+  const result = await write(taskId, who, async ({ task }) => {
+    if (check(task)) throw rule(`home is refused: ${taskId} was set to ${home} meanwhile`);
+    return { kind: 'row', note: 'Backlog home', set: { backlogHome: home } };
+  });
+  out(`task=${taskId} home=${home}`);
+  return result;
+}
+
 const cmdArchive = simple('archive', 'archived', async () => ({ state: 'archived', nextActor: 'firstmate' }));
+
+// The worker state of a task is the endpoint recorded in this home, read through the backend contract in bin/.
+// A delete is irreversible, so an unreadable endpoint is not taken as proof that nobody is running.
+function workerState(taskId) {
+  const home = process.env.FM_HOME;
+  if (!home) return 'unknown';
+  const meta = path.join(process.env.FM_STATE_OVERRIDE || path.join(home, 'state'), `${taskId}.meta`);
+  if (!fs.existsSync(meta)) return 'dead';
+  const probe = process.env.FM_TASK_AGENT_STATE;
+  const run = probe
+    ? spawnSync(probe, [meta], { encoding: 'utf8', timeout: 20000 })
+    : spawnSync('bash', ['-c', '. "$1/fm-backend.sh"; b=$(fm_backend_of_meta "$2") || exit 1; t=$(fm_backend_target_of_meta "$2") || exit 1; [ -n "$t" ] || exit 1; fm_backend_agent_alive "$b" "$t"', 'fm-task-delete-check', HERE, meta], { encoding: 'utf8', timeout: 20000 });
+  const said = String(run.stdout ?? '').trim();
+  return run.status === 0 && said === 'alive' ? 'alive' : run.status === 0 && said === 'dead' ? 'dead' : 'unknown';
+}
+
+// Only a definite answer closes the PR question: a failed, rejected, or unreadable lookup is not proof that the task's
+// PR is closed, so it refuses the delete instead of deleting under an open review.
+function prState(prUrl) {
+  if (!/^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+/.test(prUrl)) return 'unknown';
+  const run = spawnSync(GH, ['pr', 'view', prUrl, '--json', 'state'], { encoding: 'utf8', timeout: 20000 });
+  if (run.error || run.status !== 0 || typeof run.stdout !== 'string' || !run.stdout.trim()) return 'unknown';
+  try {
+    const state = String(JSON.parse(run.stdout)?.state ?? '').toUpperCase();
+    return state === 'OPEN' ? 'open' : state === 'CLOSED' || state === 'MERGED' ? 'closed' : 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
+const EVENT_CHILD_TABLES = ['fm_event_done', 'fm_event_question', 'fm_event_block', 'fm_event_image', 'fm_event_document', 'fm_event_video'];
+const filterBatches = (expressions, size = 20) => {
+  const out = [];
+  for (let i = 0; i < expressions.length; i += size) out.push(expressions.slice(i, i + size).join(' or '));
+  return out;
+};
+async function listByFilters(table, expressions) {
+  const rows = [];
+  for (const filter of filterBatches(expressions)) rows.push(...await listAll(table, { filter, orderby: 'id', select: 'id' }));
+  return rows;
+}
+async function deleteRows(table, rows) {
+  let count = 0;
+  for (const row of rows) {
+    const res = await http('DELETE', `/api/${table}/${encodeURIComponent(row.id)}`);
+    if (res.status === 404) continue;
+    ok(res, `delete ${table} ${row.id}`);
+    count++;
+  }
+  return count;
+}
+
+// Delete every row the task owns, children first, so a failure leaves the task row readable for a re-run. Notifications
+// are dismissed only after the task row is deleted, so any row-delete failure leaves its cards open.
+async function dismissTaskNotices(taskId) {
+  const notices = await listAll('notification', { filter: `taskId eq ${lit(taskId)} and state ne 'dismissed'`, orderby: 'id', select: 'id' });
+  for (const notice of notices) {
+    ok(await http('PATCH', `/api/notification/${encodeURIComponent(notice.id)}`, { state: 'dismissed' }), 'dismiss the notification');
+  }
+  return notices.length;
+}
+// The owner's pictures kept as files for the worker (bin/fm-task-owner.sh, comment --image-data) go with their task,
+// except on a record-only delete, whose session still runs (deleteOutcome decides).
+function ownerImagesDir(taskId) {
+  const data = process.env.FM_DATA_OVERRIDE || (process.env.FM_HOME && path.join(process.env.FM_HOME, 'data'));
+  const dir = data && path.join(data, taskId, 'owner-images');
+  return dir && fs.existsSync(dir) ? dir : null;
+}
+function removeOwnerImages(taskId) {
+  const dir = ownerImagesDir(taskId);
+  if (!dir) return false;
+  fs.rmSync(dir, { recursive: true });
+  return true;
+}
+async function deleteTaskRows(taskId, events) {
+  const eventIds = events.map((e) => `fmTaskEventId eq ${e.id}`);
+  const seqs = events.map((e) => `seq eq ${e.seq}`);
+  let rows = 0;
+  for (const table of EVENT_CHILD_TABLES) rows += await deleteRows(table, await listByFilters(table, eventIds));
+  for (const table of ['fm_task_step', 'fm_task_check', 'fm_owner_check']) {
+    rows += await deleteRows(table, await listAll(table, { filter: `taskId eq ${lit(taskId)}`, orderby: 'id', select: 'id' }));
+  }
+  rows += await deleteRows('fm_task_delivery', await listByFilters('fm_task_delivery', seqs));
+  rows += await deleteRows('fm_task_event', events);
+  rows += await deleteRows('fm_task_link', [
+    ...await listAll('fm_task_link', { filter: `parentTaskId eq ${lit(taskId)}`, orderby: 'id', select: 'id' }),
+    ...await listAll('fm_task_link', { filter: `childTaskId eq ${lit(taskId)}`, orderby: 'id', select: 'id' }),
+  ]);
+  rows += await deleteRows('fm_task', await listAll('fm_task', { filter: `taskId eq ${lit(taskId)}`, orderby: 'id', select: 'id' }));
+  await dismissTaskNotices(taskId);
+  return rows;
+}
+
+// delete <task>...: hard delete, no backup. A refusal is checked before any row of that task is written, and one
+// refused id does not stop the others.
+// Decide and perform one delete: every refusal happens before the first write, so a refused id is left untouched.
+async function deleteOutcome(taskId, assistanceRecordOnly = false) {
+  // A partial earlier run leaves the task row without its events; that row is still deleted.
+  const events = await rawTaskEvents(taskId);
+  const task = fold(events);
+  const stored = task ? null : await firstRow('fm_task', `taskId eq ${lit(taskId)}`);
+  if (!task && !stored && !events.length) {
+    // A failed notification PATCH or picture removal can outlive the task row. Retry the cleanup without recreating the task.
+    // Pictures a record-only delete kept belong to a session that may still run: they go only once its worker is gone,
+    // and that refusal comes before a notice is dismissed.
+    const pictures = !assistanceRecordOnly && Boolean(ownerImagesDir(taskId));
+    if (pictures) {
+      const holder = workerState(taskId);
+      if (holder === 'alive') return { refuse: 'a live worker' };
+      if (holder === 'unknown') return { refuse: 'its worker state could not be read' };
+    }
+    const dismissed = await dismissTaskNotices(taskId);
+    if (pictures) removeOwnerImages(taskId);
+    return dismissed || pictures ? { rows: 0 } : { refuse: 'no such task' };
+  }
+  const state = task ? task.state : stored?.state;
+  const prUrl = task ? task.prUrl : stored?.prUrl;
+  if (assistanceRecordOnly) {
+    // Retire an obsolete task projection, not the live assistance session.
+    const kind = task ? task.kind : stored?.kind;
+    const home = process.env.FM_HOME;
+    const meta = path.join(process.env.FM_STATE_OVERRIDE || path.join(home, 'state'), `${taskId}.meta`);
+    let metadata;
+    try { metadata = fs.readFileSync(meta, 'utf8'); } catch { return { refuse: 'assistance metadata could not be read' }; }
+    if (kind !== 'assistance' || !metadata.split('\n').includes('kind=assistance')) {
+      return { refuse: 'record-only deletion requires an assistance row and assistance metadata' };
+    }
+  }
+  if (state === 'running' && !assistanceRecordOnly) return { refuse: 'running' };
+  const worker = assistanceRecordOnly ? 'dead' : workerState(taskId);
+  if (worker === 'alive') return { refuse: 'a live worker' };
+  if (worker === 'unknown') return { refuse: 'its worker state could not be read' };
+  if (prUrl) {
+    const pr = prState(prUrl);
+    if (pr === 'open') return { refuse: `open PR ${prUrl}` };
+    if (pr === 'unknown') return { refuse: 'its PR state could not be read' };
+  }
+  // A transition that appended while the checks ran would leave an event after the task row is gone; a changed
+  // snapshot refuses this id before anything is written.
+  const fresh = await rawTaskEvents(taskId);
+  if (fresh.length !== events.length || fresh.some((e, i) => e.id !== events[i].id)) {
+    return { refuse: 'its events changed while it was checked' };
+  }
+  const rows = await deleteTaskRows(taskId, events);
+  // The session of a record-only delete still runs and may not have read a picture yet: its files stay.
+  if (!assistanceRecordOnly) removeOwnerImages(taskId);
+  return { rows };
+}
+
+async function cmdDelete(args) {
+  const ids = args.pos.tasks ?? [];
+  if (!ids.length) throw usage('delete needs at least one task');
+  if (!args.flags.reason?.trim()) throw usage('delete needs --reason');
+  identity(args, 'firstmate');
+  const deleted = [];
+  const refused = [];
+  const failed = [];
+  for (const taskId of ids) {
+    if (!TASK_ID.test(taskId)) {
+      refused.push(`${taskId}: not a task id`);
+      continue;
+    }
+    try {
+      const outcome = await deleteOutcome(taskId, args.flags['assistance-record-only']);
+      if (outcome.refuse) refused.push(`${taskId}: ${outcome.refuse}`);
+      else deleted.push(`${taskId} (${outcome.rows} rows)`);
+    } catch (error) {
+      failed.push(`${taskId}: ${error.message}`);
+    }
+  }
+  for (const id of deleted) out(`deleted ${id}`);
+  for (const id of refused) out(`refused ${id}`);
+  for (const id of failed) out(`failed ${id}`);
+  out(`summary deleted=${deleted.length} refused=${refused.length} failed=${failed.length} reason=${JSON.stringify(args.flags.reason)}`);
+  if (failed.length) throw new Fail(4, `delete failed for ${failed.length} task(s)`);
+}
 // A user-visible pass counts for the head that was built or deployed last: the head of the newest done call, or of a
 // newer deploy event that names one (the Tester checks the deployed head, which a merge makes differ from the worker's).
 const lastHeadEvent = (events) => [...events].reverse().find((e) => e.kind === 'done' || (e.kind === 'deploy' && bodyOf(e).head));
@@ -942,9 +1536,42 @@ const newestRows = (rows, events) =>
     return v ? { ...r, status: v.status, nextActor: v.nextActor, evidence: v.evidence ?? null, head: v.head ?? null } : r;
   });
 
-const cmdApprove = simple('approve', 'approved', async (task, args, taskId) => {
-  const events = await taskEvents(taskId);
-  const rows = newestRows(await checkRows(taskId), events);
+async function taskVideos(events) {
+  const out = [];
+  for (const event of events.filter((e) => e.kind === 'comment')) {
+    const vids = await listAll('fm_event_video', { filter: `fmTaskEventId eq ${event.id}`, orderby: 'id', select: 'id,fmTaskEventId,label,mediaType,size' });
+    for (const v of vids) out.push({ ...v, eventSeq: event.seq });
+  }
+  return out;
+}
+
+const isVideoEvidence = (ev, videos) => {
+  if (!ev) return false;
+  if (/^event:\d+#video(?::\d+)?$/.test(ev) || /\.(?:mp4|webm)$/i.test(ev) || /\/fm_event_video\//.test(ev)) return true;
+  const m = /^event:(\d+)$/.exec(ev);
+  return Boolean(m && videos.some((v) => v.eventSeq === Number(m[1])));
+};
+
+async function findTesterScreenshot(events, row) {
+  const candidates = [];
+  const round = lastHeadEvent(events);
+  for (const event of [...events].reverse()) {
+    if (event.actorRole !== 'tester') continue;
+    // Only captures attached during the row's current built/deployed round qualify.
+    if (!round || bodyOf(round).head !== row.head || event.seq <= round.seq) continue;
+    const imgs = await listAll('fm_event_image', { filter: `fmTaskEventId eq ${event.id}`, orderby: 'position', select: 'id,fmTaskEventId,label,mediaType,position' });
+    for (const img of imgs) {
+      // A screenshot belongs to one scenario/width pair, never to the scenario alone.
+      const escapedKey = rowKey(row).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      if (!new RegExp(`(^|[^A-Za-z0-9_@.-])${escapedKey}(?=$|[^A-Za-z0-9_@.-])`).test(img.label || '')) continue;
+      candidates.push({ event, img, ref: `event:${event.seq}#image:${img.position || 1}` });
+    }
+  }
+  if (!candidates.length) return null;
+  return candidates[0]?.ref ?? null;
+}
+
+async function checkApproveReady(task, taskId, events, rows) {
   const open = openRows(rows);
   if (open.length) throw rule(`approve is refused while check rows are open: ${open.map((r) => `${rowKey(r)} (${r.status})`).join(', ')}`);
   const visible = rows.filter((r) => r.surface === 'user-visible');
@@ -958,312 +1585,229 @@ const cmdApprove = simple('approve', 'approved', async (task, args, taskId) => {
     const stale = visible.filter((r) => (r.head ?? null) !== head && !carried(r, events));
     if (stale.length) throw rule(`approve is refused: these user-visible rows passed on another head than the latest built or deployed head (${head ?? 'none'}): ${stale.map((r) => `${rowKey(r)} (${r.head ?? 'none'})`).join(', ')}`);
   }
-  return { state: 'done', nextActor: 'firstmate', blockKind: null, blockReason: null, blockRepeats: 0, holdUntil: null };
-});
-
-// ---- the backlog view (T7) ------------------------------------------------------------------------------
-// data/backlog.md is a view of the record: each row is fm_task's row (the header after the checkbox), notes (the lines
-// under it, each ending in a newline) and section, verbatim. The checkbox is [x] in Done. In a section the rows follow
-// the event that put them there: In flight and Done newest first, every other section oldest first, as tasks-axi places
-// a moved row. Line 1 is the view's own and names the record.
-const BACKLOG_LINE1 = '# Backlog - a view of the task record (fm_task row, notes and section); change it through bin/fm-tasks-axi.sh';
-const BACKLOG_SECTIONS = ['In flight', 'Queued', 'Done'];
-const NEWEST_FIRST = ['In flight', 'Done'];
-const ROW_LINE = /^- \[[ x]\] ([A-Za-z0-9._-]+) - /;
-const SECTION_LINE = /^## (.*)$/;
-
-function readText(file, what) {
-  let bytes;
-  try {
-    bytes = fs.readFileSync(file);
-  } catch {
-    throw usage(`${what} is missing or unreadable: ${file}`);
-  }
-  try {
-    return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
-  } catch {
-    throw rule(`${what} is not UTF-8: ${file}`);
-  }
 }
 
-// The values a row event sets, checked so that rendering them gives back the same row.
-function rowValues(taskId, section, row, notes) {
-  if (!section || section.length > LIMITS.section || /[\r\n]/.test(section) || section !== section.trim()) throw rule(`the section must be one line of 1 to ${LIMITS.section} characters`);
-  if (/[\r\n]/.test(row)) throw rule('the row is one line: the header after the checkbox');
-  if (ROW_LINE.exec(`- [ ] ${row}`)?.[1] !== taskId) throw rule(`the row must start with "${taskId} - "`);
-  if (notes !== '' && !notes.endsWith('\n')) throw rule('the notes end with a newline');
-  for (const line of notes.split('\n').slice(0, -1)) {
-    if (ROW_LINE.test(line) || SECTION_LINE.test(line)) throw rule(`a notes line reads as a row or a section: ${JSON.stringify(line.slice(0, 60))}`);
-  }
-  return { section, row, notes };
-}
-
-// A row event, naming the backlog file whose view holds the row; text over one event body goes in a documents child
-// as `<row>\n<notes>`.
-// Reserve 64 characters for the stage metadata append adds, without duplicating its fold rules.
-const EVENT_STAGE_BUDGET = 64;
-function rowSpec(taskId, set, note, file) {
-  const extra = { file };
-  if (set.row === undefined || JSON.stringify({ v: 1, note, set, ...extra }).length <= 8000 - EVENT_STAGE_BUDGET) return { kind: 'row', note, set, extra };
-  const doc = { title: `backlog row ${taskId}`, mediaType: 'text/markdown', content: `${set.row}\n${set.notes}` };
-  return { kind: 'row', note, set: { section: set.section, rowDocument: true }, extra, children: { documents: [doc] } };
-}
-// Every sync and row call of one backlog file holds an exclusive lock on <file>.view-lock for its reads, writes and
-// render, so an older one never writes its rows after a newer one. Node has no flock, so a perl child takes the lock
-// and holds it until this process closes its stdin (or ends).
-const LOCK_PERL = 'use Fcntl qw(:flock); open(my $f, ">>", shift) or die "cannot open the lock: $!\\n"; flock($f, LOCK_EX) or die "cannot lock: $!\\n"; $| = 1; print "locked\\n"; <STDIN>;';
-async function withBacklogLock(file, fn) {
-  const holder = spawn('perl', ['-e', LOCK_PERL, `${file}.view-lock`], { stdio: ['pipe', 'pipe', 'pipe'] });
-  await new Promise((resolve, reject) => {
-    const failed = (why) => reject(new Fail(3, `the backlog lock ${file}.view-lock was not taken: ${why}`));
-    holder.once('error', (error) => failed(error.message));
-    holder.once('exit', (code) => failed(`exit ${code}`));
-    holder.stdout.once('data', () => {
-      holder.removeAllListeners('exit');
-      resolve();
-    });
-  });
-  try {
-    return await fn();
-  } finally {
-    holder.stdin.end();
-  }
-}
-
-// A backlog file's identity: its real path, so a link to the file names the same view (and a write lands in the file).
-// The backlog a command names: --file, else FM_DATA_OVERRIDE, else $FM_HOME/data, then backlog.md.
-const backlogFile = (file) => backlogPath(file || path.join(process.env.FM_DATA_OVERRIDE || path.join(process.env.FM_HOME || '.', 'data'), 'backlog.md'));
-const backlogPath = (file) => {
-  try {
-    return fs.realpathSync(file);
-  } catch {
-    return path.resolve(file);
-  }
-};
-
-async function cmdRow(args) {
+async function cmdApprove(args) {
   const taskId = taskIdOf(args);
   const who = identity(args, 'firstmate');
-  const f = args.flags;
-  let set;
-  if (f.gone) {
-    if (f.section !== undefined || f['row-file'] !== undefined || f['notes-file'] !== undefined) throw usage('--gone takes no --section, --row-file or --notes-file');
-    set = { section: null };
-  } else {
-    if (f.section === undefined || f['row-file'] === undefined || f['notes-file'] === undefined) throw usage('row needs --section, --row-file and --notes-file, or --gone');
-    set = rowValues(taskId, f.section, readText(f['row-file'], 'the row file'), readText(f['notes-file'], 'the notes file'));
-  }
-  const file = backlogFile(f.file);
-  const store = () =>
-    write(taskId, who, async ({ task }) => {
-      if (!task) throw rule('no such task');
-      return rowSpec(taskId, set, noteOf(args), file);
+  // an item the record already proves passes first, so approve reads it closed
+  if (await syncChecklist(taskId)) await project(taskId);
+  const initialEvents = await taskEvents(taskId);
+  const initialTask = fold(initialEvents);
+  const replay = await eventByKey(who.key);
+  if (!replay || args.flags.check) guard('approve', initialTask);
+  const initialRows = newestRows(await checkRows(taskId), initialEvents);
+  await checkApproveReady(initialTask, taskId, initialEvents, initialRows);
+  const videos = await taskVideos(initialEvents);
+  for (const row of initialRows) {
+    if (!isVideoEvidence(row.evidence, videos)) continue;
+    const replacement = await findTesterScreenshot(initialEvents, row);
+    if (!replacement) throw rule(`approve is refused: check row ${rowKey(row)} references a video (${row.evidence}) and has no Tester screenshot to replace it`);
+    if (args.flags.check) continue;
+    const values = { status: row.status, nextActor: row.nextActor, evidence: replacement, head: row.head ?? null, checkedAt: row.checkedAt ?? new Date().toISOString() };
+    await append(taskId, { ...who, key: `${who.key}:video-ev:${rowKey(row)}` }, async ({ task }) => {
+      // append retries after a sequence conflict with a fresh fold. A competing approval
+      // therefore prevents this evidence check from being stored after Done.
+      guard('approve', task);
+      return {
+        kind: 'check',
+        note: `${rowKey(row)} ${row.status}: ${replacement} (replaced video evidence)`,
+        extra: { row: rowKey(row), values },
+      };
     });
-  if (!fs.existsSync(file)) return store();
-  // the view shows the row at once, so the next sync does not take the file's older copy back
-  return withBacklogLock(file, async () => {
-    const result = await store();
-    try {
-      out(await syncBacklog(file, who, { skip: taskId }));
-    } catch (error) {
-      if (error instanceof Fail) throw new Fail(error.code, `the row is stored; ${file} was not generated: ${error.message}`);
-      throw error;
-    }
-    return result;
-  });
+    await applyNewestCheck(taskId, row);
+  }
+  if (args.flags.check) return out(`approve ready task=${taskId} state=${initialTask.state}`);
+  return write(
+    taskId,
+    who,
+    async ({ task }) => {
+      guard('approve', task);
+      const events = await taskEvents(taskId);
+      const rows = newestRows(await checkRows(taskId), events);
+      await checkApproveReady(task, taskId, events, rows);
+      // approve closes the workflow from whatever state it is in (the legacy closers do not move): a running step ends
+      // and a state that never started is skipped
+      const now = new Date().toISOString();
+      const stepWrites = (await stepRows(taskId)).flatMap(s => s.status === 'running' ? [{ state: s.state, status: 'done', alive: 'dead', endedAt: now, endReason: 'approved' }]
+        : s.status === 'pending' ? [{ state: s.state, status: 'skipped', endReason: 'approved' }] : []);
+      return { kind: 'approved', note: noteOf(args), ...(stepWrites.length ? { extra: { stepWrites } } : {}),
+        set: { state: 'done', workflowState: 'done', workflowSince: now, stepAlive: null, nextActor: 'firstmate', blockKind: null, blockReason: null, blockRepeats: 0, holdUntil: null } };
+    },
+    async () => {
+      await release(taskId, who);
+      const currentVideos = await taskVideos(await taskEvents(taskId));
+      const count = videos.length || currentVideos.length;
+      for (const v of currentVideos) ok(await http('DELETE', `/api/fm_event_video/${v.id}`), 'delete event video');
+      if (count > 0) {
+        await append(taskId, { ...who, key: `${who.key}:video-cleanup` }, async () => ({
+          kind: 'comment',
+          note: `${count} ${count === 1 ? 'video' : 'videos'} deleted after Verify`,
+        }));
+      }
+    },
+  );
 }
 
-// The rows of a backlog file in file order, and the first line the record cannot hold (null when there is none).
-// Line 1 is the file's title when it starts with "# ". A blank line that belongs to no row (tasks-axi leaves one in an
-// empty section) holds nothing and is dropped; any other line outside a row cannot be held.
-function parseBacklogFile(text, file) {
-  if (text !== '' && !text.endsWith('\n')) throw rule(`${file} does not end with a newline`);
-  const lines = text === '' ? [] : text.slice(0, -1).split('\n');
-  const titled = /^# /.test(lines[0] ?? '');
-  const rows = [];
-  const seen = new Set();
-  let problem = null;
-  let section = null;
-  let current = null;
-  lines.forEach((line, i) => {
-    if (i === 0 && titled) return;
-    const sec = SECTION_LINE.exec(line);
-    if (sec) {
-      section = sec[1];
-      current = null;
-      return;
-    }
-    const id = ROW_LINE.exec(line)?.[1];
-    if (id && section !== null) {
-      if (seen.has(id)) throw rule(`${file} holds ${id} twice`);
-      seen.add(id);
-      current = { id, section, row: line.slice(6), notes: '' };
-      rows.push(current);
-      return;
-    }
-    if (current) current.notes += `${line}\n`;
-    else if (line.trim() !== '') problem ??= `${file} line ${i + 1} is not part of a row, so the record cannot hold it: ${JSON.stringify(line.slice(0, 80))}; the file is left as it is`;
-  });
-  for (const r of rows) rowValues(r.id, r.section, r.row, r.notes);
-  return { rows, problem };
-}
-
-function renderBacklog(rows) {
-  const names = [...BACKLOG_SECTIONS, ...[...new Set(rows.map((r) => r.section))].filter((s) => !BACKLOG_SECTIONS.includes(s)).sort()];
-  let text = `${BACKLOG_LINE1}\n\n`;
-  for (const name of names) {
-    text += `## ${name}\n`;
-    for (const r of rows) if (r.section === name) text += `- [${name === 'Done' ? 'x' : ' '}] ${r.row}\n${r.notes}`;
-  }
-  return text;
-}
-
-// The record's side: every task row; for each task the backlog file its newest row event names, the seq of the event
-// that put it in its section of that file, and the seq of its newest row event. The record is shared by every home, so
-// a view holds only the rows its own file put there.
-async function backlogRecord(file) {
-  const tasks = new Map((await listAll('fm_task', { orderby: 'taskId' })).map((t) => [t.taskId, t]));
-  const entry = new Map();
-  const last = new Map();
-  const place = new Map();
-  const owner = new Map();
-  for (const e of await listAll('fm_task_event', { filter: "kind eq 'row'", orderby: 'seq' })) {
-    const body = bodyOf(e);
-    if (!('section' in (body.set || {}))) continue;
-    const where = JSON.stringify([body.file ?? null, body.set.section]);
-    if (place.get(e.taskId) !== where) entry.set(e.taskId, e.seq);
-    place.set(e.taskId, where);
-    owner.set(e.taskId, body.file ?? null);
-    last.set(e.taskId, e.seq);
-  }
-  return { tasks, entry, last, mine: (taskId) => owner.get(taskId) === file };
-}
-
-function recordRows(record) {
-  const rows = [...record.tasks.values()]
-    .filter((t) => t.section && t.row && record.mine(t.taskId))
-    .map((t) => ({ id: t.taskId, section: t.section, row: t.row, notes: t.notes ?? '', entry: record.entry.get(t.taskId) ?? 0 }));
-  const sections = [...new Set(rows.map((r) => r.section))];
-  return sections.flatMap((name) => rows.filter((r) => r.section === name).sort((a, b) => (NEWEST_FIRST.includes(name) ? b.entry - a.entry : a.entry - b.entry)));
-}
-
-// The order to write changed rows in so that section entry gives the file's order back: newest-first sections bottom up.
-function writeOrder(rows) {
-  const out = [];
-  for (const name of [...new Set(rows.map((r) => r.section))]) {
-    const own = rows.filter((r) => r.section === name);
-    out.push(...(NEWEST_FIRST.includes(name) ? own.reverse() : own));
-  }
-  return out;
-}
-
-// A task the record does not hold yet: import it at the state the old-source mapping gives its row.
-async function importRow(r, who) {
-  const head = r.row.slice(r.id.length + 3);
-  const hold = holdText(attr(head, 'hold'));
-  const map = hermes({ section: r.section, hold, holdKind: attr(head, 'hold-kind') });
-  const kind = attr(head, 'kind');
-  const title = head.split(/ https?:\/\/| \((?:repo|kind|since|hold|merged|done)\b/)[0].trim().slice(0, LIMITS.title) || r.id;
-  await write(r.id, { ...who, key: `import:${r.id}` }, async ({ task }) => {
-    if (task) throw rule(`task ${r.id} already present`);
-    return {
-      kind: 'created',
-      note: 'imported from the backlog view',
-      set: { title, repo: attr(head, 'repo').slice(0, LIMITS.repo) || null, kind: TASK_KINDS.includes(kind) ? kind : 'other', state: map.state, assignee: r.id.slice(0, LIMITS.assignee), nextActor: map.nextActor, blockKind: map.blockKind, blockReason: map.blockKind ? (hold || 'backlog hold').slice(0, LIMITS.blockReason) : null, blockRepeats: 0, issueUrl: null, prUrl: null, surface: null, holdUntil: null },
-    };
-  });
-}
-
-async function rowWrite(taskId, set, who, last, file) {
-  const key = `row:${taskId}:${last}:${crypto.createHash('sha256').update(JSON.stringify([file, set])).digest('hex').slice(0, 16)}`;
-  await write(taskId, { ...who, key }, async ({ task }) => {
-    if (!task) throw rule('no such task');
-    return rowSpec(taskId, set, 'backlog view', file);
-  });
-}
-
-async function cmdBacklog(args) {
-  const action = args.pos.action;
-  if (!['sync', 'render'].includes(action)) throw usage('backlog needs sync or render');
-  const file = backlogFile(args.flags.file);
-  if (action === 'render') {
-    const text = renderBacklog(recordRows(await backlogRecord(file)));
-    if (!args.flags.out || args.flags.out === '-') return process.stdout.write(text);
-    fs.writeFileSync(args.flags.out, text);
-    return out(`rendered ${args.flags.out}`);
-  }
-  if (args.flags.out) throw usage('--out is for render');
-  const who = identity(args, 'firstmate');
-  out(await withBacklogLock(file, () => syncBacklog(file, who, { absorbOnly: args.flags['absorb-only'] })));
-}
-
-// Absorb a backlog file into the record, then render it from the record. `skip` names a task whose record row was just
-// written by `row`: the file's copy of that row is not absorbed, so the render carries the record's.
-async function syncBacklog(file, who, { absorbOnly = false, skip = null } = {}) {
-  const text = readText(file, 'the backlog file');
-  const { rows, problem } = parseBacklogFile(text, file);
-  let record = await backlogRecord(file);
-  let written = 0;
-  for (const r of rows) {
-    if (record.tasks.has(r.id)) continue;
-    await importRow(r, who);
-    written++;
-  }
-  // a file the record cannot hold still has its new tasks imported, so their other record writes land
-  if (problem) throw rule(problem);
-  if (written) record = await backlogRecord(file);
-  for (const r of writeOrder(rows)) {
-    const t = record.tasks.get(r.id);
-    if (r.id === skip) continue;
-    if (record.mine(r.id) && t.section === r.section && t.row === r.row && (t.notes ?? '') === r.notes) continue;
-    await rowWrite(r.id, { section: r.section, row: r.row, notes: r.notes }, who, record.last.get(r.id) ?? 0, file);
-    written++;
-  }
-  const inFile = new Set(rows.map((r) => r.id));
-  for (const t of record.tasks.values()) {
-    if (!t.section || inFile.has(t.taskId) || !record.mine(t.taskId) || t.taskId === skip) continue;
-    await rowWrite(t.taskId, { section: null }, who, record.last.get(t.taskId) ?? 0, file);
-    written++;
-  }
-  if (absorbOnly) return `backlog: ${rows.length} rows, ${written} written, file left as it is (--absorb-only)`;
-  if (written) record = await backlogRecord(file);
-  const view = recordRows(record);
-  const ids = (list) => list.filter((id) => id !== skip).sort().join('\n');
-  if (ids(view.map((r) => r.id)) !== ids([...inFile])) {
-    throw new Fail(3, `the record does not hold the rows ${file} holds (another writer moved meanwhile); the file is left as it is; run backlog sync again`);
-  }
-  const next = renderBacklog(view);
-  let state = 'unchanged';
-  if (next !== text) {
-    if (fs.readFileSync(file, 'utf8') !== text) {
-      state = 'changed meanwhile, left for the next sync';
-    } else {
-      const tmp = `${file}.${process.pid}.tmp`;
-      fs.writeFileSync(tmp, next);
-      fs.renameSync(tmp, file);
-      state = 'generated';
-    }
-  }
-  return `backlog: ${rows.length} rows, ${written} written, file ${state}`;
-}
+// Reserve 64 characters for the stage metadata append adds, without duplicating its fold rules.
+const EVENT_STAGE_BUDGET = 64;
 
 async function cmdDescribe(args) {
   const f = args.flags;
   if (!f.document || !['.md', '.markdown'].includes(path.extname(f.document).toLowerCase())) throw usage('describe needs --document FILE.md');
   const document = documentOf({ ...f, 'document-title': f['document-title'] ?? 'Description' });
-  return write(taskIdOf(args), identity(args, 'firstmate'), async ({ task }) => {
+  const taskId = taskIdOf(args);
+  const who = identity(args, 'firstmate');
+  const { task } = await write(taskId, who, async ({ task }) => {
     if (!task) throw rule('no such task');
     return { kind: 'description', children: { documents: [document] } };
   });
+  // A task with no scenario row yet takes its rows from this Description, through the sync `rows <task>` runs. A task
+  // that holds one keeps its rows, so a re-describe resets no result; a Description the sync refuses still stands.
+  // A task whose issue is another source (an external issue, another task) keeps it as the source of its rows, which
+  // deploy verify and the gate read: the Description seeds nothing there, and `rows` seeds it.
+  if ((await checkRows(taskId)).some((row) => !isChecklist(row))) return;
+  const issue = task?.issueUrl ?? '';
+  if (!['', taskId, `task:${taskId}`].includes(issue) && boardTask(issue) !== taskId) {
+    out(`rows not seeded: ${taskId} has the issue ${issue}, the source of its rows; seed them with rows ${taskId} ${issue}`);
+    return;
+  }
+  try {
+    await cmdRows({ pos: { task: taskId }, flags: { actor: who.actor, role: who.role } });
+  } catch (error) {
+    if (!(error instanceof Fail) || error.code !== 5) throw error;
+    out(`rows not seeded: ${error.message}`);
+  }
+}
+
+async function cmdPlan(args) {
+  const f = args.flags;
+  if (!f.document) throw usage('plan needs --document FILE');
+  const document = documentOf(f);
+  const images = imagesOf(args);
+  const taskId = taskIdOf(args);
+  return write(taskId, identity(args, 'planner'), async ({ task, seq }) => {
+    if (!task) throw rule('no such task');
+    if (CLOSED.includes(task.state)) throw rule(`plan is refused: ${taskId} is ${task.state}`);
+    return {
+      kind: 'plan',
+      note: noteOf(args) || document.title,
+      set: { planSeq: seq, planDecision: null, planDecidedAt: null },
+      children: withImages({ documents: [document] }, images),
+    };
+  });
+}
+
+async function cmdPlanDecision(args) {
+  const taskId = taskIdOf(args);
+  const f = args.flags;
+  if (!f.decision) throw usage('plan-decision needs --decision approve|changes');
+  const decision = oneOf(['approve', 'changes'], f.decision, 'decision');
+  const seqText = f['plan-seq'];
+  if (!seqText || !/^[1-9][0-9]*$/.test(seqText) || !Number.isSafeInteger(Number(seqText))) throw usage('plan-decision needs --plan-seq N');
+  const planSeq = Number(seqText);
+  return write(taskId, identity(args, 'owner'), async ({ task }) => {
+    if (!task) throw rule('no such task');
+    if (!task.planSeq) throw rule(`task ${taskId} has no plan`);
+    if (task.planSeq !== planSeq) throw rule(`plan-decision is for plan seq ${planSeq}, but task ${taskId} is at plan seq ${task.planSeq}`);
+    return {
+      kind: 'plan_decision',
+      note: noteOf(args) || `plan #${planSeq}: ${decision}`,
+      set: { planDecision: decision, planDecidedAt: new Date().toISOString() },
+      extra: { planSeq, decision },
+    };
+  });
+}
+
+async function descriptionContent(taskId) {
+  const event = (await taskEvents(taskId)).filter((e) => e.kind === 'description').at(-1);
+  if (!event) throw rule('task has no Description event');
+  const doc = await firstRow('fm_event_document', `fmTaskEventId eq ${event.id}`);
+  if (!doc?.content) throw rule('task Description document is missing');
+  return doc.content;
+}
+
+async function taskPlanSpec(taskId) {
+  const body = await descriptionContent(taskId);
+  const parents = [...body.matchAll(/^- Parent:\s*(\S+)\s*$/gm)].map((m) => m[1]);
+  if (parents.length > 1) throw rule('plan ticket must have only one Parent line');
+  if (!parents.length) return taskId;
+  const parent = parents[0];
+  if (!/^[A-Za-z0-9_.-]+$/.test(parent)) throw rule('Parent must be one task id');
+  return parent;
+}
+
+async function cmdPlanSpec(args) {
+  out(await taskPlanSpec(taskIdOf(args)));
+}
+
+async function cmdPlanApprove(args) {
+  const taskId = taskIdOf(args);
+  const who = identity(args, 'firstmate');
+  return write(taskId, who, async ({ task }) => {
+    if (!task || CLOSED.includes(task.state)) throw rule('plan approval needs an open task');
+    const spec = await taskPlanSpec(taskId);
+    const active = await listAll('fm_task', { filter: "state ne 'done' and state ne 'archived'" });
+    let count = 0;
+    for (const candidate of active) {
+      if (candidate.repo !== task.repo || candidate.taskId === spec || candidate.taskId === taskId) continue;
+      const candidateEvents = await taskEvents(candidate.taskId);
+      if (!candidateEvents.some((e) => e.kind === 'description')) continue;
+      if (await taskPlanSpec(candidate.taskId) === spec) count++;
+    }
+    const childCount = count + (taskId === spec ? 0 : 1);
+    if (childCount > 1) throw rule('spec has more than one open ticket in this repository');
+    const hash = crypto.createHash('sha256').update(await descriptionContent(taskId)).digest('hex');
+    return { kind: 'plan-approved', note: args.flags.note || hash, extra: { descriptionSha256: hash } };
+  });
+}
+
+async function cmdPlanCheck(args) {
+  const taskId = taskIdOf(args);
+  const events = await taskEvents(taskId);
+  const task = fold(events);
+  if (!task || CLOSED.includes(task.state)) throw rule('plan approval needs an open task');
+  const hash = crypto.createHash('sha256').update(await descriptionContent(taskId)).digest('hex');
+  const approval = events.filter((e) => e.kind === 'plan-approved' && e.actorRole === 'firstmate').at(-1);
+  if (!approval || bodyOf(approval).descriptionSha256 !== hash) throw rule('plan is unapproved or Description changed since approval');
+  out(hash);
 }
 
 async function cmdDocument(args) {
   const events = await taskEvents(taskIdOf(args));
-  const event = events.filter((e) => e.kind === 'description').at(-1);
-  if (!event) throw rule('task has no Description event');
+  const kind = args.flags.kind || 'description';
+  if (!['description', 'done'].includes(kind)) throw usage('--kind must be description or done');
+  const event = events.filter((e) => e.kind === kind).at(-1);
+  if (!event) throw rule(`task has no ${kind} event`);
   const doc = await firstRow('fm_event_document', `fmTaskEventId eq ${event.id}`);
-  if (!doc || !doc.content) throw rule('task Description document is missing');
+  if (!doc || !doc.content) throw rule(`task ${kind} document is missing`);
   out(doc.content);
+}
+
+async function cmdMaterials(args) {
+  const taskId = taskIdOf(args);
+  const events = await taskEvents(taskId);
+  if (!fold(events)) throw rule(`no such task ${taskId}`);
+  const links = [];
+  const images = [];
+  const seenMaterial = new Set();
+  // Newest first: a screenshot republished under the same material id keeps only its newest version.
+  for (const e of [...events].reverse()) {
+    const b = bodyOf(e);
+    if (e.kind === 'link' && links.length < 12 && b.url && !links.some((r) => r.url === b.url)) {
+      links.unshift({ url: b.url, label: b.note || b.url });
+    }
+    if (images.length < 6 && ['comment', 'plan', 'done', 'needs-decision', 'blocked'].includes(e.kind)) {
+      if (b.material && seenMaterial.has(b.material)) continue;
+      const rows = await listAll('fm_event_image', { filter: `fmTaskEventId eq ${e.id}`, orderby: 'position' });
+      if (b.material && rows.length) seenMaterial.add(b.material);
+      for (const r of rows.slice().reverse()) {
+        if (images.length >= 6) break;
+        images.unshift({ label: r.label, mediaType: r.mediaType, content: r.content, seq: e.seq, position: r.position });
+      }
+    }
+  }
+  out(JSON.stringify({ links, images }));
 }
 
 async function cmdThread(args) {
@@ -1274,21 +1818,177 @@ async function cmdThread(args) {
   }
 }
 
+// The passage a thread opens at: the quoted words and a little text on each side, so a page finds them again.
+const ANCHOR_QUOTE_MAX = 500;
+const ANCHOR_SIDE_MAX = 160;
+// The one line a thread resolves with: what was decided or found, as its end shows it.
+const OUTCOME_MAX = 200;
+function anchorOf(args) {
+  const quote = args.flags['anchor-quote'];
+  const prefix = args.flags['anchor-prefix'];
+  const suffix = args.flags['anchor-suffix'];
+  if (quote === undefined) {
+    if (prefix !== undefined || suffix !== undefined) throw usage('--anchor-prefix and --anchor-suffix need --anchor-quote');
+    return undefined;
+  }
+  if (!quote.trim() || quote.length > ANCHOR_QUOTE_MAX) throw usage(`--anchor-quote is 1 to ${ANCHOR_QUOTE_MAX} characters of quoted text`);
+  for (const [name, side] of [['prefix', prefix], ['suffix', suffix]]) {
+    if (side !== undefined && side.length > ANCHOR_SIDE_MAX) throw usage(`--anchor-${name} is at most ${ANCHOR_SIDE_MAX} characters`);
+  }
+  return { quote, ...(prefix ? { prefix } : {}), ...(suffix ? { suffix } : {}) };
+}
+
+// The task's threads waiting on the owner: a thread is a comment that opened one at a passage (`anchor`) and the comments that
+// answer it (`thread`); it waits on the owner when its last comment is not the owner's. Only the owner accepts an outcome, so a
+// resolved thread ends with the owner's comment and is not counted until someone writes in it again. `next` is the comment being
+// written, its seq not yet known. A task with no thread gets no count, so its comments never write the field.
+function threadsYourTurn(events, next) {
+  const last = new Map();
+  for (const e of [...events.filter((event) => event.kind === 'comment').sort((a, b) => a.seq - b.seq), next]) {
+    const body = e === next ? next.body : bodyOf(e);
+    const key = body.thread ?? (body.anchor ? (e === next ? 'next' : e.seq) : undefined);
+    if (key !== undefined) last.set(key, e === next ? next.role : e.actorRole);
+  }
+  return last.size ? [...last.values()].filter((role) => role !== 'owner').length : undefined;
+}
+
 async function cmdComment(args) {
   const taskId = taskIdOf(args);
   const who = identity(args, 'worker');
   const images = imagesOf(args);
-  if (!args.flags.note && !images.length) throw usage('comment needs --note or --image');
+  const videos = videosOf(args);
+  const outcome = args.flags.outcome;
+  const accept = Boolean(args.flags.accept);
+  if (!args.flags.note && !images.length && !videos.length && !accept) throw usage('comment needs --note, --image or --video');
+  if ((outcome !== undefined || accept) && args.flags['reply-to'] === undefined) throw usage('--outcome and --accept answer a comment of a thread: give --reply-to');
+  if (outcome !== undefined && accept) throw usage('a comment proposes an --outcome or accepts one, not both');
+  if (outcome !== undefined && (!outcome.trim() || outcome.length > OUTCOME_MAX || /[\r\n]/.test(outcome))) throw usage(`--outcome is one line of 1 to ${OUTCOME_MAX} characters`);
+  const material = args.flags.material;
+  if (material !== undefined && !/^[A-Za-z0-9:._-]{1,128}$/.test(material)) throw usage('--material is a stable id of 1 to 128 letters, digits, : . _ -');
   const ask = args.flags.ask;
   if (ask !== undefined && !['why', 'how', 'wait-what'].includes(ask)) throw usage('--ask must be why, how or wait-what');
   const reply = args.flags['reply-to'];
   if (reply !== undefined && (!/^[1-9][0-9]*$/.test(reply) || !Number.isSafeInteger(Number(reply)))) throw usage('--reply-to must be a positive integer sequence');
+  const anchor = anchorOf(args);
+  if (anchor && reply !== undefined) throw usage('a comment opens a thread at --anchor-quote or answers one with --reply-to, not both');
   return write(taskId, who, async ({ task, events }) => {
     guard('comment', task);
-    if (reply !== undefined && !events.some((event) => event.seq === Number(reply) && event.kind === 'comment')) throw rule('--reply-to must name an existing comment of this task');
-    const spec = { kind: 'comment', note: noteOf(args), extra: { ...(ask ? { ask } : {}), ...(reply !== undefined ? { replyTo: Number(reply) } : {}) }, children: withImages({}, images) };
+    const parent = reply === undefined ? undefined : events.find((event) => event.seq === Number(reply) && event.kind === 'comment');
+    if (reply !== undefined && !parent) throw rule('--reply-to must name an existing comment of this task');
+    // A reply joins the thread of the comment it answers: that comment's thread, or the comment itself when it opened one.
+    const thread = parent ? (bodyOf(parent).thread ?? (bodyOf(parent).anchor ? parent.seq : undefined)) : undefined;
+    if ((outcome !== undefined || accept) && !thread) throw rule('--outcome and --accept belong to a thread: --reply-to must name a comment of one');
+    // Only the owner resolves a thread, and only with an outcome the agent proposed.
+    if (accept && who.role !== 'owner') throw rule('--accept is the owner\'s: it resolves the thread');
+    const proposed = accept ? bodyOf(parent).outcome : undefined;
+    if (accept && !proposed) throw rule('--accept must answer a comment that proposes an --outcome');
+    const settled = outcome !== undefined ? { outcome } : accept ? { outcome: proposed, accepted: parent.seq } : {};
+    const extra = { ...(material ? { material } : {}), ...(ask ? { ask } : {}), ...(reply !== undefined ? { replyTo: Number(reply) } : {}), ...(thread ? { thread } : {}), ...(anchor ? { anchor } : {}), ...settled };
+    const spec = { kind: 'comment', note: noteOf(args) || (accept ? `Accepted: ${proposed}` : ''), extra, set: Object.fromEntries([['threadsYourTurn', threadsYourTurn(events, { body: extra, role: who.role })]].filter(([, count]) => count !== undefined)), children: withVideos(withImages({}, images), videos) };
     return spec;
   });
+}
+
+// The owner's requests no result answers yet, oldest first: a request is answered by the first event of one of its
+// result kinds that follows it, so a refused request asked again is open again.
+function openRequests(events) {
+  const sorted = [...events].sort((a, b) => a.seq - b.seq);
+  return sorted.filter((e, i) => REQUEST_RESULTS[e.kind] && !sorted.slice(i + 1).some((later) => REQUEST_RESULTS[e.kind].includes(later.kind)));
+}
+
+// The PR event is authoritative; callers may use their local cache only after a network failure.
+async function cmdMergeAuthority(args) {
+  const phase = oneOf(['pending', 'accepted'], args.flags.phase, 'merge authority phase');
+  return cmdEvent({ ...args, mergeGate: true, pos: { ...args.pos, kind: 'pr' },
+    flags: { ...args.flags, note: `merge authority ${phase}` } });
+}
+
+async function cmdPrRecord(args) {
+  const taskId = taskIdOf(args);
+  const events = await taskEvents(taskId);
+  const task = fold(events);
+  if (!task) throw rule('no such task');
+  const event = events.filter((e) => e.kind === 'pr').at(-1);
+  const body = event ? bodyOf(event) : {};
+  console.log(JSON.stringify({ prUrl: task.prUrl ?? null, prHead: event?.prHead ?? body.prHead ?? null,
+    mergeAuthority: event?.mergeAuthority ?? body.mergeAuthority ?? null, authorityPhase: body.authorityPhase ?? null, merged: body.merged === true }));
+}
+
+async function cmdPrRound(args) {
+  const action = oneOf(['list', 'put', 'cursor', 'set-cursor', 'seed'], args.pos.action, 'pr-round action');
+  if (action === 'list') {
+    const home = process.env.FM_HOME;
+    const legacy = home && path.join(home, 'data', 'pr-review', 'ledger.jsonl');
+    if (legacy && fs.existsSync(legacy)) {
+      // Keep legacy history visible until cutover is explicitly complete; no deletion occurs here.
+      const lines = fs.readFileSync(legacy, 'utf8').split('\n').filter((line) => line.trim());
+      for (const line of lines) {
+        const file = path.join(os.tmpdir(), `fm-pr-legacy-${process.pid}.json`);
+        try {
+          fs.writeFileSync(file, line, { mode: 0o600 });
+          await cmdPrRound({ pos: { action: 'put' }, flags: { file } });
+        } finally { fs.rmSync(file, { force: true }); }
+      }
+    }
+    for (const row of (await listAll('fm_pr_round', { orderby: 'id' })).sort((a, b) => Date.parse(a.at ?? 0) - Date.parse(b.at ?? 0))) {
+      if (row.kind !== 'cursor') console.log(row.payload);
+    }
+    return;
+  }
+  if (action === 'seed') {
+    if (!args.flags.file) throw usage('pr-round seed needs --file JSONL');
+    const lines = fs.readFileSync(args.flags.file, 'utf8').split('\n').filter((line) => line.trim());
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'fm-pr-seed-'));
+    try {
+      for (const line of lines) {
+        JSON.parse(line);
+        const file = path.join(tmp, 'row.json');
+        fs.writeFileSync(file, line, { mode: 0o600 });
+        await cmdPrRound({ pos: { action: 'put' }, flags: { file } });
+      }
+    } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+    console.log(`seeded=${lines.length}`);
+    return;
+  }
+  const cursorKey = 'firstmate-pr-review-cursor-v1';
+  if (action === 'cursor') {
+    const row = await firstRow('fm_pr_round', `recordKey eq ${lit(cursorKey)}`);
+    if (!row) {
+      const legacy = process.env.FM_HOME && path.join(process.env.FM_HOME, 'data', 'pr-review', 'state.json');
+      if (legacy && fs.existsSync(legacy)) {
+        await cmdPrRound({ pos: { action: 'set-cursor' }, flags: { file: legacy } });
+        console.log(JSON.stringify(JSON.parse(fs.readFileSync(legacy, 'utf8'))));
+        return;
+      }
+    }
+    console.log(row?.payload ?? '{}');
+    return;
+  }
+  if (!args.flags.file) throw usage('pr-round put/set-cursor needs --file JSON');
+  let payload;
+  try { payload = JSON.parse(fs.readFileSync(args.flags.file, 'utf8')); } catch { throw usage('pr-round file must contain JSON'); }
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw usage('pr-round payload must be an object');
+  const text = JSON.stringify(payload);
+  if (Buffer.byteLength(text) > 2 * 1024 * 1024) throw usage('pr-round payload exceeds 2 MiB');
+  const cursor = action === 'set-cursor';
+  const identityPayload = { ...payload };
+  delete identityPayload.at;
+  // Round identity stays stable across a captured result's retry; full payload is retained in the first row.
+  const roundIdentity = ['round', 'late', 'baseline', 'cap', 'superseded'].includes(payload.type)
+    ? { type: payload.type, repo: payload.repo, pr: payload.pr, task: payload.task ?? null, head: payload.head, round: payload.round ?? null }
+    : identityPayload;
+  const recordKey = cursor ? cursorKey : `pr-round:${crypto.createHash('sha256').update(JSON.stringify(roundIdentity)).digest('hex')}`;
+  const prior = await firstRow('fm_pr_round', `recordKey eq ${lit(recordKey)}`);
+  if (prior && !cursor) return;
+  const row = { recordKey, kind: cursor ? 'cursor' : String(payload.type ?? 'round'), payload: text,
+    task: payload.task ?? null, prUrl: payload.prUrl ?? (payload.repo && payload.pr ? `https://github.com/${payload.repo}/pull/${payload.pr}` : null),
+    head: payload.head ?? null, round: payload.round ?? null, reviewers: JSON.stringify(payload.reviewers ?? { reviewer: payload.reviewer ?? null, reader: payload.reader ?? null }),
+    delivered: payload.delivered === true, retained: JSON.stringify(payload.retained ?? []), at: payload.at == null ? null : new Date(payload.at * 1000).toISOString() };
+  const res = await http(prior ? 'PATCH' : 'POST', prior ? `/api/fm_pr_round/${prior.id}` : '/api/fm_pr_round', row);
+  if (res.status === 409 && !cursor) {
+    if (await firstRow('fm_pr_round', `recordKey eq ${lit(recordKey)}`)) return;
+  }
+  ok(res, 'write PR round');
 }
 
 async function cmdEvent(args) {
@@ -1297,9 +1997,33 @@ async function cmdEvent(args) {
   const kind = oneOf([...FREE_KINDS, 'wait'], args.pos.kind, 'event kind');
   const prUrl = args.flags['pr-url'];
   const head = args.flags.head;
-  const headKind = kind === 'deploy' || kind === 'ci';
-  if (head !== undefined && !headKind) throw usage('--head names a head a deploy or a ci event reports: give it only on one of those');
+  const url = args.flags.url;
+  const headKind = kind === 'deploy' || kind === 'ci' || kind === 'pr';
+  if (head !== undefined && !headKind) throw usage('--head goes only on a deploy, ci or pr event');
+  const mergeAuthority = args.flags['merge-authority'];
+  if (mergeAuthority !== undefined && !args.mergeGate) throw usage('authority is written only by merge-authority with a gate receipt');
+  if (mergeAuthority !== undefined) {
+    if (kind !== 'pr') throw usage('--merge-authority goes only on a pr event');
+    oneOf(['away', 'attended'], mergeAuthority, 'merge authority');
+    if (!['merge authority pending', 'merge authority accepted'].includes(noteOf(args))) throw usage('merge authority requires the merge-gate phase');
+    const receipt = args.flags.receipt;
+    if (!receipt) throw usage('merge authority requires --receipt from the merge gate');
+    let stat, proof;
+    try {
+      stat = fs.lstatSync(receipt);
+      proof = JSON.parse(fs.readFileSync(receipt, 'utf8'));
+    } catch { throw usage('merge authority receipt is missing or unreadable'); }
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || (stat.mode & 0o777) !== 0o600 || stat.uid !== process.getuid()
+      || proof.task !== taskId || proof.prUrl !== prUrl || proof.head !== head || proof.authority !== mergeAuthority) {
+      throw usage('merge authority receipt does not match task, PR, head and authority');
+    }
+  }
+  if (kind === 'pr' && head !== undefined && !/^[a-f0-9]{40,64}$/.test(head)) throw usage('--head on pr must be a full commit SHA');
   if (args.flags.touched !== undefined && !(kind === 'deploy' && head)) throw usage('--touched names the scenarios a deploy touched: give it only on a deploy event with --head');
+  if (url !== undefined && kind !== 'link') throw usage('--url goes only on a link event');
+  const merged = args.flags.merged === true;
+  if (merged && kind !== 'pr') throw usage('--merged says a pull request merged: give it only on a pr event');
+  if (kind === 'link' && (!url || !/^https?:\/\/\S+$/.test(url) || url.length > 2048)) throw rule('a link event needs --url with an http or https URL up to 2048 characters');
   const touched = touchedOf(args.flags.touched);
   if (kind === 'wait') {
     const f = args.flags;
@@ -1313,9 +2037,23 @@ async function cmdEvent(args) {
       return { kind: 'wait', note: f.note, extra: { wait: { actor, clearsOn, rows } } };
     });
   } else if (['next-actor', 'clears-on', 'rows'].some((n) => args.flags[n] !== undefined)) throw usage('--next-actor, --clears-on and --rows go only on a wait event');
-  return write(taskId, who, async ({ task }) => {
+  if (RESULT_REQUEST[kind] && !/\S/.test(noteOf(args)) && kind !== 'closed') throw usage(`a ${kind} event needs --note with the refusal text`);
+  return write(taskId, who, async ({ task, events }) => {
     if (!task) throw rule('no such task');
-    return { kind, note: noteOf(args), set: kind === 'pr' && prUrl ? { prUrl } : {}, ...(head ? { extra: { head, ...(touched ? { touched } : {}) } } : {}) };
+    if (REQUEST_RESULTS[kind]) {
+      if (CLOSED.includes(task.state)) throw rule(`${kind} is refused: ${taskId} is ${task.state}`);
+      if (kind === 'start-request' && task.state === 'running') throw rule(`start-request is refused: ${taskId} is running`);
+      // one open request per kind, so each result answers exactly one request
+      const open = openRequests(events).find((e) => e.kind === kind);
+      if (open) throw rule(`${kind} is refused: request ${open.seq} is still open on ${taskId}`);
+      return { kind, note: noteOf(args), set: { nextActor: 'firstmate' } };
+    }
+    if (RESULT_REQUEST[kind]) {
+      if (!openRequests(events).some((e) => e.kind === RESULT_REQUEST[kind])) throw rule(`${kind} is refused: ${taskId} has no open ${RESULT_REQUEST[kind]}`);
+      if (kind === 'closed' && task.state !== 'done') throw rule(`closed is refused: ${taskId} is ${task.state}, not approved`);
+      return { kind, note: noteOf(args), set: kind === 'closed' ? {} : { nextActor: 'owner' } };
+    }
+    return { kind, note: noteOf(args) || (kind === 'link' ? url : ''), set: kind === 'pr' && prUrl ? { prUrl } : {}, ...((head || merged || mergeAuthority || kind === 'link') ? { extra: { ...(head ? { head, ...(kind === 'pr' ? { prHead: head } : {}), ...(touched ? { touched } : {}) } : {}), ...(merged ? { merged: true } : {}), ...(mergeAuthority ? { mergeAuthority, authorityPhase: noteOf(args).endsWith(' accepted') ? 'accepted' : 'pending' } : {}), ...(kind === 'link' ? { url } : {}) } } : {}) };
   }, kind === 'deploy' && head ? () => routeReview(taskId, who) : undefined);
 }
 
@@ -1346,6 +2084,7 @@ async function cmdDone(args) {
   const nextActor = f['next-actor'] === undefined ? null : oneOf(['tester', 'firstmate'], f['next-actor'], 'next actor');
   return write(taskId, who, async ({ task }) => {
     guard('done', task);
+    if ((task.kind === 'scout' || task.kind === 'plan') && !documents && !/^(shadow|backfill):/.test(who.key)) throw rule(`done on a ${task.kind} task requires --document`);
     const rows = await checkRows(taskId);
     const waitingOnTester = rows.some((r) => r.surface === 'user-visible' && r.status !== 'retired' && !(r.status === 'pass' && (r.head ?? null) === (f.head ?? null)));
     const child = { summary: f.summary, changedFiles: f['changed-files'], verification: f.verification, residualRisk: f['residual-risk'], rows: f.rows ?? rowsJson(rows), prUrl: f['pr-url'], head: f.head };
@@ -1384,9 +2123,21 @@ function prChecksRunning(prUrl) {
   return rows.some((row) => RUNNING_CHECK_STATES.includes(String(row?.state ?? '').toLowerCase()));
 }
 
+// The kind of the task's current block streak, read from the events: a block, or a question to firstmate, sets it; an
+// event that resets blockRepeats ends it. An owner question leaves it, and so does an unblock, which clears blockKind.
+function streakKind(events) {
+  let kind = null;
+  for (const e of [...events].sort((a, b) => a.seq - b.seq)) {
+    const set = bodyOf(e).set || {};
+    if (set.blockRepeats === 0) kind = null;
+    else if (e.kind === 'blocked' || (e.kind === 'needs-decision' && set.nextActor !== 'owner')) kind = set.blockKind ?? kind;
+  }
+  return kind;
+}
+
 // Count a block of `kind` against the task: the third in a row of one kind goes to triage.
-function blockSet(task, kind, reason, nextActor, until) {
-  const repeats = task.blockKind === kind ? task.blockRepeats + 1 : 1;
+function blockSet(task, events, kind, reason, nextActor, until) {
+  const repeats = streakKind(events) === kind ? task.blockRepeats + 1 : 1;
   const triage = kind !== 'dependency' && repeats >= 3;
   return { state: triage ? 'triage' : 'blocked', nextActor: triage ? 'firstmate' : nextActor, blockKind: kind, blockReason: String(reason ?? '').slice(0, LIMITS.blockReason), blockRepeats: repeats, holdUntil: until };
 }
@@ -1399,12 +2150,52 @@ async function cmdAsk(args) {
   if (options.length < 2 || options.length > 6) throw rule(`a question has 2 to 6 options, not ${options.length}`);
   const nextActor = f['next-actor'] === undefined ? 'firstmate' : oneOf(['firstmate', 'owner'], f['next-actor'], 'next actor');
   const images = imagesOf(args);
-  return write(taskId, who, async ({ task }) => {
-    guard('ask', task);
+  return write(taskId, who, async ({ task, events }) => {
+    // A round of owner questions: another owner ask joins a task blocked only on open owner questions.
+    const round = nextActor === 'owner' && task?.state === 'blocked' && openCalls(events).length > 0
+      && openCalls(events).every((e) => e.kind === 'needs-decision' && bodyOf(e).set?.nextActor === 'owner');
+    if (!round) guard('ask', task);
     const child = { question: f.question, options: JSON.stringify(options), recommendation: f.recommendation, why: f.why, document: f.document };
     for (const key of Object.keys(child)) if (child[key] === undefined) delete child[key];
-    return { kind: 'needs-decision', note: noteOf(args), set: blockSet(task, 'needs-decision', f.question, nextActor, null), children: withImages({ question: [child] }, images) };
-  }, undefined, nextActor === 'owner' ? () => waitOn(taskId, who, { actor: 'owner', clearsOn: 'answer', note: String(f.question).replace(/\s+/g, ' ').slice(0, 300) }) : undefined);
+    // An owner question does not count toward repeat-to-triage; a question to firstmate still does.
+    const set = nextActor === 'owner'
+      ? { state: 'blocked', nextActor: 'owner', blockKind: 'needs-decision', blockReason: String(f.question).slice(0, LIMITS.blockReason), blockRepeats: task.blockRepeats, holdUntil: null }
+      : blockSet(task, events, 'needs-decision', f.question, nextActor, null);
+    return { kind: 'needs-decision', note: noteOf(args), set, children: withImages({ question: [child] }, images) };
+  }, undefined, nextActor === 'owner' ? (result) => waitOn(taskId, who, { actor: 'owner', clearsOn: 'answer', note: String(f.question).replace(/\s+/g, ' ').slice(0, 300), question: result.event.seq }) : undefined);
+}
+
+// The owner answers one open question of a round (plan v2 D3): an `answered` event names the question seq, the option
+// and the note. The task leaves blocked (ready, next actor worker; todo while a dependency block's parent is open) only when its last open
+// question is answered; until then it stays blocked on the owner with the next open question as its reason.
+async function cmdAnswer(args) {
+  const taskId = taskIdOf(args);
+  const who = identity(args, 'owner');
+  const f = args.flags;
+  if (!/^[1-9]\d*$/.test(f.question ?? '')) throw usage('answer needs --question SEQ');
+  if (f.option === undefined && !f.note) throw usage('answer needs --option or --note');
+  const question = Number(f.question);
+  return write(taskId, who, async ({ task, events }) => {
+    if (!task) throw rule('no such task');
+    const open = openQuestions(events);
+    const asked = open.find((e) => e.seq === question);
+    if (!asked) throw rule(`#${question} is not an open question of ${taskId}`);
+    if (f.option !== undefined) {
+      const child = await firstRow('fm_event_question', `fmTaskEventId eq ${asked.id}`);
+      let options = [];
+      try {
+        options = JSON.parse(child?.options ?? '[]');
+      } catch { /* an unreadable list accepts no option */ }
+      if (!options.includes(f.option)) throw rule(`option ${JSON.stringify(f.option)} is not one of question #${question}: ${options.join(', ')}`);
+    }
+    const left = open.filter((e) => e.seq !== question);
+    const waiting = !left.length && (await openParents(taskId)).length > 0;
+    const set = left.length
+      ? { blockReason: bodyOf(left[0]).set?.blockReason ?? null }
+      : { state: waiting ? 'todo' : 'ready', nextActor: 'worker', blockReason: null, blockKind: null, holdUntil: null };
+    const answer = { question, ...(f.option !== undefined ? { option: f.option } : {}), ...(f.note ? { note: f.note } : {}) };
+    return { kind: 'answered', note: [f.option, f.note].filter(Boolean).join(' - '), set, extra: { answer } };
+  });
 }
 
 async function cmdBlock(args) {
@@ -1428,7 +2219,7 @@ async function cmdBlock(args) {
   return write(
     taskId,
     who,
-    async ({ task }) => {
+    async ({ task, events }) => {
       guard('block', task);
       let set;
       if (kind === 'dependency') {
@@ -1437,9 +2228,9 @@ async function cmdBlock(args) {
         if (!parent) throw rule(`parent ${f.on} does not exist`);
         if (CLOSED.includes(parent.state)) throw rule(`parent ${f.on} is ${parent.state}; a dependency waits on an open parent`);
         if (await wouldCycle(f.on, taskId)) throw rule(`${f.on} already waits on ${taskId}`);
-        set = { ...blockSet(task, kind, f.reason, f['next-actor'] ?? 'worker', null), state: 'todo', nextActor: 'worker' };
+        set = { ...blockSet(task, events, kind, f.reason, f['next-actor'] ?? 'worker', null), state: 'todo', nextActor: 'worker' };
       } else {
-        set = blockSet(task, kind, f.reason, f['next-actor'] ?? 'firstmate', until);
+        set = blockSet(task, events, kind, f.reason, f['next-actor'] ?? 'firstmate', until);
       }
       const child = { blockKind: kind, reason: f.reason, nextActor: f['next-actor'], until };
       for (const key of Object.keys(child)) if (child[key] === undefined) delete child[key];
@@ -1455,29 +2246,22 @@ async function cmdLink(args) {
   const { parent, child } = args.pos;
   if (!parent || !child) throw usage('link needs <parent> <child>');
   for (const id of [parent, child]) if (!TASK_ID.test(id)) throw usage(`${id} is not a task id`);
-  const who = identity(args, 'firstmate');
-  if (parent === child) throw rule('a task cannot wait on itself');
+  identity(args, 'firstmate');
+  if (parent === child) throw rule('a task cannot be its own parent');
   const p = fold(await taskEvents(parent));
   const c = fold(await taskEvents(child));
   if (!p) throw rule(`parent ${parent} does not exist`);
   if (!c) throw rule(`child ${child} does not exist`);
-  if (!['triage', 'todo', 'ready'].includes(c.state)) throw rule(`a task in state ${c.state} cannot take a new parent`);
+  if (c.state === 'archived') throw rule(`child ${child} is archived`);
   const existing = await firstRow('fm_task_link', `parentTaskId eq ${lit(parent)} and childTaskId eq ${lit(child)}`);
-  if (!existing && (await wouldCycle(parent, child))) throw rule(`${parent} already waits on ${child}`);
-  const needsMove = !CLOSED.includes(p.state) && c.state === 'ready';
-  if (existing && !needsMove) {
+  if (!existing && (await wouldCycle(parent, child))) throw rule(`${parent} is already under ${child}`);
+  if (existing) {
     out(`link ${parent} -> ${child} (already linked)`);
     return;
   }
+  // The link is hierarchy only: the child keeps its state and can start while the parent is open.
   await ensureLink(parent, child);
-  if (!needsMove) {
-    out(`link ${parent} -> ${child}`);
-    return;
-  }
-  await write(child, who, async ({ task }) => {
-    guard('assign', task);
-    return { kind: 'linked', note: `waits on ${parent}`, set: { state: 'todo' } };
-  });
+  out(`link ${parent} -> ${child}`);
 }
 
 // The check rows an issue asks for now, keyed <id>@<width>, each with the digest of its scenario as the issue reads it.
@@ -1513,6 +2297,10 @@ async function wantedRows(issue) {
   return wanted;
 }
 
+// A board link names a task, so its rows come from that task's Description, as from task:<id>.
+const boardTask = (issue) => /^https?:\/\/[^\s]+[?&]task=([^&#\s]*)/.exec(issue)?.[1];
+const boardLink = (issue) => boardTask(issue) !== undefined;
+
 async function cmdRows(args) {
   const taskId = taskIdOf(args);
   const issue = args.pos.issue || taskId;
@@ -1522,7 +2310,7 @@ async function cmdRows(args) {
   if (CLOSED.includes(task.state)) throw rule(`rows is refused: ${taskId} is ${task.state}, and new rows or resets would sit under a closed task`);
   const surface = oneOf(['all', 'user-visible'], args.flags.surface ?? 'all', 'surface');
   const wanted = new Map([...(await wantedRows(issue))].filter(([, want]) => surface === 'all' || want.surface === surface));
-  const have = new Map((await checkRows(taskId)).map((row) => [rowKey(row), row]));
+  const have = new Map((await checkRows(taskId)).filter((row) => !isChecklist(row)).map((row) => [rowKey(row), row]));
   const counts = { added: 0, reset: 0, retired: 0, updated: 0, unchanged: 0 };
   const fresh = { status: 'pending', evidence: null, head: null, checkedAt: null };
   const actorFor = (surface) => (surface === 'user-visible' ? 'tester' : 'worker');
@@ -1567,9 +2355,9 @@ async function cmdRows(args) {
   const summary = `rows added=${counts.added} reset=${counts.reset} retired=${counts.retired} updated=${counts.updated} unchanged=${counts.unchanged} total=${wanted.size}`;
   const parser = process.env.FM_TASK_ACCEPTANCE || path.join(HERE, 'fm-acceptance.mjs');
   const digestRun = spawnSync('node', [parser, 'digest', issue, '--strict'], { encoding: 'utf8', timeout: 60000 });
-  const taskNative = !args.pos.issue || /^https?:\/\/[^\s]+[?&]task=/.test(issue);
+  const taskNative = !args.pos.issue || issue.startsWith('task:') || boardLink(issue);
   if (taskNative && (digestRun.status !== 0 || !/^[a-f0-9]{64}\s*$/.test(digestRun.stdout))) throw rule('acceptance digest could not be read');
-  const sets = { ...(taskNative && task.acceptanceDigest !== digestRun.stdout.trim() ? { acceptanceDigest: digestRun.stdout.trim() } : {}), ...(taskNative ? (task.issueUrl !== issue ? { issueUrl: issue } : {}) : (args.pos.issue && !task.issueUrl ? { issueUrl: issue } : {})) };
+  const sets = { ...(taskNative && task.acceptanceDigest !== digestRun.stdout.trim() ? { acceptanceDigest: digestRun.stdout.trim() } : {}), ...(taskNative ? (task.issueUrl !== issue ? { issueUrl: issue } : {}) : (args.pos.issue && !/^https?:\/\//.test(task.issueUrl ?? '') ? { issueUrl: issue } : {})) };
   if (counts.added + counts.reset + counts.retired + counts.updated === 0 && !Object.keys(sets).length) {
     out(summary);
     return;
@@ -1587,7 +2375,7 @@ async function requireOpenTask(taskId, command) {
 }
 
 // The newest event that sets the values of a check row: a check call, a reset by rows or an owner-check.
-const rowEvent = (events, row) => [...events].reverse().find((e) => (e.kind === 'check' || e.kind === 'owner-check') && bodyOf(e).row === rowKey(row) && bodyOf(e).values);
+const rowEvent = (events, row) => [...events].reverse().find((e) => ['check', 'owner-check', 'checklist'].includes(e.kind) && bodyOf(e).row === rowKey(row) && bodyOf(e).values);
 
 async function cmdCheck(args) {
   const taskId = taskIdOf(args);
@@ -1596,11 +2384,22 @@ async function cmdCheck(args) {
   const target = targetOf(args.pos.target);
   if (args.pos.status !== undefined && f.status !== undefined && args.pos.status !== f.status) throw usage(`give the result once: ${args.pos.status} or --status ${f.status}`);
   const status = oneOf(CHECK_STATUSES, args.pos.status ?? f.status, 'status');
+  if (f['evidence-label'] !== undefined && !f['evidence-image']) throw usage('--evidence-label requires --evidence-image');
+  if (f['evidence-image'] && f.evidence !== undefined) throw usage('give either --evidence or --evidence-image, not both');
+  const evImages = f['evidence-image'] ? imagesOf({ flags: { image: [f['evidence-image']], 'image-label': [f['evidence-label'] ?? `${rowKey(target)} evidence`] } }) : [];
   await requireOpenTask(taskId, 'check');
   const row = await checkRow(taskId, target);
   const nextActor = oneOf(ACTORS, f['next-actor'] ?? (status === 'pass' ? 'firstmate' : status === 'fail' ? 'worker' : row.nextActor === 'firstmate' ? surfaceActor(row.surface) : row.nextActor), 'next actor');
   if (nextActor === 'owner' && !(await ownerItem(taskId, target))) throw rule(`${rowKey(row)} cannot read next actor owner without its owner item; run owner-check first`);
-  const values = { status, nextActor, evidence: f.evidence ?? null, head: f.head ?? null, checkedAt: status === 'pending' ? null : new Date().toISOString() };
+  let evidence = f.evidence ?? null;
+  if (evImages.length) {
+    const imgRes = await append(taskId, { ...who, key: `${who.key}:evidence-image` }, async ({ task }) => {
+      guard('comment', task);
+      return { kind: 'comment', note: f['evidence-label'] ?? `${rowKey(row)} evidence`, children: withImages({}, evImages) };
+    });
+    evidence = `event:${imgRes.event.seq}#image:1`;
+  }
+  const values = { status, nextActor, evidence, head: f.head ?? null, checkedAt: status === 'pending' ? null : new Date().toISOString() };
   // a re-sent key means the call it already recorded: other values are another call and need another key
   const prior = await eventByKey(who.key);
   if (prior) {
@@ -1613,10 +2412,10 @@ async function cmdCheck(args) {
   await write(taskId, who, async ({ task }) => {
     if (!task) throw rule('no such task');
     if (CLOSED.includes(task.state)) throw rule(`check is refused: ${taskId} is ${task.state}`);
-    return { kind: 'check', note: `${rowKey(row)} ${status}${f.evidence ? `: ${f.evidence}` : ''}`, extra: { row: rowKey(row), values } };
+    return { kind: 'check', note: `${rowKey(row)} ${status}${evidence ? `: ${evidence}` : ''}`, extra: { row: rowKey(row), values } };
   }, async () => {
     await applyNewestCheck(taskId, row);
-    if (who.role === 'owner' && status !== 'pending') await ownerVerdict(taskId, target, status, f.evidence);
+    if (who.role === 'owner' && status !== 'pending') await ownerVerdict(taskId, target, status, evidence);
     await routeReview(taskId, who);
   });
 }
@@ -1699,6 +2498,21 @@ async function cmdChecks(args) {
   out(JSON.stringify({ task: taskId, state: task.state, nextActor: task.nextActor, issueUrl: task.issueUrl ?? null, head, rows }));
 }
 
+async function eventEvidenceExists(events, ev) {
+  const m = /^event:([1-9][0-9]*)#(image:([1-9][0-9]*)|document)$/.exec(ev);
+  if (!m) return false;
+  const event = events.find((e) => e.seq === Number(m[1]));
+  if (!event) return false;
+  if (m[2] === 'document') {
+    const doc = await firstRow('fm_event_document', `fmTaskEventId eq ${event.id}`);
+    return Boolean(doc && doc.content);
+  }
+  const pos = Number(m[3]);
+  const images = await listAll('fm_event_image', { filter: `fmTaskEventId eq ${event.id}`, orderby: 'position' });
+  const img = images.find((r) => r.position === pos) ?? images[pos - 1];
+  return Boolean(img && img.content);
+}
+
 // The verify gate's read of the record (bin/fm-verify-gate-lib.sh calls it for a task begun after T5). It writes nothing,
 // prints one problem per line and exits 5 when there is any. The task passes when every user-visible row the issue asks
 // for now is `pass` with evidence on the deployed --head and with its scenario's current digest, and an approved event is
@@ -1718,7 +2532,11 @@ async function cmdGate(args) {
   if (!wanted.length) problems.push(`issue ${f.issue} has no user-visible scenario row`);
   const have = new Map(newestRows(await checkRows(taskId), events).map((r) => [rowKey(r), r]));
   // a carried pass counts only for the latest recorded deployed head
-  const lastDeploy = [...events].reverse().find((e) => e.kind === 'deploy' && bodyOf(e).head);
+  // --before-approval [--touched IDS] reads the record as the handoff does before it writes the deploy event: as if a deploy
+  // event of --head were recorded next (the way checks --as-deployed does), and writes nothing
+  if (f.touched !== undefined && !f['before-approval']) throw usage('--touched goes with --before-approval');
+  const view = f['before-approval'] ? [...events, { seq: (events.at(-1)?.seq ?? 0) + 1, kind: 'deploy', taskId, body: JSON.stringify({ v: 1, note: '', set: {}, head: f.head, ...(touchedOf(f.touched) ? { touched: touchedOf(f.touched) } : {}) }) }] : events;
+  const lastDeploy = [...view].reverse().find((e) => e.kind === 'deploy' && bodyOf(e).head);
   const deployedHead = lastDeploy ? bodyOf(lastDeploy).head : null;
   for (const [key, want] of wanted) {
     const row = have.get(key);
@@ -1733,16 +2551,21 @@ async function cmdGate(args) {
     }
     const ev = row.evidence ?? '';
     if (!ev || ev === '-') problems.push(`${key} is pass without evidence`);
-    else if (!/^https?:\/\/./.test(ev) && !fs.existsSync(path.resolve(f['evidence-root'] || '.', ev))) problems.push(`${key} evidence path does not exist: ${ev}`);
-    if ((row.head ?? null) !== f.head && f.head === deployedHead && carried(row, events)) out(`${key} carried: pass on head ${row.head}, and no later deployed PR names ${row.scenarioId}`);
+    else if (/^event:/.test(ev)) {
+      if (!(await eventEvidenceExists(events, ev))) problems.push(`${key} evidence reference does not exist: ${ev}`);
+    } else if (!/^https?:\/\/./.test(ev) && !fs.existsSync(path.resolve(f['evidence-root'] || '.', ev))) problems.push(`${key} evidence path does not exist: ${ev}`);
+    if ((row.head ?? null) !== f.head && f.head === deployedHead && carried(row, view)) out(`${key} carried: pass on head ${row.head}, and no later deployed PR names ${row.scenarioId}`);
     else if ((row.head ?? null) !== f.head) problems.push(`${key} passed on head ${row.head ?? 'none'}, not the deployed head ${f.head}`);
   }
   const wantedKeys = new Set(wanted.map(([key]) => key));
   for (const [key, row] of have) if (row.surface === 'user-visible' && !wantedKeys.has(key)) problems.push(`${key} is not a row of ${f.issue}; run rows`);
   const lastRow = [...events].reverse().find((e) => (e.kind === 'check' || e.kind === 'owner-check') && bodyOf(e).row);
   const approved = [...events].reverse().find((e) => e.kind === 'approved');
-  if (!approved) problems.push(`no approved event for ${taskId}: firstmate approves with bin/fm-task.sh approve after the rows pass`);
-  else if (lastRow && approved.seq < lastRow.seq) problems.push(`the approved event (seq ${approved.seq}) is not newer than the last row event (seq ${lastRow.seq})`);
+  // --before-approval: the approval does not exist yet, so neither approved check applies
+  if (!f['before-approval']) {
+    if (!approved) problems.push(`no approved event for ${taskId}: firstmate approves with bin/fm-task.sh approve after the rows pass`);
+    else if (lastRow && approved.seq < lastRow.seq) problems.push(`the approved event (seq ${approved.seq}) is not newer than the last row event (seq ${lastRow.seq})`);
+  }
   for (const problem of problems) out(problem);
   if (problems.length) throw new Fail(5, `gate: ${taskId} is not complete`);
 }
@@ -1786,6 +2609,171 @@ async function cmdOwnerCheck(args) {
     await applyNewestCheck(taskId, row);
     await routeReview(taskId, who);
   });
+}
+
+// ---- the checklist ----------------------------------------------------------------------------------------
+// One fixed list per task kind, changed by PR (plan task-checklist-template P2); the approved round-2 templates.
+// `passes` is the row's proof text; `off` is the reason of an item that starts off.
+const TEMPLATES = {
+  plan: [
+    { id: 'plan', label: 'Plan document', passes: 'a plan event or a done document' },
+    { id: 'mockup', label: 'Prototype / mockup', passes: 'a comment image labelled mockup' },
+    { id: 'decision', label: 'Owner decision', passes: 'an answered owner question and none open' },
+    { id: 'tester', label: 'Tester evidence', passes: 'every user-visible row passes', off: 'Plan task: Tester verifies the ship slices it files' },
+  ],
+  ship: [
+    { id: 'ci', label: 'PR & CI green', passes: 'a ci event green on the PR head' },
+    { id: 'mockup', label: 'Prototype / mockup', passes: 'a comment image labelled mockup' },
+    { id: 'tester', label: 'Tester evidence', passes: 'every user-visible row passes' },
+    { id: 'deploy', label: 'Deployed SHA', passes: 'a deploy event with a head, and every user-visible row passes on it' },
+  ],
+};
+const isChecklist = (row) => String(row.scenarioId ?? '').startsWith(CHECKLIST_PREFIX);
+const templateOf = (task) => (task?.kind === 'plan' || task?.kind === 'scout' ? TEMPLATES.plan : task?.kind === 'ship' && task.surface === 'user-visible' ? TEMPLATES.ship : null);
+const CHECKLIST_WHO = { actor: 'checklist', role: 'system' };
+
+// Add the template's missing items; a present item keeps its values. Returns [added, total].
+async function applyChecklist(taskId) {
+  const template = templateOf(fold(await taskEvents(taskId)));
+  if (!template) return [0, 0];
+  const have = new Set((await checkRows(taskId)).map(rowKey));
+  let added = 0;
+  for (const item of template) {
+    const scenarioId = `${CHECKLIST_PREFIX}${item.id}`;
+    if (have.has(`${scenarioId}@-`)) continue;
+    const res = await http('POST', '/api/fm_task_check', {
+      taskId, scenarioId, width: '-', line: item.label, surface: 'checklist', page: '-', controls: '-', data: '-', env: null, mock: null, proof: item.passes,
+      acceptanceDigest: crypto.createHash('sha256').update(JSON.stringify(item)).digest('hex'),
+      status: item.off ? 'off' : 'pending', evidence: item.off ?? null, nextActor: 'firstmate', head: null, checkedAt: null,
+    });
+    if (res.status === 409) continue; // another apply wrote it first
+    ok(res, `create the checklist row ${scenarioId}`);
+    added++;
+  }
+  return [added, template.length];
+}
+
+async function hasDocument(event) {
+  const docs = await listAll('fm_event_document', { filter: `fmTaskEventId eq ${event.id}`, orderby: 'id', select: 'id,title' });
+  return docs.some((d) => d.title !== 'Event note');
+}
+
+// The evidence that passes an item, naming its event, or null while the record holds none.
+async function checklistEvidence(item, task, events, visible) {
+  const newest = (test) => [...events].reverse().find(test);
+  const allPass = visible.length > 0 && visible.every((r) => r.status === 'pass');
+  if (item === 'plan') {
+    for (const e of [...events].reverse()) {
+      if (e.kind === 'plan' || (e.kind === 'done' && (await hasDocument(e)))) return `event:${e.seq}#document`;
+    }
+    return null;
+  }
+  if (item === 'mockup') {
+    for (const e of [...events].reverse().filter((x) => x.kind === 'comment')) {
+      const images = await listAll('fm_event_image', { filter: `fmTaskEventId eq ${e.id}`, orderby: 'position', select: 'id,label,position' });
+      const image = images.find((i) => /\bmockup\b/i.test(i.label || ''));
+      if (image) return `event:${e.seq}#image:${image.position || images.indexOf(image) + 1}`;
+    }
+    return null;
+  }
+  if (item === 'decision') {
+    if (task.blockKind === 'needs-decision' && task.state === 'blocked') return null;
+    // the owner's own word: his approval of the current plan, or his answer to the newest owner question
+    // (an unblock by the owner; firstmate's unblock is not an answer)
+    const approval = task.planDecision === 'approve'
+      && newest((e) => e.kind === 'plan_decision' && e.actorRole === 'owner' && bodyOf(e).decision === 'approve' && bodyOf(e).planSeq === task.planSeq);
+    if (approval) return `event:${approval.seq}`;
+    const question = newest((e) => e.kind === 'needs-decision' && bodyOf(e).set?.nextActor === 'owner');
+    const answer = question && events.find((e) => e.kind === 'unblocked' && e.actorRole === 'owner' && e.seq > question.seq);
+    return answer ? `event:${answer.seq}` : null;
+  }
+  if (item === 'ci') {
+    // green CI on the current head: the head the newest done call built (a ci result for another head, whenever
+    // it arrives, does not count); a done call without --head leaves the head the newest ci result reports
+    const done = newest((e) => e.kind === 'done');
+    const built = done ? (await firstRow('fm_event_done', `fmTaskEventId eq ${done.id}`))?.head ?? null : null;
+    const head = built ?? (newest((e) => e.kind === 'ci' && bodyOf(e).head) ? bodyOf(newest((e) => e.kind === 'ci' && bodyOf(e).head)).head : null);
+    const ci = head && newest((e) => e.kind === 'ci' && bodyOf(e).head === head);
+    return ci && /\bCI green\b/.test(bodyOf(ci).note ?? '') ? `event:${ci.seq}` : null;
+  }
+  if (item === 'tester') {
+    if (!allPass) return null;
+    const last = visible.map((r) => rowEvent(events, r)).filter(Boolean).sort((a, b) => a.seq - b.seq).at(-1);
+    return last ? `event:${last.seq}` : null;
+  }
+  if (item === 'deploy') {
+    const deploy = newest((e) => e.kind === 'deploy' && bodyOf(e).head);
+    if (!deploy || !allPass) return null;
+    const head = bodyOf(deploy).head;
+    return visible.every((r) => (r.head ?? null) === head || carried(r, events)) ? `event:${deploy.seq}` : null;
+  }
+  return null;
+}
+
+// Items whose evidence a later event can take back: a new head without green CI, a new plan or the owner's changes.
+const RECHECKED = [`${CHECKLIST_PREFIX}ci`, `${CHECKLIST_PREFIX}decision`];
+// Pass each pending item whose evidence the record now holds, and set a passed ci or decision item pending again when
+// its evidence no longer holds. Each write is refused when the row changed after it was read (an owner's off or on wins).
+// Returns how many rows it changed.
+async function syncChecklist(taskId) {
+  const all = await checkRows(taskId);
+  if (!all.some(isChecklist)) return 0;
+  const events = await taskEvents(taskId);
+  const task = fold(events);
+  if (!task || CLOSED.includes(task.state)) return 0;
+  const rows = newestRows(all, events);
+  const visible = rows.filter((r) => r.surface === 'user-visible');
+  let changed = 0;
+  for (const row of rows.filter((r) => isChecklist(r) && (r.status === 'pending' || (r.status === 'pass' && RECHECKED.includes(r.scenarioId))))) {
+    const evidence = await checklistEvidence(row.scenarioId.slice(CHECKLIST_PREFIX.length), task, events, visible);
+    if (row.status === 'pending' ? !evidence : evidence === (row.evidence ?? null)) continue;
+    const status = evidence ? 'pass' : 'pending';
+    const seen = rowEvent(events, row)?.seq ?? 0;
+    // one key per item, row value and evidence: a re-run finds its event, and an item set on again can pass again
+    const key = `checklist:${crypto.createHash('sha1').update(`${taskId}\0${rowKey(row)}\0${seen}\0${status}\0${evidence}`).digest('hex')}`;
+    const values = { status, nextActor: 'firstmate', evidence, head: null, checkedAt: evidence ? new Date().toISOString() : null };
+    const wrote = await append(taskId, { ...CHECKLIST_WHO, key }, async ({ task: now, events: nowEvents }) => {
+      if (!now || CLOSED.includes(now.state)) throw rule('the task is closed');
+      if ((rowEvent(nowEvents, row)?.seq ?? 0) !== seen) throw rule(`${rowKey(row)} changed meanwhile`);
+      return { kind: 'checklist', note: `${rowKey(row)} ${status}${evidence ? `: ${evidence}` : ': its evidence no longer holds'}`, extra: { row: rowKey(row), values } };
+    }).then(() => true, (error) => {
+      if (!(error instanceof Fail && error.code === 5)) throw error;
+      return false;
+    });
+    await applyNewestCheck(taskId, row);
+    if (wrote) changed++;
+  }
+  return changed;
+}
+
+async function cmdChecklist(args) {
+  const taskId = taskIdOf(args);
+  const who = identity(args, 'firstmate');
+  const verb = oneOf(['apply', 'off', 'on'], args.pos.verb, 'checklist command');
+  const reason = args.flags.reason;
+  if (verb === 'apply') {
+    if (args.pos.item !== undefined) throw usage('checklist apply takes no item');
+    await requireOpenTask(taskId, 'checklist apply');
+    const [added, total] = await applyChecklist(taskId);
+    if (added && (await syncChecklist(taskId))) await project(taskId);
+    out(`checklist added=${added} total=${total}`);
+    return;
+  }
+  const item = args.pos.item;
+  if (!item || !/^[a-z0-9-]+$/.test(item)) throw usage(`checklist ${verb} needs an item id, for example plan`);
+  if (verb === 'off' && !reason?.trim()) throw usage('checklist off needs --reason');
+  await requireOpenTask(taskId, `checklist ${verb}`);
+  const target = { scenarioId: `${CHECKLIST_PREFIX}${item}`, width: '-' };
+  const row = await firstRow('fm_task_check', `taskId eq ${lit(taskId)} and scenarioId eq ${lit(target.scenarioId)} and width eq '-'`);
+  if (!row) throw rule(`task ${taskId} has no checklist item ${item}; run checklist ${taskId} apply`);
+  const values = verb === 'off'
+    ? { status: 'off', nextActor: 'firstmate', evidence: reason.trim(), head: null, checkedAt: new Date().toISOString() }
+    : { status: 'pending', nextActor: 'firstmate', evidence: null, head: null, checkedAt: null };
+  await write(taskId, who, async ({ task }) => {
+    if (!task) throw rule('no such task');
+    if (CLOSED.includes(task.state)) throw rule(`checklist is refused: ${taskId} is ${task.state}`);
+    return { kind: 'checklist', note: `${rowKey(row)} ${verb}${reason ? `: ${reason.trim()}` : ''}`, extra: { row: rowKey(row), values } };
+  }, () => applyNewestCheck(taskId, row));
 }
 
 async function cmdShow(args) {
@@ -1835,11 +2823,14 @@ const TEMPLATE_FIELDS = {
   blocked: ['blockKind', 'reason', 'nextActor', 'until'],
 };
 
+const openQuestions = (events) => openCalls(events).filter((e) => e.kind === 'needs-decision');
+
 function openCalls(events) {
   let open = [];
   for (const e of events) {
     if (e.kind === 'blocked' || e.kind === 'needs-decision') open.push(e);
     else if (e.kind === 'unblocked' || e.kind === 'started') open = [];
+    else if (e.kind === 'answered') open = open.filter((call) => call.seq !== bodyOf(e).answer?.question);
   }
   return open;
 }
@@ -1883,7 +2874,7 @@ async function cmdResume(args) {
   const questions = calls.filter((e) => e.kind === 'needs-decision');
   const blocks = calls.filter((e) => e.kind === 'blocked');
   lines.push(`OPEN QUESTIONS (${questions.length})`);
-  for (const e of questions.slice(-3)) lines.push(`  #${e.seq} ${cut(bodyOf(e).set?.blockReason, 130)} -> ${bodyOf(e).set?.nextActor ?? '-'}`);
+  for (const e of questions.slice(-6)) lines.push(`  #${e.seq} ${cut(bodyOf(e).set?.blockReason, 130)} -> ${bodyOf(e).set?.nextActor ?? '-'}`);
   lines.push(`OPEN BLOCKS (${blocks.length})`);
   for (const e of blocks.slice(-3)) lines.push(`  #${e.seq} ${bodyOf(e).set?.blockKind ?? '-'}: ${cut(bodyOf(e).set?.blockReason, 110)} -> ${bodyOf(e).set?.nextActor ?? '-'}`);
   lines.push('LAST 10 EVENTS');
@@ -1927,10 +2918,119 @@ async function cmdTurnEnd(args) {
   out(verdict);
 }
 
+async function cmdInbox(args) {
+  const id = taskIdOf(args);
+  const action = args.flags.action;
+  if (!['task', 'linked', 'delete'].includes(action)) throw usage('inbox needs --action task|linked|delete');
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) throw usage('inbox requires a notification UUID');
+  const items = await listAll('notification', { filter: `id eq ${id}`, expand: 'actions,images($select=id),documents($select=id)' });
+  const item = items[0];
+  if (!item) throw new Fail(5, 'inbox item does not exist');
+  if (action === 'delete') {
+    ok(await http('PATCH', `/api/notification/${encodeURIComponent(id)}`, { state: 'dismissed' }), 'dismiss inbox item');
+    const retention = spawnSync('bash', [path.join(os.homedir(), '.local/share/cfw-scripts/notifications-retention.sh'), '--days', '0', '--only', id], { encoding: 'utf8', timeout: 30000 });
+    if (retention.status !== 0) throw new Fail(3, `inbox dismissed but retention failed: ${retention.stderr || retention.error?.message || 'unknown error'}`);
+    let receipt;
+    try { receipt = JSON.parse(retention.stdout); } catch { throw new Fail(3, 'retention returned no JSON receipt'); }
+    if (receipt.deleted !== 1) throw new Fail(3, 'inbox dismissed but retention did not confirm deletion');
+    out(`deleted inbox=${id}`);
+    return;
+  }
+  const target = action === 'task' ? `inbox-${id}` : args.flags.target;
+  if (!target) throw usage('linked needs --target task-id');
+  const home = args.flags.home || 'main';
+  if (!/^[A-Za-z0-9._-]{1,128}$/.test(home)) throw usage('inbox --home must be a valid backlog home');
+  if (item.resolution && item.taskId !== target) throw new Fail(5, 'inbox item was already handled');
+  if (action === 'task') {
+    await cmdCreate({ pos: { task: target }, flags: { title: item.title, kind: 'other', key: `inbox:${id}:create` } });
+    if (item.body) await cmdComment({ pos: { task: target }, flags: { note: item.body, key: `inbox:${id}:body` } });
+    await requireOpenTask(target, 'make inbox task');
+    await write(target, identity({ flags: { key: `inbox:${id}:home` } }, 'firstmate'), async () => ({
+      kind: 'row', note: 'Inbox task home', set: { backlogHome: home },
+    }));
+  } else {
+    await requireOpenTask(target, 'link inbox');
+  }
+  ok(await http('PATCH', `/api/notification/${encodeURIComponent(id)}`, { taskId: target, resolution: action }), 'resolve inbox item');
+  out(`inbox=${id} task=${target} resolution=${action}`);
+}
+
+const steerReadConsumer = (taskId) => taskId.length <= 59
+  ? `read:${taskId}` : `read:${crypto.createHash('sha256').update(taskId).digest('hex').slice(0, 59)}`;
+
+async function cmdSteers(args) {
+  const taskId = taskIdOf(args);
+  if (!await taskRow(taskId)) throw new Fail(5, `steers: missing task ${taskId}; use the local inbox fallback`);
+  const consumer = steerReadConsumer(taskId);
+  if (consumer.length > 64) throw usage('read consumer exceeds 64 characters');
+  const marks = await listAll('fm_task_delivery', { filter: `consumer eq ${lit(consumer)}` });
+  const read = new Set(marks.map((m) => Number(m.seq)));
+  const events = (await taskEvents(taskId)).filter((e) => e.kind === 'steer' && !read.has(Number(e.seq)));
+  for (const event of events) {
+    // Wait for the output callback before claiming consumption, including pipe errors.
+    await new Promise((resolve, reject) => {
+      process.stdout.write(`${JSON.stringify({ seq: event.seq, key: event.idempotencyKey, note: bodyOf(event).note })}\n`, (error) => error ? reject(error) : resolve());
+    });
+    if (!args.flags.peek) await markSteerRead(taskId, event);
+  }
+}
+
+async function markSteerRead(taskId, event) {
+  const consumer = steerReadConsumer(taskId);
+  const prior = await listAll('fm_task_delivery', { filter: `consumer eq ${lit(consumer)} and seq eq ${event.seq}` });
+  if (!prior.length) {
+    const res = await http('POST', '/api/fm_task_delivery', { consumer, seq: event.seq });
+    if (res.status !== 409) ok(res, 'mark steer read');
+  }
+}
+
+async function cmdReadMark(args) {
+  const taskId = taskIdOf(args);
+  const key = args.flags.key;
+  if (!key?.startsWith(`steer:${taskId}:`)) throw usage('read-mark needs this task’s steer key');
+  const consumer = steerReadConsumer(taskId);
+  if (consumer.length > 64) throw usage('read consumer exceeds 64 characters');
+  const event = (await taskEvents(taskId)).find((e) => e.kind === 'steer' && e.idempotencyKey === key);
+  if (!event) throw new Fail(5, 'steer event not stored yet');
+  await markSteerRead(taskId, event);
+  out(`read ${consumer} seq=${event.seq}`);
+}
+
+// An owner request names the one command that answers it, so the wake alone tells firstmate what to run.
+const wakeReason = (e) => (REQUEST_RESULTS[e.kind]
+  ? `owner request ${e.seq}: ${e.taskId} ${e.kind} - run bin/fm-owner-request.sh ${e.taskId} --seq ${e.seq}`
+  : `task event ${e.seq}: ${e.taskId} ${e.kind}`);
+
+// requests: the open owner requests, oldest first, each with the setup step a start runs (the current workflow
+// state's step, or the first step while the task is queued).
+async function cmdRequests(args) {
+  const taskId = taskIdOf(args);
+  const events = await taskEvents(taskId);
+  const task = fold(events);
+  if (!task) throw rule('no such task');
+  const steps = await stepRows(taskId);
+  const step = steps.find((s) => s.state === task.workflowState) ?? steps[0] ?? null;
+  const rows = openRequests(events).map((e) => ({ seq: e.seq, kind: e.kind, actor: e.actor ?? null, note: bodyOf(e).note ?? '', at: e.createdAt ?? null,
+    ...(e.kind === 'start-request' ? { step: step && { state: step.state, harness: step.harness ?? null, model: step.model ?? null, effort: step.effort ?? null } } : {}) }));
+  // the seq of the newest result of each request kind (0 when none), so a request asked again after its answer is new
+  const answered = Object.fromEntries(Object.entries(REQUEST_RESULTS).map(([k, results]) => [k, Math.max(0, ...events.filter((e) => results.includes(e.kind)).map((e) => e.seq))]));
+  if (args.flags.json) return out(JSON.stringify({ taskId, state: task.state, workflowState: task.workflowState, requests: rows, answered }));
+  if (!rows.length) return out(`no open request task=${taskId} state=${task.state}`);
+  for (const r of rows) out(`seq=${r.seq} kind=${r.kind} actor=${r.actor ?? '-'}${r.step ? ` step=${r.step.state} harness=${r.step.harness ?? '-'} model=${r.step.model ?? '-'} effort=${r.step.effort ?? '-'}` : ''} note=${JSON.stringify(r.note)}`);
+}
+
 async function cmdDeliver(args) {
   const consumer = args.flags.consumer;
   if (!consumer || consumer.length > 64) throw usage('deliver needs --consumer (up to 64 characters)');
   if (!process.env.FM_HOME) throw usage('deliver requires FM_HOME');
+  // The generation held now ('' with the lease off). It is read again before each claim, so a run whose lease moved
+  // mid-way claims nothing more.
+  const leaseGeneration = () => {
+    const lease = spawnSync('bash', ['-c', 'source "$1/fm-home-lease-lib.sh"; fm_home_lease_generation', 'home-lease', HERE], { encoding: 'utf8', env: process.env });
+    if (lease.status !== 0) throw new Fail(5, `event delivery requires home ownership: ${lease.stdout}${lease.stderr}`);
+    return lease.stdout.trim();
+  };
+  const generation = leaseGeneration();
   const taskStream = await taskEvents(taskIdOf(args));
   await waitView(taskIdOf(args), taskStream);
   const firstSeq = taskStream[0]?.seq ?? 0;
@@ -1941,35 +3041,347 @@ async function cmdDeliver(args) {
   const spool = path.join(state, '.task-delivery-outbox', crypto.createHash('sha256').update(consumer).digest('hex'));
   fs.mkdirSync(spool, { recursive: true });
   const activation = path.join(spool, `${taskIdOf(args)}.activated`);
+  let baseline;
   if (!fs.existsSync(activation)) {
-    // First activation establishes a baseline, not a replay of historical work.
+    // First activation establishes a baseline, not a replay of historical work; an owner request no result answers
+    // yet is work still waiting, so it is delivered all the same.
     fs.writeFileSync(activation, String(lastSeq));
     out(`activated ${consumer} task=${taskIdOf(args)} after=${lastSeq}`);
-    return;
-  }
-  const baseline = Number(fs.readFileSync(activation, 'utf8'));
-  const events = taskStream.filter((e) => e.seq > baseline);
+    baseline = lastSeq;
+  } else baseline = Number(fs.readFileSync(activation, 'utf8'));
+  const open = new Set(openRequests(taskStream).map((e) => e.seq));
+  const events = taskStream.filter((e) => (e.seq > baseline || open.has(e.seq)) && !e.idempotencyKey?.startsWith('steer-attempt:'));
   for (const event of events) {
     if (event.kind === 'comment' && event.actorRole === 'owner' && event.idempotencyKey?.startsWith('owner-comment:')) continue;
     const receipt = path.join(spool, `${event.seq}.json`);
     if (seen.has(event.seq) && !fs.existsSync(receipt)) continue;
+    if (generation && leaseGeneration() !== generation) throw new Fail(5, `event delivery stopped before seq ${event.seq}: the home lease moved from generation ${generation}`);
     // Persist recovery intent before claiming. A replay owns only this consumer's spool.
     if (!fs.existsSync(receipt)) fs.writeFileSync(receipt, JSON.stringify(event), { flag: 'wx' });
     const res = await http('POST', '/api/fm_task_delivery', { consumer, seq: event.seq });
     if (res.status !== 409) ok(res, 'claim event delivery');
-    const queued = spawnSync('bash', ['-c', 'source "$1/fm-wake-lib.sh"; fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"; trap \'fm_lock_release "$FM_WAKE_QUEUE_LOCK"\' EXIT; if ! test -f "$4.sent"; then if ! test -f "$STATE/.wake-queue" || ! grep -Fq "$(printf "\\t%s\\t" "$2")" "$STATE/.wake-queue"; then fm_wake_append_locked check "$2" "$3" || exit; fi; : > "$4.sent"; fi', 'task-delivery', HERE, `task-event-${event.seq}`, `task event ${event.seq}: ${event.taskId} ${event.kind}`, receipt], { encoding: 'utf8', env: process.env });
+    const queued = spawnSync('bash', ['-c', 'source "$1/fm-wake-lib.sh"; fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"; trap \'fm_lock_release "$FM_WAKE_QUEUE_LOCK"\' EXIT; if ! test -f "$4.sent"; then if ! test -f "$STATE/.wake-queue" || ! grep -Fq "$(printf "\\t%s\\t" "$2")" "$STATE/.wake-queue"; then fm_wake_append_locked check "$2" "$3" || exit; fi; : > "$4.sent"; fi', 'task-delivery', HERE, `task-event-${event.seq}`, wakeReason(event), receipt], { encoding: 'utf8', env: process.env });
     if (queued.status !== 0) throw new Fail(3, `delivery ${event.seq} claimed but wake append failed: ${queued.stderr}`);
     fs.unlinkSync(receipt);
     out(`delivered ${consumer} seq=${event.seq}`);
   }
 }
 
+// ---- model rules (plan v2 D2) ------------------------------------------------------------------------------
+// fm_model_rule holds the owner's rules; the board edits them through fm-task-owner.sh, firstmate only reads them.
+// A rule matches a dispatch when it is enabled, its hours hold at the dispatch time (local time), its account is
+// null or the asked one, and its scope fits the repo: a repo that a rule of that state names in its scope uses only
+// the rules that name it, every other repo uses the rules with no scope. Lower rank runs first.
+const RULE_STATES = ['plan', 'implement', 'testing', 'merge', 'verify'];
+const RULES_TASK = 'fm-model-rules';
+const RULES_HOME = 'system';
+const DAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+const RULE_TEXT = ['state', 'harness', 'model', 'effort', 'account', 'hours', 'scope', 'warning', 'note'];
+
+// hours: comma-separated tokens; `H-H` is a local hour range (17-07 wraps past midnight), a day name is that whole day.
+function hourTokens(hours) {
+  const tokens = String(hours).toLowerCase().split(',').map((t) => t.trim());
+  for (const token of tokens) {
+    const range = /^(\d{1,2})-(\d{1,2})$/.exec(token);
+    if (range ? Number(range[1]) > 24 || Number(range[2]) > 24 || range[1] === range[2] : !DAYS.includes(token)) {
+      throw rule(`hours ${JSON.stringify(hours)} is not a list of hour ranges (17-07) and days (${DAYS.join(',')})`);
+    }
+  }
+  return tokens;
+}
+function inHours(hours, at) {
+  if (!hours) return true;
+  const hour = at.getHours();
+  return hourTokens(hours).some((token) => {
+    const range = /^(\d{1,2})-(\d{1,2})$/.exec(token);
+    if (!range) return token === DAYS[at.getDay()];
+    const [from, to] = [Number(range[1]) % 24, Number(range[2]) % 24];
+    return from < to ? hour >= from && hour < to : hour >= from || hour < to;
+  });
+}
+const scopeFits = (scope, repo) => {
+  const name = String(repo).split('/').pop();
+  return String(scope).split(',').map((t) => t.trim()).some((t) => t && (t === repo || t === name || name.startsWith(`${t}-`)));
+};
+const byRank = (a, b) => (a.rank ?? 0) - (b.rank ?? 0) || RULE_STATES.indexOf(a.state) - RULE_STATES.indexOf(b.state) || String(a.id).localeCompare(String(b.id));
+
+// The rules that apply to one state and repo (pool), and those of them that can run now (live), in rank order.
+function ruleCandidates(rows, { state, repo, account, at }) {
+  const forState = rows.filter((r) => r.state === state);
+  const scoped = repo ? forState.filter((r) => r.scope && scopeFits(r.scope, repo)) : [];
+  const pool = (scoped.length ? scoped : forState.filter((r) => !r.scope)).sort(byRank);
+  const live = pool.filter((r) => r.enabled === true && inHours(r.hours, at) && (!account || !r.account || r.account === account));
+  return { pool, live };
+}
+const ruleLine = (r) => `rank=${r.rank ?? 0} state=${r.state} harness=${r.harness} model=${r.model} effort=${r.effort ?? '-'} account=${r.account ?? '-'} hours=${r.hours ?? '-'}`
+  + ` scope=${r.scope ?? '-'} enabled=${r.enabled === true} id=${r.id}${r.warning ? ` warning=${JSON.stringify(r.warning)}` : ''}`;
+
+async function cmdRules(args) {
+  const f = args.flags;
+  const rows = await listAll('fm_model_rule', { orderby: 'id' });
+  if (f.state === undefined) {
+    if (f.task || f.repo || f.at || f.account) throw usage('rules --repo, --at, --account and --task need --state');
+    const all = rows.sort(byRank);
+    if (f.json) out(JSON.stringify(all));
+    else for (const r of all) out(ruleLine(r));
+    return;
+  }
+  const state = oneOf(RULE_STATES, f.state, 'state');
+  const at = f.at === undefined ? new Date() : new Date(isoOf(f.at, '--at'));
+  const { pool, live } = ruleCandidates(rows, { state, repo: f.repo, account: f.account, at });
+  if (f.json) out(JSON.stringify(live));
+  else for (const r of live) out(ruleLine(r));
+  if (live.length || !f.task) return;
+  await stopForNoModel(taskIdOf(args), { state, repo: f.repo, at, pool }, identity(args, 'firstmate'));
+  throw rule(`no ${state} rule can run for ${f.repo ?? 'every repo'} now; ${f.task} waits on the owner`);
+}
+
+// Every candidate of a state is off or out of hours: the task stops with a question card for the owner, once per open
+// question. Its options are the rules that would fit if switched on or run out of hours, then "Chờ quota".
+async function stopForNoModel(taskId, { state, repo, at, pool }, who) {
+  const question = `Không còn model cho ${state[0].toUpperCase()}${state.slice(1)}`;
+  const options = [...new Set(pool.map((r) => `${r.enabled === true ? 'Dùng ngoài giờ' : 'Bật'} ${r.harness} ${r.model}`.slice(0, 200)))].slice(0, 5);
+  options.push('Chờ quota');
+  if (options.length < 2) options.unshift('Thêm rule trong Settings → Models');
+  const why = `Mọi rule ${state} cho ${repo ?? 'mọi repo'} đang tắt hoặc ngoài giờ lúc ${at.toISOString()}.`;
+  return write(taskId, who, async ({ task, events }) => {
+    if (!task) throw rule('no such task');
+    if (['review', ...CLOSED].includes(task.state)) throw rule(`${taskId} is ${task.state}; a missing model stops only an open task`);
+    if (openQuestions(events).some((e) => bodyOf(e).set?.blockReason === question)) throw rule(`${taskId} already asks the owner: ${question}`);
+    const set = { state: 'blocked', nextActor: 'owner', blockKind: 'needs-decision', blockReason: question, blockRepeats: task.blockRepeats, holdUntil: null };
+    return { kind: 'needs-decision', note: why, set, children: { question: [{ question, options: JSON.stringify(options), recommendation: options[0], why }] } };
+  }, undefined, (result) => waitOn(taskId, who, { actor: 'owner', clearsOn: 'answer', note: question, question: result.event.seq }));
+}
+
+// The fields of a rule from the flags; `add` needs state, harness, model and rank.
+function ruleFields(f, adding) {
+  const fields = {};
+  for (const name of RULE_TEXT) if (f[name] !== undefined) fields[name] = f[name];
+  if (fields.state !== undefined) oneOf(RULE_STATES, fields.state, 'state');
+  if (fields.hours !== undefined) hourTokens(fields.hours);
+  if (f.rank !== undefined) {
+    if (!/^\d{1,6}$/.test(f.rank)) throw rule(`rank ${JSON.stringify(f.rank)} is not a whole number`);
+    fields.rank = Number(f.rank);
+  }
+  if (f.enabled !== undefined) fields.enabled = oneOf(['true', 'false'], f.enabled, 'enabled') === 'true';
+  if (adding) {
+    for (const need of ['state', 'harness', 'model', 'rank']) if (fields[need] === undefined) throw usage(`rule add needs --${need}`);
+    fields.enabled ??= true;
+  }
+  return fields;
+}
+
+// The record task the rule changes are logged on, kept in a backlog home the board does not show.
+async function rulesTask(who) {
+  if (await taskRow(RULES_TASK)) return;
+  await append(RULES_TASK, { ...who, key: `${RULES_TASK}:create` }, async ({ task }) => (task ? { kind: 'row', note: '', set: {} } : {
+    kind: 'created', note: 'The owner model rules log', set: { title: 'Model rules', repo: null, kind: 'other', state: 'triage', assignee: '-', nextActor: 'firstmate', blockKind: null, blockReason: null, blockRepeats: 0, issueUrl: null, prUrl: null, surface: 'internal', holdUntil: null, backlogHome: RULES_HOME },
+  }));
+  await project(RULES_TASK);
+}
+
+async function cmdRule(args) {
+  const action = oneOf(['add', 'set', 'delete'], args.pos.action, 'rule action');
+  const who = identity(args, 'firstmate');
+  const prior = await eventByKey(who.key);
+  if (prior) {
+    out(`seq=${prior.seq} task=${prior.taskId} event=${prior.kind} (already recorded)`);
+    return;
+  }
+  const id = args.pos.id;
+  if (action === 'add' ? id !== undefined : !id) throw usage(action === 'add' ? 'rule add takes no id' : `rule ${action} needs the rule id`);
+  const fields = action === 'delete' ? {} : ruleFields(args.flags, action === 'add');
+  if (action === 'set' && !Object.keys(fields).length) throw usage('rule set needs a field to change');
+  let before = null;
+  if (id) {
+    const res = await http('GET', `/api/fm_model_rule/${encodeURIComponent(id)}`);
+    if (res.status === 404) throw rule(`no rule ${id}`);
+    before = unwrap(ok(res, 'read the rule'));
+  }
+  let after = null;
+  if (action === 'add') after = unwrap(ok(await http('POST', '/api/fm_model_rule', fields), 'add the rule'));
+  else if (action === 'set') after = unwrap(ok(await http('PATCH', `/api/fm_model_rule/${encodeURIComponent(id)}`, fields), 'change the rule'));
+  else ok(await http('DELETE', `/api/fm_model_rule/${encodeURIComponent(id)}`), 'delete the rule');
+  const ruleId = after?.id ?? id;
+  const shown = after ?? before;
+  const note = `${action} ${shown.state} ${shown.harness} ${shown.model} rank ${shown.rank ?? 0}${shown.enabled === false ? ' off' : ''}`;
+  await rulesTask(who);
+  await write(RULES_TASK, who, async ({ task }) => {
+    if (!task) throw rule(`the record task ${RULES_TASK} is missing`);
+    return { kind: 'rules', note, extra: { rule: { action, id: ruleId, changed: fields } } };
+  });
+  out(`rule=${ruleId} action=${action}`);
+}
+
+// Owner records share the task writer's transport, authentication and paging.
+// Input files keep private note bodies out of process arguments.
+const OWNER_TABLES = {
+  home: { table: 'fm_home', key: 'home', fields: ['home', 'posture', 'postureWords', 'postureSince'] },
+  note: { table: 'fm_owner_note', key: 'noteId', fields: ['home', 'noteId', 'text', 'source', 'state', 'reply', 'at', 'requestId', 'announcedAt', 'handledAt', 'replyAt', 'replySeq'] },
+  hold: { table: 'fm_hold_record', key: 'sourceId', fields: ['home', 'kind', 'sourceId', 'taskId', 'payload', 'state', 'at'] },
+};
+async function cmdOwnerRecord(args) {
+  const spec = OWNER_TABLES[args.pos.table];
+  if (!spec) throw usage('owner-record table must be home, note or hold');
+  const action = args.pos.action;
+  if (!['list', 'get', 'put'].includes(action)) throw usage('owner-record action must be list, get or put');
+  const f = args.flags;
+  if (args.pos.table === 'hold' && !['binding', 'reconcile'].includes(f.kind)) throw usage('hold requires --kind binding or reconcile');
+  if (args.pos.table === 'hold' && !f.home) throw usage('hold requires --home');
+  const filters = [];
+  if (f.home) {
+    filters.push(`home eq ${lit(f.home)}`);
+  }
+  if (f.kind) {
+    if (args.pos.table !== 'hold') throw usage('--kind belongs to hold records');
+    filters.push(`kind eq ${lit(f.kind)}`);
+  }
+  if (action !== 'list' && !f.identity) throw usage('get and put require --identity');
+  if (f.identity) filters.push(`${spec.key} eq ${lit(f.identity)}`);
+  let body;
+  if (action === 'put') {
+    if (!f.file) throw usage('put requires --file with a JSON object');
+    try { body = JSON.parse(fs.readFileSync(f.file, 'utf8')); } catch { throw usage('--file must hold a readable JSON object'); }
+    if (!body || typeof body !== 'object' || Array.isArray(body)) throw usage('--file must hold a JSON object');
+    for (const key of Object.keys(body)) if (!spec.fields.includes(key)) throw usage(`unknown ${args.pos.table} field ${key}`);
+    if (body[spec.key] !== f.identity) throw usage('record identity does not match --identity');
+    if (f.kind && body.kind !== f.kind) throw usage('record kind does not match --kind');
+    if (f.home && body.home !== f.home) throw usage('record home does not match --home');
+  } else if (f.file) throw usage('--file belongs to put');
+  const filter = filters.join(' and ');
+  if (action === 'list') { out(JSON.stringify(await listAll(spec.table, { filter }))); return; }
+  const before = await firstRow(spec.table, filter);
+  if (action === 'get') { out(JSON.stringify(before)); return; }
+  // One unique identity owns a note's body and first reply, even after retries.
+  if (before && args.pos.table === 'note') {
+    for (const key of ['home', 'text', 'source', 'requestId']) {
+      if (body[key] !== undefined && body[key] !== before[key]) throw rule(`note ${key} conflicts with the saved record`);
+    }
+    if (before.reply && body.reply !== undefined && body.reply !== before.reply) throw rule('note already has a different reply');
+    if (before.state === 'handled' && body.state === 'waiting') body.state = 'handled';
+    if (before.handledAt) body.handledAt = before.handledAt;
+  }
+  if (!before) {
+    if (args.pos.table === 'note' && body.requestId) {
+      const prior = await firstRow(spec.table, `home eq ${lit(body.home)} and requestId eq ${lit(body.requestId)}`);
+      if (prior) {
+        if (prior.text !== body.text || (prior.source === 'text' ? 'cli' : prior.source) !== (body.source === 'text' ? 'cli' : body.source)) throw rule('request id already has different note content');
+        out(JSON.stringify(prior));
+        return;
+      }
+    }
+    const created = await http('POST', `/api/${spec.table}`, body);
+    if (created.status === 409) {
+      if (args.pos.table === 'note' && body.requestId) {
+        const winner = await firstRow(spec.table, `home eq ${lit(body.home)} and requestId eq ${lit(body.requestId)}`);
+        if (winner && winner.text === body.text && (winner.source === 'text' ? 'cli' : winner.source) === (body.source === 'text' ? 'cli' : body.source)) {
+          out(JSON.stringify(winner));
+          return;
+        }
+      }
+      throw rule('owner record conflicts with an existing identity or request body; read it before retrying');
+    }
+    ok(created, 'create owner record');
+  } else {
+    const endpoint = `/api/${spec.table}/${encodeURIComponent(before.id)}`;
+    if (args.pos.table === 'note' && body.reply !== undefined && !before.reply) {
+      // A unique reply_seq insert/update arbitrates competing machines. Never
+      // derive a portable receipts cursor from a machine-local counter.
+      for (let attempt = 0; attempt < 10; attempt++) {
+        const latest = await firstRow(spec.table, `home eq ${lit(body.home || before.home)} and replySeq gt 0`, 'replySeq desc');
+        body.replySeq = Number(latest?.replySeq || 0) + 1;
+        const current = await firstRow(spec.table, filter);
+        if (current?.reply !== null && current?.reply !== undefined) throw rule('reply already recorded; refusing to overwrite it');
+        const result = await http('PATCH', endpoint, body);
+        if (result.status === 409) continue;
+        ok(result, 'record reply');
+        const saved = await firstRow(spec.table, filter);
+        if (saved?.reply !== body.reply) throw rule('reply conflict after write; inspect the saved reply instead of retrying');
+        out(JSON.stringify(saved));
+        return;
+      }
+      throw rule('reply cursor kept moving; retry the saved reply');
+    }
+    if (before.replySeq) body.replySeq = before.replySeq;
+    ok(await http('PATCH', endpoint, body), 'update owner record');
+  }
+  out(JSON.stringify(await firstRow(spec.table, filter)));
+}
+
+// Deploy history is append-only; payload retains all adapter fields without narrowing its schema.
+function deployCanonical(value) {
+  if (Array.isArray(value)) return value.map(deployCanonical);
+  if (value && typeof value === 'object') return Object.fromEntries(Object.keys(value).sort().map((k) => [k, deployCanonical(value[k])]));
+  return value;
+}
+async function cmdDeployLedger(args) {
+  const repo = args.flags.repo || process.env.FM_DEPLOY_VERIFY_REPO || 'huynhtandat223/cfw-modules';
+  const records = () => listAll('fm_deploy_ask', { filter: `repo eq ${lit(repo)}`, orderby: 'position' });
+  const append = async (payload) => {
+    if (!payload || Array.isArray(payload) || typeof payload !== 'object' || !['ask', 'deployed', 'cursor', 'carry', 'hold', 'release', 'skip', 'draft-skip'].includes(payload.type)) throw usage('deploy ledger record needs a supported type');
+    const text = JSON.stringify(deployCanonical(payload));
+    const recordKey = crypto.createHash('sha256').update(`${repo}\n${text}`).digest('hex');
+    const previous = await firstRow('fm_deploy_ask', `recordKey eq ${lit(recordKey)}`);
+    if (previous) {
+      if (previous.payload !== text) throw rule('deploy ledger key has a different payload');
+      return;
+    }
+    for (let attempt = 0; attempt < 20; attempt++) {
+    const last = await firstRow('fm_deploy_ask', `repo eq ${lit(repo)}`, 'position desc');
+    const body = { recordKey, repo, position: (last?.position ?? 0) + 1, kind: payload.type,
+      task: payload.task ?? null, sha: payload.sha ?? null, prs: JSON.stringify(payload.prs ?? []),
+      runId: String(payload.run ?? ''), round: payload.round ?? null, tester: payload.tester ?? null,
+      at: payload.at ? new Date(payload.at * 1000).toISOString() : null, payload: text };
+    const res = await http('POST', '/api/fm_deploy_ask', body);
+    if (res.status === 409) {
+      const existing = await firstRow('fm_deploy_ask', `recordKey eq ${lit(recordKey)}`);
+      if (existing?.payload === text) return;
+      if (!existing) continue; // Another writer took repo,position; allocate again.
+    }
+    ok(res, 'append deploy ledger');
+    return;
+    }
+    throw rule('deploy ledger allocation kept moving; retry the same record');
+  };
+  const readFile = () => {
+    if (!args.flags.file) throw usage('deploy-ledger needs --file');
+    return fs.readFileSync(args.flags.file, 'utf8');
+  };
+  switch (args.pos.action) {
+    case 'list':
+      for (const row of await records()) if (row.kind !== 'cursor') out(row.payload);
+      break;
+    case 'cursor': {
+      const row = await firstRow('fm_deploy_ask', `repo eq ${lit(repo)} and kind eq 'cursor'`, 'position desc');
+      if (row) { const value = JSON.parse(row.payload); delete value.type; out(JSON.stringify(value)); }
+      break;
+    }
+    case 'append': await append(JSON.parse(readFile())); break;
+    case 'put-cursor': await append({ ...JSON.parse(readFile()), type: 'cursor' }); break;
+    case 'seed': {
+      const values = readFile().split('\n').filter((s) => s.trim()).map((s) => JSON.parse(s));
+      for (const value of values) await append(value);
+      const stored = new Set((await records()).map((r) => r.payload));
+      if (values.some((v) => !stored.has(JSON.stringify(deployCanonical(v))))) throw rule('deploy seed readback differs');
+      out(JSON.stringify({ imported: values.length, distinct: new Set(values.map((v) => JSON.stringify(deployCanonical(v)))).size }));
+      break;
+    }
+    default: throw usage('deploy-ledger list|cursor|append|put-cursor|seed [--file FILE] [--repo OWNER/REPO]');
+  }
+}
+
 const COMMANDS = {
-  'turn-end': cmdTurnEnd, deliver: cmdDeliver, describe: cmdDescribe, thread: cmdThread,
+  'owner-home': async () => out(process.env.FM_BACKLOG_HOME || backlogHomeOf() || 'main'),
+  'deploy-ledger': cmdDeployLedger,
+  'owner-record': cmdOwnerRecord,
+  setup: cmdSetup, move: cmdMove, step: cmdStep,
+  rules: cmdRules, rule: cmdRule, answer: cmdAnswer,
+  'turn-end': cmdTurnEnd, deliver: cmdDeliver, requests: cmdRequests, steers: cmdSteers, 'read-mark': cmdReadMark, inbox: cmdInbox, describe: cmdDescribe, plan: cmdPlan, 'plan-decision': cmdPlanDecision, thread: cmdThread,
   create: cmdCreate, import: cmdImport, assign: cmdAssign, start: cmdStart, heartbeat: cmdHeartbeat, done: cmdDone, ask: cmdAsk, block: cmdBlock,
-  unblock: cmdUnblock, approve: cmdApprove, changes: cmdChanges, reopen: cmdReopen, reassign: cmdReassign, archive: cmdArchive, comment: cmdComment, event: cmdEvent,
-  document: cmdDocument, link: cmdLink, rows: cmdRows, check: cmdCheck, 'owner-check': cmdOwnerCheck, gate: cmdGate, show: cmdShow, list: cmdList, resume: cmdResume, reproject: cmdReproject,
-  row: cmdRow, backlog: cmdBacklog, checks: cmdChecks,
+  'merge-authority': cmdMergeAuthority, 'pr-record': cmdPrRecord, 'pr-round': cmdPrRound,
+  unblock: cmdUnblock, approve: cmdApprove, changes: cmdChanges, reopen: cmdReopen, reassign: cmdReassign, archive: cmdArchive, delete: cmdDelete, home: cmdHome, comment: cmdComment, event: cmdEvent,
+  materials: cmdMaterials, 'plan-spec': cmdPlanSpec, 'plan-approve': cmdPlanApprove, 'plan-check': cmdPlanCheck, document: cmdDocument, link: cmdLink, rows: cmdRows, check: cmdCheck, 'owner-check': cmdOwnerCheck, gate: cmdGate, show: cmdShow, list: cmdList, resume: cmdResume, reproject: cmdReproject,
+  checks: cmdChecks, checklist: cmdChecklist,
 };
 
 async function main(argv) {

@@ -15,6 +15,9 @@ TEARDOWN="$ROOT/bin/fm-teardown.sh"
 BEARINGS="$ROOT/bin/fm-bearings-snapshot.sh"
 TMP_ROOT=$(fm_test_tmproot fm-captain-hold)
 TASKS_AXI_BIN=$(command -v tasks-axi || true)
+. "$ROOT/tests/owner-api-helpers.sh"
+owner_api_start "$ROOT" "$TMP_ROOT"
+trap 'kill "$OWNER_API_PID" 2>/dev/null || true' EXIT
 
 command -v jq >/dev/null 2>&1 || { echo "skip: jq not found"; exit 0; }
 command -v tasks-axi >/dev/null 2>&1 || { echo "skip: tasks-axi not found"; exit 0; }
@@ -41,7 +44,7 @@ EOF
 run_lavish() {  # <home> <command args...>
   local home=$1
   shift
-  PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" \
+  PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_PROCEVENT_CLAIM_ROOT="$home/procevent-claims" \
     "$ROOT/bin/fm-procevent-lavish.sh" "$@"
@@ -53,7 +56,7 @@ run_procevent() {  # <home> <command args...>
   local home=$1
   shift
   PATH="$home/fakebin:$PATH" REAL_TASKS_AXI="$TASKS_AXI_BIN" \
-    FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" \
+    FM_ROOT_OVERRIDE="$ROOT" FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_CONFIG_OVERRIDE="$home/config" \
     FM_PROCEVENT_CLAIM_ROOT="$home/procevent-claims" \
@@ -63,13 +66,13 @@ run_procevent() {  # <home> <command args...>
 run_bearings() {  # <home> [extra args]
   local home=$1
   shift
-  PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_BEARINGS_NOW=2026-07-14T12:00:00Z \
+  PATH="$home/fakebin:$PATH" FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" FM_BEARINGS_NOW=2026-07-14T12:00:00Z \
     "$BEARINGS" --json "$@"
 }
 
 run_teardown() {  # <home> <id>
   local home=$1 id=$2
-  PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" \
+  PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_CONFIG_OVERRIDE="$home/config" "$TEARDOWN" "$id"
 }
@@ -84,7 +87,7 @@ run_captain() {  # <home> <command args...>
   local home=$1
   shift
   PATH="$home/fakebin:$PATH" REAL_TASKS_AXI="$TASKS_AXI_BIN" \
-    FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_CONFIG_OVERRIDE="$home/config" "$ROOT/bin/fm-captain-hold.sh" "$@"
 }
 
@@ -148,7 +151,7 @@ SH
 run_pr_merge() {  # <home> <id> <url>
   local home=$1
   shift
-  PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" \
+  PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_CONFIG_OVERRIDE="$home/config" FM_TEST_GH_LOG="$home/gh.log" \
     FM_TEST_GH_AXI_LOG="$home/gh-axi.log" "$ROOT/bin/fm-pr-merge.sh" "$@"
@@ -200,7 +203,7 @@ run_shim() {  # <home> <command args...>
   local home=$1
   shift
   PATH="$home/fakebin:$PATH" REAL_TASKS_AXI="$TASKS_AXI_BIN" \
-    FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_CONFIG_OVERRIDE="$home/config" "$ROOT/bin/fm-decision-hold.sh" "$@"
 }
 
@@ -442,6 +445,34 @@ test_marker_noted_row_wins_over_a_prefix_namesake() {
   pass "the marker-noted row wins over an unrelated row holding the prefix namesake"
 }
 
+# A home that selects Beads through its gitignored config/tasks-axi/.tasks.toml names a relative
+# graph path there; tasks-axi resolves it against config/tasks-axi/, so the migration scan must
+# read the same graph. This bd stub only reports the graph it was given, so no beads install is needed.
+test_migration_scan_reads_the_home_config_graph() {
+  local home fb scout out
+  home="$TMP_ROOT/home-config-beads/home"
+  mkdir -p "$home/data" "$home/config/tasks-axi" "$home/projects"
+  (umask 077; mkdir -p "$home/state")
+  fm_test_tasks_toml "$home/.tasks.toml"
+  printf '%s\n' 'backend = "beads"' '' '[beads]' 'path = "graph"' 'binary = "bd"' 'prefix = "fm"' \
+    > "$home/config/tasks-axi/.tasks.toml"
+  fb=$(fm_fakebin "$home")
+  fm_fake_exit0 "$fb" tmux treehouse no-mistakes gh gh-axi
+  write_known_rows_stub "$fb" fm-unrelated-row
+  cat > "$fb/bd" <<'SH'
+#!/usr/bin/env bash
+printf 'graph %s\n' "${BEADS_DIR:-unset}" >&2
+exit 1
+SH
+  chmod +x "$fb/bd"
+  scout="home-config-scout"
+  write_scout_with_attested_inventory "$home" "$scout" legacy-row
+  out=$(run_captain "$home" verify "$scout" 2>&1) && fail "verify passed with an unreadable graph: $out"
+  assert_contains "$out" "reading the beads graph at $home/config/tasks-axi/graph failed" \
+    "the migration scan did not read the graph the home config names"
+  pass "the migration scan resolves a home config's relative beads path where tasks-axi does"
+}
+
 test_complete_accepts_a_migrated_inventory_on_beads() {
   local fixture home scout
   require_tasks_axi_beads "complete against a beads-migrated hold" || return 0
@@ -619,7 +650,7 @@ SH
   chmod +x "$fb/tasks-axi"
 
   PATH="$fb:$PATH" REAL_TASKS_AXI="$TASKS_AXI_BIN" \
-    FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+    FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
     FM_DATA_OVERRIDE="$home/data" FM_CONFIG_OVERRIDE="$home/config" \
     "$ROOT/bin/fm-captain-hold.sh" hold "$id" --reason "captain must decide" >/dev/null \
     || fail "holding on a beads-configured home failed without a markdown backlog"
@@ -629,7 +660,7 @@ SH
   decision="$home/captain-decision.txt"
   printf 'Ship the gold-only plan.\n' > "$decision"
   PATH="$fb:$PATH" REAL_TASKS_AXI="$TASKS_AXI_BIN" \
-    FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+    FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
     FM_DATA_OVERRIDE="$home/data" FM_CONFIG_OVERRIDE="$home/config" \
     "$ROOT/bin/fm-captain-hold.sh" answer "$id" --decision-file "$decision" >/dev/null \
     || fail "answering on a beads-configured home failed without a markdown backlog"
@@ -940,7 +971,7 @@ EOF
   FM_CAPTAIN_HOLD_NOW=2026-07-14T12:00:00Z run_captain "$home" hold sample-widget \
     --reason "captain pricing call needed" >/dev/null \
     || fail "could not re-hold the released work item"
-  snap=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+  snap=$(PATH="$home/fakebin:$PATH" REAL_TASKS_AXI="$TASKS_AXI_BIN" FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
     FM_DATA_OVERRIDE="$home/data" FM_CONFIG_OVERRIDE="$home/config" \
     FM_PROJECTS_OVERRIDE="$home/projects" FM_SNAPSHOT_NOW=2026-07-14T12:00:00Z \
     "$ROOT/bin/fm-fleet-snapshot.sh" --json) || fail "fleet snapshot failed after re-hold"
@@ -1059,7 +1090,7 @@ EOF
     --decision-file "$home/interrupted-answer.txt" > "$home/answer.out" 2> "$home/answer.err"; then
     fail "the forced answer close failure reported success"
   fi
-  snap=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+  snap=$(PATH="$home/fakebin:$PATH" REAL_TASKS_AXI="$TASKS_AXI_BIN" FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
     FM_DATA_OVERRIDE="$home/at-close" FM_CONFIG_OVERRIDE="$home/config" \
     FM_PROJECTS_OVERRIDE="$home/projects" FM_SNAPSHOT_NOW=2026-07-14T12:00:00Z \
     "$ROOT/bin/fm-fleet-snapshot.sh" --json) || fail "fleet snapshot failed at interrupted close boundary"
@@ -1122,7 +1153,7 @@ EOF
     fail "hold accepted a malformed --until date"
   fi
 
-  snap=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+  snap=$(PATH="$home/fakebin:$PATH" REAL_TASKS_AXI="$TASKS_AXI_BIN" FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
     FM_DATA_OVERRIDE="$home/data" FM_CONFIG_OVERRIDE="$home/config" \
     FM_PROJECTS_OVERRIDE="$home/projects" FM_SNAPSHOT_NOW=2026-07-14T12:00:00Z \
     "$ROOT/bin/fm-fleet-snapshot.sh" --json) || fail "fleet snapshot failed"
@@ -1149,7 +1180,7 @@ EOF
 
   # On its date the call is due again - and still answerable even though
   # tasks-axi reports the expired hold as no longer held.
-  snap=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+  snap=$(PATH="$home/fakebin:$PATH" REAL_TASKS_AXI="$TASKS_AXI_BIN" FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
     FM_DATA_OVERRIDE="$home/data" FM_CONFIG_OVERRIDE="$home/config" \
     FM_PROJECTS_OVERRIDE="$home/projects" FM_SNAPSHOT_NOW=2026-08-01T12:00:00Z \
     "$ROOT/bin/fm-fleet-snapshot.sh" --json) || fail "fleet snapshot failed at the due date"
@@ -1491,15 +1522,15 @@ test_secondmate_reconcile_publishes_before_request_retirement() {
   request_reconciles "$mate" reconcile-board reconcile-channel-call \
     || fail "could not request the channel reconciliation"
   printf 'The release has already landed.\n' > "$evidence"
-  request="$mate/state/reconcile-requests/reconcile-channel-call.request"
+  request=reconcile-channel-call
 
-  chmod 0500 "$mate/state/reconcile-requests"
+  curl -fsS "$FM_TASK_BASE_URL/__x/fail-retire?n=1" >/dev/null
   set +e
   out=$(run_captain "$mate" reconcile close reconcile-channel-call \
     --evidence-file "$evidence" 2>&1)
   rc=$?
   set -e
-  chmod 0700 "$mate/state/reconcile-requests"
+  curl -fsS "$FM_TASK_BASE_URL/__x/fail-retire?n=0" >/dev/null
   [ "$rc" -ne 0 ] || fail "failed reconcile request retirement reported success"
   assert_contains "$out" "reconcile-channel-call" \
     "the reconcile retirement failure did not name its task: $out"
@@ -1507,14 +1538,14 @@ test_secondmate_reconcile_publishes_before_request_retirement() {
   assert_contains "$show" "state: done" "request retirement failure reversed the reconciled close"
   assert_contains "$show" "Resolution mode: reconciled" \
     "request retirement failure lost the reconciled resolution mode"
-  [ -f "$request" ] || fail "the request retired despite its forced retirement failure"
+  [ -n "$(FM_HOME="$mate" FM_BACKLOG_HOME="${mate##*/}" "$ROOT/bin/fm-owner-record.sh" hold-read reconcile "$request")" ] || fail "the request retired despite its forced retirement failure"
   [ "$(grep -c 'resolved \[key=captain-hold-reconcile-channel-call-1\]: captain hold reconcile-channel-call: reconciled' \
     <(sed -E 's/ \[at=[0-9]+\]//' "$channel"))" -eq 1 ] \
     || fail "the parent resolution was not published before retirement failed: $(cat "$channel")"
 
   run_captain "$mate" reconcile close reconcile-channel-call --evidence-file "$evidence" >/dev/null \
     || fail "the closed reconciliation could not finish publication and retirement"
-  [ ! -e "$request" ] || fail "the retry did not retire the published reconcile request"
+  [ -z "$(FM_HOME="$mate" FM_BACKLOG_HOME="${mate##*/}" "$ROOT/bin/fm-owner-record.sh" hold-read reconcile "$request")" ] || fail "the retry did not retire the published reconcile request"
   [ "$(grep -c 'resolved \[key=captain-hold-reconcile-channel-call-1\]: captain hold reconcile-channel-call: reconciled' \
     <(sed -E 's/ \[at=[0-9]+\]//' "$channel"))" -eq 1 ] \
     || fail "the reconciliation retry duplicated or changed its parent resolution: $(cat "$channel")"
@@ -1525,23 +1556,23 @@ test_secondmate_reconcile_publishes_before_request_retirement() {
   request_reconciles "$mate" reconcile-board answer-channel-call \
     || fail "could not create the normal-answer retry trigger"
   printf 'Proceed with the release.\n' > "$mate/answer.txt"
-  request="$mate/state/reconcile-requests/answer-channel-call.request"
-  chmod 0500 "$mate/state/reconcile-requests"
+  request=answer-channel-call
+  curl -fsS "$FM_TASK_BASE_URL/__x/fail-retire?n=1" >/dev/null
   set +e
   out=$(run_captain "$mate" answer answer-channel-call --decision-file "$mate/answer.txt" 2>&1)
   rc=$?
   set -e
-  chmod 0700 "$mate/state/reconcile-requests"
+  curl -fsS "$FM_TASK_BASE_URL/__x/fail-retire?n=0" >/dev/null
   [ "$rc" -ne 0 ] || fail "failed normal-answer request retirement reported success"
   show=$(tasks_in "$mate" show answer-channel-call --full)
   assert_contains "$show" "state: done" "request retirement failure reversed the captain answer"
-  [ -f "$request" ] || fail "the normal-answer retry trigger retired after its forced failure"
+  [ -n "$(FM_HOME="$mate" FM_BACKLOG_HOME="${mate##*/}" "$ROOT/bin/fm-owner-record.sh" hold-read reconcile "$request")" ] || fail "the normal-answer retry trigger retired after its forced failure"
   [ "$(grep -c 'resolved \[key=captain-hold-answer-channel-call-1\]: captain hold answer-channel-call: answered' \
     <(sed -E 's/ \[at=[0-9]+\]//' "$channel"))" -eq 1 ] \
     || fail "the normal answer did not publish before retirement failed: $(cat "$channel")"
   run_captain "$mate" answer answer-channel-call --decision-file "$mate/answer.txt" >/dev/null \
     || fail "the normal-answer retry could not finish request retirement"
-  [ ! -e "$request" ] || fail "the normal-answer retry left its request pending"
+  [ -z "$(FM_HOME="$mate" FM_BACKLOG_HOME="${mate##*/}" "$ROOT/bin/fm-owner-record.sh" hold-read reconcile "$request")" ] || fail "the normal-answer retry left its request pending"
   [ "$(grep -c 'resolved \[key=captain-hold-answer-channel-call-1\]: captain hold answer-channel-call: answered' \
     <(sed -E 's/ \[at=[0-9]+\]//' "$channel"))" -eq 1 ] \
     || fail "the normal-answer retry duplicated its parent resolution: $(cat "$channel")"
@@ -1659,12 +1690,14 @@ SH
   chmod +x "$home/adapter-root/bin/fm-procevent-fixturechan.sh"
   run_captain "$home" bind fixture-src >/dev/null \
     || fail "could not bind the fixture channel"
-  PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$home/adapter-root" FM_HOME="$home" \
+  PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$home/adapter-root" FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" \
+    REAL_TASKS_AXI="$TASKS_AXI_BIN" FM_CONFIG_OVERRIDE="$home/config" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_PROCEVENT_CLAIM_ROOT="$home/procevent-claims" \
     "$ROOT/bin/fm-procevent.sh" register fixturechan fixture-src -- cat "$result" >/dev/null \
     || fail "could not register the fixture channel source"
-  PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$home/adapter-root" FM_HOME="$home" \
+  PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$home/adapter-root" FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" \
+    REAL_TASKS_AXI="$TASKS_AXI_BIN" FM_CONFIG_OVERRIDE="$home/config" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_PROCEVENT_CLAIM_ROOT="$home/procevent-claims" \
     "$ROOT/bin/fm-procevent.sh" start fixture-src >/dev/null 2>&1
@@ -1882,10 +1915,10 @@ test_reconcile_closes_with_evidence_or_keeps_the_call_open() {
   [ "$rc" -ne 0 ] || fail "a reconcile close was accepted with no evidence"
   assert_contains "$out" "evidence" "the refusal did not name the missing evidence: $out"
 
-  cp "$home/state/reconcile-requests/sample-mode-call.request" "$home/mode-request.backup"
+  FM_HOME="$home" FM_BACKLOG_HOME="${home##*/}" "$ROOT/bin/fm-owner-record.sh" hold-read reconcile sample-mode-call > "$home/mode-request.backup"
   run_captain "$home" answer sample-mode-call --decision-file "$home/evidence.txt" >/dev/null \
     || fail "could not record the normal answer for the mode fixture"
-  cp "$home/mode-request.backup" "$home/state/reconcile-requests/sample-mode-call.request"
+  FM_HOME="$home" FM_BACKLOG_HOME="${home##*/}" "$ROOT/bin/fm-owner-record.sh" hold-write reconcile sample-mode-call "$home/mode-request.backup"
   set +e
   out=$(run_captain "$home" reconcile close sample-mode-call --evidence-file "$home/evidence.txt" 2>&1)
   rc=$?
@@ -2021,7 +2054,7 @@ SH
   [ "$(printf '%s\n' "$show" | grep -c 'Captain hold reconciled:')" -eq 1 ] \
     || fail "reconcile note duplicated its durable annotation"
 
-  chmod 0500 "$home/state/reconcile-requests"
+  curl -fsS "$FM_TASK_BASE_URL/__x/fail-retire?n=1" >/dev/null
   set +e
   out=$(run_captain "$home" reconcile close sample-reconcile-close-retire \
     --evidence-file "$home/close-retire-evidence.txt" 2>&1)
@@ -2033,12 +2066,12 @@ SH
   list=$(run_captain "$home" reconcile list)
   assert_contains "$list" "sample-reconcile-close-retire" \
     "the failed close retirement hid its pending request"
-  chmod 0700 "$home/state/reconcile-requests"
+  curl -fsS "$FM_TASK_BASE_URL/__x/fail-retire?n=0" >/dev/null
   run_captain "$home" reconcile close sample-reconcile-close-retire \
     --evidence-file "$home/close-retire-evidence.txt" >/dev/null \
     || fail "the closed reconciliation could not finish request retirement"
 
-  chmod 0500 "$home/state/reconcile-requests"
+  curl -fsS "$FM_TASK_BASE_URL/__x/fail-retire?n=1" >/dev/null
   set +e
   out=$(run_captain "$home" answer sample-answer-retire \
     --decision-file "$home/answer-retire.txt" 2>&1)
@@ -2049,17 +2082,17 @@ SH
   assert_contains "$show" "state: done" "retirement failure reversed the durable captain answer"
   assert_contains "$show" "Captain answered despite retirement failure" \
     "retirement failure lost the durable captain answer"
-  chmod 0700 "$home/state/reconcile-requests"
+  curl -fsS "$FM_TASK_BASE_URL/__x/fail-retire?n=0" >/dev/null
   run_captain "$home" answer sample-answer-retire --decision-file "$home/answer-retire.txt" >/dev/null \
     || fail "the answer replay could not finish request retirement"
 
-  chmod 0500 "$home/state/reconcile-requests"
+  curl -fsS "$FM_TASK_BASE_URL/__x/fail-retire?n=1" >/dev/null
   set +e
   out=$(run_captain "$home" reconcile note sample-reconcile-retire-retry \
     --note-file "$home/retry-retire-note.txt" 2>&1)
   rc=$?
   set -e
-  chmod 0700 "$home/state/reconcile-requests"
+  curl -fsS "$FM_TASK_BASE_URL/__x/fail-retire?n=0" >/dev/null
   [ "$rc" -ne 0 ] || fail "a failed request retirement reported note success"
   assert_not_contains "$out" "still-open:" "failed retirement reported a successful outcome"
   run_captain "$home" reconcile note sample-reconcile-retire-retry \
@@ -2355,7 +2388,7 @@ SH
   chmod +x "$fb/tmux"
 
   : > "$home/send.log"
-  env PATH="$fb:$PATH" FM_ROOT_OVERRIDE="$home" FM_HOME="$home" \
+  env PATH="$fb:$PATH" FM_ROOT_OVERRIDE="$home" FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_SEND_LOG="$home/send.log" FM_SEND_SETTLE=0 \
     "$ROOT/bin/fm-send.sh" "$id" --resolve-key chat-choice "go with option A" >/dev/null 2>&1 \
@@ -2369,7 +2402,7 @@ SH
   assert_contains "$show" "Answer: go with option A" "the chat-answered row lost the captain answer"
 
   : > "$home/send.log"
-  env PATH="$fb:$PATH" FM_ROOT_OVERRIDE="$home" FM_HOME="$home" \
+  env PATH="$fb:$PATH" FM_ROOT_OVERRIDE="$home" FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_SEND_LOG="$home/send.log" FM_SEND_SETTLE=0 \
     "$ROOT/bin/fm-send.sh" "$id" --resolve-key sample-chat-followup "take the second option" >/dev/null 2>&1 \
@@ -2382,7 +2415,7 @@ SH
 
   : > "$home/send.log"
   set +e
-  env PATH="$fb:$PATH" FM_ROOT_OVERRIDE="$home" FM_HOME="$home" \
+  env PATH="$fb:$PATH" FM_ROOT_OVERRIDE="$home" FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_SEND_LOG="$home/send.log" FM_SEND_SETTLE=0 \
     "$ROOT/bin/fm-send.sh" "$id" --resolve-key sample-chat-reconcile reconcile >/dev/null 2>&1
@@ -2399,7 +2432,7 @@ SH
   run_captain "$home" answer sample-chat-reconcile --decision-file "$home/chat-reconcile.txt" >/dev/null \
     || fail "could not close the chat reconcile fixture normally"
 
-  if env PATH="$fb:$PATH" FM_ROOT_OVERRIDE="$home" FM_HOME="$home" \
+  if env PATH="$fb:$PATH" FM_ROOT_OVERRIDE="$home" FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_SEND_LOG="$home/send.log" FM_SEND_SETTLE=0 \
     "$ROOT/bin/fm-send.sh" "$id" --resolve-key sample-chat-followup "again" \
@@ -2432,7 +2465,7 @@ test_origin_slug_validation_precedes_path_construction() {
 run_drain() {  # <home>
   local home=$1
   PATH="$home/fakebin:$PATH" REAL_TASKS_AXI="$TASKS_AXI_BIN" \
-    FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+    FM_ROOT_OVERRIDE="$ROOT" FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
     FM_DATA_OVERRIDE="$home/data" FM_CONFIG_OVERRIDE="$home/config" \
     "$ROOT/bin/fm-wake-drain.sh" 2>/dev/null
 }
@@ -2634,7 +2667,7 @@ test_teardown_never_closes_a_captain_held_task() {
   printf '# Sample forced path\n\nOne captain choice remains.\n' > "$home/data/$forced/report.md"
   run_captain "$home" hold "$forced" --reason "captain must choose the sample forced path" >/dev/null \
     || fail "could not hold the forced fixture for the captain"
-  PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" \
+  PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_CONFIG_OVERRIDE="$home/config" "$TEARDOWN" "$forced" --force \
     > "$home/forced.out" 2> "$home/forced.err" \
@@ -2806,7 +2839,7 @@ test_retained_row_artifacts_survive_captain_answers() {
   show=$(tasks_in "$home" show "$local_id" --full) || fail "the released local merge disappeared"
   assert_not_contains "$show" "hold_kind: captain" \
     "local merge approval retained its captain hold kind"
-  PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" \
+  PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" "$ROOT/bin/fm-merge-local.sh" "$local_id" \
     > "$home/local-merge.out" 2> "$home/local-merge.err" \
     || fail "approved local merge failed: $(cat "$home/local-merge.err")"
@@ -2939,7 +2972,7 @@ SH
   chmod +x "$home/fakebin/treehouse"
 
   set +e
-  PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" \
+  PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_CONFIG_OVERRIDE="$home/config" "$TEARDOWN" "$id" --force \
     > "$home/teardown.out" 2> "$home/teardown.err"
@@ -2956,7 +2989,7 @@ SH
     "the deliverable was recorded before destructive cleanup succeeded"
 
   fm_fake_exit0 "$home/fakebin" treehouse
-  bootstrap=$(PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" \
+  bootstrap=$(PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_CONFIG_OVERRIDE="$home/config" FM_BOOTSTRAP_NETWORK=skip \
     "$ROOT/bin/fm-bootstrap.sh" 2>&1) \
@@ -2998,7 +3031,7 @@ SH
   chmod +x "$home/fakebin/treehouse"
 
   set +e
-  PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" \
+  PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_CONFIG_OVERRIDE="$home/config" "$TEARDOWN" "$id" --force \
     > "$home/teardown.out" 2> "$home/teardown.err"
@@ -3012,7 +3045,7 @@ SH
   run_captain "$home" answer "$id" --decision-file "$home/answer.txt" >/dev/null \
     || fail "the captain could not answer before cleanup replay"
   fm_fake_exit0 "$home/fakebin" treehouse
-  bootstrap=$(PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" \
+  bootstrap=$(PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_CONFIG_OVERRIDE="$home/config" FM_BOOTSTRAP_NETWORK=skip \
     "$ROOT/bin/fm-bootstrap.sh" 2>&1) \
@@ -3064,7 +3097,7 @@ SH
   chmod +x "$home/fakebin/treehouse"
 
   set +e
-  PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" \
+  PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_CONFIG_OVERRIDE="$home/config" "$TEARDOWN" "$id" --force \
     > "$home/teardown.out" 2> "$home/teardown.err"
@@ -3109,7 +3142,7 @@ SH
   chmod +x "$home/fakebin/treehouse"
 
   set +e
-  PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" \
+  PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_CONFIG_OVERRIDE="$home/config" "$TEARDOWN" "$id" --force \
     > "$home/teardown.out" 2> "$home/teardown.err"
@@ -3157,17 +3190,17 @@ EOF
     "harness=codex" "kind=scout" "mode=scout" "spawn_gen=fixture-$id"
   printf 'done: report complete\n' > "$home/state/$id.status"
   printf '# Relocated interrupted cleanup\n\nThe captain call remains open.\n' > "$data/$id/report.md"
-  PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+  PATH="$home/fakebin:$PATH" FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
     FM_DATA_OVERRIDE="$data" FM_CONFIG_OVERRIDE="$home/config" \
     "$ROOT/bin/fm-captain-hold.sh" hold "$id" \
     --reason "captain must choose after relocated interrupted cleanup" >/dev/null \
     || fail "could not hold the relocated answer-before-replay fixture"
-  PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+  PATH="$home/fakebin:$PATH" FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
     FM_DATA_OVERRIDE="$data" FM_CONFIG_OVERRIDE="$home/config" \
     "$ROOT/bin/fm-captain-hold.sh" hold "$id-call" --title "Sibling captain call" \
     --reason "captain must decide the sibling call" --repo sample --origin "$id" >/dev/null \
     || fail "could not hold the sibling captain call"
-  PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+  PATH="$home/fakebin:$PATH" FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
     FM_DATA_OVERRIDE="$data" FM_CONFIG_OVERRIDE="$home/config" \
     "$ROOT/bin/fm-captain-hold.sh" complete "$id" "$id-call" >/dev/null \
     || fail "completion gate failed for the relocated answer-before-replay fixture"
@@ -3178,7 +3211,7 @@ SH
   chmod +x "$home/fakebin/treehouse"
 
   set +e
-  PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" \
+  PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$data" \
     FM_CONFIG_OVERRIDE="$home/config" "$TEARDOWN" "$id" --force \
     > "$home/teardown.out" 2> "$home/teardown.err"
@@ -3189,7 +3222,7 @@ SH
     "the interrupted relocated cleanup lost its pending record"
 
   printf 'Proceed despite the reporting limitation.\n' > "$home/answer.txt"
-  PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+  PATH="$home/fakebin:$PATH" FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
     FM_DATA_OVERRIDE="$data" FM_CONFIG_OVERRIDE="$home/config" \
     "$ROOT/bin/fm-captain-hold.sh" answer "$id" --decision-file "$home/answer.txt" \
     >/dev/null || fail "the unsupported relocated report wedged the captain's answer"
@@ -3199,14 +3232,14 @@ SH
   assert_contains "$show" "held: no" "the relocated report kept the answered call held"
 
   fm_fake_exit0 "$home/fakebin" treehouse
-  bootstrap=$(PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" \
+  bootstrap=$(PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$data" \
     FM_CONFIG_OVERRIDE="$home/config" FM_BOOTSTRAP_NETWORK=skip \
     "$ROOT/bin/fm-bootstrap.sh" 2>&1) \
     || fail "session start could not replay relocated cleanup after the answer: $bootstrap"
   assert_absent "$home/state/$id.meta" "session start left the relocated task record behind"
   assert_absent "$home/state/$id.backlog-close" "session start left the relocated pending record behind"
-  json=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_DATA_OVERRIDE="$data" \
+  json=$(PATH="$home/fakebin:$PATH" REAL_TASKS_AXI="$TASKS_AXI_BIN" FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" FM_DATA_OVERRIDE="$data" \
     FM_BEARINGS_NOW=2026-07-14T12:00:00Z "$BEARINGS" --json) \
     || fail "Bearings failed after the relocated answer-before-replay lifecycle"
   printf '%s' "$json" | jq -e --arg id "$id" \
@@ -3239,22 +3272,22 @@ EOF
   write_origin_meta "$home" "$id"
   printf 'done: report complete\n' > "$home/state/$id.status"
   printf '# Relocated hold\n\nThe captain call remains open.\n' > "$data/$id/report.md"
-  PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+  PATH="$home/fakebin:$PATH" FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
     FM_DATA_OVERRIDE="$data" FM_CONFIG_OVERRIDE="$home/config" \
     "$ROOT/bin/fm-captain-hold.sh" hold "$id" \
     --reason "captain must choose the relocated sample outcome" >/dev/null \
     || fail "could not hold the relocated work item"
-  PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+  PATH="$home/fakebin:$PATH" FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
     FM_DATA_OVERRIDE="$data" FM_CONFIG_OVERRIDE="$home/config" \
     "$ROOT/bin/fm-captain-hold.sh" hold "$id-call" --title "Sibling captain call" \
     --reason "captain must decide the sibling call" --repo sample --origin "$id" >/dev/null \
     || fail "could not hold the sibling captain call"
-  PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+  PATH="$home/fakebin:$PATH" FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
     FM_DATA_OVERRIDE="$data" FM_CONFIG_OVERRIDE="$home/config" \
     "$ROOT/bin/fm-captain-hold.sh" complete "$id" "$id-call" >/dev/null \
     || fail "completion gate failed for the relocated captain hold"
 
-  PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" \
+  PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$data" \
     FM_CONFIG_OVERRIDE="$home/config" "$TEARDOWN" "$id" \
     > "$home/teardown.out" 2> "$home/teardown.err" \
@@ -3422,7 +3455,7 @@ test_local_merge_entrypoint_refuses_a_captain_held_task() {
   # Without the entrypoint guard, this run fast-forwards main while the task
   # still carries the captain hold.
   set +e
-  PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" \
+  PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_CONFIG_OVERRIDE="$home/config" "$ROOT/bin/fm-merge-local.sh" "$local_id" \
     > "$home/local.out" 2> "$home/local.err"
@@ -3491,7 +3524,7 @@ test_local_merge_entrypoint_separates_an_unreadable_record_from_an_absent_one() 
   # Unreadable authority record: refuse, and leave the default branch where it was.
   chmod 000 "$home/data/backlog.md"
   set +e
-  PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" \
+  PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_CONFIG_OVERRIDE="$home/config" "$ROOT/bin/fm-merge-local.sh" "$id" \
     > "$home/missing-local.out" 2> "$home/missing-local.err"
@@ -3506,7 +3539,7 @@ test_local_merge_entrypoint_separates_an_unreadable_record_from_an_absent_one() 
 
   # No backlog at all: nothing can be held, so the landing proceeds.
   rm "$home/data/backlog.md"
-  PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" \
+  PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_CONFIG_OVERRIDE="$home/config" "$ROOT/bin/fm-merge-local.sh" "$id" \
     > "$home/absent-local.out" 2> "$home/absent-local.err" \
@@ -3524,7 +3557,7 @@ test_merge_entrypoints_validate_identity_and_state_before_locking() {
   pr_state="$home/missing-pr-state"
   set +e
   fm_run_timed 2 env PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" \
-    FM_HOME="$home" FM_STATE_OVERRIDE="$pr_state" \
+    FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" FM_STATE_OVERRIDE="$pr_state" \
     "$ROOT/bin/fm-pr-merge.sh" sample-missing-pr-state \
     https://github.com/sample/sample/pull/41 \
     > "$home/missing-pr-state.out" 2> "$home/missing-pr-state.err"
@@ -3541,7 +3574,7 @@ test_merge_entrypoints_validate_identity_and_state_before_locking() {
   local_state="$home/missing-local-state"
   set +e
   fm_run_timed 2 env PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" \
-    FM_HOME="$home" FM_STATE_OVERRIDE="$local_state" \
+    FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" FM_STATE_OVERRIDE="$local_state" \
     "$ROOT/bin/fm-merge-local.sh" sample-missing-local-state \
     > "$home/missing-local-state.out" 2> "$home/missing-local-state.err"
   rc=$?
@@ -3557,7 +3590,7 @@ test_merge_entrypoints_validate_identity_and_state_before_locking() {
   bad_id=sample/bad-local-id
   set +e
   fm_run_timed 2 env PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" \
-    FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+    FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
     "$ROOT/bin/fm-merge-local.sh" "$bad_id" \
     > "$home/bad-local-id.out" 2> "$home/bad-local-id.err"
   rc=$?
@@ -3603,7 +3636,7 @@ test_merge_entrypoints_refuse_a_reused_task_incarnation() {
   teardown_release="$home/reuse-teardown-release"
   merge_ready="$home/reuse-merge-ready"
   merge_release="$home/reuse-merge-release"
-  PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" \
+  PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_CONFIG_OVERRIDE="$home/config" FM_TEST_REUSE_TEARDOWN=1 \
     FM_TEST_REUSE_TEARDOWN_ONCE="$home/reuse-teardown-once" \
@@ -3694,7 +3727,7 @@ test_merge_entrypoints_refuse_a_reused_task_incarnation() {
   local_teardown_release="$local_home/reuse-teardown-release"
   local_merge_ready="$local_home/reuse-merge-ready"
   local_merge_release="$local_home/reuse-merge-release"
-  PATH="$local_home/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$local_home" \
+  PATH="$local_home/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_BACKLOG_HOME="${local_home##*/}" FM_HOME="$local_home" \
     FM_STATE_OVERRIDE="$local_home/state" FM_DATA_OVERRIDE="$local_home/data" \
     FM_CONFIG_OVERRIDE="$local_home/config" FM_TEST_REUSE_TEARDOWN=1 \
     FM_TEST_REUSE_TEARDOWN_ONCE="$local_home/reuse-teardown-once" \
@@ -3715,7 +3748,7 @@ test_merge_entrypoints_refuse_a_reused_task_incarnation() {
     FM_TEST_REUSE_MERGE_READY="$local_merge_ready" \
     FM_TEST_REUSE_MERGE_RELEASE="$local_merge_release" \
     FM_TEST_REAL_PERL="$real_perl" FM_TEST_REAL_SLEEP="$real_sleep" \
-    FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$local_home" \
+    FM_ROOT_OVERRIDE="$ROOT" FM_BACKLOG_HOME="${local_home##*/}" FM_HOME="$local_home" \
     FM_STATE_OVERRIDE="$local_home/state" FM_DATA_OVERRIDE="$local_home/data" \
     FM_CONFIG_OVERRIDE="$local_home/config" \
     "$ROOT/bin/fm-merge-local.sh" "$local_id" > "$local_home/reuse-merge.out" \
@@ -3834,7 +3867,7 @@ SH
     fail "the PR merge did not reach the post-metadata synchronization point"
   fi
   set +e
-  PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" \
+  PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_CONFIG_OVERRIDE="$home/config" "$TEARDOWN" "$id" --force \
     > "$home/race-pr-teardown.out" 2> "$home/race-pr-teardown.err"
@@ -3901,7 +3934,7 @@ SH
   PATH="$local_home/fakebin:$PATH" FM_TEST_REAL_GIT="$real_git" \
     FM_TEST_RACE_REPO="$local_repo" FM_TEST_RACE_READY="$local_ready" \
     FM_TEST_RACE_RELEASE="$local_release" FM_ROOT_OVERRIDE="$ROOT" \
-    FM_HOME="$local_home" FM_STATE_OVERRIDE="$local_home/state" \
+    FM_BACKLOG_HOME="${local_home##*/}" FM_HOME="$local_home" FM_STATE_OVERRIDE="$local_home/state" \
     FM_DATA_OVERRIDE="$local_home/data" FM_CONFIG_OVERRIDE="$local_home/config" \
     "$ROOT/bin/fm-merge-local.sh" "$local_id" \
     > "$local_home/race-local.out" 2> "$local_home/race-local.err" &
@@ -3919,7 +3952,7 @@ SH
     fail "the local merge did not reach the post-validation synchronization point"
   fi
   set +e
-  PATH="$local_home/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$local_home" \
+  PATH="$local_home/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_BACKLOG_HOME="${local_home##*/}" FM_HOME="$local_home" \
     FM_STATE_OVERRIDE="$local_home/state" FM_DATA_OVERRIDE="$local_home/data" \
     FM_CONFIG_OVERRIDE="$local_home/config" "$TEARDOWN" "$local_id" --force \
     > "$local_home/race-local-teardown.out" 2> "$local_home/race-local-teardown.err"
@@ -3975,7 +4008,7 @@ test_released_merge_passes_the_entrypoint_and_lands() {
     "the approved merge remained captain-held after its release"
   run_pr_merge "$home" "$id" "$pr" > "$home/merge.out" 2> "$home/merge.err" \
     || fail "the released merge was refused: $(cat "$home/merge.err")"
-  PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" \
+  PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_CONFIG_OVERRIDE="$home/config" "$TEARDOWN" "$id" --force \
     > "$home/teardown.out" 2> "$home/teardown.err" \
@@ -4015,7 +4048,7 @@ SH
 
   set +e
   PATH="$home/fakebin:$PATH" REAL_TASKS_AXI="$TASKS_AXI_BIN" \
-    TASKS_AXI_FAIL_SHOW_ID="$id" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" \
+    TASKS_AXI_FAIL_SHOW_ID="$id" FM_ROOT_OVERRIDE="$ROOT" FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_CONFIG_OVERRIDE="$home/config" "$TEARDOWN" "$id" --force \
     > "$home/teardown.out" 2> "$home/teardown.err"
@@ -4686,7 +4719,7 @@ test_hold_reason_round_trips_awkward_characters() {
     tasks_in "$home" hold "$id" --reason "$malformed" --kind captain >/dev/null \
       || fail "could not store the historical literal reason"
     for verb in show view; do
-      out=$(FM_HOME="$home" "$ROOT/bin/fm-tasks-axi.sh" "$verb" "$id" --full) \
+      out=$(FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" "$ROOT/bin/fm-tasks-axi.sh" "$verb" "$id" --full) \
         || fail "public $verb failed on historical literal $malformed"
       raw=$(tasks_in "$home" "$verb" "$id" --full)
       assert_equals "$raw" "$out" "public $verb changed historical literal $malformed"
@@ -4710,7 +4743,7 @@ test_hold_reason_round_trips_awkward_characters() {
     assert_contains "$stored" "(hold-kind: captain)" "the reason broke the hold-kind tag"
 
     for verb in show view; do
-      out=$(FM_HOME="$home" "$ROOT/bin/fm-tasks-axi.sh" "$verb" "$id") \
+      out=$(FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" "$ROOT/bin/fm-tasks-axi.sh" "$verb" "$id") \
         || fail "public $verb failed for $id"
       shown=$(printf '%s\n' "$out" | sed -n 's/^  hold_reason: //p')
       printf '%s\n' "$shown" | jq -e --arg reason "$reason" '. == $reason' >/dev/null \
@@ -4718,7 +4751,7 @@ test_hold_reason_round_trips_awkward_characters() {
       assert_contains "$out" "  title: $quoted_title" "public $verb changed the title"
     done
     for fields in hold_reason,body body,hold_reason,hold_until; do
-      out=$(FM_HOME="$home" "$ROOT/bin/fm-tasks-axi.sh" list --fields "$fields") \
+      out=$(FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" "$ROOT/bin/fm-tasks-axi.sh" list --fields "$fields") \
         || fail "public list failed with $fields"
       assert_contains "$out" "$quoted_reason" "public list changed the reason with $fields"
       assert_contains "$out" "$quoted_title" "public list changed the title with $fields"
@@ -4729,7 +4762,7 @@ test_hold_reason_round_trips_awkward_characters() {
         assert_contains "$out" "$malformed" "public list changed historical literal $malformed"
       done
     done
-    json=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+    json=$(PATH="$home/fakebin:$PATH" REAL_TASKS_AXI="$TASKS_AXI_BIN" FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
       FM_DATA_OVERRIDE="$home/data" FM_CONFIG_OVERRIDE="$home/config" \
       "$ROOT/bin/fm-fleet-snapshot.sh" --json) || fail "fleet snapshot failed"
     printf '%s' "$json" | jq -e --arg id "$id" --arg reason "$reason" --arg title "$title" \
@@ -4746,18 +4779,18 @@ test_hold_reason_round_trips_awkward_characters() {
     done
   done
 
-  out=$(FM_HOME="$home" "$ROOT/bin/fm-tasks-axi.sh" show sample-legacy-call --full)
+  out=$(FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" "$ROOT/bin/fm-tasks-axi.sh" show sample-legacy-call --full)
   raw=$(tasks_in "$home" show sample-legacy-call --full)
   assert_equals "$raw" "$out" "public show changed legacy or unrelated fields"
-  out=$(FM_HOME="$home" "$ROOT/bin/fm-tasks-axi.sh" list)
+  out=$(FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" "$ROOT/bin/fm-tasks-axi.sh" list)
   raw=$(tasks_in "$home" list)
   assert_equals "$raw" "$out" "public list changed output with no reason column"
   for verb in show list; do
-    out=$(FM_HOME="$home" "$ROOT/bin/fm-tasks-axi.sh" "$verb" --help)
+    out=$(FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" "$ROOT/bin/fm-tasks-axi.sh" "$verb" --help)
     raw=$(tasks_in "$home" "$verb" --help)
     assert_equals "$raw" "$out" "public $verb changed help output"
   done
-  out=$(FM_HOME="$home" "$ROOT/bin/fm-tasks-axi.sh" show nonexistent-call 2>&1)
+  out=$(FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" "$ROOT/bin/fm-tasks-axi.sh" show nonexistent-call 2>&1)
   rc=$?
   raw=$(tasks_in "$home" show nonexistent-call 2>&1)
   raw_rc=$?
@@ -4783,9 +4816,17 @@ SH
         chmod +x "$home/fakebin/tasks-axi"
         ;;
     esac
-    start=$(PATH="$home/fakebin:$PATH" REAL_TASKS_AXI="$TASKS_AXI_BIN" FM_HOME="$home" \
+    start=$(PATH="$home/fakebin:$PATH" REAL_TASKS_AXI="$TASKS_AXI_BIN" FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" \
       FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" FM_CONFIG_OVERRIDE="$home/config" \
       FM_BOOTSTRAP_NETWORK=skip "$ROOT/bin/fm-session-start.sh" 2>&1 || true)
+    if [ "$mode" = fallback ]; then
+      # A failed tasks-axi read is reported as is: startup never falls back to reading the backlog file.
+      assert_contains "$start" 'tasks-axi compact listing failed:' "startup did not report the failed listing"
+      assert_contains "$start" 'read failed: literal %28 and fm-hold-v1:bm9ydGg=' \
+        "startup changed unrelated error text"
+      assert_not_contains "$start" 'Investigate literal %28' "startup read the backlog file after a failed listing"
+      continue
+    fi
     assert_contains "$start" "$quoted_reason" "startup $mode changed the encoded reason"
     assert_contains "$start" 'Investigate literal %28' "startup $mode changed the title"
     assert_contains "$start" "$legacy" "startup $mode changed the legacy reason"
@@ -4793,13 +4834,9 @@ SH
     for malformed in "${malformed_reasons[@]}"; do
       assert_contains "$start" "$malformed" "startup $mode changed historical literal $malformed"
     done
-    if [ "$mode" = fallback ]; then
-      assert_contains "$start" 'read failed: literal %28 and fm-hold-v1:bm9ydGg=' \
-        "startup changed unrelated error text"
-    fi
   done
   rm "$home/fakebin/tasks-axi"
-  out=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+  out=$(PATH="$home/fakebin:$PATH" FM_BACKLOG_HOME="${home##*/}" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
     FM_DATA_OVERRIDE="$home/data" FM_CONFIG_OVERRIDE="$home/config" \
     "$ROOT/bin/fm-afk-return.sh" check 2>&1 || true)
   assert_contains "$out" "$quoted_reason" "return brief changed the encoded reason"
@@ -5000,6 +5037,7 @@ test_teardown_refuses_a_ship_when_the_captain_hold_cannot_be_read
 test_verify_resolves_a_hold_migrated_to_beads_notes
 test_verify_resolves_a_hold_migrated_under_the_configured_prefix
 test_marker_noted_row_wins_over_a_prefix_namesake
+test_migration_scan_reads_the_home_config_graph
 test_complete_accepts_a_migrated_inventory_on_beads
 test_verify_names_the_unresolvable_legacy_id_once
 test_verify_resolves_a_pre_collapse_key_through_its_derived_marker

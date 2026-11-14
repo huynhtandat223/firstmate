@@ -4,7 +4,8 @@
 // transcript (JSONL) and decides which captain rules the end of each turn broke.
 // It never writes anything. Codes and the fix each one prints:
 //   english  no Vietnamese letter and 20+ Latin letters in the reply (captain.md:16)
-//   question a `?` in the last 400 characters and no agent-ask call in the turn (captain.md:20)
+//   question a sentence ending in `?` near the reply's end (code and links left out) whose paragraph links no
+//            Needs you card (?q=, outside code), and no agent-ask call in the turn (captain.md:20)
 //   notes    captain notes wait in the inbox directory (--inbox-dir)
 //   unread   data/captain.md was not read since the last SessionStart
 // Usage:
@@ -190,6 +191,39 @@ function shellReadsCaptain(use) {
   });
 }
 
+// Code is never the agent's own words: a `?` or a card link inside it says nothing.
+function withoutCode(text) {
+  return text.replace(/```[\s\S]*?(```|$)/g, " ").replace(/`[^`\n]*`/g, " ");
+}
+
+// The prose of a paragraph with its links taken out whole (a Markdown link's label too) and its quoted text, so a
+// `?q=` link, a linked page named as a question, or a quoted card title is not a question asked.
+function prose(paragraph) {
+  return paragraph
+    .replace(/\[[^\]\n]*\]\([^)\s]*\)/g, " ")
+    .replace(/\b(?:https?:\/\/|www\.)\S+|#[\w.-]+\?\S*/g, " ")
+    .replace(/"[^"\n]*"|“[^”\n]*”|«[^»\n]*»/g, " ");
+}
+
+// A Needs you card link outside code: the board's address with `?q=<8 characters>`.
+const CARD_LINK = /firstmate[.-]board\b[^\s)\]]*[?&]q=[0-9a-f]{8}\b/i;
+
+// A question asked of the reader and not put on Needs you: a paragraph near the reply's end (its last 400
+// characters) holds a `?` that ends a sentence of its prose, and that paragraph links no Needs you card.
+// Limit: a question inside quotation marks is not seen, even one the agent asks itself; quoted card titles were
+// the common false hit in the replay of real transcripts, so they are left out.
+export function unpostedQuestion(text) {
+  const plain = withoutCode(text);
+  const cut = Math.max(0, plain.length - 400);
+  let offset = 0;
+  for (const paragraph of plain.split(/(\n\s*\n)/)) {
+    const end = offset + paragraph.length;
+    if (end > cut && /\?+(?=[\s)*_]|$)/.test(prose(paragraph)) && !CARD_LINK.test(paragraph)) return true;
+    offset = end;
+  }
+  return false;
+}
+
 function callsAgentAsk(use) {
   return use.name === "Bash" && shellCommands(commandOf(use)).some((c) => c.name === "agent-ask");
 }
@@ -207,7 +241,7 @@ export function findStops(rows, options = {}) {
     const codes = [];
     const latin = (text.match(/[A-Za-z]/g) ?? []).length;
     if (language === "vi" && !VIETNAMESE.test(text) && latin >= 20) codes.push("english");
-    if (text.slice(-400).includes("?") && !turnTools.some(callsAgentAsk)) codes.push("question");
+    if (unpostedQuestion(text) && !turnTools.some(callsAgentAsk)) codes.push("question");
     if (sessionStartIdx !== -1 && !readSince && !sessionStartInReach) codes.push("unread");
     return codes;
   };
@@ -243,7 +277,7 @@ export function findStops(rows, options = {}) {
 
 const MESSAGES = {
   english: "captain.md:16: resend in Vietnamese, technical terms stay English",
-  question: "captain.md:20: post it with agent-ask (FM_TASK_ID, AGENT_ASK_ASKER=firstmate); chat carries its id",
+  question: "captain.md:20: a question for the captain is not on Needs you: post it with agent-ask (FM_TASK_ID, AGENT_ASK_ASKER=firstmate); chat carries its link",
   unread: (handoff) =>
     `data/captain.md was not read since the last SessionStart: read data/captain.md${handoff ? ` and the handoff it names (${handoff})` : " and the handoff its Start here line names"} before replying`,
 };

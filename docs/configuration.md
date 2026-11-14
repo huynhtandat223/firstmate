@@ -10,9 +10,10 @@ Start with the directory layout, then use the setting reference for the behavior
 | Firstmate's code, private files, or project location | [FM_HOME](#fm_home) and [operational home layout](#operational-home-layout-and-state) |
 | Task windows and worker tools | [Runtime backend](#runtime-backend-configbackend--fm_backend) and [harness support](#harness-support) |
 | Worker permissions, accounts, or environment | [Codex approval review](#codex-automatic-approval-review), [Claude permission mode](#claude-permission-mode-configclaude-permission-mode), [Codex permission mode](#codex-permission-mode-configcodex-permission-mode), [persistent managed-policy failover](#persistent-managed-policy-failover), [worker account pin](#worker-account-pin-configclaude-account-configpi-account), [worker tool exclusions](#worker-tool-exclusions-configcrew-exclude-tools), [worker launch environment](#worker-launch-environment-configlaunch-env-allowlist), and its [Orca environment source](#orca-environment-source-configlaunch-env-tmux-session) |
-| Backlog, preferences, and memory | [Backlog backend](#backlog-backend-taskstoml--configbacklog-backend), [captain preferences](#captain-preferences-datacaptainmd--datacaptain-sharedmd), [external memory tiers](#external-memory-tiers-memory-layering-section), [record export](#record-export-configrecord-export-root), and [startup memory budget](#startup-memory-budget-configstartup-memory-budget) |
+| Backlog, preferences, and memory | [Backlog backend](#backlog-backend-taskstoml--configtasks-axi--configbacklog-backend), [captain preferences](#captain-preferences-datacaptainmd--datacaptain-sharedmd), [external memory tiers](#external-memory-tiers-memory-layering-section), [record export](#record-export-configrecord-export-root), [memory home](#memory-home-configmemory-home), and [startup memory budget](#startup-memory-budget-configstartup-memory-budget) |
 | Supervision and presentation | [Pi supervision branch](#pi-supervision-branch), [supervision host](#supervision-host-configsupervision-host), [warm-cache compaction](#warm-cache-compaction-configwarm-compact), and [Calm preference](#calm-preference-configcalm) |
 | Persistent secondmates | [Secondmate routes](#secondmate-routes-datasecondmatesmd) |
+| Portable config, roles, and private skills on Dev 5001 | [Material home](#material-home-configmaterial-home) |
 | Review rounds for worker PRs | [PR review rounds](#pr-review-rounds-configpr-reviewjson) |
 | Review bots on owned GitHub pull requests | [Contribution review bots](#contribution-review-bots-configcontribution-review-bots) |
 | Per-run overrides and tuning | [Environment variables](#environment-variables) |
@@ -89,6 +90,7 @@ A bot signal's text is third-party content for the owning home to triage, never 
 
 Firstmate, the DMS assistance, and scripts use [`bin/fm-notify-me.sh`](../bin/fm-notify-me.sh) to post owner notifications and read decisions.
 Its header and `--help` own the command syntax, output, token paths, and environment settings.
+A post with no action is a notice: a system alert with no choices, never a question; a post with actions is a question whose decision the command reads.
 Each producer needs its own service account with only Notifications route grants; store its issued token privately and never copy it into instructions or logs.
 Set `FM_NOTIFY_RECIPIENT` to the owner user id, or store that id in the private, gitignored `$FM_HOME/config/notify-recipient` file.
 The environment value takes precedence; posting refuses with exit 2 when neither source supplies a recipient.
@@ -500,7 +502,7 @@ This feature does not set `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` or any other autocom
 
 ## Dispatch plan gate (config/dispatch-plan-gate)
 
-The presence of `config/dispatch-plan-gate` requires a fresh ship or scout to link an approved open GitHub issue through its backlog item's `doc:` links.
+The presence of `config/dispatch-plan-gate` requires a fresh ship or scout to have an approved plan: the gate reads an open GitHub issue linked through the backlog item's `doc:` links, or the task Description when given a task identifier or task URL.
 Batch pairs are checked separately.
 Relaunches, secondmates, and assistance launches are exempt; homes without the file retain their existing behavior.
 The gate requires the automatic tasks-axi backlog preflight and refuses when that source is unavailable or manual.
@@ -513,6 +515,7 @@ An approved launch prints its issue URL and records `plan_issue` in the task rec
 
 On a fresh single ship or scout, `--plan-exception "<captain words>"` skips the issue check and records those words, base64-encoded as `plan_exception`, and in the backlog body.
 The flag requires nonempty words and cannot be used in a batch or with an exempt launch.
+`--plan-exempt <name>` skips the issue check for a spawn that carries no plan, records the gate's line in the backlog body and `plan_exempt` in the task record, changes nothing in a home without `config/dispatch-plan-gate`, and is refused outside the scope `bin/fm-plan-gate-lib.sh` gives that name; `verify` covers the deploy-verify Tester scout whose brief holds the adapter's ask for the same task and sha.
 Refusals name the link or approval command and the exception flag.
 ### One ticket per repository and two specs in flight
 
@@ -552,8 +555,9 @@ A missing file, an empty file, or any other word keeps the check in log-only mod
 The first check is `drain-ack`: `bin/fm-drain-pretool-check.sh` denies one command that acknowledges a wake drain and runs another drain, and `bin/fm-wake-drain.sh` refuses an acknowledgement while a captain note waits in `state/inbox/`.
 Both read `config/enforce-drain-ack`.
 A drain piped into `grep`, `head`, `cut` or `sed` is only ever logged.
-The second check is `reply-lint`: the Claude Stop hook `bin/fm-reply-lint.sh` reads the turn that just ended and flags a reply with no Vietnamese letter, a question with no `agent-ask` call in the turn, a waiting captain note, and a session that has not read `data/captain.md` since its last SessionStart.
-It reads `config/enforce-reply-lint`, and it does nothing until `config/reply-language` holds a language word (`vi` today); with the file absent the lint is off.
+The second check is `reply-lint`: the Claude Stop hook `bin/fm-reply-lint.sh` reads the turn that just ended and flags a reply with no Vietnamese letter, a question for the captain that is not on Needs you, a waiting captain note, and a session that has not read `data/captain.md` since its last SessionStart.
+A question is on Needs you when the turn called `agent-ask` or the question's own paragraph links its card (`?q=`, outside code); a `?` in code, a link or quoted text is not a question.
+It reads `config/enforce-reply-lint` for every check, and `config/enforce-reply-lint-<code>` (for example `config/enforce-reply-lint-question`) for one check alone; it does nothing until `config/reply-language` holds a language word (`vi` today); with the file absent the lint is off.
 A hit blocks at most once per turn, and `bin/fm-reply-lint.sh --replay <transcript>` lists the turn ends a past transcript would have flagged.
 The third check is `clone-git`: `bin/fm-clone-git-pretool-check.sh` denies a state-changing git command aimed at a clone under `projects/` (AGENTS.md hard rule 1).
 It denies fetch of a refspec such as `pull/<n>/head` (or `--stdin`), pull, checkout, switch, reset, commit, stash, rebase, cherry-pick, push, clean, add, branch, tag, config, worktree and remote writes, and merge without `--ff-only`.
@@ -638,9 +642,14 @@ Both say to re-scaffold with `--herdr-lab`.
 The check is log-only until `config/enforce-herdr-lab-brief` holds `block`: each hit is written to `state/enforce-herdr-lab-brief.log` and the brief or steer still passes.
 `bin/fm-enforce-lib.sh` owns that switch.
 
-## Backlog backend (.tasks.toml / config/backlog-backend)
+## Backlog backend (.tasks.toml / config/tasks-axi / config/backlog-backend)
 
 The tracked `.tasks.toml` pins the default `tasks-axi` markdown backend to `data/backlog.md`, with `done_keep = 10` and an archive at `data/done-archive.md`.
+A home overrides it without editing the tracked file through a gitignored `config/tasks-axi/.tasks.toml` beside its data directory: when that file exists, firstmate runs tasks-axi from `config/tasks-axi/`, so the home config replaces the tracked one whole and any relative path in it resolves against that folder ([`bin/fm-tasks-axi-lib.sh`](../bin/fm-tasks-axi-lib.sh) `fm_tasks_axi_workdir`).
+A home keeps its backlog in Dev 5001 with `backend = "cfw5001"` and `[cfw5001] home = "<name>"` in that home config: the backlog is then the `fm_task` rows whose `backlogHome` is that name, and no markdown file holds it (no render, no archive).
+That backend is a fork-only option of tasks-axi (`huynhtandat223/tasks-axi`, keys owned by its `src/config.ts` and `src/backends/cfw5001.ts`); a stock tasks-axi build refuses it with `UNSUPPORTED`, which is why the tracked default stays markdown.
+Do not set `[cfw5001] db` in a home: the backlog is read through the API only.
+Scripts read the backlog only through `bin/fm-tasks-axi.sh` (`rows` gives the `list` table as JSON) and change it only through tasks-axi verbs; the only `bin/` code that touches `data/backlog.md` itself is the `manual` backend's startup digest and the secondmate handoff, receive and provisioning paths, which move markdown backlogs between homes.
 A home may instead select another tasks-axi adapter such as Beads through its own `.tasks.toml` or `TASKS_AXI_BACKEND`; firstmate still uses only tasks-axi verbs for routine backlog reads and mutations, and the adapter maps `start` and evidence-bearing `done` transitions to its native statuses and evidence fields.
 
 ### Captain holds on Beads
@@ -675,13 +684,14 @@ Any other configured adapter is addressed by that root alone, because `--file` w
 The gate does not apply to persistent secondmates, manual-backend homes, or markdown homes without a backlog file.
 Those retain their existing persistent-agent, manual, or ad-hoc lifecycle behavior.
 Configured non-markdown adapters remain active without that file.
-Migrated-hold resolution on a beads home reads its graph path, binary, and prefix from the root `.tasks.toml` `[beads]` section only, and refuses (rc=2) when the beads backend is selected elsewhere (a `TASKS_AXI_BACKEND` override or user-level config) with no root-level `[beads]` section.
+Migrated-hold resolution on a beads home reads its graph path, binary, and prefix from the `[beads]` section of the `.tasks.toml` tasks-axi runs from (the home config when present, else the root file) only, and refuses (rc=2) when the beads backend is selected elsewhere (a `TASKS_AXI_BACKEND` override or user-level config) with no root-level `[beads]` section.
 
 On an automatic-backend home, missing or incompatible `tasks-axi`, an unresolvable configured data directory, or one containing a control byte fails lifecycle work before mutation.
 An unreadable backend configuration can refuse lifecycle work before the no-backlog exemption applies; repair the configuration named in the diagnostic ([backend resolution contract](../bin/fm-tasks-axi-lib.sh)).
 
 ### Handoffs between homes
 
+A home whose backend is `cfw5001` refuses every secondmate handoff (exit 2), because the move edits only a markdown backlog file and that home has none.
 Secondmate handoffs bypass that routine-backend choice: `fm-backlog-handoff.sh` keeps only its own fleet-level validation and delegates the item move to `tasks-axi mv`; its [script header](../bin/fm-backlog-handoff.sh) owns route-specific wake outcomes and remote outbox release.
 It moves in-scope `## Queued` items only and refuses `## In flight` and historical `## Done` records, which stay with their home for pruning or archiving.
 
@@ -1278,6 +1288,44 @@ Until then local files are the only memory owners.
 
 [`AGENTS.md`](../AGENTS.md) section 6 owns what a declaration changes about knowledge routing, and the internal [`stow` skill](../.agents/skills/stow/SKILL.md) owns how curation reads the declaration and protects tier-owned entries from pruning.
 The section counts toward the startup memory budget like the rest of its file, so keep it to the mapping rather than restating these rules.
+
+## Material home (config/material-home)
+
+`config/material-home` is an optional one-line file naming a home, such as `main`.
+Its presence moves this home's portable material to Dev 5001 as insert-only `fm_doc` rows, source `5001`; the highest version is current, and the local files become a cache.
+Without the file nothing below runs and session start behaves as before.
+
+The portable list is fixed in `PORTABLE` and `classify` of `bin/fm-material-lib.mjs`, never found by scanning, so a new file is not uploaded until a reviewed code change names it.
+Scope `home:<name>` holds `config/crew-harness`, `dispatch-plan-gate`, `handoff-thresholds`, `notify-recipient`, `pr-review.json`, `reply-language`, `secondmate-harness`, `startup-memory-budget`, `config/assistances/*` and `config/roles/*` (`.json` and `.md`), every private skill (a top-level `.agents/skills/` folder in which git tracks nothing), `data/chatgpt-review.md`, and `data/firstmate-tools/**`.
+Scope `host:<hostId>` holds `config/claude-account`; only the captain edits it.
+`config/task-shadow`, `backend`, `tasks-axi/`, `supervision-host`, `host-id`, token files, backups, and dot-files stay on the machine.
+A name denylist and a token-shape scan refuse a whole upload and name the file.
+
+`bin/fm-doc.sh` owns the commands (`seed`, `status`, `materialize --home`, `sync`, `put`, `remove`) and `bin/fm-material-lib.mjs --help` owns their rules; `FM_TASK_BASE_URL` and `FM_TASK_TOKEN_FILE` select the service as for the git documents.
+Session start, while it holds the lock, starts `bin/fm-doc.sh sync` in a background worker bounded by `FM_MATERIAL_SYNC_TIMEOUT` (60 seconds) and never waits for it.
+The digest prints its `MATERIAL` line at the end: `material_source=5001`, `material_source=cache` with the cache age when 5001 is unreachable or the worker ran out of time, or `material_source=pending` while it still runs (the result lands in `state/.material-sync.out`).
+One worker runs per home at a time (`state/.material-sync.lock`); while one runs, the digest also prints the last finished report, so a late `material_conflict` reaches the next session.
+A local edit is never overwritten: `sync` uploads it as the next version when it sits on the version it started from, and otherwise prints `material_conflict` and keeps it; `put` refuses with the diff when 5001 moved first.
+`remove` copies the file to `state/material-backup/` before it inserts a tombstone and deletes it, and refuses a copy that is behind 5001; `seed` never restores a removed file, `put --rebase` does.
+Each machine records the versions it holds, and the Settings tab of the `firstmate.home` page lists them per file.
+Cutover for an existing home is `bin/fm-doc.sh seed --home <name>`, then writing the file.
+
+## Memory home (config/memory-home)
+
+`config/memory-home` is an optional one-line file naming a home, such as `main`.
+Its presence moves this home's `data/captain.md`, `data/captain-shared.md`, `data/learnings.md`, and `data/memory-archive.md` to Dev 5001 as insert-only `fm_doc` rows, scope `home:<name>` and kind `memory`; the highest version is current, and `data/<file>` becomes a cache.
+Each of the first three files also has a `<file>.rules.json` row of the same version that holds its rules for the Memory tab of the `firstmate.home` page.
+Without the file, memory stays local and nothing below runs.
+
+`bin/fm-memory.sh` owns the commands (`seed`, `pull`, `put`, `show`, `history`, `sync`) and its header owns the rules for a waiting edit and a lost race; `FM_TASK_BASE_URL` and `FM_TASK_TOKEN_FILE` select the service as for `bin/fm-doc.sh`.
+Session start prints the last synchronized cache first, then refreshes it with `sync` (5 s in total) only after it verified the fleet lock, and prints a refreshed `data/captain.md` or `data/captain-shared.md` again under `MEMORY (5001)`; a lock-refused session leaves the cache alone.
+`bin/fm-startup-memory-budget.sh report` runs `sync` first, so it measures the 5001 text.
+When 5001 is unreachable it uses the cache and prints one `memory_source=cache` line with its age.
+The daily `bin/fm-startup-growth-check.sh` makes no 5001 call and measures the cache that session start refreshed.
+A secondmate home never reads or writes `captain-shared.md` on 5001; the primary's inheritance owns it.
+`put` refuses a pull record taken from another memory home.
+`/stow` pulls first and puts last, as its skill describes.
+Cutover for an existing home is `bin/fm-memory.sh seed`, then writing the file; a home whose local files already differ from 5001 puts them once with `put --rebase`.
 
 ## Startup memory budget (config/startup-memory-budget)
 

@@ -15,6 +15,8 @@ command -v node >/dev/null 2>&1 || { printf 'skip - node is not installed\n'; ex
 command -v jq >/dev/null 2>&1 || fail 'jq is required'
 
 TMP_ROOT=$(fm_test_tmproot fm-verify-gate)
+FM_DEPLOY_LEDGER_TASK="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/deploy-ledger-fixture.sh"
+export FM_DEPLOY_LEDGER_TASK
 FX="$ROOT/tests/fixtures/fm-acceptance"
 unset FM_TESTER_HOME FM_STATE_OVERRIDE
 vg_install_gh "$TMP_ROOT/gh"
@@ -200,7 +202,7 @@ case_row_pass_without_evidence() {
   refuses "$1" "$home" 'A1@390 is pass without evidence'
 }
 
-# An evidence path must exist: absolute as written, relative under the Tester home.
+# An evidence path must exist: absolute as written, relative under the Tester home, or an event:<seq>#image:<n>/#document reference.
 case_row_evidence_path() {
   local home
   home=$(new_home)
@@ -208,6 +210,13 @@ case_row_evidence_path() {
   refuses "$1" "$home" "A1@390 evidence path does not exist: $home/no-such.png" || return 1
   set_line "$(tester "$home")" '- A1@390 ' "$(row A1@390 pass 'evidence: shots/a1.png')"
   refuses "$1" "$home" 'A1@390 evidence path does not exist: shots/a1.png' || return 1
+  set_line "$(tester "$home")" '- A1@390 ' "$(row A1@390 pass 'evidence: event:bad')"
+  refuses "$1" "$home" 'A1@390 evidence reference requires the task-record gate: event:bad' || return 1
+  set_line "$(tester "$home")" '- A1@390 ' "$(row A1@390 pass 'evidence: event:999999#image:1')"
+  refuses "$1" "$home" 'A1@390 evidence reference requires the task-record gate: event:999999#image:1' || return 1
+  set_line "$(tester "$home")" '- A1@390 ' "$(row A1@390 pass 'evidence: event:12#document')"
+  refuses "$1" "$home" 'A1@390 evidence reference requires the task-record gate: event:12#document' || return 1
+  set_line "$(tester "$home")" '- A1@390 ' "$(row A1@390 pass 'evidence: shots/a1.png')"
   mkdir -p "$home/tester/shots"
   : > "$home/tester/shots/a1.png"
   passes "$1" "$home"
@@ -311,10 +320,11 @@ case_verified_line_without_head() {
   refuses "$1" "$home" 'Tester verified line has no head=<sha>'
 }
 
-# The deployed head is the newest deploy or replay ask of this task: a newer deploy refuses an
-# older record, a draft round and another task's ask do not count.
+# The deployed head is the newest deployed head of this task's deploy and replay asks, by ancestry: a newer deploy
+# refuses an older record, a draft round and another task's ask do not count.
 case_deployed_head_is_the_newest_ask() {
   local home old=2222222222222222222222222222222222222222 ledger
+  export VG_ORDER="$old $VG_SHA"
   home=$(new_home)
   ledger="$home/data/deploy-verify/ledger.jsonl"
   set_line "$(tester "$home")" 'verified: ' "verified: tester 1000 head=$old acceptance=$(vg_digest)"
@@ -425,12 +435,18 @@ case_home_video() {
 # ---- tasks begun after T5: firstmate's record says 'record: rows', and the task record is read ----------------
 
 # A stand-in for bin/fm-task.sh: it records its arguments and the writer settings it was given, then prints
-# FAKE_OUT, writes FAKE_ERR to stderr and exits FAKE_RC.
+# FAKE_OUT, writes FAKE_ERR to stderr and exits FAKE_RC. With FAKE_PASS_HEAD set, the rows passed only on that head:
+# a gate asked about it answers clean, and a gate asked about any other head names a row without a pass there.
 FAKE_TASK="$TMP_ROOT/fake-fm-task.sh"
 cat > "$FAKE_TASK" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" > "$FAKE_ARGS"
 printf 'url=%s\n' "${FM_TASK_BASE_URL:-}" >> "$FAKE_ARGS"
+if [ -n "${FAKE_PASS_HEAD:-}" ]; then
+  case " $* " in *" --head $FAKE_PASS_HEAD "*) exit 0 ;; esac
+  printf 'A1@1440 has no pass on the asked head\n'
+  exit 5
+fi
 [ -z "${FAKE_OUT:-}" ] || printf '%s\n' "$FAKE_OUT"
 [ -z "${FAKE_ERR:-}" ] || printf '%s\n' "$FAKE_ERR" >&2
 exit "${FAKE_RC:-0}"
@@ -481,13 +497,114 @@ case_rows_record_unreadable() {
 case_rows_deployed_head() {
   local home sha2=2222222222222222222222222222222222222222
   home=$(rows_home)
-  export FAKE_ARGS="$home/fake.args"
+  export FAKE_ARGS="$home/fake.args" VG_ORDER="$VG_SHA $sha2"
   printf '{"type":"ask","round":"deploy","key":"k2","task":"%s","sha":"%s"}\n' "$TASK" "$sha2" >> "$home/data/deploy-verify/ledger.jsonl"
   FAKE_RC=0 passes "$1" "$home" || return 1
   case "$(sed -n 1p "$FAKE_ARGS")" in *"--head $sha2 "*) ;; *) echo "the record was asked about another head: $(sed -n 1p "$FAKE_ARGS")"; return 1 ;; esac
   rm -f "$FAKE_ARGS"; : > "$home/data/deploy-verify/ledger.jsonl"
   refuses "$1" "$home" "no deploy ask for $TASK" || return 1
   [ ! -e "$FAKE_ARGS" ] || { echo 'the record was asked with no deployed head'; return 1; }
+}
+
+# One deploy-verify ledger ask line, and one replay ask line (round deploy, key replay:<task>:<sha>).
+ledger_ask() {  # <round> <task> <sha>
+  printf '{"type":"ask","round":"%s","key":"%s:%s:%s","task":"%s","sha":"%s"}\n' "$1" "$1" "$2" "$3" "$2" "$3"
+}
+ledger_replay() {  # <task> <sha>
+  printf '{"type":"ask","round":"deploy","key":"replay:%s:%s","task":"%s","sha":"%s"}\n' "$1" "$2" "$1" "$2"
+}
+
+# A rows ask on a head a later deploy names is the deployed head: after a deploy ask on head A, another task's deploy
+# ask on head B leaves this task on A, and this task's rows ask on B then moves it to B, so rows that passed on B close
+# the gate and rows that passed only on A refuse.
+case_rows_ask_is_the_deployed_head() {
+  local home a=2222222222222222222222222222222222222222 b=3333333333333333333333333333333333333333 ledger
+  home=$(rows_home)
+  export FAKE_ARGS="$home/fake.args" VG_ORDER="$a $b"
+  ledger="$home/data/deploy-verify/ledger.jsonl"
+  ledger_ask deploy "$TASK" "$a" > "$ledger"
+  FAKE_PASS_HEAD=$a passes "$1" "$home" || return 1
+  ledger_ask deploy other "$b" >> "$ledger"
+  FAKE_PASS_HEAD=$a passes "$1" "$home" || return 1
+  ledger_ask rows "$TASK" "$b" >> "$ledger"
+  FAKE_PASS_HEAD=$b passes "$1" "$home" || return 1
+  FAKE_PASS_HEAD=$a refuses "$1" "$home" 'A1@1440 has no pass on the asked head'
+}
+
+# The order is the deploy order (ancestry), not the ask order: a rows ask on head A written after this task's deploy
+# ask on a newer head B (deploy-verify plans the deploy round before the rows round) leaves the head at B, and a later
+# deploy ask on A does not make A newer.
+case_rows_ask_on_an_older_head() {
+  local home a=2222222222222222222222222222222222222222 b=3333333333333333333333333333333333333333 ledger
+  home=$(rows_home)
+  export FAKE_ARGS="$home/fake.args" VG_ORDER="$a $b"
+  ledger="$home/data/deploy-verify/ledger.jsonl"
+  { ledger_ask deploy other "$a"; ledger_ask deploy "$TASK" "$b"; ledger_ask rows "$TASK" "$a"; } > "$ledger"
+  FAKE_PASS_HEAD=$b passes "$1" "$home" || return 1
+  FAKE_PASS_HEAD=$a refuses "$1" "$home" 'A1@1440 has no pass on the asked head' || return 1
+  ledger_ask deploy other "$a" >> "$ledger"
+  FAKE_PASS_HEAD=$b passes "$1" "$home"
+}
+
+# A head no deploy ask names is not deployed: a draft or rows ask of the task on PR head C leaves the head at the
+# deployed head B, and with no deploy ask at all the rows ask on C refuses as a missing ask.
+case_rows_ask_on_an_undeployed_head() {
+  local home b=3333333333333333333333333333333333333333 c=4444444444444444444444444444444444444444 ledger
+  home=$(rows_home)
+  export FAKE_ARGS="$home/fake.args"
+  ledger="$home/data/deploy-verify/ledger.jsonl"
+  { ledger_ask deploy "$TASK" "$b"; ledger_ask draft "$TASK" "$c"; ledger_ask rows "$TASK" "$c"; } > "$ledger"
+  FAKE_PASS_HEAD=$b passes "$1" "$home" || return 1
+  FAKE_PASS_HEAD=$c refuses "$1" "$home" 'A1@1440 has no pass on the asked head' || return 1
+  { ledger_ask draft "$TASK" "$c"; ledger_ask rows "$TASK" "$c"; } > "$ledger"
+  FAKE_PASS_HEAD=$c refuses "$1" "$home" "no deploy ask for $TASK"
+}
+
+# A `deployed` line (deploy-verify writes one per successful deploy step, also when every PR of the deploy was skipped)
+# proves a deploy: this task's rows ask on head B, with no deploy-round ask on B, is on a deployed head once a deployed
+# line names B, so rows that passed on B close the gate. The skip line such a deploy wrote before carries no sha and
+# proves nothing, a deployed line for another sha proves nothing for B, and a deployed line alone is no ask of the task.
+case_rows_a_deployed_line_proves_a_deploy() {
+  local home b=3333333333333333333333333333333333333333 c=4444444444444444444444444444444444444444 ledger
+  home=$(rows_home)
+  export FAKE_ARGS="$home/fake.args"
+  ledger="$home/data/deploy-verify/ledger.jsonl"
+  { ledger_ask rows "$TASK" "$b"; printf '{"type":"skip","pr":"https://github.com/o/r/pull/1","task":"%s","reason":"no-issue"}\n' "$TASK"; } > "$ledger"
+  FAKE_PASS_HEAD=$b refuses "$1" "$home" "no deploy ask for $TASK" || return 1
+  printf '{"type":"deployed","sha":"%s","run":"https://example.test/runs/1","completed":"2026-11-13T07:00:00Z","at":1}\n' "$c" >> "$ledger"
+  FAKE_PASS_HEAD=$b refuses "$1" "$home" "no deploy ask for $TASK" || return 1
+  printf '{"type":"deployed","sha":"%s","run":"https://example.test/runs/2","completed":"2026-11-13T07:30:00Z","at":2}\n' "$b" >> "$ledger"
+  FAKE_PASS_HEAD=$b passes "$1" "$home" || return 1
+  FAKE_PASS_HEAD=$c refuses "$1" "$home" 'A1@1440 has no pass on the asked head'
+}
+
+# A replay ask after a newer deploy does not make its older head newer: a held ask can keep the cursor at older head A
+# after this task's deploy ask on B, and replay-skips then writes the first deploy-round ask naming A after B's. A rows
+# ask on A then leaves the head at B. The replay still proves a deploy: with no other ask of the task, A is its head.
+case_rows_ask_on_a_head_only_a_replay_names() {
+  local home a=2222222222222222222222222222222222222222 b=3333333333333333333333333333333333333333 ledger
+  home=$(rows_home)
+  export FAKE_ARGS="$home/fake.args" VG_ORDER="$a $b"
+  ledger="$home/data/deploy-verify/ledger.jsonl"
+  { ledger_ask deploy "$TASK" "$b"; ledger_replay other "$a"; ledger_ask rows "$TASK" "$a"; } > "$ledger"
+  FAKE_PASS_HEAD=$b passes "$1" "$home" || return 1
+  FAKE_PASS_HEAD=$a refuses "$1" "$home" 'A1@1440 has no pass on the asked head' || return 1
+  { ledger_replay other "$a"; ledger_ask rows "$TASK" "$a"; } > "$ledger"
+  FAKE_PASS_HEAD=$a passes "$1" "$home"
+}
+
+# Two deployed heads that GitHub cannot order refuse, naming why: a compare that cannot be read, or heads that are
+# not in one line of the watched repo's history; the record is never asked then.
+case_rows_heads_cannot_be_ordered() {
+  local home a=2222222222222222222222222222222222222222 b=3333333333333333333333333333333333333333 ledger
+  home=$(rows_home)
+  export FAKE_ARGS="$home/fake.args"
+  ledger="$home/data/deploy-verify/ledger.jsonl"
+  { ledger_ask deploy "$TASK" "$a"; ledger_ask deploy other "$b"; ledger_ask rows "$TASK" "$b"; } > "$ledger"
+  VG_ORDER="$a" FAKE_PASS_HEAD=$b refuses "$1" "$home" "cannot order the deployed heads of $TASK: the GitHub compare $a...$b in o/r cannot be read" || return 1
+  [ ! -e "$FAKE_ARGS" ] || { echo 'the record was asked with no deployed head'; return 1; }
+  VG_ORDER="$a $b" VG_DIVERGED=1 FAKE_PASS_HEAD=$b refuses "$1" "$home" "cannot order the deployed heads of $TASK: $a and $b are not in one line of o/r history (compare status 'diverged')" || return 1
+  VG_ORDER="$a $b" FAKE_PASS_HEAD=$b passes "$1" "$home"
 }
 
 # The writer runs with the home's record settings from config/task-shadow.
@@ -532,7 +649,7 @@ issue_cannot_be_parsed issue_cannot_be_read issue_without_user_visible_rows row_
 row_not_pass row_without_evidence_field row_pass_without_evidence row_evidence_path row_id_not_in_issue retired_row
 retired_row_of_a_present_id_at_another_width internal_scenario_row row_text_differs_from_the_issue malformed_tester_row verified_line_closes_the_record acceptance_digest verified_line_missing verified_line_without_head
 deployed_head_is_the_newest_ask a_pr_in_the_watched_repo_needs_an_ask a_pr_in_another_repo_takes_the_deployed_line the_backlog_line_names_the_pr approval home_video
-rows_read_the_record rows_problems rows_record_unreadable rows_deployed_head rows_writer_settings rows_files_before_t5 rows_carried"
+rows_read_the_record rows_problems rows_record_unreadable rows_deployed_head rows_ask_is_the_deployed_head rows_ask_on_an_older_head rows_ask_on_an_undeployed_head rows_a_deployed_line_proves_a_deploy rows_ask_on_a_head_only_a_replay_names rows_heads_cannot_be_ordered rows_writer_settings rows_files_before_t5 rows_carried"
 
 # ---- real gate ------------------------------------------------------------------------
 
@@ -549,6 +666,10 @@ done
 MBIN="$TMP_ROOT/mbin"
 mkdir -p "$MBIN"
 cp "$ROOT/bin/fm-acceptance.mjs" "$MBIN/fm-acceptance.mjs"
+# The library reads backlog rows through its sibling bin/fm-tasks-axi.sh, which needs its own sibling libraries.
+for f in fm-tasks-axi.sh fm-tasks-axi-lib.sh fm-backlog-transition-lib.sh fm-hold-reason-lib.sh fm-timeout-lib.sh fm-pr-lib.sh; do
+  ln -s "$ROOT/bin/$f" "$MBIN/$f"
+done
 cp "$ROOT/bin/fm-verify-gate-lib.sh" "$TMP_ROOT/gate.orig"
 MLIB="$MBIN/fm-verify-gate-lib.sh"
 
@@ -599,16 +720,14 @@ unsay 'the verified line carries a digest' acceptance_digest 'Tester verified li
 unsay 'the verified line is required' verified_line_missing "Tester record has no 'verified: tester"
 unsay 'the verified line names a head' verified_line_without_head 'Tester verified line has no head='
 unsay 'the Tester head is the deployed head' deployed_head_is_the_newest_ask 'Tester head '
-mutate 'the newest ask is the deployed head' deployed_head_is_the_newest_ask 's/\| tail -n 1\n\}/| head -n 1\n}/'
-mutate 'a draft round is not a deploy' deployed_head_is_the_newest_ask 's/\.round == "deploy" and //'
-mutate 'only the task'"'"'s own asks count' deployed_head_is_the_newest_ask 's/ and \.task == \$t//'
+mutate 'only the task'"'"'s own asks count' rows_ask_is_the_deployed_head 's/ and \.task == \$t//'
 unsay 'a deployed head is required' a_pr_in_another_repo_takes_the_deployed_line 'no deployed head for'
 mutate 'a PR elsewhere takes the deployed line' a_pr_in_another_repo_takes_the_deployed_line 's/want_sha=\$\(fm_verify_gate_field "\$file" deployed\)/want_sha=/'
 unsay 'a missing ask refuses for a PR in the watched repo' a_pr_in_the_watched_repo_needs_an_ask 'no deploy ask for'
 mutate 'a PR in the watched repo needs an ask, not a deployed line' a_pr_in_the_watched_repo_needs_an_ask 's/if fm_verify_gate_task_in_repo "\$state" "\$data" "\$id" "\$repo"; then/if false; then/'
 mutate 'the endpoint record names the PR' pass_and_read_only 's/case "\$pr" in "https:\/\/github.com\/\$4\/pull\/"\[0-9\]\*\) return 0 ;; esac//'
-mutate 'the backlog line names the PR' the_backlog_line_names_the_pr 's/\[ -f "\$2\/backlog.md" \] \|\| return 1/return 1/'
-mutate 'only the task'"'"'s own backlog line counts' the_backlog_line_names_the_pr 's/if \(t == task && match/if (match/'
+mutate 'the backlog row names the PR' the_backlog_line_names_the_pr 's/select\(\.id == \$task and /select(false and /'
+mutate 'only the task'"'"'s own backlog row counts' the_backlog_line_names_the_pr 's/\.id == \$task and //'
 unsay 'approval is required' approval "missing 'approved: firstmate"
 unsay 'approval is a number' approval 'approved line needs a numeric epoch'
 unsay 'approval is newer than the Tester' approval 'approved: firstmate $approved is not newer'
@@ -626,5 +745,15 @@ swap 'each reason the record gives is a problem' rows_problems "printf '%s\\n' \
 unsay 'a record that cannot be read is a problem' rows_record_unreadable 'the task record cannot be read: $(sed'
 swap 'the record is asked about the deployed head' rows_deployed_head '--head "$want_sha"' '--head "$issue"'
 swap 'no deployed head, no read of the record' rows_deployed_head '[ -n "$want_sha" ] || return 0' ':'
+swap 'a rows ask is a deployed head' rows_ask_is_the_deployed_head '(.round == "deploy" or .round == "rows")' '.round == "deploy"'
+swap 'only a deploy-round ask proves a deploy' rows_ask_on_an_undeployed_head 'select((.type == "ask" and .round == "deploy") or .type == "deployed") | .sha] as $deployed' 'select(.type == "ask" or .type == "deployed") | .sha] as $deployed'
+swap 'a deployed line proves a deploy' rows_a_deployed_line_proves_a_deploy ' or .type == "deployed") | .sha] as $deployed' ') | .sha] as $deployed'
+swap 'an ask on no deployed head is no head' rows_ask_on_an_undeployed_head ' | .sha | select(IN($deployed[]))]' ' | .sha]'
+swap 'a replay ask proves a deploy' rows_ask_on_a_head_only_a_replay_names 'select((.type == "ask" and .round == "deploy") or .type == "deployed") | .sha] as $deployed' 'select((.type == "ask" and .round == "deploy" and (.key | startswith("replay:") | not)) or .type == "deployed") | .sha] as $deployed'
+swap 'a head ahead by ancestry is newer' deployed_head_is_the_newest_ask '        ahead) want_sha=$head ;;' '        ahead) ;;'
+swap 'a head behind by ancestry is older' rows_ask_on_an_older_head '        behind|identical) ;;' '        behind|identical) want_sha=$head ;;'
+swap 'the compare is in the watched repo' rows_ask_on_a_head_only_a_replay_names 'api "repos/$repo/compare/' 'api "repos/x/$repo/compare/'
+unsay 'an unreadable compare refuses' rows_heads_cannot_be_ordered 'cannot order the deployed heads of $id: the GitHub compare'
+unsay 'heads off one line of history refuse' rows_heads_cannot_be_ordered 'cannot order the deployed heads of $id: $want_sha and $head'
 swap 'the writer runs with the record settings' rows_writer_settings '    fm_task_shadow_config "$config/task-shadow"' '    :'
 pass 'every rule of the gate has a red mutation proof'

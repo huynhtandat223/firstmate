@@ -231,7 +231,7 @@ The command exits nonzero when any key was skipped.
 
 ### Source bindings
 
-`bind`, `unbind`, and `binding` record that a captured-answer source feeds this intake, as a private record under `state/decision-bindings/`.
+`bind`, `unbind`, and `binding` record that a captured-answer source feeds this intake, as an `fm_hold_record` row of kind `binding` on 5001; `state/decision-bindings/` only stages the file the writer reads.
 An unbound source feeds nothing, so the path is opt-in per source.
 `bind` deliberately does not require the source to exist yet.
 
@@ -298,7 +298,7 @@ Failures remain best-effort and never acknowledge or suppress the captured resul
 
 ### The reconcile request record
 
-This captured-source intake records a durable reconcile request under `state/reconcile-requests/`.
+This captured-source intake records a durable reconcile request as an `fm_hold_record` row of kind `reconcile` on 5001; `state/reconcile-requests/` only stages the file the writer reads.
 There is one private record per task, carrying the requesting provenance and a UTC timestamp.
 The record exists so the obligation to re-check cannot be lost between the wake that carried the answer and the turn that acts on it.
 It is idempotent per task: repeating a reconcile keeps one request and its original timestamp.
