@@ -4174,7 +4174,7 @@ mutate 'a setup edit of the current pending state shows on the card' workflow "s
 mutate 'reopen returns to the state that ran last in event order' workflow "const last = steps.find(s => s.state === lastRan);" "const last = steps.filter(s => ['done', 'failed', 'running'].includes(s.status)).at(-1);"
 mutate 'approve skips the states that never started' workflow ": s.status === 'pending' ? [{ state: s.state, status: 'skipped', endReason: 'approved' }] : []);" ": []);"
 mutate 'a move ends the running attempt of the state left behind' workflow "const stepWrites = left ? [{ state: left.state, status: 'done'" "const stepWrites = false ? [{ state: left.state, status: 'done'"
-mutate 'an event moves the card only forward' board_column "if (column && WORKFLOW_STATES.indexOf(column) > WORKFLOW_STATES.indexOf(task.workflowState ?? 'queued'))" "if (column)"
+mutate 'an event moves the card only forward' board_column "(back || WORKFLOW_STATES.indexOf(column) > WORKFLOW_STATES.indexOf(task.workflowState ?? 'queued'))" "(true)"
 mutate 'a pull request waits in Testing while the Tester is asked' board_column "(task.nextActor === 'tester' ? 'testing' : 'merge')" "'merge'"
 mutate 'a ship task waits in Plan until its Solution is approved' board_column "task.planDecision !== 'approve' && task.kind === 'ship' ? 'plan'" "false ? 'plan'"
 mutate 'liveness reports on the running step' board_column "const current = action === 'start' ? own : running ?? own;" "const current = own;"
