@@ -540,6 +540,35 @@ escaped=$(run_inbox "$home" note -- "--request-id is body text here") \
 assert_contains "$escaped" "queued " "-- escapes a body that looks like a flag"
 pass "a note body that opens with a double dash is queued as text"
 
+# --- a home with many saved notes uploads only what changed ----------------
+
+# Every subcommand replays the spool before and after it runs; a put per note
+# made `list` take minutes on a home with hundreds of handled notes.
+home=$(make_home many-notes)
+spool="$home/state/owner-note-spool"
+mkdir -p "$spool/handled"
+for i in $(seq 1 4); do
+  printf 'id=w%s\nat=2026-11-14T00:00:0%sZ\nsource=cli\nannounce_marker=1\n--\nwaiting note %s\n' "$i" "$i" "$i" > "$spool/w$i.note"
+done
+for i in $(seq 1 40); do
+  printf 'id=h%s\nat=2026-11-13T00:00:00Z\nsource=cli\nannounce_marker=1\n--\nhandled note %s\n' "$i" "$i" > "$spool/handled/h$i.note"
+done
+run_inbox "$home" list >/dev/null || fail "first list should upload the spool"
+owner_writes() {
+  curl -s "$FM_TASK_BASE_URL/__x/log" | python3 -c 'import json,sys
+print(sum(1 for e in json.load(sys.stdin) if e["method"] in ("POST","PATCH") and e["path"].startswith("/api/fm_owner_note")))'
+}
+curl -s -X POST "$FM_TASK_BASE_URL/__x/log" >/dev/null
+many_out=$(run_inbox "$home" list) || fail "list on a saved spool should succeed"
+assert_equals "0" "$(owner_writes)" "list must not upload notes 5001 already holds"
+for i in 1 2 3 4; do assert_contains "$many_out" "waiting note $i" "list should still show waiting note $i"; done
+assert_not_contains "$many_out" "handled note" "list must not show handled notes"
+run_inbox "$home" drain --ack w4 >/dev/null || fail "drain --ack on a saved spool failed"
+w4_state=$(curl -s "$FM_TASK_BASE_URL/__x/rows/fm_owner_note" | python3 -c 'import json,sys
+print(next(r["state"] for r in json.load(sys.stdin) if r["noteId"] == "w4" and r["home"] == "many-notes"))')
+assert_equals "handled" "$w4_state" "a changed note must still upload"
+pass "a saved spool makes no upload; a changed note still uploads"
+
 # --- drain still acks by moving the note ------------------------------------
 
 home=$(make_home drain)
