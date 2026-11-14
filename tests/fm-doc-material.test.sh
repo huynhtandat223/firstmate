@@ -254,6 +254,8 @@ mkdir "$M2/state/.material-sync.lock"; printf '%s\n' "$LIVE" > "$M2/state/.mater
 printf 'material_conflict path="config/crew-harness" reason="5001 moved"\nmaterial_source=5001 home=main files=3 written=0 uploaded=0 waiting=0 conflicts=1\n' > "$M2/state/.material-sync.out"
 FM_HOME="$M2" "$ROOT/bin/fm-session-start.sh" > "$TMP/sf.out" 2>&1 || true
 grep -q 'material_source=pending home=main (bounded background sync from an earlier start still running' "$TMP/sf.out" || { echo 'second start did not see the running worker'; exit 1; }
+# Review round 2 (3): the last finished report, with its conflict, is in the digest while a worker runs.
+grep -q 'last finished report:' "$TMP/sf.out" && grep -q 'material_conflict path="config/crew-harness"' "$TMP/sf.out" || { echo 'digest hides the last report'; exit 1; }
 grep -q material_conflict "$M2/state/.material-sync.out" || { echo 'the running worker output was deleted'; exit 1; }
 [ "$(cat "$M2/state/.material-sync.lock/pid")" = "$LIVE" ]
 kill "$LIVE"; wait "$LIVE" 2>/dev/null || true

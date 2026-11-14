@@ -1282,6 +1282,7 @@ if [ "${MATERIAL_STATE:-none}" != none ]; then
     cat "$MATERIAL_OUT"
   else
     printf 'material_source=pending home=%s (bounded background sync %s; result lands in state/.material-sync.out)\n' "$(head -n1 "$CONFIG/material-home" 2>/dev/null)" "$([ "$MATERIAL_STATE" = running ] && echo 'from an earlier start still running' || echo 'running')"
+    if [ -s "$MATERIAL_OUT" ]; then printf 'last finished report:\n'; sed 's/^/  /' "$MATERIAL_OUT"; fi
   fi
 fi
 
