@@ -187,6 +187,42 @@ test_delivery_stops_claiming_when_the_lease_moves() {
   [ "$(deliveries)" = '[1]' ] || { echo "the former holder claimed events after the move: $(deliveries)"; return 1; }
 }
 
+# A host that does not hold the lease writes no step: the loop checks ownership before every pass, skips the pass,
+# logs the loss once, and writes again when ownership returns. The writer is a stub that records each call.
+writer_calls() { grep -c . "$TMP_ROOT/writer.log" 2>/dev/null || true; }
+writes_seen() { [ "$(writer_calls)" -ge "$1" ]; }
+
+test_step_loop_writes_only_while_its_host_holds_the_lease() {
+  reset_db
+  local home calls
+  home=$(make_home steploop)
+  : > "$TMP_ROOT/writer.log"
+  printf '#!/bin/sh\necho "$@" >> "%s"\n' "$TMP_ROOT/writer.log" > "$TMP_ROOT/writer.sh"
+  chmod +x "$TMP_ROOT/writer.sh"
+  : > "$home/config/task-shadow"
+  # a tmux with no window: the task's endpoint reads dead, so every pass has a step to write
+  mkdir -p "$TMP_ROOT/tmuxquiet" && printf '#!/bin/sh\nexit 0\n' > "$TMP_ROOT/tmuxquiet/tmux" && chmod +x "$TMP_ROOT/tmuxquiet/tmux"
+  printf 'window=test:fm-t1\nkind=ship\nharness=claude\nbackend=tmux\nspawn_gen=g1\n' > "$home/state/t1.meta"
+  local hostb="FM_HOME=$TMP_ROOT/other FM_HOST_ID=probe-b FM_HOME_NAME=$LEASE_HOME"
+  env $hostb "$ROOT/bin/fm-host.sh" register >/dev/null && env $hostb "$ROOT/bin/fm-host.sh" lease take >/dev/null || { echo 'probe-b could not take the lease'; return 1; }
+  FM_HOME="$home" FM_HOST_ID=probe-a FM_HOME_NAME="$LEASE_HOME" "$ROOT/bin/fm-host.sh" register >/dev/null
+  sleep 60 & local live=$!
+  printf '%s\n' "$live" > "$home/state/.lock"
+  FM_HOME="$home" FM_HOST_ID=probe-a FM_TASK_SHADOW_WRITER="$TMP_ROOT/writer.sh" FM_TASK_STEP_EVERY=1 FM_HOST_HEARTBEAT_EVERY=1 PATH="$TMP_ROOT/tmuxquiet:$PATH" \
+    "$ROOT/bin/fm-task-step-loop.sh" start >/dev/null
+  sleep 4
+  calls=$(writer_calls)
+  [ "$calls" = 0 ] || { echo "the loop wrote $calls step(s) without the lease: $(cat "$TMP_ROOT/writer.log")"; kill "$live"; return 1; }
+  grep -q 'lost the home lease' "$home/state/.task-step-loop.log" || { echo "the loop did not log the lost lease: $(cat "$home/state/.task-step-loop.log" 2>&1)"; kill "$live"; return 1; }
+  # ownership returns: probe-b releases, probe-a takes generation 3
+  env $hostb FM_HOST_LIVE_WORKERS=0 FM_HOST_WAKE_QUEUE_LENGTH=0 "$ROOT/bin/fm-host.sh" heartbeat >/dev/null
+  env $hostb FM_HOST_LIVE_WORKERS=0 "$ROOT/bin/fm-host.sh" lease release >/dev/null
+  FM_HOME="$home" FM_HOST_ID=probe-a FM_HOME_NAME="$LEASE_HOME" "$ROOT/bin/fm-host.sh" lease take >/dev/null || { echo 'probe-a could not take the lease back'; kill "$live"; return 1; }
+  wait_for 10 writes_seen 1 || { echo 'the loop wrote nothing after ownership returned'; kill "$live"; return 1; }
+  grep -q 'holds the home lease' "$home/state/.task-step-loop.log" || { echo "no regain line: $(cat "$home/state/.task-step-loop.log")"; kill "$live"; return 1; }
+  stop_loop "$home"; kill "$live" 2>/dev/null
+}
+
 run_case() {
   local name=$1
   if "$name"; then pass "$name"; else fail "$name"; fi
@@ -196,3 +232,4 @@ run_case test_session_start_renews_the_lease_without_a_watcher
 run_case test_a_worker_claim_blocks_takeover_until_the_worker_record_counts
 run_case test_an_expired_claim_stops_counting
 run_case test_delivery_stops_claiming_when_the_lease_moves
+run_case test_step_loop_writes_only_while_its_host_holds_the_lease

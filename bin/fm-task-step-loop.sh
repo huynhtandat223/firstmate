@@ -22,8 +22,9 @@
 # died. The loop exits on its own when this home's session lock (state/.lock) is free or names a dead pid, when the
 # config/task-shadow flag is gone, or when the state directory is gone.
 #
-# With config/home-lease the loop also renews this host's lease every FM_HOST_HEARTBEAT_EVERY seconds (default 30), and
-# bin/fm-lock.sh starts it as soon as the session takes the lease, so no first turn waits on the watcher arm.
+# With config/home-lease the loop writes steps only while this host holds the lease: it checks before every pass,
+# skips a pass without it, and logs each change to state/.task-step-loop.log. It also renews the lease every
+# FM_HOST_HEARTBEAT_EVERY seconds (default 30); bin/fm-lock.sh starts it as soon as the session takes the lease.
 #
 # A stop (TERM, INT, HUP or `stop`) lets the in-flight writer call finish, records it, and only then releases the
 # lock, so no writer of a stopped loop can commit after a successor's write. Each writer call is bounded by a 2 s
@@ -146,9 +147,27 @@ host_heartbeat_pass() {
   return "$rc"
 }
 
+# 0 when this host holds the current lease (or the lease is off). Checked before every pass, so a host that lost the
+# lease writes no step. Each change of ownership is one line in state/.task-step-loop.log.
+host_owns_lease() {
+  local now
+  [ -f "$CONFIG/home-lease" ] || return 0
+  fm_home_lease_config || return 1
+  now=$(date +%s)
+  if "$SCRIPT_DIR/fm-host.sh" lease check >/dev/null 2>&1; then
+    [ "$HOST_LEASE_LOST" -eq 0 ] || printf 'at=%s holds the home lease again: step writes resume\n' "$now" >> "$STATE/.task-step-loop.log"
+    HOST_LEASE_LOST=0
+    return 0
+  fi
+  [ "$HOST_LEASE_LOST" -eq 1 ] || printf 'at=%s lost the home lease: step writes skipped\n' "$now" >> "$STATE/.task-step-loop.log"
+  HOST_LEASE_LOST=1
+  return 1
+}
+
 run_loop() {
   local fd
   HOST_HEARTBEAT_AT=0
+  HOST_LEASE_LOST=0
   # keep no descriptor of the caller open (a harness waits on its pipes)
   for fd in 3 4 5 6 7 8 9; do eval "exec $fd>&-" 2>/dev/null || true; done
   fm_lock_try_acquire "$LOCK" || exit 0
@@ -156,7 +175,7 @@ run_loop() {
   trap 'fm_lock_release "$LOCK"' EXIT
   while [ "$STOP" -eq 0 ] && loop_wanted; do
     host_heartbeat_pass || true
-    [ ! -e "$CONFIG/task-shadow" ] || task_step_pass
+    if host_owns_lease && [ -e "$CONFIG/task-shadow" ]; then task_step_pass; fi
     [ "$STOP" -eq 0 ] || break
     # an interruptible wait: a stop ends the sleep at once
     sleep "$TASK_STEP_EVERY" &
@@ -186,6 +205,6 @@ case "${1:-start}" in
     while [ "$tries" -gt 0 ] && fm_pid_alive "$pid"; do sleep 0.1; tries=$((tries - 1)); done
     if fm_pid_alive "$pid"; then echo "task-step-loop: pid=$pid outlived the stop" >&2; exit 1; fi
     echo "task-step-loop: stopped pid=$pid" ;;
-  -h|--help) sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//' ;;
+  -h|--help) sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//' ;;
   *) echo "usage: fm-task-step-loop.sh [start|run|stop]" >&2; exit 2 ;;
 esac
