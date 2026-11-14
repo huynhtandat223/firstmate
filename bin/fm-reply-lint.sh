@@ -9,7 +9,7 @@
 #   english  no Vietnamese letter and 20+ Latin letters in the reply
 #   question a sentence ending in `?` near the end (code, links, quotes left out)
 #            whose paragraph links no Needs you card (?q=), and no agent-ask call
-#   notes    captain notes wait in state/inbox/
+#   notes    captain notes wait in state/owner-note-spool/
 #   unread   data/captain.md was not read since the last SessionStart
 #
 # Switches (config/, bin/fm-enforce-lib.sh owns the log-only rule):
@@ -99,7 +99,7 @@ TRANSCRIPT=$(printf '%s' "$PAYLOAD" | jq -r '.transcript_path // empty' 2>/dev/n
 STOP_ACTIVE=$(printf '%s' "$PAYLOAD" | jq -r '.stop_hook_active // false' 2>/dev/null) || STOP_ACTIVE=false
 LAST_TEXT=$(printf '%s' "$PAYLOAD" | jq -r '.last_assistant_message // empty' 2>/dev/null) || LAST_TEXT=
 
-ARGS=(--transcript "$TRANSCRIPT" --last --language "$LANGUAGE" --inbox-dir "$STATE/inbox" --home "$FM_HOME")
+ARGS=(--transcript "$TRANSCRIPT" --last --language "$LANGUAGE" --inbox-dir "$STATE/owner-note-spool" --home "$FM_HOME")
 [ -z "$LAST_TEXT" ] || ARGS+=(--last-text "$LAST_TEXT")
 RESULT=$(node "$CORE" "${ARGS[@]}" 2>/dev/null) || exit 0
 [ -n "$RESULT" ] || exit 0
