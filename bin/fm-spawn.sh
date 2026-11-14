@@ -4540,6 +4540,8 @@ if [ -e "$STATE/$ID.backlog-close" ] || [ -L "$STATE/$ID.backlog-close" ]; then
 fi
 
 W="fm-$ID"
+# With config/home-lease, count this worker on the host record before any endpoint exists (bin/fm-home-lease-lib.sh).
+fm_home_lease_claim_worker "$ID" || exit 1
 if [ "$RELAUNCH" -eq 1 ]; then
   # A secondmate's home already resolved WT above through the same validation a
   # fresh secondmate spawn uses; every other kind takes the recorded worktree.

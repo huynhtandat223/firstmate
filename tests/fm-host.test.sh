@@ -48,6 +48,11 @@ FM_HOST_LIVE_WORKERS=0 run lease release >/dev/null
 FM_HOST_ID=probe-b run lease take --json > "$TMP/second"
 node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1]));if(r.hostId!=="probe-b"||r.generation!==2)process.exit(1)' "$TMP/second"
 if FM_HOST_LIVE_WORKERS=0 FM_HOST_WAKE_QUEUE_LENGTH=0 run heartbeat >/dev/null; then echo 'FAIL old host renewed'; exit 1; fi
+# A worker claim needs the lease and raises the recorded count, which then blocks a release.
+if run worker claim w1 >/dev/null; then echo 'FAIL a non-holder claimed a worker'; exit 1; fi
+FM_HOST_ID=probe-b run worker claim w1 --json | grep -q '"liveWorkers":1' || { echo 'FAIL worker claim did not raise liveWorkers'; exit 1; }
+if FM_HOST_ID=probe-b FM_HOST_LIVE_WORKERS=0 run lease release >/dev/null; then echo 'FAIL released over a claimed worker'; exit 1; fi
+FM_HOST_ID=probe-b FM_HOST_LIVE_WORKERS=0 FM_HOST_WAKE_QUEUE_LENGTH=0 run heartbeat >/dev/null
 if run register --typo >/dev/null; then echo 'FAIL unknown flag accepted'; exit 1; fi
 # A configured authorization seam refuses an old host; an unconfigured home is unchanged.
 mkdir -p "$FM_HOME/config"; printf probe > "$FM_HOME/config/home-lease"

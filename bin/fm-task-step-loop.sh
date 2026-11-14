@@ -56,6 +56,8 @@ TASK_STEP_EVERY=${FM_TASK_STEP_EVERY:-5}
 STOP=0
 # seconds between lease heartbeats; the lease expires after 180
 HOST_HEARTBEAT_EVERY=${FM_HOST_HEARTBEAT_EVERY:-30}
+# seconds a worker claim counts when no worker record follows it
+HOST_CLAIM_TTL=600
 
 # 0 while this home should run a loop: the flag is on and the session lock names a live pid.
 loop_wanted() {
@@ -111,20 +113,37 @@ task_step_pass() {
 }
 
 host_heartbeat_pass() {
-  local meta live count=0 queue=0 epoch
+  local meta live count=0 queue=0 epoch claim id at live_ids=' ' lock rc
   [ -f "$CONFIG/home-lease" ] || return 0
   epoch=$(date +%s)
   [ $((epoch - HOST_HEARTBEAT_AT)) -ge "$HOST_HEARTBEAT_EVERY" ] || return 0
   HOST_HEARTBEAT_AT=$epoch
   fm_home_lease_config || return 1
+  # Count and report under the lock a worker claim takes, so a claim cannot fall between the count and the report.
+  lock=$STATE/.host-count.lock
+  fm_lock_acquire_wait_max "$lock" 30 || return 1
   for meta in "$STATE"/*.meta; do
     [ -f "$meta" ] || continue
     live=$(fm_backend_agent_alive "$(fm_backend_of_meta "$meta")" "$(fm_backend_target_of_meta "$meta")" 2>/dev/null) || live=unknown
     # Unknown is counted as live: no hand-over on incomplete reconciliation.
-    [ "$live" = dead ] || count=$((count + 1))
+    [ "$live" = dead ] && continue
+    count=$((count + 1))
+    id=${meta##*/}; live_ids+="${id%.meta} "
+  done
+  # A claim stands in for a worker whose record is not live yet: once that record is counted the claim ends, and a
+  # launch that never produced a record stops counting after HOST_CLAIM_TTL seconds.
+  for claim in "$STATE"/.host-claim.*; do
+    [ -f "$claim" ] || continue
+    id=${claim##*/.host-claim.}
+    at=$(cat "$claim" 2>/dev/null || true)
+    case "$at" in ''|*[!0-9]*) at=0 ;; esac
+    if [[ "$live_ids" == *" $id "* ]] || [ $((epoch - at)) -ge "$HOST_CLAIM_TTL" ]; then rm -f "$claim"; else count=$((count + 1)); fi
   done
   [ ! -f "$STATE/.wake-queue" ] || queue=$(wc -l < "$STATE/.wake-queue" | tr -d ' ')
   FM_HOST_LIVE_WORKERS=$count FM_HOST_WAKE_QUEUE_LENGTH=$queue "$SCRIPT_DIR/fm-host.sh" heartbeat >/dev/null 2>&1
+  rc=$?
+  fm_lock_release "$lock"
+  return "$rc"
 }
 
 run_loop() {
