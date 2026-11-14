@@ -1145,11 +1145,71 @@ case_reads_and_images() {
   id=$(db fm_task_event | jq -r --argjson s "$(seq_of)" '.[] | select(.seq == $s) | .id')
   db fm_event_image | jq -e --arg id "$id" '.[] | select(.fmTaskEventId == $id) | .label == "a pixel" and .mediaType == "image/png" and .position == 1 and (.content | length > 0)' >/dev/null || { echo "image child wrong"; return 1; }
   [ "$(posts POST fm_event_image)" = 0 ] || { echo "the image was posted on its own"; return 1; }
+  ft event tk-r1 link --url https://example.com/review --note Review
+  must 'publish link' 0 || return 1
+  ft materials tk-r1
+  must 'read durable materials' 0 || return 1
+  jq -e --arg bytes "$(base64 < "$png" | tr -d '\n')" '.links == [{url:"https://example.com/review",label:"Review"}] and .images[0].content == $bytes and .images[0].label == "a pixel"' <<<"$OUT" >/dev/null || { echo "materials differ from published bytes"; return 1; }
   ft comment tk-r1 --note x --image "$png"
   [ "$RC" -ne 0 ] || { echo "an image with no label was accepted"; return 1; }
   head -c 2200000 /dev/zero > "$TMP_ROOT/big.png"
   ft comment tk-r1 --note x --image "$TMP_ROOT/big.png" --image-label big
   [ "$RC" -ne 0 ] || { echo "an image over 2 MiB was accepted"; return 1; }
+  FM_HOME="$TMP_ROOT/material-home" "$ROOT/bin/fm-task-links.sh" tk-r1 add-image "$png" Pixel >/dev/null || return 1
+  FM_HOME="$TMP_ROOT/material-home" "$ROOT/bin/fm-task-links.sh" tk-r1 add-image "$png" Pixel >/dev/null || return 1
+  [ "$(db fm_event_image | jq '[.[] | select(.label == "Pixel")] | length')" = 2 ] || { echo 'a republished image did not record a new event'; return 1; }
+  FM_HOME="$TMP_ROOT/material-home" "$ROOT/bin/fm-task-links.sh" tk-r1 add-image "$png" Renamed >/dev/null || return 1
+  ft materials tk-r1
+  jq -e '[.images[] | select(.label == "Pixel" or .label == "Renamed")] | length == 1 and .[0].label == "Renamed"' <<<"$OUT" >/dev/null || { echo "materials repeat a republished image: $OUT"; return 1; }
+  mkdir -p "$TMP_ROOT/legacy-home/data/tk-r1"
+  jq -n --arg path "$png" '{schema:"fm-task-links.v1",links:[{url:"https://example.com/legacy",label:"Legacy"}],images:[{path:$path,label:"Unmirrored"}]}' > "$TMP_ROOT/legacy-home/data/tk-r1/links.json"
+  local legacy
+  legacy=$(FM_HOME="$TMP_ROOT/legacy-home" "$ROOT/bin/fm-task-links.sh" tk-r1 show --json) || return 1
+  jq -e 'any(.links[]; .label == "Legacy") and any(.images[]; .label == "Unmirrored")' <<<"$legacy" >/dev/null || { echo "remote read hid legacy materials: $legacy"; return 1; }
+  { printf '\x89PNG\r\n\x1a\n'; head -c 300000 /dev/zero; } > "$TMP_ROOT/large.png"
+  FM_HOME="$TMP_ROOT/material-home" "$ROOT/bin/fm-task-links.sh" tk-r1 add-image "$TMP_ROOT/large.png" Large >/dev/null || return 1
+  mkdir -p "$TMP_ROOT/migrate-home/data/tk-r1"
+  jq -n --arg path "$png" '{schema:"fm-task-links.v1",links:[{url:"https://example.com/seeded",label:"Seeded"}],images:[{path:$path,label:"Seeded shot"},{path:"/nonexistent/gone.png",label:"Gone"}]}' > "$TMP_ROOT/migrate-home/data/tk-r1/links.json"
+  local migrated
+  migrated=$(FM_HOME="$TMP_ROOT/migrate-home" "$ROOT/bin/fm-task-links.sh" tk-r1 migrate 2>/dev/null) || { echo 'migrate failed'; return 1; }
+  case $migrated in *'migrated: 2'*'skipped: 1'*) ;; *) echo "migrate summary: $migrated"; return 1 ;; esac
+  [ -s "$(printf '%s\n' "$migrated" | sed -n 's/^backup: //p')/links.json" ] || { echo 'migrate made no backup'; return 1; }
+  FM_HOME="$TMP_ROOT/migrate-home" "$ROOT/bin/fm-task-links.sh" tk-r1 migrate >/dev/null 2>&1 || return 1
+  [ "$(db fm_event_image | jq '[.[] | select(.label == "Seeded shot")] | length')" = 1 ] || { echo 'second migrate duplicated an image'; return 1; }
+  [ "$(db fm_task_event | jq '[.[] | select(.kind == "link" and (.body | contains("seeded")))] | length')" = 1 ] || { echo 'second migrate duplicated a link'; return 1; }
+  local materials
+  materials=$(FM_HOME="$TMP_ROOT/another-home" "$ROOT/bin/fm-task-links.sh" tk-r1 show --json) || return 1
+  cmp "$png" "$(jq -r '.images[-1].path' <<<"$materials")" || return 1
+  materials=$(FM_TASK_BASE_URL=http://127.0.0.1:1 FM_HOME="$TMP_ROOT/another-home" "$ROOT/bin/fm-task-links.sh" tk-r1 show --json) || return 1
+  cmp "$png" "$(jq -r '.images[-1].path' <<<"$materials")" || return 1
+  FM_TASK_BASE_URL=http://127.0.0.1:1 FM_HOME="$TMP_ROOT/material-home" "$ROOT/bin/fm-task-links.sh" tk-r1 add-url https://example.com/retry Retry >/dev/null 2>&1 && { echo 'offline publication claimed success'; return 1; }
+  FM_HOME="$TMP_ROOT/material-home" "$ROOT/bin/fm-task-links.sh" tk-r1 add-url https://example.com/retry Retry >/dev/null || return 1
+  ft materials tk-r1
+  jq -e '[.links[] | select(.url == "https://example.com/retry")] | length == 1' <<<"$OUT" >/dev/null || return 1
+  FM_HOME="$TMP_ROOT/material-home" "$ROOT/bin/fm-task-links.sh" tk-r1 add-image "$TMP_ROOT/missing.png" Missing >/dev/null 2>&1 && { echo 'publisher accepted missing image'; return 1; }
+  local n
+  FM_HOME="$TMP_ROOT/material-home" "$ROOT/bin/fm-task-links.sh" tk-r1 add-url https://example.com/first First >/dev/null || return 1
+  for n in $(seq 1 12); do FM_HOME="$TMP_ROOT/material-home" "$ROOT/bin/fm-task-links.sh" tk-r1 add-url "https://example.com/n$n" "N$n" >/dev/null || return 1; done
+  FM_HOME="$TMP_ROOT/material-home" "$ROOT/bin/fm-task-links.sh" tk-r1 add-url https://example.com/first First >/dev/null || return 1
+  ft materials tk-r1
+  jq -e '.links[-1].url == "https://example.com/first"' <<<"$OUT" >/dev/null || { echo "a republished URL fell off the remote reader: $OUT"; return 1; }
+  # A migrated URL that fell out of the newest 12 is published again, with a new label when the label changed.
+  ft materials tk-r1
+  jq -e 'any(.links[]; .url == "https://example.com/seeded") | not' <<<"$OUT" >/dev/null || { echo 'the seeded URL did not fall out of the newest 12'; return 1; }
+  jq '.links[0].label = "Seeded v2"' "$TMP_ROOT/migrate-home/data/tk-r1/links.json" > "$TMP_ROOT/links-v2.json" && mv "$TMP_ROOT/links-v2.json" "$TMP_ROOT/migrate-home/data/tk-r1/links.json"
+  migrated=$(FM_HOME="$TMP_ROOT/migrate-home" "$ROOT/bin/fm-task-links.sh" tk-r1 migrate 2>/dev/null) || { echo 'second-round migrate failed'; return 1; }
+  ft materials tk-r1
+  jq -e '.links[-1] == {url:"https://example.com/seeded",label:"Seeded v2"}' <<<"$OUT" >/dev/null || { echo "migrate did not republish the fallen or relabeled URL: $OUT"; return 1; }
+  # The backup is private and keeps no copy of the remote read.
+  local bdir
+  bdir=$(printf '%s\n' "$migrated" | sed -n 's/^backup: //p')
+  [ "$(stat -c %a "$bdir")" = 700 ] && [ "$(stat -c %a "$bdir/links.json")" = 600 ] && [ -z "$(find "$bdir" -name 'remote*')" ] || { echo "migrate backup is not private: $(stat -c %a "$bdir")"; return 1; }
+  # Changed image bytes start a new publication instead of reusing the pending key of the old bytes.
+  cp "$png" "$TMP_ROOT/edit.png"
+  FM_TASK_BASE_URL=http://127.0.0.1:1 FM_HOME="$TMP_ROOT/material-home" "$ROOT/bin/fm-task-links.sh" tk-r1 add-image "$TMP_ROOT/edit.png" Edit >/dev/null 2>&1 && { echo 'offline image publication claimed success'; return 1; }
+  printf 'more' >> "$TMP_ROOT/edit.png"
+  FM_TASK_BASE_URL=http://127.0.0.1:1 FM_HOME="$TMP_ROOT/material-home" "$ROOT/bin/fm-task-links.sh" tk-r1 add-image "$TMP_ROOT/edit.png" Edit >/dev/null 2>&1 && { echo 'offline image publication claimed success'; return 1; }
+  [ "$(find "$TMP_ROOT/material-home/data/tk-r1/links-pending" -type f | wc -l)" = 2 ] || { echo 'changed image bytes reused the pending publication'; return 1; }
   ft heartbeat tk-r1
   must 'heartbeat from ready' 5 || return 1
   FM_TASK_ID=tk-r1 ft comment --note 'task from the environment'
