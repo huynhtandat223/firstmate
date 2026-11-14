@@ -7090,7 +7090,13 @@ SPAWN_ACCOUNT=
 # Opt-in task record shadow (bin/fm-task-shadow.sh): the fresh task is written to the record too; off costs one file test.
 [ ! -e "$CONFIG/task-shadow" ] || [ "$RELAUNCH" -eq 1 ] || FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_CONFIG_OVERRIDE=$CONFIG FM_DATA_OVERRIDE=$DATA "$SCRIPT_DIR/fm-task-shadow.sh" dispatched "$ID" "$SPAWN_REPORTED_KIND" "${PROJ_ABS##*/}" "$HARNESS" || true
 # The task's current workflow state records this incarnation's runtime (plan v2 D1); a relaunch re-points it.
-[ ! -e "$CONFIG/task-shadow" ] || FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_CONFIG_OVERRIDE=$CONFIG FM_DATA_OVERRIDE=$DATA "$SCRIPT_DIR/fm-task-shadow.sh" step-start "$ID" "$SPAWN_GEN" "$HARNESS" "${MODEL:-}" "${EFFORT:-}" "${WORKER_ACCOUNT_DECLARED:-}" || true
+# It also carries where the worker runs (machine, endpoint, isolated copy, branch), the brief as a document and the
+# dispatch evidence (FM_SPAWN_DISPATCH_NOTE: the quota and resolver lines firstmate chose the profile by) as the note.
+if [ -e "$CONFIG/task-shadow" ]; then
+  SPAWN_HOST_ID=${FM_HOST_ID:-$(FM_HOME=$FM_HOME FM_CONFIG_OVERRIDE=$CONFIG; . "$SCRIPT_DIR/fm-home-lease-lib.sh"; fm_host_id)}
+  SPAWN_STEP_NOTE="harness=$HARNESS model=${MODEL:--} effort=${EFFORT:--} account=${WORKER_ACCOUNT_DECLARED:--} backend=$BACKEND host=$SPAWN_HOST_ID${MODE:+ mode=$MODE}${FM_SPAWN_DISPATCH_NOTE:+ $FM_SPAWN_DISPATCH_NOTE}"
+  FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_CONFIG_OVERRIDE=$CONFIG FM_DATA_OVERRIDE=$DATA FM_STEP_HOST=$SPAWN_HOST_ID FM_STEP_ENDPOINT="$BACKEND:$META_WINDOW" FM_STEP_WORKTREE=$WT FM_STEP_BRANCH=${BRANCH:-} FM_STEP_BRIEF_FILE=$BRIEF FM_STEP_NOTE=$SPAWN_STEP_NOTE "$SCRIPT_DIR/fm-task-shadow.sh" step-start "$ID" "$SPAWN_GEN" "$HARNESS" "${MODEL:-}" "${EFFORT:-}" "${WORKER_ACCOUNT_DECLARED:-}" || true
+fi
 # Opt-in Herdr project groups (docs/herdr-backend.md "Project groups") tag the
 # new endpoint now rather than at the next watcher poll; off costs one file test.
 [ ! -e "$CONFIG/herdr-project-groups" ] || [ "$BACKEND" != herdr ] || FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_CONFIG_OVERRIDE=$CONFIG "$SCRIPT_DIR/fm-herdr-groups.sh" sync "$ID" || true

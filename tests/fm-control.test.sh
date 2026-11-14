@@ -1228,6 +1228,12 @@ test_exit_ends_the_workflow_step_when_the_record_is_on() {
   out=$(FM_TASK_SHADOW_WRITER="$writer" run_control "$dir" t1 exit); rc=$?
   expect_code 0 "$rc" "exit with the record on should succeed"$'\n'"$out"
   assert_contains "$(cat "$dir/writer.log" 2>/dev/null)" "step t1 end --generation s1700000000.42.7 --reason cleanup --key shadow:t1:step-end-s1700000000.42.7-" "exit should end the running step of the stopped incarnation"
+  assert_contains "$(cat "$dir/writer.log" 2>/dev/null)" "event t1 comment --note control exit: " "exit should write its verified result as a Timeline event"
+  : > "$dir/writer.log"
+  alive_as "$dir" claude
+  out=$(FM_TASK_SHADOW_WRITER="$writer" run_control "$dir" t1 interrupt); rc=$?
+  expect_code 0 "$rc" "interrupt with the record on should succeed"$'\n'"$out"
+  assert_contains "$(cat "$dir/writer.log" 2>/dev/null)" "event t1 comment --note control interrupt: interrupt-delivered harness=claude" "interrupt should write its verified result as a Timeline event"
   dir=$(new_case exit-step-off)
   add_task "$dir" t1 claude
   alive_as "$dir" claude

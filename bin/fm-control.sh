@@ -1219,10 +1219,16 @@ do_relaunch() {
 
   journal_write complete "${CHECKPOINT_LINES[@]}" "$note_line" "exit_result=$exit_result"
   RELAUNCH_ACTIVE=0
+  control_event relaunch "relaunched harness=$TARGET_HARNESS from=$PRIOR_RECORDED_HARNESS model=$TARGET_MODEL effort=$TARGET_EFFORT backend=$BACKEND endpoint=$T"
   echo "relaunched $ID harness=$TARGET_HARNESS from=$PRIOR_RECORDED_HARNESS model=$TARGET_MODEL effort=$TARGET_EFFORT backend=$BACKEND endpoint=$T worktree=$WT"
 }
 
 # --- verbs ------------------------------------------------------------------
+
+# Opt-in task record shadow: each verified result is one comment event on the task's Timeline. Never fatal.
+control_event() {  # <verb> <result>
+  [ ! -e "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}/task-shadow" ] || FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_DATA_OVERRIDE=$DATA "$SCRIPT_DIR/fm-task-shadow.sh" control "$ID" "$1" "$2" || true
+}
 
 case "$VERB" in
   interrupt)
@@ -1239,12 +1245,14 @@ case "$VERB" in
       *) die "task $ID's endpoint reads '$state' rather than a positively classified state; refusing to send a lifecycle key into an unattributed endpoint" ;;
     esac
     proof=$(do_interrupt)
+    control_event interrupt "interrupt-delivered harness=$HARNESS backend=$BACKEND verified=$proof"
     echo "interrupt-delivered $ID harness=$HARNESS backend=$BACKEND verified=$proof"
     ;;
   exit)
     result=$(do_exit)
     # Opt-in task record shadow: the stopped incarnation's running workflow step ends (plan v2 D1).
     [ ! -e "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}/task-shadow" ] || FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_DATA_OVERRIDE=$DATA "$SCRIPT_DIR/fm-task-shadow.sh" step-end "$ID" "$(fm_meta_get "$META" spawn_gen)" cleanup || true
+    control_event exit "$result harness=$HARNESS backend=$BACKEND endpoint=$T"
     echo "$result $ID harness=$HARNESS backend=$BACKEND endpoint=$T worktree=$WT"
     ;;
   relaunch)
