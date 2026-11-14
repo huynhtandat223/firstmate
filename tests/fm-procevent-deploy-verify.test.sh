@@ -14,6 +14,8 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 TMP_ROOT=$(fm_test_tmproot fm-deploy-verify)
+FM_DEPLOY_LEDGER_TASK="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/deploy-ledger-fixture.sh"
+export FM_DEPLOY_LEDGER_TASK
 export FM_PROCEVENT_CLAIM_ROOT="$TMP_ROOT/claims"
 unset FM_ROOT_OVERRIDE FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_CONFIG_OVERRIDE FM_PROJECTS_OVERRIDE
 REPO=huynhtandat223/cfw-modules
@@ -867,7 +869,7 @@ scenario_rows_record() {
   [ "$CYCLE_AUTO" = 0 ] || { echo "the retry: autohandle=$CYCLE_AUTO"; return 1; }
   [ "$(sed -n 1p "$LAB/writer.calls")" = "rows alpha https://github.com/$REPO/issues/500 --surface user-visible --key deploy-verify:$(ledger | jq -r 'select(.task == "alpha") | .key'):rows --actor deploy-verify --role system" ] \
     || { echo "the rows were not written first: $(cat "$LAB/writer.calls" 2>&1)"; return 1; }
-  grep -q "^event alpha deploy --note deploy deploy at $(sha s2): verify ask sent (cfw-modules#500) --head $(sha s2) --touched all --key deploy-verify:[^ ]*:deploy --actor deploy-verify --role system$" "$LAB/writer.calls" \
+  grep -q "^event alpha deploy --note deploy deploy head $(sha s2) run https://example.test/runs/2: verify ask sent (cfw-modules#500) --head $(sha s2) --touched all --key deploy-verify:[^ ]*:deploy --actor deploy-verify --role system$" "$LAB/writer.calls" \
     || { echo "the rows task deploy event names no head, or a PR with no Scenarios touched line did not touch all: $(cat "$LAB/writer.calls")"; return 1; }
   [ "$(grep -c '^event alpha deploy' "$LAB/writer.calls")" = 1 ] || { echo "the deploy event was written twice: $(cat "$LAB/writer.calls")"; return 1; }
   ! grep -q '^rows beta' "$LAB/writer.calls" || { echo "a task begun before T5 got check rows: $(cat "$LAB/writer.calls")"; return 1; }

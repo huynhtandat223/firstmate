@@ -94,8 +94,8 @@
 //            [--accept]         with --reply-to naming a proposal, role owner: resolves the thread with its outcome
 //                               (note optional); any later comment in the thread reopens it
 //   event    <task> <kind> [--note N] [--pr-url U] [--head H] [--url U] [--merged] kinds: steer comment pr deploy ci
-//            protocol_violation divergence link; --head on deploy (the deployed head, which user-visible passes count on
-//            from then) or on ci (the head the CI result read); --url on link; --merged on pr (the pull request merged:
+//            protocol_violation divergence link; --head on deploy (the deployed head), ci (the checked head) or pr
+//            (the recorded PR head); --merge-authority away|attended only on pr; --url on link; --merged on pr (the pull request merged:
 //            the event body holds merged: true); no other kind takes them
 //   event    <task> close-request|start-request [--note N]   the owner's Done or Start on the board (next actor
 //            firstmate; refused on a done or archived task, start-request also on a running one, and while a request of
@@ -103,6 +103,9 @@
 //            firstmate's bin/fm-owner-request.sh writes its result: closed (only on a done task) or close-refused, and
 //            started (the start transition) or start-refused; a refused result needs --note with the refusal text and
 //            sets next actor owner. A result with no open request of its kind is refused (exit 5).
+//   pr-record <task>                     JSON: recorded PR URL, head, authority and merged flag
+//   pr-round list|cursor                JSONL history or JSON cursor from 5001
+//   pr-round put|set-cursor --file JSON  preserve a ledger payload once, or replace the review cursor
 //   requests <task> [--json]                 read only: the open owner requests, oldest first; a start-request carries
 //            the setup step it runs (the current workflow state's step, or the first one while queued); --json adds
 //            `answered`, the seq of each request kind's newest result (0 when none)
@@ -158,6 +161,7 @@
 //            [--scope REPO,...] [--enabled true|false] [--warning W] [--note WHY]   |   rule set <id> [the same flags]
 //            |   rule delete <id>     writes fm_model_rule, then a `rules` event on task fm-model-rules (created
 //            on first use in backlog home system); a re-sent --key writes nothing again
+//   steers   <task> [--peek]                  print unread steers, then mark each read; --peek reads only
 //   read-mark <task> --key steer:<task>:<record>  mark one handled steer in fm_task_delivery (consumer read:<task>)
 //   deliver  <task> --consumer NAME           claim each event in fm_task_delivery, then append a wake
 //            FM_HOME is required; delivery is scoped to this task, never a whole foreign fleet. The first call only
@@ -165,6 +169,9 @@
 //            reads `owner request <seq>: <task> <kind> - run bin/fm-owner-request.sh <task> --seq <seq>`.
 //            A crash between claim and queue append requires operator reconciliation (no duplicate claim).
 //            a row that has an item needs all five template fields again; a re-sent --key never writes the item twice)
+//   deploy-ledger list|cursor|append|put-cursor|seed [--file FILE] [--repo OWNER/REPO]
+//            append-only deploy history on 5001; list emits ordered JSONL, cursor emits the latest cursor JSON.
+//            append accepts one complete record; seed accepts JSONL and verifies readback; put-cursor accepts cursor JSON.
 //   show     <task> [--json]   list [--state S] [--actor A] [--json]   resume <task>   reproject <task> | --all
 //            reproject --all folds every task row again (the board card's step fields too) and prints each repair.
 // Every write takes --key K (the idempotency key; a re-send returns the first event), --actor NAME
@@ -489,6 +496,7 @@ async function project(taskId) {
 // ---- arguments --------------------------------------------------------------------------------------------
 const COMMON = { actor: 's', role: 's', key: 's', note: 's', task: 's', json: 'b' };
 const SPECS = {
+  'deploy-ledger': { pos: ['action'], flags: { file: 's', repo: 's' } },
   setup: { pos: ['task'], flags: { file: 's', by: 's', 'from-rules': 'b', states: 's', repo: 's', account: 's', at: 's' } },
   move: { pos: ['task'], flags: { to: 's' } },
   step: { pos: ['task', 'action'], flags: { harness: 's', model: 's', effort: 's', account: 's', reason: 's', generation: 's' } },
@@ -513,7 +521,10 @@ const SPECS = {
   'plan-decision': { pos: ['task'], flags: { decision: 's', 'plan-seq': 's' } },
   thread: { pos: ['task'], flags: { since: 's' } },
   comment: { pos: ['task'], flags: { image: 'm', 'image-label': 'm', video: 'm', 'video-label': 'm', ask: 's', 'reply-to': 's', 'anchor-quote': 's', 'anchor-prefix': 's', 'anchor-suffix': 's', outcome: 's', accept: 'b' } },
-  event: { pos: ['task', 'kind'], flags: { 'pr-url': 's', head: 's', touched: 's', 'next-actor': 's', 'clears-on': 's', rows: 's', url: 's', merged: 'b' } },
+  'merge-authority': { pos: ['task'], flags: { 'pr-url': 's', head: 's', 'merge-authority': 's', receipt: 's', phase: 's', merged: 'b' } },
+  'pr-record': { pos: ['task'], flags: {} },
+  'pr-round': { pos: ['action'], flags: { file: 's' } },
+  event: { pos: ['task', 'kind'], flags: { 'pr-url': 's', head: 's', touched: 's', 'next-actor': 's', 'clears-on': 's', rows: 's', url: 's', merged: 'b', 'merge-authority': 's', receipt: 's' } },
   checks: { pos: ['task'], flags: { 'as-deployed': 's', touched: 's' } },
   link: { pos: ['parent', 'child'], flags: {} },
   rows: { pos: ['task', 'issue'], flags: { surface: 's' } },
@@ -526,6 +537,7 @@ const SPECS = {
   'turn-end': { pos: ['task'], flags: { turn: 's' } },
   deliver: { pos: ['task'], flags: { consumer: 's' } },
   requests: { pos: ['task'], flags: {} },
+  steers: { pos: ['task'], flags: { peek: 'b' } },
   'read-mark': { pos: ['task'], flags: {} },
   inbox: { pos: ['task'], flags: { action: 's', target: 's', home: 's' } },
   document: { pos: ['task'], flags: {} },
@@ -631,7 +643,9 @@ async function append(taskId, who, build) {
       spec.note = '';
       spec.extra = { ...spec.extra, noteDocument: true };
     }
-    const body = { seq: high + 1, taskId, kind: spec.kind, actorRole: who.role, actor: who.actor, body: wireBody(spec), idempotencyKey: who.key };
+    const body = { seq: high + 1, taskId, kind: spec.kind, actorRole: who.role, actor: who.actor, body: wireBody(spec), idempotencyKey: who.key,
+      ...(spec.kind === 'pr' && spec.extra?.prHead ? { prHead: spec.extra.prHead } : {}),
+      ...(spec.kind === 'pr' && spec.extra?.mergeAuthority ? { mergeAuthority: spec.extra.mergeAuthority } : {}) };
     const stage = fold([...events, body])?.stage;
     body.body = wireBody({ ...spec, extra: { ...spec.extra, stage } });
     Object.assign(body, spec.children || {});
@@ -1845,6 +1859,101 @@ function openRequests(events) {
   return sorted.filter((e, i) => REQUEST_RESULTS[e.kind] && !sorted.slice(i + 1).some((later) => REQUEST_RESULTS[e.kind].includes(later.kind)));
 }
 
+// The PR event is authoritative; callers may use their local cache only after a network failure.
+async function cmdMergeAuthority(args) {
+  const phase = oneOf(['pending', 'accepted'], args.flags.phase, 'merge authority phase');
+  return cmdEvent({ ...args, mergeGate: true, pos: { ...args.pos, kind: 'pr' },
+    flags: { ...args.flags, note: `merge authority ${phase}` } });
+}
+
+async function cmdPrRecord(args) {
+  const taskId = taskIdOf(args);
+  const events = await taskEvents(taskId);
+  const task = fold(events);
+  if (!task) throw rule('no such task');
+  const event = events.filter((e) => e.kind === 'pr').at(-1);
+  const body = event ? bodyOf(event) : {};
+  console.log(JSON.stringify({ prUrl: task.prUrl ?? null, prHead: event?.prHead ?? body.prHead ?? null,
+    mergeAuthority: event?.mergeAuthority ?? body.mergeAuthority ?? null, authorityPhase: body.authorityPhase ?? null, merged: body.merged === true }));
+}
+
+async function cmdPrRound(args) {
+  const action = oneOf(['list', 'put', 'cursor', 'set-cursor', 'seed'], args.pos.action, 'pr-round action');
+  if (action === 'list') {
+    const home = process.env.FM_HOME;
+    const legacy = home && path.join(home, 'data', 'pr-review', 'ledger.jsonl');
+    if (legacy && fs.existsSync(legacy)) {
+      // Keep legacy history visible until cutover is explicitly complete; no deletion occurs here.
+      const lines = fs.readFileSync(legacy, 'utf8').split('\n').filter((line) => line.trim());
+      for (const line of lines) {
+        const file = path.join(os.tmpdir(), `fm-pr-legacy-${process.pid}.json`);
+        try {
+          fs.writeFileSync(file, line, { mode: 0o600 });
+          await cmdPrRound({ pos: { action: 'put' }, flags: { file } });
+        } finally { fs.rmSync(file, { force: true }); }
+      }
+    }
+    for (const row of (await listAll('fm_pr_round', { orderby: 'id' })).sort((a, b) => Date.parse(a.at ?? 0) - Date.parse(b.at ?? 0))) {
+      if (row.kind !== 'cursor') console.log(row.payload);
+    }
+    return;
+  }
+  if (action === 'seed') {
+    if (!args.flags.file) throw usage('pr-round seed needs --file JSONL');
+    const lines = fs.readFileSync(args.flags.file, 'utf8').split('\n').filter((line) => line.trim());
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'fm-pr-seed-'));
+    try {
+      for (const line of lines) {
+        JSON.parse(line);
+        const file = path.join(tmp, 'row.json');
+        fs.writeFileSync(file, line, { mode: 0o600 });
+        await cmdPrRound({ pos: { action: 'put' }, flags: { file } });
+      }
+    } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+    console.log(`seeded=${lines.length}`);
+    return;
+  }
+  const cursorKey = 'firstmate-pr-review-cursor-v1';
+  if (action === 'cursor') {
+    const row = await firstRow('fm_pr_round', `recordKey eq ${lit(cursorKey)}`);
+    if (!row) {
+      const legacy = process.env.FM_HOME && path.join(process.env.FM_HOME, 'data', 'pr-review', 'state.json');
+      if (legacy && fs.existsSync(legacy)) {
+        await cmdPrRound({ pos: { action: 'set-cursor' }, flags: { file: legacy } });
+        console.log(JSON.stringify(JSON.parse(fs.readFileSync(legacy, 'utf8'))));
+        return;
+      }
+    }
+    console.log(row?.payload ?? '{}');
+    return;
+  }
+  if (!args.flags.file) throw usage('pr-round put/set-cursor needs --file JSON');
+  let payload;
+  try { payload = JSON.parse(fs.readFileSync(args.flags.file, 'utf8')); } catch { throw usage('pr-round file must contain JSON'); }
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw usage('pr-round payload must be an object');
+  const text = JSON.stringify(payload);
+  if (Buffer.byteLength(text) > 2 * 1024 * 1024) throw usage('pr-round payload exceeds 2 MiB');
+  const cursor = action === 'set-cursor';
+  const identityPayload = { ...payload };
+  delete identityPayload.at;
+  // Round identity stays stable across a captured result's retry; full payload is retained in the first row.
+  const roundIdentity = ['round', 'late', 'baseline', 'cap', 'superseded'].includes(payload.type)
+    ? { type: payload.type, repo: payload.repo, pr: payload.pr, task: payload.task ?? null, head: payload.head, round: payload.round ?? null }
+    : identityPayload;
+  const recordKey = cursor ? cursorKey : `pr-round:${crypto.createHash('sha256').update(JSON.stringify(roundIdentity)).digest('hex')}`;
+  const prior = await firstRow('fm_pr_round', `recordKey eq ${lit(recordKey)}`);
+  if (prior && !cursor) return;
+  const row = { recordKey, kind: cursor ? 'cursor' : String(payload.type ?? 'round'), payload: text,
+    task: payload.task ?? null, prUrl: payload.prUrl ?? (payload.repo && payload.pr ? `https://github.com/${payload.repo}/pull/${payload.pr}` : null),
+    head: payload.head ?? null, round: payload.round ?? null, reviewers: JSON.stringify(payload.reviewers ?? { reviewer: payload.reviewer ?? null, reader: payload.reader ?? null }),
+    delivered: payload.delivered === true, retained: JSON.stringify(payload.retained ?? []), at: payload.at == null ? null : new Date(payload.at * 1000).toISOString() };
+  const res = await http(prior ? 'PATCH' : 'POST', prior ? `/api/fm_pr_round/${prior.id}` : '/api/fm_pr_round', row);
+  if (res.status === 409 && !cursor) {
+    if (await firstRow('fm_pr_round', `recordKey eq ${lit(recordKey)}`)) return;
+  }
+  ok(res, 'write PR round');
+}
+
 async function cmdEvent(args) {
   const taskId = taskIdOf(args);
   const who = identity(args, 'worker');
@@ -1852,8 +1961,27 @@ async function cmdEvent(args) {
   const prUrl = args.flags['pr-url'];
   const head = args.flags.head;
   const url = args.flags.url;
-  const headKind = kind === 'deploy' || kind === 'ci';
-  if (head !== undefined && !headKind) throw usage('--head names a head a deploy or a ci event reports: give it only on one of those');
+  const headKind = kind === 'deploy' || kind === 'ci' || kind === 'pr';
+  if (head !== undefined && !headKind) throw usage('--head goes only on a deploy, ci or pr event');
+  const mergeAuthority = args.flags['merge-authority'];
+  if (mergeAuthority !== undefined && !args.mergeGate) throw usage('authority is written only by merge-authority with a gate receipt');
+  if (mergeAuthority !== undefined) {
+    if (kind !== 'pr') throw usage('--merge-authority goes only on a pr event');
+    oneOf(['away', 'attended'], mergeAuthority, 'merge authority');
+    if (!['merge authority pending', 'merge authority accepted'].includes(noteOf(args))) throw usage('merge authority requires the merge-gate phase');
+    const receipt = args.flags.receipt;
+    if (!receipt) throw usage('merge authority requires --receipt from the merge gate');
+    let stat, proof;
+    try {
+      stat = fs.lstatSync(receipt);
+      proof = JSON.parse(fs.readFileSync(receipt, 'utf8'));
+    } catch { throw usage('merge authority receipt is missing or unreadable'); }
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || (stat.mode & 0o777) !== 0o600 || stat.uid !== process.getuid()
+      || proof.task !== taskId || proof.prUrl !== prUrl || proof.head !== head || proof.authority !== mergeAuthority) {
+      throw usage('merge authority receipt does not match task, PR, head and authority');
+    }
+  }
+  if (kind === 'pr' && head !== undefined && !/^[a-f0-9]{40,64}$/.test(head)) throw usage('--head on pr must be a full commit SHA');
   if (args.flags.touched !== undefined && !(kind === 'deploy' && head)) throw usage('--touched names the scenarios a deploy touched: give it only on a deploy event with --head');
   if (url !== undefined && kind !== 'link') throw usage('--url goes only on a link event');
   const merged = args.flags.merged === true;
@@ -1888,7 +2016,7 @@ async function cmdEvent(args) {
       if (kind === 'closed' && task.state !== 'done') throw rule(`closed is refused: ${taskId} is ${task.state}, not approved`);
       return { kind, note: noteOf(args), set: kind === 'closed' ? {} : { nextActor: 'owner' } };
     }
-    return { kind, note: noteOf(args) || (kind === 'link' ? url : ''), set: kind === 'pr' && prUrl ? { prUrl } : {}, ...(head ? { extra: { head, ...(touched ? { touched } : {}) } } : kind === 'link' ? { extra: { url } } : merged ? { extra: { merged: true } } : {}) };
+    return { kind, note: noteOf(args) || (kind === 'link' ? url : ''), set: kind === 'pr' && prUrl ? { prUrl } : {}, ...((head || merged || mergeAuthority || kind === 'link') ? { extra: { ...(head ? { head, ...(kind === 'pr' ? { prHead: head } : {}), ...(touched ? { touched } : {}) } : {}), ...(merged ? { merged: true } : {}), ...(mergeAuthority ? { mergeAuthority, authorityPhase: noteOf(args).endsWith(' accepted') ? 'accepted' : 'pending' } : {}), ...(kind === 'link' ? { url } : {}) } } : {}) };
   }, kind === 'deploy' && head ? () => routeReview(taskId, who) : undefined);
 }
 
@@ -2790,19 +2918,44 @@ async function cmdInbox(args) {
   out(`inbox=${id} task=${target} resolution=${action}`);
 }
 
-async function cmdReadMark(args) {
+const steerReadConsumer = (taskId) => taskId.length <= 59
+  ? `read:${taskId}` : `read:${crypto.createHash('sha256').update(taskId).digest('hex').slice(0, 59)}`;
+
+async function cmdSteers(args) {
   const taskId = taskIdOf(args);
-  const key = args.flags.key;
-  if (!key?.startsWith(`steer:${taskId}:`)) throw usage('read-mark needs this task’s steer key');
-  const consumer = `read:${taskId}`;
+  if (!await taskRow(taskId)) throw new Fail(5, `steers: missing task ${taskId}; use the local inbox fallback`);
+  const consumer = steerReadConsumer(taskId);
   if (consumer.length > 64) throw usage('read consumer exceeds 64 characters');
-  const event = (await taskEvents(taskId)).find((e) => e.kind === 'steer' && e.idempotencyKey === key);
-  if (!event) throw new Fail(5, 'steer event not stored yet');
+  const marks = await listAll('fm_task_delivery', { filter: `consumer eq ${lit(consumer)}` });
+  const read = new Set(marks.map((m) => Number(m.seq)));
+  const events = (await taskEvents(taskId)).filter((e) => e.kind === 'steer' && !read.has(Number(e.seq)));
+  for (const event of events) {
+    // Wait for the output callback before claiming consumption, including pipe errors.
+    await new Promise((resolve, reject) => {
+      process.stdout.write(`${JSON.stringify({ seq: event.seq, key: event.idempotencyKey, note: bodyOf(event).note })}\n`, (error) => error ? reject(error) : resolve());
+    });
+    if (!args.flags.peek) await markSteerRead(taskId, event);
+  }
+}
+
+async function markSteerRead(taskId, event) {
+  const consumer = steerReadConsumer(taskId);
   const prior = await listAll('fm_task_delivery', { filter: `consumer eq ${lit(consumer)} and seq eq ${event.seq}` });
   if (!prior.length) {
     const res = await http('POST', '/api/fm_task_delivery', { consumer, seq: event.seq });
     if (res.status !== 409) ok(res, 'mark steer read');
   }
+}
+
+async function cmdReadMark(args) {
+  const taskId = taskIdOf(args);
+  const key = args.flags.key;
+  if (!key?.startsWith(`steer:${taskId}:`)) throw usage('read-mark needs this task’s steer key');
+  const consumer = steerReadConsumer(taskId);
+  if (consumer.length > 64) throw usage('read consumer exceeds 64 characters');
+  const event = (await taskEvents(taskId)).find((e) => e.kind === 'steer' && e.idempotencyKey === key);
+  if (!event) throw new Fail(5, 'steer event not stored yet');
+  await markSteerRead(taskId, event);
   out(`read ${consumer} seq=${event.seq}`);
 }
 
@@ -2833,6 +2986,8 @@ async function cmdDeliver(args) {
   const consumer = args.flags.consumer;
   if (!consumer || consumer.length > 64) throw usage('deliver needs --consumer (up to 64 characters)');
   if (!process.env.FM_HOME) throw usage('deliver requires FM_HOME');
+  const lease = spawnSync('bash', ['-c', 'source "$1/fm-home-lease-lib.sh"; fm_home_lease_require', 'home-lease', HERE], { encoding: 'utf8', env: process.env });
+  if (lease.status !== 0) throw new Fail(5, `event delivery requires home ownership: ${lease.stdout}${lease.stderr}`);
   const taskStream = await taskEvents(taskIdOf(args));
   await waitView(taskIdOf(args), taskStream);
   const firstSeq = taskStream[0]?.seq ?? 0;
@@ -2852,7 +3007,7 @@ async function cmdDeliver(args) {
     baseline = lastSeq;
   } else baseline = Number(fs.readFileSync(activation, 'utf8'));
   const open = new Set(openRequests(taskStream).map((e) => e.seq));
-  const events = taskStream.filter((e) => e.seq > baseline || open.has(e.seq));
+  const events = taskStream.filter((e) => (e.seq > baseline || open.has(e.seq)) && !e.idempotencyKey?.startsWith('steer-attempt:'));
   for (const event of events) {
     if (event.kind === 'comment' && event.actorRole === 'owner' && event.idempotencyKey?.startsWith('owner-comment:')) continue;
     const receipt = path.join(spool, `${event.seq}.json`);
@@ -3014,11 +3169,75 @@ async function cmdRule(args) {
   out(`rule=${ruleId} action=${action}`);
 }
 
+// Deploy history is append-only; payload retains all adapter fields without narrowing its schema.
+function deployCanonical(value) {
+  if (Array.isArray(value)) return value.map(deployCanonical);
+  if (value && typeof value === 'object') return Object.fromEntries(Object.keys(value).sort().map((k) => [k, deployCanonical(value[k])]));
+  return value;
+}
+async function cmdDeployLedger(args) {
+  const repo = args.flags.repo || process.env.FM_DEPLOY_VERIFY_REPO || 'huynhtandat223/cfw-modules';
+  const records = () => listAll('fm_deploy_ask', { filter: `repo eq ${lit(repo)}`, orderby: 'position' });
+  const append = async (payload) => {
+    if (!payload || Array.isArray(payload) || typeof payload !== 'object' || !['ask', 'deployed', 'cursor', 'carry', 'hold', 'release', 'skip', 'draft-skip'].includes(payload.type)) throw usage('deploy ledger record needs a supported type');
+    const text = JSON.stringify(deployCanonical(payload));
+    const recordKey = crypto.createHash('sha256').update(`${repo}\n${text}`).digest('hex');
+    const previous = await firstRow('fm_deploy_ask', `recordKey eq ${lit(recordKey)}`);
+    if (previous) {
+      if (previous.payload !== text) throw rule('deploy ledger key has a different payload');
+      return;
+    }
+    for (let attempt = 0; attempt < 20; attempt++) {
+    const last = await firstRow('fm_deploy_ask', `repo eq ${lit(repo)}`, 'position desc');
+    const body = { recordKey, repo, position: (last?.position ?? 0) + 1, kind: payload.type,
+      task: payload.task ?? null, sha: payload.sha ?? null, prs: JSON.stringify(payload.prs ?? []),
+      runId: String(payload.run ?? ''), round: payload.round ?? null, tester: payload.tester ?? null,
+      at: payload.at ? new Date(payload.at * 1000).toISOString() : null, payload: text };
+    const res = await http('POST', '/api/fm_deploy_ask', body);
+    if (res.status === 409) {
+      const existing = await firstRow('fm_deploy_ask', `recordKey eq ${lit(recordKey)}`);
+      if (existing?.payload === text) return;
+      if (!existing) continue; // Another writer took repo,position; allocate again.
+    }
+    ok(res, 'append deploy ledger');
+    return;
+    }
+    throw rule('deploy ledger allocation kept moving; retry the same record');
+  };
+  const readFile = () => {
+    if (!args.flags.file) throw usage('deploy-ledger needs --file');
+    return fs.readFileSync(args.flags.file, 'utf8');
+  };
+  switch (args.pos.action) {
+    case 'list':
+      for (const row of await records()) if (row.kind !== 'cursor') out(row.payload);
+      break;
+    case 'cursor': {
+      const row = await firstRow('fm_deploy_ask', `repo eq ${lit(repo)} and kind eq 'cursor'`, 'position desc');
+      if (row) { const value = JSON.parse(row.payload); delete value.type; out(JSON.stringify(value)); }
+      break;
+    }
+    case 'append': await append(JSON.parse(readFile())); break;
+    case 'put-cursor': await append({ ...JSON.parse(readFile()), type: 'cursor' }); break;
+    case 'seed': {
+      const values = readFile().split('\n').filter((s) => s.trim()).map((s) => JSON.parse(s));
+      for (const value of values) await append(value);
+      const stored = new Set((await records()).map((r) => r.payload));
+      if (values.some((v) => !stored.has(JSON.stringify(deployCanonical(v))))) throw rule('deploy seed readback differs');
+      out(JSON.stringify({ imported: values.length, distinct: new Set(values.map((v) => JSON.stringify(deployCanonical(v)))).size }));
+      break;
+    }
+    default: throw usage('deploy-ledger list|cursor|append|put-cursor|seed [--file FILE] [--repo OWNER/REPO]');
+  }
+}
+
 const COMMANDS = {
+  'deploy-ledger': cmdDeployLedger,
   setup: cmdSetup, move: cmdMove, step: cmdStep,
   rules: cmdRules, rule: cmdRule, answer: cmdAnswer,
-  'turn-end': cmdTurnEnd, deliver: cmdDeliver, requests: cmdRequests, 'read-mark': cmdReadMark, inbox: cmdInbox, describe: cmdDescribe, plan: cmdPlan, 'plan-decision': cmdPlanDecision, thread: cmdThread,
+  'turn-end': cmdTurnEnd, deliver: cmdDeliver, requests: cmdRequests, steers: cmdSteers, 'read-mark': cmdReadMark, inbox: cmdInbox, describe: cmdDescribe, plan: cmdPlan, 'plan-decision': cmdPlanDecision, thread: cmdThread,
   create: cmdCreate, import: cmdImport, assign: cmdAssign, start: cmdStart, heartbeat: cmdHeartbeat, done: cmdDone, ask: cmdAsk, block: cmdBlock,
+  'merge-authority': cmdMergeAuthority, 'pr-record': cmdPrRecord, 'pr-round': cmdPrRound,
   unblock: cmdUnblock, approve: cmdApprove, changes: cmdChanges, reopen: cmdReopen, reassign: cmdReassign, archive: cmdArchive, delete: cmdDelete, home: cmdHome, comment: cmdComment, event: cmdEvent,
   'plan-spec': cmdPlanSpec, 'plan-approve': cmdPlanApprove, 'plan-check': cmdPlanCheck, document: cmdDocument, link: cmdLink, rows: cmdRows, check: cmdCheck, 'owner-check': cmdOwnerCheck, gate: cmdGate, show: cmdShow, list: cmdList, resume: cmdResume, reproject: cmdReproject,
   checks: cmdChecks, checklist: cmdChecklist,
