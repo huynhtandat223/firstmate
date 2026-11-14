@@ -113,9 +113,11 @@ if [ "$cmd" = migrate ]; then
   mkdir -p "$backup/images"
   cp "$record" "$backup/links.json"
   # Missing legacy images are recorded, never dropped: they stay in links.json.
-  todo=$(FM_REMOTE_MATERIALS="$remote" FM_BACKUP="$backup" node -e '
+  remote_file="$backup/remote-materials.json"
+  printf '%s' "$remote" > "$remote_file"
+  todo=$(FM_REMOTE_FILE="$remote_file" FM_BACKUP="$backup" node -e '
     const fs=require("fs"),path=require("path"),crypto=require("crypto");
-    const local=JSON.parse(fs.readFileSync(process.argv[1],"utf8")),remote=JSON.parse(process.env.FM_REMOTE_MATERIALS);
+    const local=JSON.parse(fs.readFileSync(process.argv[1],"utf8")),remote=JSON.parse(fs.readFileSync(process.env.FM_REMOTE_FILE,"utf8"));
     const sha=b=>crypto.createHash("sha256").update(b).digest("hex");
     const have=new Set(remote.images.map(r=>sha(Buffer.from(r.content,"base64"))+":"+r.label));
     const urls=new Set(remote.links.map(r=>r.url));

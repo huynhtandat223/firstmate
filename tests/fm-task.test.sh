@@ -1095,6 +1095,8 @@ case_reads_and_images() {
   local legacy
   legacy=$(FM_HOME="$TMP_ROOT/legacy-home" "$ROOT/bin/fm-task-links.sh" tk-r1 show --json) || return 1
   jq -e 'any(.links[]; .label == "Legacy") and any(.images[]; .label == "Unmirrored")' <<<"$legacy" >/dev/null || { echo "remote read hid legacy materials: $legacy"; return 1; }
+  { printf '\x89PNG\r\n\x1a\n'; head -c 300000 /dev/zero; } > "$TMP_ROOT/large.png"
+  FM_HOME="$TMP_ROOT/material-home" "$ROOT/bin/fm-task-links.sh" tk-r1 add-image "$TMP_ROOT/large.png" Large >/dev/null || return 1
   mkdir -p "$TMP_ROOT/migrate-home/data/tk-r1"
   jq -n --arg path "$png" '{schema:"fm-task-links.v1",links:[{url:"https://example.com/seeded",label:"Seeded"}],images:[{path:$path,label:"Seeded shot"},{path:"/nonexistent/gone.png",label:"Gone"}]}' > "$TMP_ROOT/migrate-home/data/tk-r1/links.json"
   local migrated
