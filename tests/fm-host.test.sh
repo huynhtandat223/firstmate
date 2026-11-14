@@ -53,6 +53,21 @@ if run worker claim w1 >/dev/null; then echo 'FAIL a non-holder claimed a worker
 FM_HOST_ID=probe-b run worker claim w1 --json | grep -q '"liveWorkers":1' || { echo 'FAIL worker claim did not raise liveWorkers'; exit 1; }
 if FM_HOST_ID=probe-b FM_HOST_LIVE_WORKERS=0 run lease release >/dev/null; then echo 'FAIL released over a claimed worker'; exit 1; fi
 FM_HOST_ID=probe-b FM_HOST_LIVE_WORKERS=0 FM_HOST_WAKE_QUEUE_LENGTH=0 run heartbeat >/dev/null
+# A holder whose lease expired while its workers live (a restart) takes it back; another host still waits.
+FM_HOST_ID=probe-b FM_HOST_LIVE_WORKERS=2 FM_HOST_WAKE_QUEUE_LENGTH=0 run heartbeat >/dev/null
+cat > "$TMP/expire.mjs" <<'JS'
+const base = process.argv[2], q = encodeURIComponent("home eq 'probe'");
+const row = (await (await fetch(`${base}/api/fm_home_lease?$filter=${q}&$orderby=generation%20desc`)).json()).value[0];
+await fetch(`${base}/api/fm_home_lease/${row.id}`, { method: 'PATCH', body: JSON.stringify({ heartbeatAt: new Date(Date.now() - 600000).toISOString() }) });
+JS
+node "$TMP/expire.mjs" "$FM_TASK_BASE_URL"
+if FM_HOST_ID=probe-b run lease check >/dev/null; then echo 'FAIL an expired lease passed the check'; exit 1; fi
+if run lease take > "$TMP/expired-refused"; then echo 'FAIL another host took an expired lease over live workers'; exit 1; fi
+grep -q 'held by probe-b' "$TMP/expired-refused"
+FM_HOST_ID=probe-b run lease take --json > "$TMP/retaken" || { echo "FAIL the holder could not take back its own expired lease: $(cat "$TMP/retaken")"; exit 1; }
+node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1]));if(r.hostId!=="probe-b"||r.generation!==2||Date.now()-Date.parse(r.heartbeatAt)>60000)process.exit(1)' "$TMP/retaken"
+FM_HOST_ID=probe-b run lease check >/dev/null
+FM_HOST_ID=probe-b FM_HOST_LIVE_WORKERS=0 FM_HOST_WAKE_QUEUE_LENGTH=0 run heartbeat >/dev/null
 if run register --typo >/dev/null; then echo 'FAIL unknown flag accepted'; exit 1; fi
 # A configured authorization seam refuses an old host; an unconfigured home is unchanged.
 mkdir -p "$FM_HOME/config"; printf probe > "$FM_HOME/config/home-lease"

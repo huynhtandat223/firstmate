@@ -121,7 +121,12 @@ try {
     else if (cmd[1] === 'take') {
       const row = await latest();
       if (row && !row.releasedAt) {
-        if (row.hostId === id && fresh(row)) { output(row); process.exit(0); }
+        // The holder keeps its own unreleased lease after it expired (a restart or a stopped renewal); its workers are
+        // its own, and only heartbeat can lower their count, which needs a fresh lease. Other hosts still wait.
+        if (row.hostId === id) {
+          if (!fresh(row)) await patch('fm_home_lease', row, { heartbeatAt: now() });
+          output(await check(id)); process.exit(0);
+        }
         const holder = await host(row.hostId);
         if (fresh(row) || !holder || holder.liveWorkers !== 0) fail(`home ${homeName} held by ${row.hostId} generation=${row.generation} liveWorkers=${holder ? holder.liveWorkers : 'unknown'}; release or wait for expiry with no live workers`);
       }
