@@ -58,6 +58,7 @@ mkhome "$TMP/docs"; printf 'docs\n' > "$TMP/docs/config/memory-home"
 mkdir -p "$TMP/docs/data/handoffs" "$TMP/docs/data/retro" "$TMP/docs/data/project-rules"
 printf 'current handoff\n' > "$TMP/docs/data/handoffs/day.md"
 ln -s day.md "$TMP/docs/data/handoffs/latest.md"
+# shellcheck disable=SC2016 # literal Markdown pointer
 printf '**Start here:** `data/handoffs/latest.md`\n' > "$TMP/docs/data/captain.md"
 printf 'daily retro\n' > "$TMP/docs/data/retro/2026-11-14.md"
 printf 'brief: remote project rule\n' > "$TMP/docs/data/project-rules/cfw-modules.md"
