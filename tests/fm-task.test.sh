@@ -3117,7 +3117,7 @@ case_workflow() {
   ft step tk-flow alive --crew-state working --generation g2; must 'same crew state' 0 || return 1
   [ "$OUT" = 'step tk-flow: unchanged' ] || { echo "an unchanged crew state wrote: $OUT"; return 1; }
   ft step tk-flow alive --crew-state napping --generation g2; must 'a crew word outside the set' 2 || return 1
-  ft step tk-flow end --crew-state done --reason x; must 'crew state on end' 2 || return 1
+  ft step tk-flow end --crew-state 'done' --reason x; must 'crew state on end' 2 || return 1
   ft step tk-flow alive --crew-state parked --generation g2; must 'new crew state' 0 || return 1
   step_of implement | jq -e '.crewState == "parked"' >/dev/null || { echo "crew state did not change: $(step_of implement)"; return 1; }
   ft step tk-flow alive --crew-state working --generation g2; must 'crew state back' 0 || return 1

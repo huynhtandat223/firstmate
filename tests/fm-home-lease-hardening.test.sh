@@ -240,7 +240,8 @@ test_a_failed_relaunch_gives_its_claim_back() {
   api -X PATCH "$BASE/api/fm_host/$(host_row probe-a | jq -r .id)" -d '{"liveWorkers":1}' | jq -e '.success == true' >/dev/null || { echo 'could not seed the count'; return 1; }
   # the old endpoint is a pane whose foreground is a bare shell: positively agent-free, so a relaunch may replace it
   local tty
-  pane_with_a_shell && tty=$(cat "$TMP_ROOT/pane.tty") || { echo 'could not make a pane tty'; return 1; }
+  pane_with_a_shell || { echo 'could not make a pane tty'; return 1; }
+  tty=$(cat "$TMP_ROOT/pane.tty")
   out=$(FM_FAKE_TTY=$tty PANE_AT="$home/elsewhere" wspawn rl-w1 --relaunch) && { echo "the relaunch did not fail: $out"; return 1; }
   case "$out" in *'not its recorded worktree'*) ;; *) echo "the relaunch did not stop at the worktree check: $out"; return 1 ;; esac
   [ -e "$home/state/rl-w1.meta" ] || { echo "the relaunch removed the task record: $out"; return 1; }
@@ -253,7 +254,8 @@ test_a_failed_relaunch_gives_its_claim_back() {
 test_the_give_back_runs_under_the_task_spawn_lock() {
   reset_db
   local code="$TMP_ROOT/code" out first
-  git clone -q "$ROOT" "$code" && cp -a "$ROOT/bin/." "$code/bin/" || { echo 'could not copy the tools'; return 1; }
+  git clone -q "$ROOT" "$code" || { echo 'could not copy the tools'; return 1; }
+  cp -a "$ROOT/bin/." "$code/bin/" || { echo 'could not copy the tools'; return 1; }
   cat > "$code/bin/fm-host.sh" <<'SH'
 #!/usr/bin/env bash
 if [ "${1:-} ${2:-}" = "worker release" ]; then : > "$FM_TEST_RELEASE_MARK"; sleep 4; fi
@@ -300,9 +302,10 @@ test_delivery_stops_claiming_when_the_lease_moves() {
   local home task=fm-probe-lease-deliver rc holder
   home=$(make_home deliver)
   export_a() { FM_HOME="$home" FM_HOST_ID=probe-a FM_HOME_NAME="$LEASE_HOME" "$@"; }
-  export_a "$ROOT/bin/fm-host.sh" register >/dev/null && export_a "$ROOT/bin/fm-host.sh" lease take >/dev/null || { echo 'probe-a could not take the lease'; return 1; }
+  export_a "$ROOT/bin/fm-host.sh" register >/dev/null || { echo 'probe-a could not register'; return 1; }
+  export_a "$ROOT/bin/fm-host.sh" lease take >/dev/null || { echo 'probe-a could not take the lease'; return 1; }
   export_a "$ROOT/bin/fm-task.sh" deliver "$task" --consumer probe-consumer >/dev/null || { echo 'activation failed'; return 1; }
-  add_event "$task" 1 && add_event "$task" 2 && add_event "$task" 3 || { echo 'could not add the probe events'; return 1; }
+  for i in 1 2 3; do add_event "$task" "$i" || { echo 'could not add the probe events'; return 1; }; done
   export FM_LOCK_STALE_AFTER=600   # a held lock stays held for the whole case
   FM_HOME="$home" bash -c 'source "$1/bin/fm-wake-lib.sh"; fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"; : > "$2/held"; sleep 120' _ "$ROOT" "$home/state" &
   holder=$!
@@ -338,8 +341,9 @@ test_step_loop_writes_only_while_its_host_holds_the_lease() {
   # a tmux with no window: the task's endpoint reads dead, so every pass has a step to write
   mkdir -p "$TMP_ROOT/tmuxquiet" && printf '#!/bin/sh\nexit 0\n' > "$TMP_ROOT/tmuxquiet/tmux" && chmod +x "$TMP_ROOT/tmuxquiet/tmux"
   printf 'window=test:fm-t1\nkind=ship\nharness=claude\nbackend=tmux\nspawn_gen=g1\n' > "$home/state/t1.meta"
-  local hostb="FM_HOME=$TMP_ROOT/other FM_HOST_ID=probe-b FM_HOME_NAME=$LEASE_HOME"
-  env $hostb "$ROOT/bin/fm-host.sh" register >/dev/null && env $hostb "$ROOT/bin/fm-host.sh" lease take >/dev/null || { echo 'probe-b could not take the lease'; return 1; }
+  local -a hostb=("FM_HOME=$TMP_ROOT/other" FM_HOST_ID=probe-b "FM_HOME_NAME=$LEASE_HOME")
+  env "${hostb[@]}" "$ROOT/bin/fm-host.sh" register >/dev/null || { echo 'probe-b could not register'; return 1; }
+  env "${hostb[@]}" "$ROOT/bin/fm-host.sh" lease take >/dev/null || { echo 'probe-b could not take the lease'; return 1; }
   FM_HOME="$home" FM_HOST_ID=probe-a FM_HOME_NAME="$LEASE_HOME" "$ROOT/bin/fm-host.sh" register >/dev/null
   sleep 60 & local live=$!
   printf '%s\n' "$live" > "$home/state/.lock"
@@ -350,8 +354,8 @@ test_step_loop_writes_only_while_its_host_holds_the_lease() {
   [ "$calls" = 0 ] || { echo "the loop wrote $calls step(s) without the lease: $(cat "$TMP_ROOT/writer.log")"; kill "$live"; return 1; }
   grep -q 'lost the home lease' "$home/state/.task-step-loop.log" || { echo "the loop did not log the lost lease: $(cat "$home/state/.task-step-loop.log" 2>&1)"; kill "$live"; return 1; }
   # ownership returns: probe-b releases, probe-a takes generation 3
-  env $hostb FM_HOST_LIVE_WORKERS=0 FM_HOST_WAKE_QUEUE_LENGTH=0 "$ROOT/bin/fm-host.sh" heartbeat >/dev/null
-  env $hostb FM_HOST_LIVE_WORKERS=0 "$ROOT/bin/fm-host.sh" lease release >/dev/null
+  env "${hostb[@]}" FM_HOST_LIVE_WORKERS=0 FM_HOST_WAKE_QUEUE_LENGTH=0 "$ROOT/bin/fm-host.sh" heartbeat >/dev/null
+  env "${hostb[@]}" FM_HOST_LIVE_WORKERS=0 "$ROOT/bin/fm-host.sh" lease release >/dev/null
   FM_HOME="$home" FM_HOST_ID=probe-a FM_HOME_NAME="$LEASE_HOME" "$ROOT/bin/fm-host.sh" lease take >/dev/null || { echo 'probe-a could not take the lease back'; kill "$live"; return 1; }
   wait_for 10 writes_seen 1 || { echo 'the loop wrote nothing after ownership returned'; kill "$live"; return 1; }
   grep -q 'holds the home lease' "$home/state/.task-step-loop.log" || { echo "no regain line: $(cat "$home/state/.task-step-loop.log")"; kill "$live"; return 1; }

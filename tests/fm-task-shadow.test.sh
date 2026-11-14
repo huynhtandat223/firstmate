@@ -675,7 +675,7 @@ test_step_loop_publishes_the_crew_state_and_replays_status() {
   printf 'working\n' > "$CASE_DIR/word"
   printf '0\n' > "$HOME_DIR/state/t1.status-sent"
   printf '%s\n' 'working [at=1]: from the outage' > "$HOME_DIR/state/t1.status"
-  (export CRASH_WORD_FILE="$CASE_DIR/word" FM_TASK_CREW_EVERY=1 FM_TASK_REPLAY_EVERY=1; SBIN="$bin"; loop start >/dev/null)
+  CRASH_WORD_FILE="$CASE_DIR/word" FM_TASK_CREW_EVERY=1 FM_TASK_REPLAY_EVERY=1 SBIN="$bin" loop start >/dev/null
   first=$(loop_pid)
   wait_calls 4 '^step t1 alive --generation g1 --crew-state working$' || { loop stop; end_session; fail "the crew state did not reach the record: $(cat "$CALLS")"; }
   wait_calls 4 '^heartbeat t1 --note from the outage ' || { loop stop; end_session; fail "the unsent status line was not replayed: $(cat "$CALLS")"; }
@@ -698,7 +698,7 @@ test_step_loop_drops_the_crew_state_of_a_replaced_incarnation() {
   printf '%s\n' '#!/usr/bin/env bash' 'printf "state: %s · source: stub · detail\n" "$(cat "$CRASH_WORD_FILE")"' > "$bin/fm-crew-state.sh"
   chmod +x "$bin/fm-crew-state.sh"
   printf 'parked\n' > "$CASE_DIR/word"
-  (export CRASH_WORD_FILE="$CASE_DIR/word" FM_TASK_CREW_EVERY=600 FM_TASK_REPLAY_EVERY=600; SBIN="$bin"; loop start >/dev/null)
+  CRASH_WORD_FILE="$CASE_DIR/word" FM_TASK_CREW_EVERY=600 FM_TASK_REPLAY_EVERY=600 SBIN="$bin" loop start >/dev/null
   wait_calls 4 '^step t1 alive --generation g1 --crew-state parked$' || { loop stop; end_session; fail "the first word did not reach the record: $(cat "$CALLS")"; }
   # the worker is relaunched as g1b and works at once; the cache would hold 'parked' for ten minutes
   printf 'working\n' > "$CASE_DIR/word"
