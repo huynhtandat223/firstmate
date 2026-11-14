@@ -52,6 +52,33 @@ mkhome "$TMP/none"
 [ ! -e "$TMP/none/data/.memory-sync" ] || fail "sync without config/memory-home wrote a record"
 ok "a home without config/memory-home is untouched"
 
+# Document families use the same executable path. This service double supplies deterministic
+# duplicate/offline responses; real Dev 5001 proof is recorded separately for HF1/HF2.
+mkhome "$TMP/docs"; printf 'docs\n' > "$TMP/docs/config/memory-home"
+mkdir -p "$TMP/docs/data/handoffs" "$TMP/docs/data/retro" "$TMP/docs/data/project-rules"
+printf 'current handoff\n' > "$TMP/docs/data/handoffs/day.md"
+ln -s day.md "$TMP/docs/data/handoffs/latest.md"
+# shellcheck disable=SC2016 # literal Markdown pointer
+printf '**Start here:** `data/handoffs/latest.md`\n' > "$TMP/docs/data/captain.md"
+printf 'daily retro\n' > "$TMP/docs/data/retro/2026-11-14.md"
+printf 'brief: remote project rule\n' > "$TMP/docs/data/project-rules/cfw-modules.md"
+run "$TMP/docs" seed >/dev/null
+out=$(run "$TMP/docs" seed)
+[ "$(printf '%s\n' "$out" | grep -c 'result="unchanged"')" = 8 ] || fail "family seed not idempotent: $out"
+rm "$TMP/docs/data/handoffs/day.md"
+run "$TMP/docs" sync >/dev/null
+[ -L "$TMP/docs/data/handoffs/latest.md" ] || fail 'sync replaced latest symlink'
+[ "$(< "$TMP/docs/data/handoffs/day.md")" = 'current handoff' ] || fail 'sync did not restore handoff'
+printf 'unpublished local handoff\n' > "$TMP/docs/data/handoffs/day.md"
+line=$(run "$TMP/docs" sync)
+[ "$(< "$TMP/docs/data/handoffs/day.md")" = 'unpublished local handoff' ] || fail 'sync lost unpublished handoff'
+case "$line" in *waiting_for_put=handoffs/latest.md*) ;; *) fail "missing waiting handoff: $line" ;; esac
+rm "$TMP/docs/data/project-rules/cfw-modules.md"
+FM_HOME="$TMP/docs" "$ROOT/bin/fm-brief.sh" hf2 cfw-modules --mode direct-PR >/dev/null
+[ "$(grep '^brief:' "$TMP/docs/data/hf2/brief.md")" = 'brief: remote project rule' ] || fail 'brief did not read remote rules'
+if run "$TMP/docs" show --file '../outside.md' >/dev/null 2>&1; then fail 'unsafe document path accepted'; fi
+ok 'document families seed once, restore symlink target and generate a brief without local rules'
+
 # T1: seed twice.
 mkhome "$TMP/a"; printf 'probe\n' > "$TMP/a/config/memory-home"
 out=$(run "$TMP/a" seed)
@@ -115,6 +142,26 @@ out=$(run "$TMP/a" put --file learnings.md)
 [ "$(field "$out" version)" = 3 ] || fail "the waiting edit did not upload as n+1: $out"
 ok "offline sync prints the cache age and a waiting edit uploads as n+1"
 
+# Review fixes: a slow 5001 holds sync for 5 s in total, not 5 s per request.
+cat > "$TMP/slow.py" <<'PY'
+import http.server,json,sys,time
+class H(http.server.BaseHTTPRequestHandler):
+ def log_message(self,*a):pass
+ def do_GET(self):
+  time.sleep(4);self.send_response(200);self.end_headers();self.wfile.write(json.dumps({'value':[]}).encode())
+s=http.server.ThreadingHTTPServer(('127.0.0.1',0),H);open(sys.argv[1],'w').write(str(s.server_port));s.serve_forever()
+PY
+python3 "$TMP/slow.py" "$TMP/slow-port" &
+SLOW=$!
+for _ in $(seq 1 100); do [ ! -s "$TMP/slow-port" ] || break; sleep .02; done
+start=$(date +%s)
+line=$(FM_TASK_BASE_URL="http://127.0.0.1:$(< "$TMP/slow-port")" run "$TMP/a" sync)
+took=$(( $(date +%s) - start ))
+kill "$SLOW" 2>/dev/null || true
+case "$line" in memory_source=cache*) ;; *) fail "a slow 5001 did not fall back to the cache: $line" ;; esac
+[ "$took" -le 7 ] || fail "sync waited ${took}s on a slow 5001, wanted at most 7s"
+ok "sync on a slow 5001 ends within its 5 s deadline and reports the cache"
+
 # T6: the budget report measures the 5001 text, not a stale cache.
 mkdir -p "$TMP/c/config"; printf '7500\n' > "$TMP/c/config/startup-memory-budget"; printf 'probe\n' > "$TMP/c/config/memory-home"; run "$TMP/c" pull >/dev/null  # a stale cache: pulled, then 5001 moves on
 printf 'a much longer learnings text that only 5001 holds now, long enough to change the byte count\n' >> "$TMP/a/data/learnings.md"
@@ -147,6 +194,17 @@ set +e; err=$(run "$TMP/x" put --file captain.md 2>&1); rc=$?; set -e
 case "$err" in *'is for home:homea, not home:homeb'*) ;; *) fail "scope refusal was: $err" ;; esac
 [ "$(run "$TMP/y" history --file captain.md | wc -l)" = 1 ] || fail "home b gained a version"
 ok "put refuses a pull record from another memory home"
+
+# Review fixes: a pull record from another home is never published into an empty home either.
+mkhome "$TMP/z"; printf 'homez\n' > "$TMP/z/config/memory-home"; run "$TMP/z" seed >/dev/null
+printf 'homenew\n' > "$TMP/z/config/memory-home"
+set +e; err=$(run "$TMP/z" put --file learnings.md 2>&1); rc=$?; set -e
+[ "$rc" != 0 ] || fail "put published a record of home z into the empty home"
+case "$err" in *'is for home:homez, not home:homenew'*) ;; *) fail "empty-home scope refusal was: $err" ;; esac
+[ "$(run "$TMP/z" history --file learnings.md | wc -l)" = 0 ] || fail "the empty home gained a version"
+out=$(run "$TMP/z" put --file learnings.md --rebase)
+[ "$(field "$out" version)" = 1 ] || fail "put --rebase into the empty home did not insert version 1: $out"
+ok "put refuses another home's pull record into an empty home unless --rebase"
 
 # T7: the rule splitter.
 long=$(python3 -c "print(' '.join(f'Sentence number {i} is a short fact.' for i in range(30)))")

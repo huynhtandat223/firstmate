@@ -330,6 +330,29 @@ test_da4_counts_each_waiting_note_once_and_ignores_the_retired_inbox() {
   pass "DA4: a note on 5001 and in the spool counts once, and a note left in state/inbox counts zero"
 }
 
+test_da4_reads_the_notes_of_its_own_backlog_home() {
+  local dir="$TMP_ROOT/da4-home" seq gen h
+  mkdir -p "$dir/state" "$dir/config/tasks-axi"
+  printf 'backend = "cfw5001"\n[cfw5001]\nhome = "da4-probe"\n' > "$dir/config/tasks-axi/.tasks.toml"
+  printf '%s\t1\tcheck\tprobe-key\tcheck: probe\n' "$(date +%s)" >> "$dir/state/.wake-queue"
+  # One waiting note on 5001 for this home and one for main; neither is in the local spool.
+  for h in da4-probe main; do
+    jq -n --arg h "$h" '{home:$h,noteId:("note-of-" + $h),text:"waiting",source:"cli",state:"waiting",at:"2026-01-01T00:00:00Z"}' > "$dir/note.json"
+    FM_HOME="$dir" "$ROOT/bin/fm-task.sh" owner-record note put --home "$h" --identity "note-of-$h" --file "$dir/note.json" >/dev/null \
+      || fail "DA4 could not store the note of $h"
+  done
+  printf 'block\n' > "$dir/config/enforce-drain-ack"
+  ( unset FM_BACKLOG_HOME; lab_drain "$dir" > "$dir/out" )
+  read -r seq gen <<< "$(lab_ack_args "$dir")"
+  [ -n "$seq" ] && [ -n "$gen" ] || fail "DA4 no ack boundary in the drain: $(cat "$dir/err")"
+  if ( unset FM_BACKLOG_HOME; lab_drain "$dir" --ack-through "$seq" --recovery-generation "$gen" > "$dir/out2" ); then
+    fail "DA4 the ack was accepted while this home's note waits"
+  fi
+  grep -F "captain note note-of-da4-probe waits" "$dir/err" >/dev/null || fail "DA4 the refusal did not name this home's note: $(cat "$dir/err")"
+  if grep -F "note-of-main" "$dir/err" >/dev/null; then fail "DA4 the drain read the notes of home main: $(cat "$dir/err")"; fi
+  pass "DA4: a home with no FM_BACKLOG_HOME exported reads the notes of its own backlog home only"
+}
+
 test_da4_logs_only_until_the_switch_is_set() {
   local dir="$TMP_ROOT/da4-log" seq gen note
   mkdir -p "$dir/state" "$dir/config"
@@ -373,6 +396,7 @@ test_hook_is_inert_in_a_task_worktree_and_fails_open
 test_claude_settings_register_the_drain_guard
 test_da4_ack_refused_while_a_captain_note_waits
 test_da4_logs_only_until_the_switch_is_set
+test_da4_reads_the_notes_of_its_own_backlog_home
 test_da4_counts_each_waiting_note_once_and_ignores_the_retired_inbox
 
 echo "# fm-drain-pretool-check.test.sh: all assertions passed"

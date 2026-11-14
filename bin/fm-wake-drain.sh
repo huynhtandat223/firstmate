@@ -305,7 +305,9 @@ fi
 # (state/enforce-drain-ack.log) until config/enforce-drain-ack holds `block`.
 if [ -n "$ACK_THROUGH" ]; then
   waiting_notes=
-  if ! owner_rows=$(FM_HOME="${FM_HOME:-$FM_ROOT}" "$SCRIPT_DIR/fm-task.sh" owner-record note list --home "${FM_BACKLOG_HOME:-main}"); then
+  # The home's own backlog home: FM_BACKLOG_HOME when exported, else its tasks-axi config, else main.
+  if ! owner_home=$(FM_HOME="${FM_HOME:-$FM_ROOT}" "$SCRIPT_DIR/fm-task.sh" owner-home) \
+    || ! owner_rows=$(FM_HOME="${FM_HOME:-$FM_ROOT}" "$SCRIPT_DIR/fm-task.sh" owner-record note list --home "$owner_home"); then
     printf 'wake drain: cannot establish whether owner notes are pending\n' >&2
     if [ "$(fm_enforce_mode "$owed_config" drain-ack)" = block ]; then exit 1; fi
     owner_rows='[]'

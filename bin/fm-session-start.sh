@@ -926,6 +926,7 @@ if [ -f "$CONFIG/memory-home" ]; then
   if [ "$READ_ONLY" -eq 0 ]; then
     MEMORY_SYNC_LINE=$(FM_HOME="$FM_HOME" FM_CONFIG_OVERRIDE="$CONFIG" "$SCRIPT_DIR/fm-memory.sh" sync --data "$DATA" 2>/dev/null || true)
     printf '%s\n' "${MEMORY_SYNC_LINE:-memory_source=unknown reason=sync produced no output}"
+    case "$MEMORY_SYNC_LINE" in *handoffs/*) print_start_handoff ;; esac
     case "$MEMORY_SYNC_LINE" in
       *' written='*)
         case ",${MEMORY_SYNC_LINE##* written=}," in *,captain.md,*) print_file_or_absent "$DATA/captain.md" "data/captain.md (refreshed from 5001)"; print_start_handoff ;; esac
