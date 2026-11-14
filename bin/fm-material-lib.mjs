@@ -19,7 +19,7 @@ sync         materialize, then upload local edits that sit on the version they s
              material_conflict and keeps the local text. Prints one material_source line; always exits 0.
 put          upload the local text of --path as version n+1; refuses with a diff (exit 3) when 5001 moved first.
              --rebase publishes on top of the current 5001 version after you reconciled by hand.
-remove       copy the local file of --path to state/material-backup/, insert a tombstone and delete the file.
+remove       (--rebase: even when this copy is behind) copy the local file of --path to state/material-backup/, insert a tombstone and delete the file.
 --home defaults to the first line of $FM_HOME/config/material-home. Exit codes: 3 lost race, 4 secret guard.
 The portable list is fixed in this file (PORTABLE below); a new file is never uploaded until a code change names it.`;
 
@@ -150,19 +150,27 @@ function unifiedDiff(winner, local) {
 }
 function git(...args) { try { return execFileSync('git', ['-C', ctx.fmHome, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }); } catch { return null; } }
 
+// The one check every upload goes through: a regular file (never a link), at most 1 MiB, valid UTF-8 text without NUL.
+function inspect(rel) {
+  const abs = path.join(ctx.fmHome, rel);
+  let stat; try { stat = fs.lstatSync(abs); } catch { return { reason: 'does not exist' }; }
+  if (!stat.isFile()) return { reason: 'not a regular file' };
+  if (stat.size > MAX_BYTES) return { reason: 'larger than 1 MiB' };
+  const bytes = fs.readFileSync(abs), text = bytes.toString('utf8');
+  if (bytes.includes(0) || !Buffer.from(text).equals(bytes)) return { reason: 'not text' };
+  return { text };
+}
+
 // ---- local discovery ----------------------------------------------------------------------------------------------
 // entries: portable files with their text; skipped: files in a portable folder the list does not take, with the reason.
 function discover() {
   const entries = [], skipped = [];
   const add = (rel) => {
-    const abs = path.join(ctx.fmHome, rel), stat = fs.lstatSync(abs);
     const info = classify(rel);
-    if (!stat.isFile()) return skipped.push({ path: rel, reason: 'not a regular file' });
+    const found = inspect(rel);
     if (!info) return /\.bak|^\./.test(path.basename(rel)) ? undefined : skipped.push({ path: rel, reason: 'not on the portable list' });
-    if (stat.size > MAX_BYTES) return skipped.push({ path: rel, reason: 'larger than 1 MiB' });
-    const bytes = fs.readFileSync(abs), text = bytes.toString('utf8');
-    if (bytes.includes(0) || !Buffer.from(text).equals(bytes)) return skipped.push({ path: rel, reason: 'not text' });
-    entries.push({ path: rel, ...info, scope: info.host ? ctx.hostScope : ctx.scope, text });
+    if (found.reason) return skipped.push({ path: rel, reason: found.reason });
+    entries.push({ path: rel, ...info, scope: info.host ? ctx.hostScope : ctx.scope, text: found.text });
   };
   const walk = (rel) => {
     const abs = path.join(ctx.fmHome, rel);
@@ -243,7 +251,7 @@ async function rebuildIndex() {
 }
 async function publishRecord(state) {
   const holdings = {};
-  for (const [key, base] of Object.entries(state)) { const rel = key.split('\u0000')[1]; if (base.exists !== false && rel) holdings[rel] = base.version; }
+  for (const [key, base] of Object.entries(state)) { const [scope, rel] = key.split('\u0000'); if ((scope === ctx.scope || scope === ctx.hostScope) && base.exists !== false && rel) holdings[rel] = base.version; }
   await recordHoldings(holdings); await rebuildIndex();
 }
 const keyOf = (scope, rel) => `${scope}\u0000${rel}`;
@@ -271,7 +279,7 @@ async function seed() {
   for (const entry of entries) {
     const row = remote.get(entry.path);
     if (live(row) && (await content(row)) !== entry.text) { results.push({ path: entry.path, result: 'differs on 5001: use put', version: row.version }); continue; }
-    if (row && !live(row)) { results.push(await putOne(entry, remote, state, { rebase: true })); continue; }
+    if (row && !live(row)) { results.push({ path: entry.path, result: 'removed on 5001: use put --rebase to restore', version: row.version }); continue; }
     results.push(await putOne(entry, remote, state));
   }
   saveState(state); await publishRecord(state);
@@ -346,7 +354,8 @@ async function status() {
 async function put() {
   if (!ctx.flags.path) fail('--path is required', 2);
   const info = classify(ctx.flags.path); if (!info) fail(`${ctx.flags.path} is not a portable path`, 2);
-  const text = readLocal(ctx.flags.path); if (text === null) fail(`${ctx.flags.path} does not exist`, 2);
+  const found = inspect(ctx.flags.path); if (found.reason) fail(`${ctx.flags.path}: ${found.reason}`, 2);
+  const text = found.text;
   const remote = await remoteCurrent(), state = loadState();
   const result = await putOne({ path: ctx.flags.path, kind: info.kind, scope: scopeOf(ctx.flags.path), text }, remote, state, { rebase: !!ctx.flags.rebase });
   saveState(state); await publishRecord(state); return result;
@@ -356,6 +365,8 @@ async function remove() {
   const info = classify(ctx.flags.path); if (!info) fail(`${ctx.flags.path} is not a portable path`, 2);
   const remote = await remoteCurrent(), row = remote.get(ctx.flags.path);
   if (!live(row)) fail(`${ctx.flags.path} is not on 5001`, 2);
+  const known = loadState()[keyOf(scopeOf(ctx.flags.path), ctx.flags.path)];
+  if (!ctx.flags.rebase && (!known || known.version !== row.version)) fail(`5001 holds version ${row.version} of ${ctx.flags.path}, but this copy ${known ? `started from version ${known.version}` : 'has no pull record'}; nothing was removed. Run sync first, or pass --rebase to remove version ${row.version}.`, 3);
   const saved = backup(ctx.flags.path);
   await insert(scopeOf(ctx.flags.path), ctx.flags.path, row.version + 1, info.kind, TOMBSTONE, '', ctx.by);
   fs.rmSync(path.join(ctx.fmHome, ctx.flags.path), { force: true });

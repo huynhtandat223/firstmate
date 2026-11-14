@@ -152,6 +152,41 @@ FM_HOME="$B" "$DOC" materialize --home main | grep -q 'config/roles/tester.md" r
 C="$TMP/home-c"; mkdir -p "$C"; FM_HOME="$C" "$DOC" materialize --home main > /dev/null; [ ! -e "$C/config/roles/tester.md" ]
 "$DOC" status --home main | grep -q 'path="config/roles/tester.md".*not' && { echo 'status lists a removed file'; exit 1; } || true
 
+# Review round 1: a removed file stays removed. A stale copy cannot resurrect it through seed.
+S="$TMP/home-stale"; mkdir -p "$S/config/roles"; printf 'role one\n' > "$S/config/roles/tester.md"
+BEFORE=$(rowcount)
+FM_HOME="$S" FM_HOST_ID=host-s "$DOC" seed --home main | grep -q 'config/roles/tester.md" result="removed on 5001: use put --rebase to restore"'
+[ "$(rowcount)" -eq "$BEFORE" ] || [ "$(rowcount)" -gt "$BEFORE" ]  # other files of the stale home may insert; the removed one must not
+dump; python3 -c 'import json,sys;r=[x for x in json.load(open(sys.argv[1])) if x["path"]=="config/roles/tester.md"];assert sorted(x["version"] for x in r)==[1,2],r' "$TMP/dump.json"
+
+# Review round 1: remove refuses a copy that is behind 5001 (B updates, A removes without syncing).
+printf 'id-2\n' > "$B/config/notify-recipient"
+FM_HOME="$B" FM_HOST_ID=host-b "$DOC" sync --home main > /dev/null
+BEFORE=$(rowcount)
+if "$DOC" remove --home main --path config/notify-recipient > "$TMP/stale-remove.out" 2> "$TMP/stale-remove.err"; then echo 'remove tombstoned a newer version'; exit 1; else [ $? -eq 3 ]; fi
+grep -q 'nothing was removed' "$TMP/stale-remove.err"; [ -f "$A/config/notify-recipient" ]; [ "$(rowcount)" = "$BEFORE" ]
+
+# Review round 1: put applies the same file checks as discovery, so a link out of the home is never uploaded.
+printf 'outside\n' > "$TMP/outside.md"; ln -s "$TMP/outside.md" "$A/data/firstmate-tools/link.md"
+BEFORE=$(rowcount)
+if "$DOC" put --home main --path data/firstmate-tools/link.md 2> "$TMP/link.err"; then echo 'put followed a link'; exit 1; fi
+grep -q 'not a regular file' "$TMP/link.err"; [ "$(rowcount)" = "$BEFORE" ]
+"$DOC" status --home main | grep -q 'path="data/firstmate-tools/link.md" state="not-portable" reason="folder or link'
+rm "$A/data/firstmate-tools/link.md"
+
+# Review round 1: holdings of one home never take the versions of another home on the same machine.
+"$DOC" seed --home other > /dev/null
+"$DOC" put --home main --path config/crew-harness > /dev/null   # unchanged text: rewrites the holdings of home main with both homes in the state file
+dump; python3 - "$TMP" <<'PY'
+import json, pathlib, sys
+rows = json.load(open(pathlib.Path(sys.argv[1]) / 'dump.json'))
+def held(name):
+    r = max((x for x in rows if x['scope'] == 'host:host-a' and x['path'] == f'holdings/{name}.json'), key=lambda x: x['version'])
+    return json.loads(r['content'])
+assert held('main')['config/crew-harness'] == 3, held('main')['config/crew-harness']
+assert held('other')['config/crew-harness'] == 1, held('other')['config/crew-harness']
+PY
+
 # Settings index and holdings: what the page shows.
 dump; python3 - "$TMP" <<'PY'
 import json, pathlib, sys
@@ -159,7 +194,7 @@ rows = json.load(open(pathlib.Path(sys.argv[1]) / 'dump.json'))
 index = max((r for r in rows if r['path'] == 'settings.index.json'), key=lambda r: r['version'])
 items = {i['path']: i for i in json.loads(index['content'])}
 assert items['config/crew-harness']['version'] == 3 and 'host-a=v3' in items['config/crew-harness']['machines'], items['config/crew-harness']
-assert 'host-b=v2' in items['config/crew-harness']['machines'], items['config/crew-harness']
+assert 'host-b=v3' in items['config/crew-harness']['machines'], items['config/crew-harness']
 assert items['config/claude-account (host-a)']['kind'] == 'config'
 assert 'config/roles/tester.md' not in items and 'config/backend' not in items
 assert any(r['scope'] == 'host:host-a' and r['kind'] == 'holding' for r in rows)
@@ -181,6 +216,26 @@ grep -q 'config/backend" result="refused path"' "$TMP/mat-d"
 
 # A materialized private skill is excluded from git status in a git home.
 [ -z "$(git -C "$D" status --porcelain -- .agents)" ] || { echo 'private skill shows as untracked'; git -C "$D" status --porcelain -- .agents; exit 1; }
+
+# Review round 1: session start never waits for the network. With a 5001 that never answers, the digest still prints
+# and names the sync as pending; the bounded worker then settles with the cache line.
+Q="$TMP/home-ss"; mkdir -p "$Q/config" "$Q/data" "$Q/state"; git init -q "$Q"; printf 'main\n' > "$Q/config/material-home"
+python3 - "$TMP/hang-port" <<'PY' &
+import socket, sys, time
+s = socket.socket(); s.bind(('127.0.0.1', 0)); s.listen(8); open(sys.argv[1], 'w').write(str(s.getsockname()[1]))
+conns = []
+while True: conns.append(s.accept()[0]); time.sleep(0)
+PY
+HANG=$!
+for _ in $(seq 1 100); do [ ! -s "$TMP/hang-port" ] || break; sleep .02; done
+START=$(date +%s)
+FM_HOME="$Q" FM_TASK_BASE_URL="http://127.0.0.1:$(< "$TMP/hang-port")" FM_MATERIAL_SYNC_TIMEOUT=30 timeout 100 "$ROOT/bin/fm-session-start.sh" > "$TMP/ss.out" 2>&1 || true
+ELAPSED=$(( $(date +%s) - START ))
+grep -q 'material_source=pending home=main' "$TMP/ss.out" || { echo 'digest lacks the pending line'; exit 1; }
+[ "$ELAPSED" -lt 25 ] || { echo "session start waited for the network: ${ELAPSED}s"; exit 1; }
+for _ in $(seq 1 120); do [ -s "$Q/state/.material-sync.out" ] && break; sleep 1; done
+grep -q 'material_source=cache home=main' "$Q/state/.material-sync.out"
+kill "$HANG" 2>/dev/null || true
 
 # The C1 git export keeps working through the same entry point.
 if "$DOC" materialize --repo firstmate --output "$TMP/export-should-fail" --unknown 2>/dev/null; then exit 1; fi

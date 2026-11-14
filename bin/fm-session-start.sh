@@ -927,9 +927,19 @@ FM_HOME="$FM_HOME" FM_CONFIG_OVERRIDE="$CONFIG" "$SCRIPT_DIR/fm-role.sh" report 
   || printf 'fm-role: unknown (bin/fm-role.sh report failed)\n'
 
 if [ "$READ_ONLY" -eq 0 ]; then
-  # A home with config/material-home refreshes its portable config, roles and private skills from 5001 first (docs/configuration.md).
+  # A home with config/material-home syncs its portable config, roles and private skills with 5001 in a bounded
+  # background worker, so network time never delays the digest; the MATERIAL line below reports it without waiting.
+  MATERIAL_PID=""
+  MATERIAL_OUT="$STATE/.material-sync.out"
   if [ "$REEMIT" -eq 0 ] && [ -f "$CONFIG/material-home" ]; then
-    FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-doc.sh" sync 2>&1 || true
+    rm -f "$MATERIAL_OUT" "$MATERIAL_OUT.tmp" 2>/dev/null || true
+    (
+      FM_HOME="$FM_HOME" timeout "${FM_MATERIAL_SYNC_TIMEOUT:-60}" "$SCRIPT_DIR/fm-doc.sh" sync > "$MATERIAL_OUT.tmp" 2>&1 \
+        || printf 'material_source=cache home=%s reason="sync did not finish in time"\n' "$(head -n1 "$CONFIG/material-home" 2>/dev/null)" >> "$MATERIAL_OUT.tmp"
+      mv -f "$MATERIAL_OUT.tmp" "$MATERIAL_OUT" 2>/dev/null || true
+    ) >/dev/null 2>&1 &
+    MATERIAL_PID=$!
+    disown "$MATERIAL_PID" 2>/dev/null || true
   fi
   if [ "$REEMIT" -eq 0 ]; then
     rm -f "$COMPLETION_FILE" 2>/dev/null || true
@@ -1236,6 +1246,14 @@ if [ "$READ_ONLY" -eq 1 ]; then
   printf 'has no action they would gate. The session holding the lock runs them.\n'
 else
   "$SCRIPT_DIR/fm-startup-network.sh" harvest --pid $$ 2>&1 || true
+fi
+
+# The portable-material sync started at step 1 is read here without waiting: its line when it finished, else a pending note.
+if [ -n "${MATERIAL_PID:-}" ]; then
+  subsection "MATERIAL"
+  if [ -s "$MATERIAL_OUT" ]; then cat "$MATERIAL_OUT"
+  else printf 'material_source=pending home=%s (bounded background sync still running; result lands in state/.material-sync.out)\n' "$(head -n1 "$CONFIG/material-home" 2>/dev/null)"
+  fi
 fi
 
 # --- 8. context digest -----------------------------------------------------
