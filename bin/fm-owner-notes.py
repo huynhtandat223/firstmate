@@ -95,8 +95,10 @@ def push():
                    state='handled' if path.parent.name == 'handled' else 'waiting', at=fields['at'],
                    requestId=fields.get('request_id'))
         announced = cache / '.announced' / identity
-        if announced.exists():
-            row['announcedAt'] = announced.read_text().strip()
+        # An empty marker file carries no time; 5001 refuses '' as a time.
+        announced_at = announced.read_text().strip() if announced.exists() else ''
+        if announced_at:
+            row['announcedAt'] = announced_at
         reply = cache / '.replies' / identity
         if reply.exists():
             reply_fields, body = read(reply)
