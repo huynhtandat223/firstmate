@@ -12,7 +12,7 @@ export const FILES = ['captain.md', 'captain-shared.md', 'learnings.md', 'memory
 const RULE_FILES = ['captain.md', 'captain-shared.md', 'learnings.md'];
 const GROUP_LIMIT = 400;
 const help = `fm-memory.sh seed|pull|put|history|rules|sync [--home NAME] [--data DIR] [--file FILE] [--by ACTOR]
-seed     insert version 1 of every local memory file that 5001 lacks; identical text is a no-op.
+seed     insert version 1 of every local memory file and handoffs/, retro/, project-rules/ Markdown file that 5001 lacks; identical text is a no-op.
 pull     write each cache file from its current 5001 version; a file with a waiting local edit is kept.
 put      insert version n+1 of --file from the cache; refuse with a diff when 5001 moved on; exit 3 on that refusal.
 history  list the versions of --file on 5001.
@@ -20,6 +20,7 @@ show     print the current 5001 text of --file (or --version N).
 rules    print the rule items of the local --file as JSON (no network).
 sync     pull the three startup files when config/memory-home exists (not the archive); print one status line; always exit 0.
 --rebase (put only) publishes this text on top of the current 5001 version: use it after reconciling a refusal by hand, or on a first cutover when no pull record exists.
+--file accepts the four memory files or a safe Markdown basename under handoffs/, retro/, project-rules/.
 --home defaults to the first line of $FM_HOME/config/memory-home; --data defaults to $FM_HOME/data.
 Examples: fm-memory.sh put --file learnings.md
           fm-memory.sh history --file captain.md`;
@@ -128,13 +129,20 @@ async function insert(scope, name, version, kind, mediaType, content, by) {
 function baseFile(data, name) { return path.join(data, '.memory-sync', name + '.base'); }
 function readBase(data, name) { try { return JSON.parse(fs.readFileSync(baseFile(data, name), 'utf8')); } catch { return null; } }
 function writeBase(data, name, scope, version, text) {
-  fs.mkdirSync(path.join(data, '.memory-sync'), { recursive: true });
+  fs.mkdirSync(path.dirname(baseFile(data, name)), { recursive: true });
   fs.writeFileSync(baseFile(data, name), JSON.stringify({ scope, version, sha256: sha(text) }) + '\n');
 }
 function readLocal(data, name) { try { return fs.readFileSync(path.join(data, name), 'utf8'); } catch { return null; } }
 function writeLocal(data, name, text) {
-  const target = path.join(data, name), tmp = `${target}.memory-${process.pid}`;
-  fs.mkdirSync(data, { recursive: true });
+  let target = path.join(data, name);
+  let stat; try { stat = fs.lstatSync(target); } catch {}
+  if (stat?.isSymbolicLink()) {
+    const resolved = path.resolve(path.dirname(target), fs.readlinkSync(target));
+    if (!resolved.startsWith(path.resolve(data, 'handoffs') + path.sep)) fail('handoff symlink escapes its directory');
+    target = resolved;
+  }
+  const tmp = `${target}.memory-${process.pid}`;
+  fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.writeFileSync(tmp, text, { mode: 0o644 }); fs.renameSync(tmp, target);
 }
 function unifiedDiff(winner, local) {
@@ -144,6 +152,29 @@ function unifiedDiff(winner, local) {
     try { execFileSync('diff', ['-u', '--label', '5001', '--label', 'local', path.join(dir, '5001'), path.join(dir, 'local')], { encoding: 'utf8' }); return ''; }
     catch (error) { return error.stdout || ''; }
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
+
+function documentKind(name) {
+  return ({ handoffs: 'handoff', retro: 'retro', 'project-rules': 'rule' })[name.split('/')[0]] || 'memory';
+}
+function localDocuments(data) {
+  const names = [];
+  for (const family of ['handoffs', 'retro', 'project-rules']) {
+    const dir = path.join(data, family);
+    if (!fs.existsSync(dir)) continue;
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (family === 'handoffs' && entry.name === 'latest.md' && entry.isSymbolicLink()) {
+        const link = path.join(dir, entry.name);
+        const target = path.resolve(dir, fs.readlinkSync(link));
+        if (!target.startsWith(path.resolve(dir) + path.sep)) fail('handoff symlink escapes its directory');
+        if (!fs.existsSync(target)) continue;
+        if (!fs.realpathSync(target).startsWith(fs.realpathSync(dir) + path.sep)) fail('handoff symlink escapes its directory');
+        names.push(`${family}/${entry.name}`);
+      }
+      if (entry.isFile() && /^[a-zA-Z0-9][a-zA-Z0-9._-]*\.md$/.test(entry.name)) names.push(`${family}/${entry.name}`);
+    }
+  }
+  return names.sort();
 }
 
 // ---- commands ---------------------------------------------------------------------------------------------------
@@ -174,7 +205,7 @@ async function seed(ctx) {
       writeBase(ctx.data, name, ctx.scope, row.version, text);
       results.push({ file: name, result: 'unchanged', version: row.version }); continue;
     }
-    await insert(ctx.scope, name, 1, 'memory', 'text/markdown', text, ctx.by);
+    await insert(ctx.scope, name, 1, documentKind(name), 'text/markdown', text, ctx.by);
     await writeRules(ctx.scope, name, 1, text, ctx.by);
     const back = await latest(ctx.scope, name);
     if (!back || back.content !== text) fail(`readback of ${name} differs after insert`);
@@ -204,7 +235,7 @@ async function put(ctx) {
   const row = await latest(ctx.scope, name);
   if (!row) {
     otherHome();
-    await insert(ctx.scope, name, 1, 'memory', 'text/markdown', text, ctx.by);
+    await insert(ctx.scope, name, 1, documentKind(name), 'text/markdown', text, ctx.by);
     await writeRules(ctx.scope, name, 1, text, ctx.by); writeBase(ctx.data, name, ctx.scope, 1, text);
     return { file: name, result: 'inserted', version: 1 };
   }
@@ -219,7 +250,7 @@ async function put(ctx) {
   const refuse = () => { const error = new Error(`5001 holds version ${row.version} of ${name}, but this cache started from version ${base.version}; nothing was written.\n${unifiedDiff(row.content, text)}`); error.code = 3; throw error; };
   if (row.version !== base.version) refuse();
   const next = base.version + 1;
-  try { await insert(ctx.scope, name, next, 'memory', 'text/markdown', text, ctx.by); }
+  try { await insert(ctx.scope, name, next, documentKind(name), 'text/markdown', text, ctx.by); }
   catch (error) { if (error.code !== 409) throw error; const winner = await latest(ctx.scope, name); row.version = winner.version; row.content = winner.content; refuse(); }
   await writeRules(ctx.scope, name, next, text, ctx.by);
   const back = await latest(ctx.scope, name);
@@ -258,9 +289,9 @@ function parse(argv) {
   const files = secondmate ? FILES.filter(f => f !== 'captain-shared.md') : FILES; // inherited from the primary, read-only here
   if (secondmate && flags.file === 'captain-shared.md' && command !== 'rules') fail('captain-shared.md is inherited from the primary home; this secondmate home never reads or writes it on 5001', 2);
   const data = flags.data || process.env.FM_DATA_OVERRIDE || path.join(fmHome, 'data');
-  if (flags.file && !FILES.includes(flags.file)) fail(`--file must be one of ${FILES.join(', ')}`, 2);
+  if (flags.file && !FILES.includes(flags.file) && !/^(handoffs|retro|project-rules)\/[a-zA-Z0-9][a-zA-Z0-9._-]*\.md$/.test(flags.file)) fail('invalid memory document path', 2);
   if (['put', 'history', 'show', 'rules'].includes(command) && !flags.file) fail('--file is required', 2);
-  return { command, home, data, files, scope: `home:${home}`, file: flags.file, rebase: !!flags.rebase, version: flags.version, by: flags.by || process.env.FM_TASK_ACTOR || os.userInfo().username };
+  return { command, home, data, files: flags.file ? [flags.file] : [...files, ...localDocuments(data)], scope: `home:${home}`, file: flags.file, rebase: !!flags.rebase, version: flags.version, by: flags.by || process.env.FM_TASK_ACTOR || os.userInfo().username };
 }
 function print(rows) { for (const r of Array.isArray(rows) ? rows : [rows]) console.log(Object.entries(r).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(' ')); }
 
@@ -272,6 +303,22 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       deadline = AbortSignal.timeout(5000); // the whole sync, so a slow 5001 never holds session start longer
       try {
         const rows = await pull(ctx, ctx.files.filter(f => RULE_FILES.includes(f))), waiting = rows.filter(r => r.result.startsWith('kept')).map(r => r.file), wrote = rows.filter(r => r.result === 'written').map(r => r.file);
+        const captain = readLocal(ctx.data, 'captain.md') || '';
+        const pointer = captain.split('\n').find(line => line.includes('Start here'))?.match(/`data\/(handoffs\/[a-zA-Z0-9][a-zA-Z0-9._-]*\.md)`/)?.[1];
+        if (pointer) {
+          const row = await latest(ctx.scope, pointer);
+          if (row) {
+            let target = path.join(ctx.data, pointer);
+            let stat; try { stat = fs.lstatSync(target); } catch {}
+            if (stat?.isSymbolicLink()) {
+              const resolved = path.resolve(path.dirname(target), fs.readlinkSync(target));
+              if (!resolved.startsWith(path.resolve(ctx.data, 'handoffs') + path.sep) || fs.existsSync(resolved) && !fs.realpathSync(resolved).startsWith(fs.realpathSync(path.join(ctx.data, 'handoffs')) + path.sep)) fail('handoff symlink escapes its directory');
+              target = resolved;
+            }
+            const localName = path.relative(ctx.data, target);
+            if (readLocal(ctx.data, localName) !== row.content) { writeLocal(ctx.data, localName, row.content); wrote.push(pointer); }
+          }
+        }
         console.log(`memory_source=5001 scope=${ctx.scope} ${rows.filter(r => r.version).map(r => `${r.file}=v${r.version}`).join(' ')}${waiting.length ? ` waiting_for_put=${waiting.join(',')}` : ''}${wrote.length ? ` written=${wrote.join(',')}` : ''}`);
       }
       catch (error) {

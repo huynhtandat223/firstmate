@@ -796,6 +796,15 @@ TASK_SECTION=${TASK_SECTION%$'\n'}
 # so a spec filled with its own ### subsections cannot swallow them; an untagged line is never copied. A missing file adds nothing, and a repo
 # name with a slash is refused above.
 PROJECT_RULES_FILE="$DATA/project-rules/$REPO.md"
+if [ -f "$CONFIG/memory-home" ]; then
+  if PROJECT_RULES_REMOTE=$(FM_HOME="$FM_HOME" FM_CONFIG_OVERRIDE="$CONFIG" "$SCRIPT_DIR/fm-memory.sh" show --data "$DATA" --file "project-rules/$REPO.md" 2>/dev/null); then
+    PROJECT_RULES=$(printf '%s\n' "$PROJECT_RULES_REMOTE" | grep '^brief:' || true)
+    [ -z "$PROJECT_RULES" ] || TASK_SECTION="$TASK_SECTION"$'\n\n### Project rules\n'"$PROJECT_RULES"
+    PROJECT_RULES_FILE=/dev/null
+  else
+    printf 'project rules: 5001 unavailable; cache %s (mtime %s)\n' "$PROJECT_RULES_FILE" "$(date -r "$PROJECT_RULES_FILE" -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || printf absent)" >&2
+  fi
+fi
 if [ -r "$PROJECT_RULES_FILE" ]; then
   PROJECT_RULES=$(grep '^brief:' "$PROJECT_RULES_FILE" || true)
   [ -z "$PROJECT_RULES" ] || TASK_SECTION="$TASK_SECTION"$'\n\n### Project rules\n'"$PROJECT_RULES"

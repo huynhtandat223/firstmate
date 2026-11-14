@@ -27,6 +27,7 @@ Steer the worker through `bin/fm-send.sh` with one message that asks it to:
 - stop at the next safe point;
 - preserve everything that builds on every branch the task owns per the task's delivery mode, and name anything left uncommitted (local-only and no-mistakes workers never push from their copy);
 - write the handoff with Matt's handoff skill (`custom-skills/matt/productivity/handoff/SKILL.md` in the firstmate home), saved to `data/<task-id>/handoff.md` in the firstmate home (this path replaces that skill's temporary-directory default);
+- attach that file with `bin/fm-task.sh handoff <task-id> --document <file> --document-title Handoff`, retaining the file as an offline cache;
 - cover the captain's current asks in his own words, every branch with its preserved head and location, every PR, live host and lab state, evidence so far, what is left, and open questions;
 - append a `handoff written` status line and end its turn.
 
@@ -35,7 +36,7 @@ Done when the status line exists, `data/<task-id>/handoff.md` exists, and every 
 ## 2. Relaunch on the same adapter
 
 Run `bin/fm-control.sh <task-id> relaunch --note "<note>"` with no `--harness`, `--model` or `--effort`, so a ship or scout keeps the adapter already recorded in `state/<task-id>.meta`.
-The note tells the replacement to read `data/<task-id>/handoff.md` first, names the preserved heads and their locations, lists what is left, and says to keep working until the next deliverable or a real blocker.
+The note tells the replacement to run `bin/fm-task.sh document <task-id> --kind handoff` first (if 5001 is unavailable, read `data/<task-id>/handoff.md` and report its cache age), names the preserved heads and their locations, lists what is left, and says to keep working until the next deliverable or a real blocker.
 
 Done when `fm-control` reports the relaunch and the recorded harness, model and effort equal those recorded before the handoff.
 

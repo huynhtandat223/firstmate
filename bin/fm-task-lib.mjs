@@ -80,7 +80,8 @@
 //            the same home again is a no-op, another home is refused: a task belongs to one board
 //   owner-record home|note|hold list|get|put [--home H] [--kind binding|reconcile]
 //            [--identity ID] [--file JSON] reads or writes portable owner records; JSON output for shell bridges
-//   document <task> [--kind description|done] prints the latest matching event document (default description)
+//   handoff <task> --document FILE [--document-title T] attaches a worker continuation document without changing task state.
+//   document <task> [--kind description|done|handoff] prints the latest matching event document (default description)
 //   describe <task> --document FILE.md [--document-title T]              any state; default title Description
 //            A task that holds no scenario check row yet gets them from this Description, as `rows <task>` writes them;
 //            a task that holds one keeps its rows (`rows` is the re-sync). Only a task whose issue is none, its own id,
@@ -522,6 +523,7 @@ const SPECS = {
   delete: { pos: [], rest: 'tasks', flags: { reason: 's', 'assistance-record-only': 'b' } },
   home: { pos: ['task'], flags: { home: 's' } },
   describe: { pos: ['task'], flags: { document: 's', 'document-title': 's' } },
+  handoff: { pos: ['task'], flags: { document: 's', 'document-title': 's' } },
   plan: { pos: ['task'], flags: { document: 's', 'document-title': 's', image: 'm', 'image-label': 'm' } },
   'plan-decision': { pos: ['task'], flags: { decision: 's', 'plan-seq': 's' } },
   materials: { pos: ['task'], flags: {} },
@@ -1773,11 +1775,19 @@ async function cmdPlanCheck(args) {
   out(hash);
 }
 
+async function cmdHandoff(args) {
+  const document = documentOf({ ...args.flags, 'document-title': args.flags['document-title'] ?? 'Handoff' });
+  await write(taskIdOf(args), identity(args, 'worker'), async ({ task }) => {
+    if (!task) throw rule('no such task');
+    return { kind: 'comment', note: 'Worker handoff', children: { documents: [document] } };
+  });
+}
+
 async function cmdDocument(args) {
   const events = await taskEvents(taskIdOf(args));
   const kind = args.flags.kind || 'description';
-  if (!['description', 'done'].includes(kind)) throw usage('--kind must be description or done');
-  const event = events.filter((e) => e.kind === kind).at(-1);
+  if (!['description', 'done', 'handoff'].includes(kind)) throw usage('--kind must be description, done or handoff');
+  const event = events.filter((e) => kind === 'handoff' ? e.kind === 'comment' && bodyOf(e).note === 'Worker handoff' : e.kind === kind).at(-1);
   if (!event) throw rule(`task has no ${kind} event`);
   const doc = await firstRow('fm_event_document', `fmTaskEventId eq ${event.id}`);
   if (!doc || !doc.content) throw rule(`task ${kind} document is missing`);
@@ -3380,7 +3390,7 @@ const COMMANDS = {
   create: cmdCreate, import: cmdImport, assign: cmdAssign, start: cmdStart, heartbeat: cmdHeartbeat, done: cmdDone, ask: cmdAsk, block: cmdBlock,
   'merge-authority': cmdMergeAuthority, 'pr-record': cmdPrRecord, 'pr-round': cmdPrRound,
   unblock: cmdUnblock, approve: cmdApprove, changes: cmdChanges, reopen: cmdReopen, reassign: cmdReassign, archive: cmdArchive, delete: cmdDelete, home: cmdHome, comment: cmdComment, event: cmdEvent,
-  materials: cmdMaterials, 'plan-spec': cmdPlanSpec, 'plan-approve': cmdPlanApprove, 'plan-check': cmdPlanCheck, document: cmdDocument, link: cmdLink, rows: cmdRows, check: cmdCheck, 'owner-check': cmdOwnerCheck, gate: cmdGate, show: cmdShow, list: cmdList, resume: cmdResume, reproject: cmdReproject,
+  materials: cmdMaterials, 'plan-spec': cmdPlanSpec, 'plan-approve': cmdPlanApprove, 'plan-check': cmdPlanCheck, document: cmdDocument, handoff: cmdHandoff, link: cmdLink, rows: cmdRows, check: cmdCheck, 'owner-check': cmdOwnerCheck, gate: cmdGate, show: cmdShow, list: cmdList, resume: cmdResume, reproject: cmdReproject,
   checks: cmdChecks, checklist: cmdChecklist,
 };
 

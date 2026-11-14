@@ -2626,6 +2626,16 @@ case_description_thread() {
   [[ "$OUT" != *'first full comment'* && "$OUT" == *$'second\nfull comment'* ]] || return 1
   ft describe "$t" --document "$TMP_ROOT/missing.md"
   must 'missing description' 2 || return 1
+  ft handoff "$t" --document "$TMP_ROOT/description.md" >/dev/null || return 1
+  [ "$(task_state "$t")" = "$before" ] || return 1
+  ft document "$t" --kind handoff
+  must 'handoff readback' 0 || return 1
+  [[ "$OUT" == *'Full description.'* ]] || return 1
+  printf '# Replacement handoff\nNew continuation.\n' > "$TMP_ROOT/handoff.md"
+  ft handoff "$t" --document "$TMP_ROOT/handoff.md" >/dev/null || return 1
+  ft document "$t" --kind handoff
+  must 'latest handoff readback' 0 || return 1
+  [[ "$OUT" == *'New continuation.'* && "$OUT" != *'Full description.'* ]] || return 1
 }
 
 # A task's first Description seeds its check rows through the sync `rows <task>` runs; a task that holds a scenario row

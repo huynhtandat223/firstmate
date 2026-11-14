@@ -52,6 +52,28 @@ mkhome "$TMP/none"
 [ ! -e "$TMP/none/data/.memory-sync" ] || fail "sync without config/memory-home wrote a record"
 ok "a home without config/memory-home is untouched"
 
+# Document families use the same executable path. This service double supplies deterministic
+# duplicate/offline responses; real Dev 5001 proof is recorded separately for HF1/HF2.
+mkhome "$TMP/docs"; printf 'docs\n' > "$TMP/docs/config/memory-home"
+mkdir -p "$TMP/docs/data/handoffs" "$TMP/docs/data/retro" "$TMP/docs/data/project-rules"
+printf 'current handoff\n' > "$TMP/docs/data/handoffs/day.md"
+ln -s day.md "$TMP/docs/data/handoffs/latest.md"
+printf '**Start here:** `data/handoffs/latest.md`\n' > "$TMP/docs/data/captain.md"
+printf 'daily retro\n' > "$TMP/docs/data/retro/2026-11-14.md"
+printf 'brief: remote project rule\n' > "$TMP/docs/data/project-rules/cfw-modules.md"
+run "$TMP/docs" seed >/dev/null
+out=$(run "$TMP/docs" seed)
+[ "$(printf '%s\n' "$out" | grep -c 'result="unchanged"')" = 8 ] || fail "family seed not idempotent: $out"
+rm "$TMP/docs/data/handoffs/day.md"
+run "$TMP/docs" sync >/dev/null
+[ -L "$TMP/docs/data/handoffs/latest.md" ] || fail 'sync replaced latest symlink'
+[ "$(< "$TMP/docs/data/handoffs/day.md")" = 'current handoff' ] || fail 'sync did not restore handoff'
+rm "$TMP/docs/data/project-rules/cfw-modules.md"
+FM_HOME="$TMP/docs" "$ROOT/bin/fm-brief.sh" hf2 cfw-modules --mode direct-PR >/dev/null
+[ "$(grep '^brief:' "$TMP/docs/data/hf2/brief.md")" = 'brief: remote project rule' ] || fail 'brief did not read remote rules'
+if run "$TMP/docs" show --file '../outside.md' >/dev/null 2>&1; then fail 'unsafe document path accepted'; fi
+ok 'document families seed once, restore symlink target and generate a brief without local rules'
+
 # T1: seed twice.
 mkhome "$TMP/a"; printf 'probe\n' > "$TMP/a/config/memory-home"
 out=$(run "$TMP/a" seed)
