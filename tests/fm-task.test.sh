@@ -3038,7 +3038,7 @@ case_workflow() {
   BIN=$1; reset_db
   local step_of
   step_of() { db fm_task_step | jq -c --arg s "$1" '.[] | select(.taskId == "tk-flow" and .state == $s)'; }
-  mk_running tk-flow >/dev/null || return 1
+  mk_ready tk-flow >/dev/null || return 1
   [ "$(task_row tk-flow | jq -r .workflowState)" = queued ] || { echo "a new task is not queued: $(task_row tk-flow)"; return 1; }
   printf '%s' '{"steps":[{"state":"implement","harness":"pi","model":"example","effort":"high","fallbacks":[{"harness":"claude","model":"backup","effort":"low"}]},{"state":"merge"}]}' > "$TMP_ROOT/setup.json"
   printf '%s' '{"steps":[{"state":"merge"},{"state":"implement","harness":"pi","model":"example"}]}' > "$TMP_ROOT/setup-order.json"
@@ -3087,7 +3087,7 @@ case_workflow() {
   ft step tk-flow start --harness pi --model example --generation g3; must 'Merge has no worker' 5 || return 1
   # the owner's Approve & start: setup by owner, then the task moves to its first state
   export FM_HOME="$TMP_ROOT/workflow-home"; rm -rf "$FM_HOME"; mkdir -p "$FM_HOME/state"
-  mk_running tk-own >/dev/null || return 1
+  mk_ready tk-own >/dev/null || return 1
   approve_solution tk-own || return 1
   OUT=$("$BIN/fm-task-owner.sh" --action setup --task tk-own --setup "$(cat "$TMP_ROOT/setup.json")" --owner u-1 2>"$TMP_ROOT/err"); RC=$?; ERR=$(cat "$TMP_ROOT/err")
   must 'owner setup' 0 || return 1
@@ -3107,12 +3107,13 @@ case_workflow() {
   [ "$(task_row tk-own | jq -r .workflowState)" = merge ] || { echo "a re-approval changed the state: $(task_row tk-own)"; return 1; }
   # approve closes the flow from any state: a state that never started is skipped
   printf '%s' '{"steps":[{"state":"implement","harness":"pi","model":"example","effort":"high"},{"state":"merge"},{"state":"verify","harness":"pi","model":"example"}]}' > "$TMP_ROOT/setup-verify.json"
-  mk_running tk-close >/dev/null && approve_solution tk-close || return 1
+  mk_ready tk-close >/dev/null && approve_solution tk-close || return 1
   ft setup tk-close --file "$TMP_ROOT/setup-verify.json"; must 'close setup' 0 || return 1
   ft move tk-close --to implement; must 'close move' 0 || return 1
   ft step tk-close start --harness pi --generation c1; must 'start on the harness default model' 0 || return 1
   db fm_task_step | jq -e '.[] | select(.taskId == "tk-close" and .state == "implement") | .model == "example" and .effort == "high"' >/dev/null \
     || { echo "a start with no model lost the configured one: $(db fm_task_step | jq -c '.[] | select(.taskId == "tk-close")')"; return 1; }
+  ft start tk-close; must 'close start' 0 || return 1
   ft "done" tk-close "${DONE_FLAGS[@]}"; must 'close done' 0 || return 1
   ft approve tk-close; must 'approve before the last state' 0 || return 1
   task_row tk-close | jq -e '.state == "done" and .workflowState == "done" and .stepAlive == null' >/dev/null || { echo "approve did not close the flow: $(task_row tk-close)"; return 1; }
@@ -3120,7 +3121,7 @@ case_workflow() {
     || { echo "approve left steps open: $(db fm_task_step | jq -c '.[] | select(.taskId == "tk-close")')"; return 1; }
   # testing fails back to implement: implement ran last although testing sits later in the setup
   printf '%s' '{"steps":[{"state":"implement","harness":"pi","model":"example"},{"state":"testing","harness":"pi","model":"example"},{"state":"merge"}]}' > "$TMP_ROOT/setup-test.json"
-  mk_running tk-back >/dev/null && approve_solution tk-back || return 1
+  mk_ready tk-back >/dev/null && approve_solution tk-back || return 1
   ft setup tk-back --file "$TMP_ROOT/setup-test.json"; must 'back setup' 0 || return 1
   ft move tk-back --to implement; must 'back implement' 0 || return 1
   ft step tk-back start --harness pi --generation b1; must 'back start implement' 0 || return 1
@@ -3130,6 +3131,7 @@ case_workflow() {
   ft move tk-back --to implement; must 'back to implement on a failed row' 0 || return 1
   ft step tk-back start --harness pi --generation b3; must 'back start implement again' 0 || return 1
   api -X PATCH "$BASE/api/fm_task_check/$(db fm_task_check | jq -r '.[] | select(.taskId == "tk-back") | .id')" -d '{"status":"pass"}' >/dev/null
+  ft start tk-back; must 'back start' 0 || return 1
   ft "done" tk-back "${DONE_FLAGS[@]}"; must 'back done' 0 || return 1
   ft approve tk-back; must 'back approve' 0 || return 1
   ft reopen tk-back --reason 'again'; must 'back reopen' 0 || return 1
@@ -3193,6 +3195,75 @@ case_gate_no_surface() {
   BIN=$1; reset_db
   solution_gate_holds tk-gate-none || return 1
   [ "$(task_row tk-gate-none | jq -r .surface)" = null ] || { echo "the task holds a surface: $(task_row tk-gate-none)"; return 1; }
+}
+
+# kv2-column-auto: the record works out the Board column from the task's events, with no `move`. An event moves the
+# card only forward; `move` is the override and holds until an event implies a later column.
+case_board_column() {
+  BIN=$1; reset_db
+  local t at h=cccccccccccccccccccccccccccccccccccccccc
+  col() {  # <label> <task> <want column> [new]: the card's column after the last ft call; new: workflowSince is that event's time
+    must "$1" 0 || return 1
+    local row; row=$(task_row "$2")
+    [ "$(jq -r .workflowState <<<"$row")" = "$3" ] || { echo "$1: column $(jq -r .workflowState <<<"$row"), want $3: $row"; return 1; }
+    [ "${4:-}" != new ] || [ "$(jq -r .workflowSince <<<"$row")" = "$(db fm_task_event | jq -r --arg t "$2" --argjson s "$(seq_of)" '.[] | select(.taskId == $t and .seq == $s) | .createdAt')" ] \
+      || { echo "$1: workflowSince is not the moving event's time: $row"; return 1; }
+  }
+  row_of() { api -X POST "$BASE/api/fm_task_check" -d "{\"taskId\":\"$1\",\"scenarioId\":\"$2\",\"width\":\"1440\",\"status\":\"pending\",\"nextActor\":\"tester\",\"surface\":\"user-visible\",\"page\":\"p\",\"line\":\"l\",\"controls\":\"-\",\"data\":\"-\",\"proof\":\"-\",\"acceptanceDigest\":\"d\"}" >/dev/null; }
+  # an internal ship task with no setup walks every column
+  t=tk-col
+  ft create $t --title 'Column' --kind ship --repo example/repo; col 'created' $t queued || return 1
+  ft assign $t --to worker-1; col 'assigned' $t queued || return 1
+  ft start $t; col 'started with no Solution' $t plan new || return 1
+  at=$(task_row $t | jq -r .workflowSince)
+  ft heartbeat $t; col 'heartbeat in plan' $t plan || return 1
+  [ "$(task_row $t | jq -r .workflowSince)" = "$at" ] || { echo "an event that keeps the column moved workflowSince"; return 1; }
+  approve_solution $t || return 1; col 'Solution approved' $t implement new || return 1
+  ft "done" $t "${DONE_FLAGS[@]}" --pr-url https://github.com/example/repo/pull/7 --head $h; col 'done with a PR' $t merge || return 1
+  ft event $t pr --pr-url https://github.com/example/repo/pull/7 --merged; col 'merged' $t merge || return 1
+  ft event $t deploy --head $h; col 'deployed' $t verify new || return 1
+  ft approve $t; col 'approved' $t 'done' || return 1
+  # a task of another kind starts in implement; an import that writes the task running starts it too
+  ft create tk-col-scout --title 'Scout' --kind scout >/dev/null && ft assign tk-col-scout --to w >/dev/null || return 1
+  ft start tk-col-scout; col 'a scout starts' tk-col-scout implement || return 1
+  ft import tk-col-imp --title 'Imported' --kind other --state running --assignee w --next-actor worker; col 'an import running' tk-col-imp implement || return 1
+  # a user-visible task: Testing while the Tester is asked; a failed row holds it there, the passed rows move it to Merge
+  t=tk-col-uv
+  ft create $t --title 'Visible' --kind ship --surface user-visible --repo example/repo >/dev/null || return 1
+  approve_solution $t; col 'an approval before the start' $t queued || return 1
+  row_of $t V1
+  ft assign $t --to w >/dev/null && ft start $t; col 'started on an approved Solution' $t implement || return 1
+  ft "done" $t "${DONE_FLAGS[@]}" --pr-url https://github.com/example/repo/pull/8 --head $h; col 'done while the Tester is asked' $t testing || return 1
+  [ "$(task_row $t | jq -r .nextActor)" = tester ] || { echo "the Tester is not asked: $(task_row $t)"; return 1; }
+  ft check $t V1@1440 --status fail --evidence red --head $h; col 'a failed row' $t testing || return 1
+  ft check $t V1@1440 --status pass --evidence green --head $h; col 'the rows pass' $t merge || return 1
+  # move is the override: it holds until an event implies a later column, and an earlier one changes nothing
+  t=tk-col-mv
+  printf '%s' '{"steps":[{"state":"implement","harness":"pi","model":"example"},{"state":"testing","harness":"pi","model":"example"},{"state":"merge"}]}' > "$TMP_ROOT/setup-col.json"
+  ft create $t --title 'Moved' --kind ship --repo example/repo >/dev/null && approve_solution $t || return 1
+  ft setup $t --file "$TMP_ROOT/setup-col.json" >/dev/null && ft assign $t --to w >/dev/null || return 1
+  ft start $t; col 'started' $t implement || return 1
+  ft move $t --to testing; col 'moved on' $t testing || return 1
+  ft heartbeat $t; col 'an earlier column holds the move' $t testing || return 1
+  row_of $t M1
+  ft check $t M1@1440 --status fail --evidence red; must 'fail a row' 0 || return 1
+  ft move $t --to implement; col 'moved back' $t implement || return 1
+  ft heartbeat $t; col 'the move back holds' $t implement || return 1
+  ft event $t pr --pr-url https://github.com/example/repo/pull/9; col 'a later column moves past the move' $t merge new || return 1
+  # a worker that started in Plan reports on its running step after the card moves on, and a start in the new column ends it
+  t=tk-col-step
+  printf '%s' '{"steps":[{"state":"plan","harness":"pi","model":"example"},{"state":"implement","harness":"pi","model":"example"},{"state":"merge"}]}' > "$TMP_ROOT/setup-col-step.json"
+  ft create $t --title 'Steps' --kind ship --repo example/repo >/dev/null && ft setup $t --file "$TMP_ROOT/setup-col-step.json" >/dev/null || return 1
+  ft assign $t --to w >/dev/null && ft start $t; col 'started' $t plan || return 1
+  ft step $t start --harness pi --generation p1; col 'plan runs' $t plan || return 1
+  approve_solution $t; col 'approved while plan runs' $t implement || return 1
+  ft step $t dead --generation p1; must 'dead after the card moved' 0 || return 1
+  db fm_task_step | jq -e --arg t $t '.[] | select(.taskId == $t and .state == "plan") | .status == "running" and .alive == "dead"' >/dev/null || { echo "liveness missed the running step: $(db fm_task_step | jq -c --arg t $t '.[] | select(.taskId == $t)')"; return 1; }
+  ft step $t start --harness pi --generation p2; must 'start implement' 0 || return 1
+  db fm_task_step | jq -e --arg t $t '[.[] | select(.taskId == $t)] | map({(.state): {status, endReason}}) | add | .plan == {status: "done", endReason: "moved to implement"} and .implement.status == "running"' >/dev/null \
+    || { echo "a start left the other step running: $(db fm_task_step | jq -c --arg t $t '.[] | select(.taskId == $t)')"; return 1; }
+  ft step $t end --reason cleanup --generation p2; must 'end' 0 || return 1
+  db fm_task_step | jq -e --arg t $t '.[] | select(.taskId == $t and .state == "implement") | .status == "done"' >/dev/null || { echo "end missed the running step"; return 1; }
 }
 
 # SG1 (#176 Step 5): every write folds the board card's step onto the row: stage by the step rule, stageSince only
@@ -3975,7 +4046,7 @@ case_pr_record() {
   jq -se 'map(.at) == [50,100]' <<<"$OUT" >/dev/null
 }
 
-CASES=${FM_TASK_CASES:-"owner_records pr_record plan_task description_thread describe_rows describe_issue describe_source terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed long_notes status_view verify_view owner_writer workflow gate_internal gate_no_surface stage latest_wait latest_no_note wait carry slice_c model_rules checklist question_round setup_rules backlog_home owner_hold owner_request gate_before_approval handoff_gate delete owner_nav"}
+CASES=${FM_TASK_CASES:-"owner_records pr_record plan_task description_thread describe_rows describe_issue describe_source terminal concurrent transitions block_rules parents value_lists rows owner resume connection reads_and_images check_replay route start_parent approve_head owner_pending rows_closed check_closed row_retired done_head route_back check_values check_parallel owner_repeat link_triage reset_supersedes route_stale rows_route owner_replay check_nulls check_close approve_newest owner_update owner_close import check_word deploy_head gate rows_visible approve_deployed long_notes status_view verify_view owner_writer workflow board_column gate_internal gate_no_surface stage latest_wait latest_no_note wait carry slice_c model_rules checklist question_round setup_rules backlog_home owner_hold owner_request gate_before_approval handoff_gate delete owner_nav"}
 
 # ---- real command -------------------------------------------------------------------
 
@@ -4089,6 +4160,11 @@ mutate 'a setup edit of the current pending state shows on the card' workflow "s
 mutate 'reopen returns to the state that ran last in event order' workflow "const last = steps.find(s => s.state === lastRan);" "const last = steps.filter(s => ['done', 'failed', 'running'].includes(s.status)).at(-1);"
 mutate 'approve skips the states that never started' workflow ": s.status === 'pending' ? [{ state: s.state, status: 'skipped', endReason: 'approved' }] : []);" ": []);"
 mutate 'a move ends the running attempt of the state left behind' workflow "const stepWrites = left ? [{ state: left.state, status: 'done'" "const stepWrites = false ? [{ state: left.state, status: 'done'"
+mutate 'an event moves the card only forward' board_column "if (column && WORKFLOW_STATES.indexOf(column) > WORKFLOW_STATES.indexOf(task.workflowState ?? 'queued'))" "if (column)"
+mutate 'a pull request waits in Testing while the Tester is asked' board_column "(task.nextActor === 'tester' ? 'testing' : 'merge')" "'merge'"
+mutate 'a ship task waits in Plan until its Solution is approved' board_column "task.kind === 'ship' && task.planDecision !== 'approve' ? 'plan'" "false ? 'plan'"
+mutate 'liveness reports on the running step' board_column "const current = action === 'start' ? own : running ?? own;" "const current = own;"
+mutate 'a start ends the step another column runs' board_column "const other = action === 'start' && running && running.state !== current.state ? running : null;" "const other = null;"
 mutate 'an unapproved Solution holds a ship before implement' workflow "task.kind === 'ship' && task.planDecision !== 'approve') {" "task.kind === 'ship' && false) {"
 mutate 'the Solution gate needs the approval, not just a plan' workflow "task.kind === 'ship' && task.planDecision !== 'approve') {" "task.kind === 'ship' && !task.planSeq) {"
 mutate 'a retry passes the Solution gate too' workflow "if (to === 'implement' && task.kind === 'ship'" "if (to === 'implement' && !retry && task.kind === 'ship'"
