@@ -21,6 +21,9 @@ const server = http.createServer(async (req,res) => {
   result={value:rows};
  } else if(req.method==='POST') {
   const value=JSON.parse(body);
+  // <port file>.race makes one competing take land first on the same generation.
+  const race=process.argv[2]+'.race';
+  if(table==='fm_home_lease'&&fs.existsSync(race)) {fs.unlinkSync(race);rows.push({...value,id:String(rows.length+1),hostId:'probe-racer'});}
   if(rows.some(r=>table==='fm_host'?r.hostId===value.hostId:r.home===value.home&&r.generation===value.generation)) status=409;
   else {value.id=String(rows.length+1);rows.push(value);result=value;}
  } else if(req.method==='PATCH') {
@@ -52,6 +55,34 @@ if FM_HOST_LIVE_WORKERS=0 FM_HOST_WAKE_QUEUE_LENGTH=0 run heartbeat >/dev/null; 
 if run worker claim w1 >/dev/null; then echo 'FAIL a non-holder claimed a worker'; exit 1; fi
 FM_HOST_ID=probe-b run worker claim w1 --json | grep -q '"liveWorkers":1' || { echo 'FAIL worker claim did not raise liveWorkers'; exit 1; }
 if FM_HOST_ID=probe-b FM_HOST_LIVE_WORKERS=0 run lease release >/dev/null; then echo 'FAIL released over a claimed worker'; exit 1; fi
+FM_HOST_ID=probe-b FM_HOST_LIVE_WORKERS=0 FM_HOST_WAKE_QUEUE_LENGTH=0 run heartbeat >/dev/null
+# A holder whose lease expired while its workers live (a restart) takes it back; another host still waits.
+FM_HOST_ID=probe-b FM_HOST_LIVE_WORKERS=2 FM_HOST_WAKE_QUEUE_LENGTH=0 run heartbeat >/dev/null
+cat > "$TMP/expire.mjs" <<'JS'
+const base = process.argv[2], q = encodeURIComponent(`home eq '${process.argv[3] || 'probe'}'`);
+const row = (await (await fetch(`${base}/api/fm_home_lease?$filter=${q}&$orderby=generation%20desc`)).json()).value[0];
+await fetch(`${base}/api/fm_home_lease/${row.id}`, { method: 'PATCH', body: JSON.stringify({ heartbeatAt: new Date(Date.now() - 600000).toISOString() }) });
+JS
+node "$TMP/expire.mjs" "$FM_TASK_BASE_URL"
+if FM_HOST_ID=probe-b run lease check >/dev/null; then echo 'FAIL an expired lease passed the check'; exit 1; fi
+if run lease take > "$TMP/expired-refused"; then echo 'FAIL another host took an expired lease over live workers'; exit 1; fi
+grep -q 'held by probe-b' "$TMP/expired-refused"
+FM_HOST_ID=probe-b run lease take --json > "$TMP/retaken" || { echo "FAIL the holder could not take back its own expired lease: $(cat "$TMP/retaken")"; exit 1; }
+# It retakes through generation+1, the generation a competing take would conflict on, never by renewing in place.
+node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1]));if(r.hostId!=="probe-b"||r.generation!==3||Date.now()-Date.parse(r.heartbeatAt)>60000)process.exit(1)' "$TMP/retaken" || { echo "FAIL the holder renewed in place instead of taking a new generation: $(cat "$TMP/retaken")"; exit 1; }
+FM_HOST_ID=probe-b run lease check >/dev/null
+FM_HOST_ID=probe-b FM_HOST_LIVE_WORKERS=0 FM_HOST_WAKE_QUEUE_LENGTH=0 run heartbeat >/dev/null
+# With no workers counted, the holder also retakes through a new generation.
+node "$TMP/expire.mjs" "$FM_TASK_BASE_URL"
+FM_HOST_ID=probe-b run lease take --json > "$TMP/retaken-idle"
+node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1]));if(r.hostId!=="probe-b"||r.generation!==4)process.exit(1)' "$TMP/retaken-idle" || { echo "FAIL an idle holder renewed in place instead of taking a new generation: $(cat "$TMP/retaken-idle")"; exit 1; }
+# A competing take that lands first on that generation wins, even while the holder counts live workers.
+FM_HOME_NAME=probe-race FM_HOST_ID=probe-b run lease take >/dev/null
+FM_HOST_ID=probe-b FM_HOST_LIVE_WORKERS=2 FM_HOST_WAKE_QUEUE_LENGTH=0 run heartbeat >/dev/null
+node "$TMP/expire.mjs" "$FM_TASK_BASE_URL" probe-race
+: > "$TMP/port.race"
+if FM_HOME_NAME=probe-race FM_HOST_ID=probe-b run lease take > "$TMP/raced"; then echo 'FAIL the holder and a competing take both took the expired lease'; exit 1; fi
+grep -q 'ownership race lost' "$TMP/raced"
 FM_HOST_ID=probe-b FM_HOST_LIVE_WORKERS=0 FM_HOST_WAKE_QUEUE_LENGTH=0 run heartbeat >/dev/null
 if run register --typo >/dev/null; then echo 'FAIL unknown flag accepted'; exit 1; fi
 # A configured authorization seam refuses an old host; an unconfigured home is unchanged.

@@ -23,16 +23,21 @@
 //            started, the list of states is fixed (exit 5 otherwise); a state that has run keeps the runtime it ran
 //            with, and only pending states take a new harness, model, effort and fallbacks. Refused while a start-request
 //            is open (that request runs the setup it was asked on).
-//   move     <task> --to STATE               queued -> the first setup state -> the next one; testing|verify -> implement
-//            on a failed check row; a state outside the setup is refused (exit 5). The running attempt of the state
-//            left behind ends with the move. Done comes only through approve, which ends a running step and skips a
+//   move     <task> --to STATE               the override: the record moves the Board column forward on its own (started
+//            or heartbeat: plan, or implement once a ship task's Solution is approved; pr or done --pr-url: testing while
+//            the Tester is asked, else merge; deploy: verify), and a move holds until an event implies a later column.
+//            queued -> the first setup state -> the next one; testing|verify -> implement
+//            on a failed check row; a state outside the setup is refused (exit 5). The running attempt, in any state,
+//            ends with the move. Done comes only through approve, which ends a running step and skips a
 //            state that never started; reopen returns to the last state that ran and lets the skipped states wait again.
 //            A ship task, whatever its surface, moves to implement, a retry too, only while its current plan (its
 //            Solution) is approved; with no plan or another decision it is refused (exit 5): write the Solution with
 //            `plan`, and the owner approves it on the task's Solution tab.
-//   step     <task> start --harness H [--model M] [--effort E] [--account A] [--generation G]   the current state runs;
-//            without --model (a harness default) the setup's model and effort for the state stand
+//   step     <task> start --harness H [--model M] [--effort E] [--account A] [--generation G]   the current state runs,
+//            and a step another state still runs ends; without --model (a harness default) the setup's model and effort
+//            for the state stand
 //   step     <task> alive|dead [--generation G]   on a change only     step <task> end --reason R [--generation G]
+//            alive, dead and end report on the running step, in any state, else on the current state's step.
 //            G is the spawn_gen of state/<task>.meta; a report from an older incarnation is refused (exit 5).
 //   heartbeat <task> [--note N]              running (today's `working:`)
 //   done     <task> --summary --changed-files --verification --residual-risk [--rows JSON]
@@ -80,7 +85,8 @@
 //            the same home again is a no-op, another home is refused: a task belongs to one board
 //   owner-record home|note|hold list|get|put [--home H] [--kind binding|reconcile]
 //            [--identity ID] [--file JSON] reads or writes portable owner records; JSON output for shell bridges
-//   document <task> [--kind description|done] prints the latest matching event document (default description)
+//   handoff <task> --document FILE [--document-title T] attaches a worker continuation document without changing task state.
+//   document <task> [--kind description|done|handoff] prints the latest matching event document (default description)
 //   describe <task> --document FILE.md [--document-title T]              any state; default title Description
 //            A task that holds no scenario check row yet gets them from this Description, as `rows <task>` writes them;
 //            a task that holds one keeps its rows (`rows` is the re-sync). Only a task whose issue is none, its own id,
@@ -90,7 +96,7 @@
 //            stored all the same, and describe prints `rows not seeded: <why>` and exits 0.
 //   materials <task>                     read latest 12 links and 6 images (base64 bytes) from 5001
 //   thread   <task> [--since SEQ]                                       full comments, oldest first
-//   comment  <task> [--note T] [--image PATH --image-label L]... [--video PATH --video-label L]...
+//   comment  <task> [--note T] [--document FILE --document-title T] [--image PATH --image-label L]... [--video PATH --video-label L]...
 //            [--ask why|how|wait-what] [--reply-to SEQ]                 any state; reply-to must name a comment of this task
 //            [--anchor-quote Q [--anchor-prefix P] [--anchor-suffix S]]   opens a thread at the quoted passage (not with
 //            --reply-to); a reply joins the thread of the comment it answers and stores it as `thread`
@@ -397,8 +403,9 @@ function bodyOf(event) {
 }
 
 // The fold of every event's `set`; null while the task has no `created` event.
-// A created task starts in workflow state queued; setup, move, step, approve and reopen set workflowState,
-// workflowSince and the card's step fields (stepHarness, stepModel, stepEffort, stepAlive) in their own `set`.
+// A created task starts in workflow state queued; each later event moves it forward to the column it implies
+// (impliedColumn), and move, approve and reopen set workflowState and workflowSince in their own `set`. Setup, move and
+// step set the card's step fields (stepHarness, stepModel, stepEffort, stepAlive) in their own `set`.
 // The step follows the state: done is passed; review is dev once a deploy follows the newest done, else pr; running is
 // pr once a pr event follows the newest started or changes, else working; triage, todo and ready are queued; blocked
 // (and archived) keep the step they had. stageSince is the time of the event that set the step. lastEventAt comes from
@@ -424,8 +431,35 @@ const isMachineRecord = (event, note) => {
     return false;
   }
 };
+// The Board column an event implies (kv2-column-auto); null when it implies none. The work starts in Plan on a ship task
+// whose current Solution is not approved, the tasks the move gate holds, and in Implement otherwise. A pull request is
+// in Testing while the Tester is asked and in Merge otherwise; a done or routed event that asks the Tester (next actor
+// tester) is Testing; Testing moves to Merge once no row waits (next actor firstmate). A deploy is Verify. `task` is the
+// fold after the event's own `set`.
+function impliedColumn(event, task, set) {
+  const work = () => (task.planDecision !== 'approve' && task.kind === 'ship' ? 'plan' : 'implement');
+  const pullRequest = () => (task.nextActor === 'tester' ? 'testing' : 'merge');
+  switch (event.kind) {
+    case 'created': return ['running', 'blocked', 'review'].includes(set.state) ? work() : null;
+    case 'started':
+    case 'heartbeat': return work();
+    case 'step': return (bodyOf(event).stepWrites ?? []).find((w) => w.status === 'running' && WORKFLOW_STATES.includes(w.state))?.state ?? null;
+    case 'plan_decision': return set.planDecision === 'approve' && task.workflowState !== 'queued' ? 'implement' : null;
+    case 'pr': return pullRequest();
+    case 'done': return task.nextActor === 'tester' ? 'testing' : set.prUrl ? 'merge' : null;
+    case 'routed': if (task.nextActor === 'tester') return 'testing'; // falls through
+    case 'check': return task.workflowState === 'testing' && task.prUrl && task.nextActor === 'firstmate' ? 'merge' : null;
+    case 'deploy': return 'verify';
+    default: return null;
+  }
+}
+
 function fold(events) {
   let task = null;
+  // the next start sets the column its start implies: after changes, and while a pr event the worker recorded during
+  // its work put the card where it is (reopen restores the state that ran last, and a start keeps it)
+  let restart = false;
+  let prDuringWork = false;
   let deployed = false;
   let pullRequest = false;
   const byKey = new Map();
@@ -439,6 +473,18 @@ function fold(events) {
     if (event.kind === 'pr') pullRequest = true;
     task = { ...task, ...set, lastSeq: event.seq };
     if (event.kind === 'created' && !task.workflowState) Object.assign(task, { workflowState: 'queued', workflowSince: event.createdAt ?? null });
+    // An event moves the card only forward; one that sets the column itself (moved, approved, reopened) sets it as given.
+    // Two events move it back: a start after changes or after a pr event during the work, and a done or routed event that
+    // asks the Tester while the card is in Merge. The card's step fields stay: they show the worker that runs.
+    if (event.kind === 'changes') restart = true;
+    const before = task.workflowState;
+    const column = set.workflowState === undefined ? impliedColumn(event, task, set) : null;
+    const back = (event.kind === 'started' && (restart || prDuringWork)) || (column === 'testing' && before === 'merge' && ['done', 'routed'].includes(event.kind));
+    if (column && column !== before && (back || WORKFLOW_STATES.indexOf(column) > WORKFLOW_STATES.indexOf(before ?? 'queued'))) Object.assign(task, { workflowState: column, workflowSince: event.createdAt ?? null });
+    if (event.kind === 'started') restart = false;
+    if (event.kind === 'pr' && ['running', 'blocked'].includes(task.state)) prDuringWork ||= task.workflowState !== before;
+    // it holds until the next start, or until another event sets or moves the column
+    else if (set.workflowState !== undefined || event.kind === 'started' || task.workflowState !== before) prDuringWork = false;
     const stage = STEP_OF_STATE[task.state] ?? (task.state === 'review' ? (deployed ? 'dev' : 'pr')
       : task.state === 'running' ? (pullRequest ? 'pr' : 'working') : task.stage ?? 'queued');
     if (stage !== task.stage) Object.assign(task, { stage, stageSince: event.createdAt ?? null });
@@ -522,11 +568,13 @@ const SPECS = {
   delete: { pos: [], rest: 'tasks', flags: { reason: 's', 'assistance-record-only': 'b' } },
   home: { pos: ['task'], flags: { home: 's' } },
   describe: { pos: ['task'], flags: { document: 's', 'document-title': 's' } },
+  handoff: { pos: ['task'], flags: { document: 's', 'document-title': 's' } },
   plan: { pos: ['task'], flags: { document: 's', 'document-title': 's', image: 'm', 'image-label': 'm' } },
   'plan-decision': { pos: ['task'], flags: { decision: 's', 'plan-seq': 's' } },
+  'artifact-copies': { pos: ['task'], flags: {} },
   materials: { pos: ['task'], flags: {} },
   thread: { pos: ['task'], flags: { since: 's' } },
-  comment: { pos: ['task'], flags: { material: 's', image: 'm', 'image-label': 'm', video: 'm', 'video-label': 'm', ask: 's', 'reply-to': 's', 'anchor-quote': 's', 'anchor-prefix': 's', 'anchor-suffix': 's', outcome: 's', accept: 'b' } },
+  comment: { pos: ['task'], flags: { document: 's', 'document-title': 's', material: 's', image: 'm', 'image-label': 'm', video: 'm', 'video-label': 'm', ask: 's', 'reply-to': 's', 'anchor-quote': 's', 'anchor-prefix': 's', 'anchor-suffix': 's', outcome: 's', accept: 'b' } },
   'merge-authority': { pos: ['task'], flags: { 'pr-url': 's', head: 's', 'merge-authority': 's', receipt: 's', phase: 's', merged: 'b' } },
   'pr-record': { pos: ['task'], flags: {} },
   'pr-round': { pos: ['action'], flags: { file: 's' } },
@@ -1087,7 +1135,7 @@ async function cmdMove(args) {
     }
     // the state left behind stops running: its attempt ends with the move
     const now = new Date().toISOString();
-    const left = steps.find(s => s.state === task.workflowState && s.status === 'running');
+    const left = steps.find(s => s.status === 'running');
     const stepWrites = left ? [{ state: left.state, status: 'done', alive: 'dead', endedAt: now, endReason: `moved to ${to}` }] : [];
     return { kind: 'moved', extra: { stepWrites }, set: { workflowState: to, workflowSince: now, ...stepProjection(target) } };
   });
@@ -1112,8 +1160,15 @@ async function cmdStep(args) {
   // the decision on the record as it is now; the write repeats it against the events really before it
   const decide = async (task, events) => {
     if (!task) throw rule('no such task');
-    const current = (await stepRows(taskId)).find(s => s.state === task.workflowState && s.status !== 'skipped');
+    // start runs the step of the card's column; alive, dead and end report on the running step, whose column the card
+    // may have left on an event (impliedColumn), and on the column's step when none runs
+    const steps = (await stepRows(taskId)).filter(s => s.status !== 'skipped');
+    const own = steps.find(s => s.state === task.workflowState);
+    const running = steps.find(s => s.status === 'running');
+    const current = action === 'start' ? own : running ?? own;
     if (!current) throw rule(`current workflow state ${task.workflowState ?? 'none'} has no setup step`);
+    // a start in the card's column ends a step another column still runs, as a move does
+    const other = action === 'start' && running && running.state !== current.state ? running : null;
     const started = startGeneration(events, current.state);
     const now = new Date().toISOString();
     if (action === 'start') {
@@ -1121,7 +1176,7 @@ async function cmdStep(args) {
       // a spawn on the harness default names no model: the configured step's model and effort stand
       const runtime = { harness: args.flags.harness, model: args.flags.model || current.model, effort: args.flags.effort || current.effort || null, account: args.flags.account || null };
       if (!runtime.model) throw usage('step start needs --model: the setup names no model for this state');
-      if (current.status !== 'running') return { current, patch: { ...runtime, status: 'running', alive: 'alive', attempt: current.attempt + 1, startedAt: now, lastHeartbeatAt: now, endedAt: null, endReason: null } };
+      if (current.status !== 'running') return { current, other, patch: { ...runtime, status: 'running', alive: 'alive', attempt: current.attempt + 1, startedAt: now, lastHeartbeatAt: now, endedAt: null, endReason: null } };
       if (!generation || !started) throw rule('end the running step before starting another attempt');
       if (generation === started) return { current, unchanged: true };
       return { current, patch: { ...runtime, status: 'running', alive: 'alive', lastHeartbeatAt: now } };
@@ -1137,9 +1192,10 @@ async function cmdStep(args) {
   if (first.unchanged) return out(`step ${taskId}: unchanged`);
   if (['alive', 'dead'].includes(action)) who.key = args.flags.key ?? `step-live:${taskId}:${first.current.state}:${first.current.attempt}:${generation ?? '-'}:${action}:${fold(before).lastSeq}`;
   return write(taskId, who, async ({ task, events }) => {
-    const { current, patch, unchanged } = await decide(task, events);
+    const { current, other, patch, unchanged } = await decide(task, events);
     if (unchanged) throw rule('the step changed meanwhile; nothing to write');
-    return { kind: 'step', note: args.flags.reason ?? action, extra: { generation, stepWrites: [{ state: current.state, ...patch }] }, set: stepProjection({ ...current, ...patch }) };
+    const ended = other ? [{ state: other.state, status: 'done', alive: 'dead', endedAt: new Date().toISOString(), endReason: `moved to ${current.state}` }] : [];
+    return { kind: 'step', note: args.flags.reason ?? action, extra: { generation, stepWrites: [...ended, { state: current.state, ...patch }] }, set: stepProjection({ ...current, ...patch }) };
   });
 }
 
@@ -1276,7 +1332,7 @@ const cmdStart = simple('start', 'started', async (task, args, taskId) => {
   return { state: 'running', nextActor: 'worker', holdUntil: null };
 });
 const cmdHeartbeat = simple('heartbeat', 'heartbeat', async (task, args, taskId) => {
-  const step = (await stepRows(taskId)).find(s => s.state === task.workflowState && s.status === 'running');
+  const step = (await stepRows(taskId)).find(s => s.status === 'running');
   if (step) await saveStep(taskId, { state: step.state, lastHeartbeatAt: new Date().toISOString() });
   return {};
 });
@@ -1773,15 +1829,37 @@ async function cmdPlanCheck(args) {
   out(hash);
 }
 
+async function cmdHandoff(args) {
+  const document = documentOf({ ...args.flags, 'document-title': args.flags['document-title'] ?? 'Handoff' });
+  await write(taskIdOf(args), identity(args, 'worker'), async ({ task }) => {
+    if (!task) throw rule('no such task');
+    return { kind: 'comment', note: 'Worker handoff', extra: { documentKind: 'handoff' }, children: { documents: [document] } };
+  });
+}
+
 async function cmdDocument(args) {
   const events = await taskEvents(taskIdOf(args));
   const kind = args.flags.kind || 'description';
-  if (!['description', 'done'].includes(kind)) throw usage('--kind must be description or done');
-  const event = events.filter((e) => e.kind === kind).at(-1);
+  if (!['description', 'done', 'handoff'].includes(kind)) throw usage('--kind must be description, done or handoff');
+  const event = events.filter((e) => kind === 'handoff' ? e.kind === 'comment' && bodyOf(e).documentKind === 'handoff' : e.kind === kind).at(-1);
   if (!event) throw rule(`task has no ${kind} event`);
   const doc = await firstRow('fm_event_document', `fmTaskEventId eq ${event.id}`);
   if (!doc || !doc.content) throw rule(`task ${kind} document is missing`);
   out(doc.content);
+}
+
+// Read every stored attachment, without the presentation limits of materials.
+async function cmdArtifactCopies(args) {
+  const copies = [];
+  for (const event of await taskEvents(taskIdOf(args))) {
+    for (const table of ['fm_event_image', 'fm_event_video', 'fm_event_document']) {
+      for (const row of await listAll(table, { filter: `fmTaskEventId eq ${event.id}` })) {
+        const bytes = table === 'fm_event_document' ? Buffer.from(row.content, 'utf8') : Buffer.from(row.content, 'base64');
+        copies.push({ sha256: crypto.createHash('sha256').update(bytes).digest('hex'), reference: `5001:${table}:${row.id}:event:${event.seq}` });
+      }
+    }
+  }
+  out(JSON.stringify(copies));
 }
 
 async function cmdMaterials(args) {
@@ -1859,7 +1937,8 @@ async function cmdComment(args) {
   const videos = videosOf(args);
   const outcome = args.flags.outcome;
   const accept = Boolean(args.flags.accept);
-  if (!args.flags.note && !images.length && !videos.length && !accept) throw usage('comment needs --note, --image or --video');
+  const document = args.flags.document ? documentOf(args.flags) : undefined;
+  if (!args.flags.note && !document && !images.length && !videos.length && !accept) throw usage('comment needs --note, --image or --video');
   if ((outcome !== undefined || accept) && args.flags['reply-to'] === undefined) throw usage('--outcome and --accept answer a comment of a thread: give --reply-to');
   if (outcome !== undefined && accept) throw usage('a comment proposes an --outcome or accepts one, not both');
   if (outcome !== undefined && (!outcome.trim() || outcome.length > OUTCOME_MAX || /[\r\n]/.test(outcome))) throw usage(`--outcome is one line of 1 to ${OUTCOME_MAX} characters`);
@@ -1884,7 +1963,7 @@ async function cmdComment(args) {
     if (accept && !proposed) throw rule('--accept must answer a comment that proposes an --outcome');
     const settled = outcome !== undefined ? { outcome } : accept ? { outcome: proposed, accepted: parent.seq } : {};
     const extra = { ...(material ? { material } : {}), ...(ask ? { ask } : {}), ...(reply !== undefined ? { replyTo: Number(reply) } : {}), ...(thread ? { thread } : {}), ...(anchor ? { anchor } : {}), ...settled };
-    const spec = { kind: 'comment', note: noteOf(args) || (accept ? `Accepted: ${proposed}` : ''), extra, set: Object.fromEntries([['threadsYourTurn', threadsYourTurn(events, { body: extra, role: who.role })]].filter(([, count]) => count !== undefined)), children: withVideos(withImages({}, images), videos) };
+    const spec = { kind: 'comment', note: noteOf(args) || (accept ? `Accepted: ${proposed}` : ''), extra, set: Object.fromEntries([['threadsYourTurn', threadsYourTurn(events, { body: extra, role: who.role })]].filter(([, count]) => count !== undefined)), children: withVideos(withImages(document ? { documents: [document] } : {}, images), videos) };
     return spec;
   });
 }
@@ -3380,7 +3459,7 @@ const COMMANDS = {
   create: cmdCreate, import: cmdImport, assign: cmdAssign, start: cmdStart, heartbeat: cmdHeartbeat, done: cmdDone, ask: cmdAsk, block: cmdBlock,
   'merge-authority': cmdMergeAuthority, 'pr-record': cmdPrRecord, 'pr-round': cmdPrRound,
   unblock: cmdUnblock, approve: cmdApprove, changes: cmdChanges, reopen: cmdReopen, reassign: cmdReassign, archive: cmdArchive, delete: cmdDelete, home: cmdHome, comment: cmdComment, event: cmdEvent,
-  materials: cmdMaterials, 'plan-spec': cmdPlanSpec, 'plan-approve': cmdPlanApprove, 'plan-check': cmdPlanCheck, document: cmdDocument, link: cmdLink, rows: cmdRows, check: cmdCheck, 'owner-check': cmdOwnerCheck, gate: cmdGate, show: cmdShow, list: cmdList, resume: cmdResume, reproject: cmdReproject,
+  'artifact-copies': cmdArtifactCopies, materials: cmdMaterials, 'plan-spec': cmdPlanSpec, 'plan-approve': cmdPlanApprove, 'plan-check': cmdPlanCheck, document: cmdDocument, handoff: cmdHandoff, link: cmdLink, rows: cmdRows, check: cmdCheck, 'owner-check': cmdOwnerCheck, gate: cmdGate, show: cmdShow, list: cmdList, resume: cmdResume, reproject: cmdReproject,
   checks: cmdChecks, checklist: cmdChecklist,
 };
 

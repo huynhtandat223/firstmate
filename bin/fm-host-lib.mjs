@@ -122,8 +122,13 @@ try {
       const row = await latest();
       if (row && !row.releasedAt) {
         if (row.hostId === id && fresh(row)) { output(row); process.exit(0); }
-        const holder = await host(row.hostId);
-        if (fresh(row) || !holder || holder.liveWorkers !== 0) fail(`home ${homeName} held by ${row.hostId} generation=${row.generation} liveWorkers=${holder ? holder.liveWorkers : 'unknown'}; release or wait for expiry with no live workers`);
+        // A holder takes its own expired lease back even with workers still counted (a restart or a stopped renewal):
+        // only heartbeat lowers that count, which needs a fresh lease. It takes generation+1 like any take, so a
+        // competing take conflicts on that generation instead of both succeeding.
+        if (row.hostId !== id) {
+          const holder = await host(row.hostId);
+          if (fresh(row) || !holder || holder.liveWorkers !== 0) fail(`home ${homeName} held by ${row.hostId} generation=${row.generation} liveWorkers=${holder ? holder.liveWorkers : 'unknown'}; release or wait for expiry with no live workers`);
+        }
       }
       if (!await host(id)) fail('register host before lease take');
       const body = { home: homeName, generation: (row?.generation || 0) + 1, hostId: id, takenAt: now(), heartbeatAt: now(), releasedAt: null };

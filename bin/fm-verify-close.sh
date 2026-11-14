@@ -125,6 +125,9 @@ fm_verify_close_rows() {
       fi
     fi
     printf 'already approved task=%s state=done%s; next: none\n' "$ID" "${current_head:+ head=$current_head}"
+    if [ "$CHECK" -ne 1 ]; then
+      FM_CLEAN_TASK_READER=$task_writer FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_DATA_OVERRIDE=$DATA python3 "$SCRIPT_DIR/fm-clean-artifacts.py" "$ID" --apply --if-terminal >&2 || echo "warning: $ID remains approved; artifact cleanup failed and retained its files" >&2
+    fi
     exit 0
   fi
 
@@ -431,4 +434,7 @@ fi
 rm -f -- "$DATA/$ID/verify-pending"
 # Opt-in task record shadow (bin/fm-task-shadow.sh); off costs one file test.
 [ ! -e "$CONFIG/task-shadow" ] || FM_HOME=$FM_HOME FM_CONFIG_OVERRIDE=$CONFIG FM_DATA_OVERRIDE=$DATA "$SCRIPT_DIR/fm-task-shadow.sh" verified "$ID" || true
+if [ -e "$CONFIG/task-shadow" ]; then
+  FM_CLEAN_TASK_READER=${FM_VERIFY_GATE_TASK:-${FM_TASK_SHADOW_WRITER:-$SCRIPT_DIR/fm-task.sh}} FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_DATA_OVERRIDE=$DATA python3 "$SCRIPT_DIR/fm-clean-artifacts.py" "$ID" --apply --if-terminal || refuse "artifact backup/cleanup failed for $ID"
+fi
 echo "Backlog: $ID is Done. Its verification record is complete."
