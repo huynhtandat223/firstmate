@@ -22,6 +22,9 @@
 # died. The loop exits on its own when this home's session lock (state/.lock) is free or names a dead pid, when the
 # config/task-shadow flag is gone, or when the state directory is gone.
 #
+# With config/home-lease the loop also renews this host's lease every FM_HOST_HEARTBEAT_EVERY seconds (default 30), and
+# bin/fm-lock.sh starts it as soon as the session takes the lease, so no first turn waits on the watcher arm.
+#
 # A stop (TERM, INT, HUP or `stop`) lets the in-flight writer call finish, records it, and only then releases the
 # lock, so no writer of a stopped loop can commit after a successor's write. Each writer call is bounded by a 2 s
 # timeout; a loop killed with KILL leaves at most that one bounded call behind.
@@ -51,6 +54,8 @@ TASK_RECORD_WRITER=${FM_TASK_SHADOW_WRITER:-$SCRIPT_DIR/fm-task.sh}
 TASK_STEP_WRITTEN="$STATE/.task-step-live"
 TASK_STEP_EVERY=${FM_TASK_STEP_EVERY:-5}
 STOP=0
+# seconds between lease heartbeats; the lease expires after 180
+HOST_HEARTBEAT_EVERY=${FM_HOST_HEARTBEAT_EVERY:-30}
 
 # 0 while this home should run a loop: the flag is on and the session lock names a live pid.
 loop_wanted() {
@@ -109,7 +114,7 @@ host_heartbeat_pass() {
   local meta live count=0 queue=0 epoch
   [ -f "$CONFIG/home-lease" ] || return 0
   epoch=$(date +%s)
-  [ $((epoch - HOST_HEARTBEAT_AT)) -ge 30 ] || return 0
+  [ $((epoch - HOST_HEARTBEAT_AT)) -ge "$HOST_HEARTBEAT_EVERY" ] || return 0
   HOST_HEARTBEAT_AT=$epoch
   fm_home_lease_config || return 1
   for meta in "$STATE"/*.meta; do
@@ -162,6 +167,6 @@ case "${1:-start}" in
     while [ "$tries" -gt 0 ] && fm_pid_alive "$pid"; do sleep 0.1; tries=$((tries - 1)); done
     if fm_pid_alive "$pid"; then echo "task-step-loop: pid=$pid outlived the stop" >&2; exit 1; fi
     echo "task-step-loop: stopped pid=$pid" ;;
-  -h|--help) sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//' ;;
+  -h|--help) sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//' ;;
   *) echo "usage: fm-task-step-loop.sh [start|run|stop]" >&2; exit 2 ;;
 esac

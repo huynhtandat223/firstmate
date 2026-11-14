@@ -26,3 +26,12 @@ fm_home_lease_take() {
   dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
   "$dir/fm-host.sh" register >/dev/null && "$dir/fm-host.sh" lease take
 }
+# Renewal runs from session start: the step loop heartbeats the lease, so it starts the moment the lease is taken
+# rather than when the watcher is first armed. Idempotent; the loop exits when the session lock goes.
+fm_home_lease_renew_start() {
+  local result=0 dir
+  fm_home_lease_config || result=$?
+  [ "$result" -eq 0 ] || return 0
+  dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+  "$dir/fm-task-step-loop.sh" start >/dev/null 2>&1 || true
+}
