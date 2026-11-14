@@ -934,7 +934,7 @@ if [ "$READ_ONLY" -eq 0 ]; then
   if [ "$REEMIT" -eq 0 ] && [ -f "$CONFIG/material-home" ]; then
     rm -f "$MATERIAL_OUT" "$MATERIAL_OUT.tmp" 2>/dev/null || true
     (
-      FM_HOME="$FM_HOME" timeout "${FM_MATERIAL_SYNC_TIMEOUT:-60}" "$SCRIPT_DIR/fm-doc.sh" sync > "$MATERIAL_OUT.tmp" 2>&1 \
+      FM_HOME="$FM_HOME" fm_run_timed "${FM_MATERIAL_SYNC_TIMEOUT:-60}" "$SCRIPT_DIR/fm-doc.sh" sync > "$MATERIAL_OUT.tmp" 2>&1 \
         || printf 'material_source=cache home=%s reason="sync did not finish in time"\n' "$(head -n1 "$CONFIG/material-home" 2>/dev/null)" >> "$MATERIAL_OUT.tmp"
       mv -f "$MATERIAL_OUT.tmp" "$MATERIAL_OUT" 2>/dev/null || true
     ) >/dev/null 2>&1 &

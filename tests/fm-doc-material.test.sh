@@ -237,6 +237,16 @@ for _ in $(seq 1 120); do [ -s "$Q/state/.material-sync.out" ] && break; sleep 1
 grep -q 'material_source=cache home=main' "$Q/state/.material-sync.out"
 kill "$HANG" 2>/dev/null || true
 
+# Review round 2 (1): a host without GNU timeout or gtimeout still syncs at session start (fm_run_timed falls back to perl).
+mkdir -p "$TMP/nopath"
+IFS=: read -ra DIRS <<< "$PATH"
+for d in "${DIRS[@]}"; do for f in "$d"/*; do n=${f##*/}; [ -x "$f" ] && [ ! -d "$f" ] && [ "$n" != timeout ] && [ "$n" != gtimeout ] && [ ! -e "$TMP/nopath/$n" ] && ln -s "$f" "$TMP/nopath/$n" || true; done; done
+N="$TMP/home-nt"; mkdir -p "$N/config" "$N/data" "$N/state"; git init -q "$N"; printf 'main\n' > "$N/config/material-home"
+PATH="$TMP/nopath" command -v timeout >/dev/null && { echo 'test PATH still has timeout'; exit 1; }
+FM_HOME="$N" PATH="$TMP/nopath" timeout=none "$(command -v bash)" "$ROOT/bin/fm-session-start.sh" > "$TMP/nt.out" 2>&1 || true
+for _ in $(seq 1 60); do [ -s "$N/state/.material-sync.out" ] && break; sleep 1; done
+grep -q 'material_source=5001 home=main' "$N/state/.material-sync.out" || { echo 'no sync without GNU timeout'; cat "$N/state/.material-sync.out"; exit 1; }
+
 # The C1 git export keeps working through the same entry point.
 if "$DOC" materialize --repo firstmate --output "$TMP/export-should-fail" --unknown 2>/dev/null; then exit 1; fi
 if "$DOC" list --unknown; then exit 1; fi
